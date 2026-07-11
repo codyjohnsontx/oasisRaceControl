@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
 
 export default function StaffLoginPage() {
   const router = useRouter();
@@ -14,18 +13,23 @@ export default function StaffLoginPage() {
   async function signIn() {
     setBusy(true);
     setError(null);
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    );
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setBusy(false);
-    if (error) {
-      setError("Sign-in failed");
-      return;
+    try {
+      const res = await fetch("/api/staff/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok) {
+        setError(res.status === 429 ? "Too many attempts — wait a minute" : "Sign-in failed");
+        return;
+      }
+      router.push("/staff");
+      router.refresh();
+    } catch {
+      setError("Network problem — try again");
+    } finally {
+      setBusy(false);
     }
-    router.push("/staff");
-    router.refresh();
   }
 
   return (
@@ -38,7 +42,11 @@ export default function StaffLoginPage() {
           void signIn();
         }}
       >
+        <label htmlFor="staff-email" className="sr-only">
+          Email
+        </label>
         <input
+          id="staff-email"
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -47,7 +55,11 @@ export default function StaffLoginPage() {
           required
           className="bg-surface border border-edge rounded-lg px-4 py-3 outline-none focus:border-accent"
         />
+        <label htmlFor="staff-password" className="sr-only">
+          Password
+        </label>
         <input
+          id="staff-password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

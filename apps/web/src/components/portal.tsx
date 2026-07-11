@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { browserClient } from "@/lib/supabase-browser";
 import { formatLapTime } from "@/lib/time";
 
 export type PortalLap = {
@@ -18,14 +17,13 @@ export type PortalLap = {
 };
 
 type Props = {
-  driverId: string;
   displayName: string;
   isGuest: boolean;
   activeRigNumber: number | null;
   initialLaps: PortalLap[];
 };
 
-export function Portal({ driverId, displayName, isGuest, activeRigNumber, initialLaps }: Props) {
+export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: Props) {
   const router = useRouter();
   const [laps, setLaps] = useState<PortalLap[]>(initialLaps);
   const [trackFilter, setTrackFilter] = useState("");
@@ -33,29 +31,25 @@ export function Portal({ driverId, displayName, isGuest, activeRigNumber, initia
   const [pin, setPin] = useState("");
   const [claimState, setClaimState] = useState<"idle" | "busy" | "done">("idle");
 
-  // Live laps: new inserts for this driver appear as they're captured.
+  // Live laps: poll while the page is open so laps appear seconds after
+  // they're captured. On failure keep showing what we have.
   useEffect(() => {
-    const db = browserClient();
-    const channel = db
-      .channel(`laps-${driverId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "laps",
-          filter: `driver_id=eq.${driverId}`,
-        },
-        (payload) => {
-          const lap = payload.new as PortalLap;
-          setLaps((current) =>
-            current.some((l) => l.id === lap.id) ? current : [lap, ...current],
-          );
-        },
-      )
-      .subscribe();
-    return () => void db.removeChannel(channel);
-  }, [driverId]);
+    let cancelled = false;
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch("/api/me/laps", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { laps: PortalLap[] };
+        if (!cancelled && Array.isArray(data.laps)) setLaps(data.laps);
+      } catch {
+        // transient network failure — try again next tick
+      }
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(poll);
+    };
+  }, []);
 
   const tracks = useMemo(
     () => [...new Set(laps.map((l) => l.track_name))].sort(),

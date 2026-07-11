@@ -1,4 +1,4 @@
-import { serviceClient } from "@/lib/supabase";
+import { queryOne } from "@/lib/db";
 import { getDriverSession } from "@/lib/driver-session";
 import { CheckInFlow } from "@/components/check-in-flow";
 
@@ -9,19 +9,15 @@ export default async function CheckInPage({
 }) {
   const { token } = await params;
 
-  const { data: qr, error } = await serviceClient()
-    .from("rig_qr_tokens")
-    .select("active, rigs ( rig_number, display_name )")
-    .eq("token", token)
-    .maybeSingle();
-
-  // A failed lookup is not an unknown rig — fail loudly rather than telling
-  // the customer their (valid) QR code isn't registered.
-  if (error) {
-    throw new Error(`Rig QR lookup failed: ${error.message}`);
-  }
-
-  const rig = qr?.active ? (Array.isArray(qr.rigs) ? qr.rigs[0] : qr.rigs) : null;
+  // A failed lookup throws to the error boundary — never tell a customer
+  // their (valid) QR code isn't registered because the database hiccupped.
+  const rig = await queryOne<{ rig_number: number }>(
+    `select r.rig_number
+     from rig_qr_tokens t
+     join rigs r on r.id = t.rig_id
+     where t.token = $1 and t.active`,
+    [token],
+  );
 
   if (!rig) {
     return (

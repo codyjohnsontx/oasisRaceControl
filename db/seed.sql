@@ -1,6 +1,7 @@
--- Dev/demo seed — NOT for production. Tokens below are deliberately guessable
--- so the fake-rig simulator and local phones can use them; production rigs get
--- random tokens at enrollment.
+-- Dev/demo seed — NOT for production. Tokens and passwords below are
+-- deliberately guessable so the fake-rig simulator and local phones can use
+-- them; production rigs get random tokens at enrollment and staff set real
+-- passwords.
 
 insert into rigs (rig_number, display_name, agent_token_hash) values
   (1, 'Rig 01', encode(digest('dev-rig-1-secret', 'sha256'), 'hex')),
@@ -20,7 +21,6 @@ insert into drivers (display_name, pin_hash, is_guest) values
   ('Jordan R.', crypt('1234', gen_salt('bf')), false),
   ('Alexis M.', crypt('1234', gen_salt('bf')), false);
 
--- First staff user: create the auth user in the Supabase dashboard
--- (Authentication → Add user), then run:
---   insert into staff_users (user_id, display_name)
---   values ('<auth-user-uuid>', 'Cody');
+-- Demo staff login: staff@oasis.test / oasis-staff-demo
+insert into staff_users (email, password_hash, display_name)
+values ('staff@oasis.test', crypt('oasis-staff-demo', gen_salt('bf')), 'Cody');

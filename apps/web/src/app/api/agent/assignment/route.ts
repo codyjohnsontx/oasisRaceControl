@@ -1,27 +1,32 @@
-import { serviceClient } from "@/lib/supabase";
+import { queryOne } from "@/lib/db";
 import { rigFromBearer } from "@/lib/agent-auth";
 
-/** Polling fallback for agents when the realtime channel drops. */
+/** Polling fallback for agents; also their primary channel now that the
+ * backend has no push transport. */
 export async function GET(request: Request) {
-  const db = serviceClient();
-  const rig = await rigFromBearer(db, request.headers.get("authorization"));
+  const rig = await rigFromBearer(request.headers.get("authorization"));
   if (!rig) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  const { data } = await db
-    .from("rig_assignments")
-    .select("id, started_at, drivers ( id, display_name )")
-    .eq("rig_id", rig.id)
-    .is("ended_at", null)
-    .maybeSingle();
+  const row = await queryOne<{
+    id: string;
+    started_at: Date;
+    driver_id: string;
+    display_name: string;
+  }>(
+    `select ra.id, ra.started_at, d.id as driver_id, d.display_name
+     from rig_assignments ra
+     join drivers d on d.id = ra.driver_id
+     where ra.rig_id = $1 and ra.ended_at is null`,
+    [rig.id],
+  );
 
-  if (!data) return Response.json({ assignment: null });
+  if (!row) return Response.json({ assignment: null });
 
-  const driver = Array.isArray(data.drivers) ? data.drivers[0] : data.drivers;
   return Response.json({
     assignment: {
-      id: data.id,
-      startedAt: data.started_at,
-      driver: { id: driver?.id, displayName: driver?.display_name },
+      id: row.id,
+      startedAt: row.started_at,
+      driver: { id: row.driver_id, displayName: row.display_name },
     },
   });
 }

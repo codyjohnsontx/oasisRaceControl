@@ -10,7 +10,7 @@ Customer flow: **scan the rig's QR code → confirm check-in on your phone → d
 apps/web/            # Next.js — driver portal, staff dashboard, TV leaderboard, API (Phase 2)
 apps/rig-agent/      # .NET 8 Windows agent that runs on every simulator (Phase 2)
 packages/shared/     # Event schemas and shared types (Phase 2)
-supabase/            # Database migrations (Phase 2)
+db/                  # SQL migrations + dev seed (Postgres — Neon in prod)
 spike/               # Phase 1 throwaway telemetry recorder — proves iRacing SDK ground truth
 docs/                # Plan, spike checklist, spike findings, ops runbook
 ```
@@ -22,12 +22,16 @@ docs/                # Plan, spike checklist, spike findings, ops runbook
 
 ## Web app development
 
+The database is plain Postgres — **Neon** in production, any local Postgres in dev. All access goes through the Next.js API routes; there is no realtime service (the TV and portal poll every few seconds, which is indistinguishable from push at venue scale).
+
 One-time setup:
 
-1. Create a Supabase project → copy `apps/web/.env.example` to `apps/web/.env.local` and fill it in.
-2. Apply the schema: `supabase login`, `supabase link --project-ref <ref>`, `supabase db push`, then paste `supabase/seed.sql` into the SQL editor (dev data: rigs 1–3, QR tokens `demo-rig-1..3`, drivers with PIN 1234, tonight's featured combo). **`seed.sql` is for local/demo environments only** — its rig tokens, QR slugs, and PINs are deliberately guessable. In the production project, skip the seed entirely: enroll rigs with randomly generated tokens (e.g. `openssl rand -hex 32`), let QR tokens be random slugs, and let drivers pick their own PINs.
-3. First staff user: Supabase dashboard → Authentication → Add user, then insert a `staff_users` row (snippet at the bottom of `seed.sql`).
-4. Vercel: import this repo, set root directory to `apps/web`, paste the same env vars.
+1. Database:
+   - **Local**: `docker run -d --name oasis-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=oasis -p 5433:5432 postgres:16`
+   - **Neon**: create a project at neon.tech and copy the **pooled** connection string (the `-pooler` host, with `sslmode=require`).
+2. Copy `apps/web/.env.example` to `apps/web/.env.local` and fill in `DATABASE_URL` and `SESSION_SECRET`.
+3. Apply schema + dev data: `npm run db:migrate && npm run db:seed` (from `apps/web`). Seed data: rigs 1–3, QR tokens `demo-rig-1..3`, drivers with PIN 1234, staff login `staff@oasis.test` / `oasis-staff-demo`, tonight's featured combo. **The seed is for local/demo environments only** — its rig tokens, QR slugs, PINs, and staff password are deliberately guessable. In production, run only `db:migrate`, enroll rigs with random tokens (`openssl rand -hex 32`), and insert real staff rows with strong bcrypt-hashed passwords.
+4. Vercel: import this repo, set root directory to `apps/web`, add the same two env vars (use the Neon pooled URL).
 
 Daily loop:
 
@@ -36,9 +40,10 @@ cd apps/web
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulates Rig 01 sending heartbeats + laps (needs dev seed)
 npm test           # unit tests
+npm run db:migrate # apply any new migrations in db/migrations/
 ```
 
-Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv` live. Staff dashboard is at `/staff`.
+Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Staff dashboard is at `/staff`.
 
 ## Building the spike recorder (on this Mac, runs on Windows)
 

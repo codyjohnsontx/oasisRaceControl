@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { serviceClient } from "@/lib/supabase";
+import { queryOne, isUniqueViolation } from "@/lib/db";
 import { setDriverSession } from "@/lib/driver-session";
 import { parseJsonBody } from "@/lib/http";
-import { displayNameSchema, isUniqueViolation } from "@/lib/driver-auth";
+import { displayNameSchema } from "@/lib/driver-auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 const body = z.object({ displayName: displayNameSchema });
@@ -20,25 +20,27 @@ export async function POST(request: Request) {
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
 
-  const db = serviceClient();
-  const { data, error } = await db
-    .from("drivers")
-    .insert({ display_name: input.displayName, is_guest: true })
-    .select("id, display_name")
-    .single();
+  try {
+    const driver = await queryOne<{ id: string; display_name: string }>(
+      `insert into drivers (display_name, is_guest)
+       values ($1, true)
+       returning id, display_name`,
+      [input.displayName],
+    );
+    if (!driver) return Response.json({ error: "server_error" }, { status: 500 });
 
-  if (error) {
+    await setDriverSession({
+      driverId: driver.id,
+      displayName: driver.display_name,
+      isGuest: true,
+    });
+    return Response.json({ driverId: driver.id, displayName: driver.display_name });
+  } catch (error) {
     if (isUniqueViolation(error)) {
       const suggestion = `${input.displayName} ${Math.floor(10 + Math.random() * 90)}`;
       return Response.json({ error: "name_taken", suggestion }, { status: 409 });
     }
+    console.error("[auth/guest] failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });
   }
-
-  await setDriverSession({
-    driverId: data.id,
-    displayName: data.display_name,
-    isGuest: true,
-  });
-  return Response.json({ driverId: data.id, displayName: data.display_name });
 }
