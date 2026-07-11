@@ -235,7 +235,7 @@ export function Portal({ driverId, displayName, isGuest, activeRigNumber, initia
                     className="text-invalid text-xs font-bold uppercase"
                     title={lap.invalid_reason ?? ""}
                   >
-                    {lap.invalid_reason === "INCIDENT_LIMIT_EXCEEDED" ? "dirty" : "invalid"}
+                    invalid
                   </span>
                 )}
               </div>
