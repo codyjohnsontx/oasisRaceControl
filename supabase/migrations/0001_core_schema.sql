@@ -286,6 +286,16 @@ create policy featured_combos_public_read on featured_combos for select to anon,
 grant select on v_fastest_tonight to anon, authenticated;
 grant select on v_rig_status to anon, authenticated;
 
+-- Explicit grants (don't rely on platform default privileges):
+-- service_role is the API routes' key and needs full table access; anon and
+-- authenticated need table-level SELECT on exactly the tables their RLS
+-- policies open up, or PostgREST/Realtime deny before RLS is even consulted.
+grant all on all tables in schema public to service_role;
+grant usage, select on all sequences in schema public to service_role;
+grant select on laps, rig_assignments, featured_combos to anon, authenticated;
+grant execute on function checkin_driver(uuid, uuid, boolean, boolean) to service_role;
+grant execute on function venue_today() to service_role, anon, authenticated;
+
 -- Realtime change feeds for live UI updates.
 alter publication supabase_realtime add table laps;
 alter publication supabase_realtime add table rig_assignments;
