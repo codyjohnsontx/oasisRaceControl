@@ -1,0 +1,27 @@
+# .NET
+bin/
+obj/
+*.user
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Supabase local
+supabase/.temp/
+supabase/.branches/
+
+# Spike telemetry recordings (large; share via drive, not git)
+spike-logs/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
