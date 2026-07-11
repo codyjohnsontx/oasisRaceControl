@@ -15,13 +15,30 @@ spike/               # Phase 1 throwaway telemetry recorder — proves iRacing S
 docs/                # Plan, spike checklist, spike findings, ops runbook
 ```
 
-## Current phase: Phase 1 — iRacing integration spike
+## Status
 
-Nothing downstream (schema, validity rules, idempotency keys) is final until the spike proves what iRacing's local SDK actually exposes on a real venue rig. See:
+- **Phase 1 (iRacing spike): awaiting a venue recording session.** The `laps` table and agent event contract are provisional until the spike findings land. See `docs/spike-checklist.md`, `docs/spike-findings.md`, and `spike/`.
+- **Phase 2 (web slice): built.** Check-in, driver portal, TV leaderboard, staff dashboard, ingestion API, and a fake-rig simulator.
 
-- `docs/spike-checklist.md` — the scripted on-site recording session
-- `docs/spike-findings.md` — findings template to fill in as scenarios are recorded
-- `spike/` — the telemetry recorder to run on a rig
+## Web app development
+
+One-time setup:
+
+1. Create a Supabase project → copy `apps/web/.env.example` to `apps/web/.env.local` and fill it in.
+2. Apply the schema: `supabase login`, `supabase link --project-ref <ref>`, `supabase db push`, then paste `supabase/seed.sql` into the SQL editor (dev data: rigs 1–3, QR tokens `demo-rig-1..3`, drivers with PIN 1234, tonight's featured combo).
+3. First staff user: Supabase dashboard → Authentication → Add user, then insert a `staff_users` row (snippet at the bottom of `seed.sql`).
+4. Vercel: import this repo, set root directory to `apps/web`, paste the same env vars.
+
+Daily loop:
+
+```bash
+cd apps/web
+npm run dev        # http://localhost:3000
+npm run fake-rig   # simulates Rig 01 sending heartbeats + laps (needs dev seed)
+npm test           # unit tests
+```
+
+Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv` live. Staff dashboard is at `/staff`.
 
 ## Building the spike recorder (on this Mac, runs on Windows)
 
