@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+/* Oasis Race Control — placeholder dark motorsport theme.
+   All brand-swappable values live in :root; components reference the
+   semantic tokens below, so real Oasis branding drops in here later. */
+:root {
+  --bg: #08080c;
+  --surface: #10101a;
+  --raised: #191926;
+  --edge: #272738;
+  --ink: #f2f2f7;
+  --muted: #8f8fa3;
+  --accent: #e10600;
+  --valid: #2bcc6c;
+  --invalid: #ff453a;
+  --gold: #ffd60a;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-edge: var(--edge);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-valid: var(--valid);
+  --color-invalid: var(--invalid);
+  --color-gold: var(--gold);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Lap times and gaps always render in tabular mono so columns line up. */
+.laptime {
+  font-family: var(--font-geist-mono), monospace;
+  font-variant-numeric: tabular-nums;
+}
