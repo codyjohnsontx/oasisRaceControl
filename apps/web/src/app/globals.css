@@ -31,9 +31,8 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* Background/text colors come from the bg-bg/text-ink classes on <body>. */
 body {
-  background: var(--bg);
-  color: var(--ink);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 

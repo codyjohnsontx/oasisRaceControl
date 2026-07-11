@@ -8,10 +8,16 @@ import {
   hashPin,
   isUniqueViolation,
 } from "@/lib/driver-auth";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 const body = z.object({ displayName: displayNameSchema, pin: pinSchema });
 
 export async function POST(request: Request) {
+  // Same unauthenticated row-creation exposure as the guest route.
+  if (!rateLimit(`register:${clientIp(request)}`, 10, 60_000)) {
+    return Response.json({ error: "rate_limited" }, { status: 429 });
+  }
+
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
 

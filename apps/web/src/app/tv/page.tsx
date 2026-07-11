@@ -37,11 +37,17 @@ export default function TvPage() {
 
   const refresh = useCallback(async () => {
     const db = browserClient();
-    const { data } = await db
+    const { data, error } = await db
       .from("v_fastest_tonight")
       .select("driver_id, display_name, lap_time_ms")
       .order("lap_time_ms", { ascending: true })
       .limit(15);
+    // The TV runs unattended for hours: on a transient failure, keep showing
+    // the last known standings instead of a falsely empty board.
+    if (error) {
+      console.error("[tv] leaderboard refresh failed", error.message);
+      return;
+    }
     const next = (data ?? []) as Row[];
 
     // Personal-best interstitial: a driver's best tonight just improved.
@@ -90,6 +96,10 @@ export default function TvPage() {
     return () => {
       void db.removeChannel(channel);
       clearInterval(poll);
+      if (interstitialTimer.current) {
+        clearTimeout(interstitialTimer.current);
+        interstitialTimer.current = null;
+      }
     };
   }, [refresh]);
 

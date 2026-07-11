@@ -9,11 +9,17 @@ export default async function CheckInPage({
 }) {
   const { token } = await params;
 
-  const { data: qr } = await serviceClient()
+  const { data: qr, error } = await serviceClient()
     .from("rig_qr_tokens")
     .select("active, rigs ( rig_number, display_name )")
     .eq("token", token)
     .maybeSingle();
+
+  // A failed lookup is not an unknown rig — fail loudly rather than telling
+  // the customer their (valid) QR code isn't registered.
+  if (error) {
+    throw new Error(`Rig QR lookup failed: ${error.message}`);
+  }
 
   const rig = qr?.active ? (Array.isArray(qr.rigs) ? qr.rigs[0] : qr.rigs) : null;
 
