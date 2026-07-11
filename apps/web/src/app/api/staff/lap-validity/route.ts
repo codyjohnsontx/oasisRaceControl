@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { serviceClient } from "@/lib/supabase";
 import { getStaffUser, writeAudit } from "@/lib/staff";
+import { parseJsonBody } from "@/lib/http";
 
 const body = z.object({
   lapId: z.uuid(),
@@ -14,12 +15,10 @@ export async function POST(request: Request) {
   const staff = await getStaffUser();
   if (!staff) return Response.json({ error: "forbidden" }, { status: 403 });
 
-  const parsed = body.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_input" }, { status: 400 });
-  }
+  const input = await parseJsonBody(request, body);
+  if (input instanceof Response) return input;
 
-  const invalidate = parsed.data.action === "invalidate";
+  const invalidate = input.action === "invalidate";
   const db = serviceClient();
   const { data, error } = await db
     .from("laps")
@@ -27,11 +26,14 @@ export async function POST(request: Request) {
       is_valid: !invalidate,
       invalid_reason: invalidate ? "MANUALLY_INVALIDATED" : null,
     })
-    .eq("id", parsed.data.lapId)
+    .eq("id", input.lapId)
     .select("id, is_valid")
     .maybeSingle();
 
-  if (error || !data) {
+  if (error) {
+    return Response.json({ error: "server_error" }, { status: 500 });
+  }
+  if (!data) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
@@ -40,7 +42,7 @@ export async function POST(request: Request) {
     action: invalidate ? "invalidate_lap" : "restore_lap",
     targetType: "lap",
     targetId: data.id,
-    reason: parsed.data.reason,
+    reason: input.reason,
   });
 
   return Response.json({ lapId: data.id, isValid: data.is_valid });

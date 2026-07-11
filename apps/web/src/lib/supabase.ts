@@ -15,6 +15,12 @@ export function serviceClient(): SupabaseClient {
   return createClient(
     required("NEXT_PUBLIC_SUPABASE_URL"),
     required("SUPABASE_SERVICE_ROLE_KEY"),
-    { auth: { persistSession: false } },
+    {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    },
   );
 }

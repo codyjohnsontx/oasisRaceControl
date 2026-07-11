@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { serviceClient } from "@/lib/supabase";
 import { setDriverSession } from "@/lib/driver-session";
+import { parseJsonBody } from "@/lib/http";
 import {
   displayNameSchema,
   pinSchema,
@@ -11,17 +12,15 @@ import {
 const body = z.object({ displayName: displayNameSchema, pin: pinSchema });
 
 export async function POST(request: Request) {
-  const parsed = body.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_input" }, { status: 400 });
-  }
+  const input = await parseJsonBody(request, body);
+  if (input instanceof Response) return input;
 
   const db = serviceClient();
   const { data, error } = await db
     .from("drivers")
     .insert({
-      display_name: parsed.data.displayName,
-      pin_hash: await hashPin(parsed.data.pin),
+      display_name: input.displayName,
+      pin_hash: await hashPin(input.pin),
       is_guest: false,
     })
     .select("id, display_name")

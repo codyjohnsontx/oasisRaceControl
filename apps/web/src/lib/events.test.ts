@@ -22,7 +22,8 @@ describe("agent events contract", () => {
   });
 
   it("rejects a lap without an idempotency key", () => {
-    const { eventId: _dropped, ...rest } = lap;
+    const rest: Record<string, unknown> = { ...lap };
+    delete rest.eventId;
     expect(agentEventsBody.safeParse({ events: [rest] }).success).toBe(false);
   });
 

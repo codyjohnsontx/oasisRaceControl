@@ -88,7 +88,11 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
           void submit();
         }}
       >
+        <label htmlFor="driver-name" className="sr-only">
+          Display name
+        </label>
         <input
+          id="driver-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Display name"
@@ -99,16 +103,22 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
           className="bg-surface border border-edge rounded-lg px-4 py-3 text-lg outline-none focus:border-accent"
         />
         {mode !== "guest" && (
-          <input
-            value={pin}
-            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
-            placeholder={mode === "register" ? "Choose a 4-digit PIN" : "4-digit PIN"}
-            inputMode="numeric"
-            autoComplete={mode === "register" ? "new-password" : "current-password"}
-            required
-            pattern="\d{4}"
-            className="bg-surface border border-edge rounded-lg px-4 py-3 text-lg outline-none focus:border-accent laptime"
-          />
+          <>
+            <label htmlFor="driver-pin" className="sr-only">
+              4-digit PIN
+            </label>
+            <input
+              id="driver-pin"
+              value={pin}
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder={mode === "register" ? "Choose a 4-digit PIN" : "4-digit PIN"}
+              inputMode="numeric"
+              autoComplete={mode === "register" ? "new-password" : "current-password"}
+              required
+              pattern="\d{4}"
+              className="bg-surface border border-edge rounded-lg px-4 py-3 text-lg outline-none focus:border-accent laptime"
+            />
+          </>
         )}
         {message && <p className="text-invalid text-sm">{message}</p>}
         <button

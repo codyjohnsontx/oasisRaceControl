@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { serviceClient } from "@/lib/supabase";
 import { getDriverSession } from "@/lib/driver-session";
+import { parseJsonBody } from "@/lib/http";
 
 const body = z.object({
   qrToken: z.string().min(1).max(120),
@@ -18,19 +19,18 @@ export async function POST(request: Request) {
   const session = await getDriverSession();
   if (!session) return Response.json({ error: "not_signed_in" }, { status: 401 });
 
-  const parsed = body.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_input" }, { status: 400 });
-  }
+  const input = await parseJsonBody(request, body);
+  if (input instanceof Response) return input;
 
   const db = serviceClient();
 
   const { data: qr } = await db
     .from("rig_qr_tokens")
     .select("rig_id, active, rigs ( id, rig_number, display_name )")
-    .eq("token", parsed.data.qrToken)
+    .eq("token", input.qrToken)
     .maybeSingle();
-  if (!qr?.active || !qr.rigs) {
+  const rig = Array.isArray(qr?.rigs) ? qr?.rigs[0] : qr?.rigs;
+  if (!qr?.active || !rig) {
     return Response.json({ error: "unknown_rig" }, { status: 404 });
   }
 
@@ -46,8 +46,8 @@ export async function POST(request: Request) {
   const { data, error } = await db.rpc("checkin_driver", {
     p_driver_id: session.driverId,
     p_rig_id: qr.rig_id,
-    p_confirm_move: parsed.data.confirmMove ?? false,
-    p_confirm_takeover: parsed.data.confirmTakeover ?? false,
+    p_confirm_move: input.confirmMove ?? false,
+    p_confirm_takeover: input.confirmTakeover ?? false,
   });
 
   if (error) {
@@ -58,6 +58,5 @@ export async function POST(request: Request) {
     return Response.json({ error: "server_error" }, { status: 500 });
   }
 
-  const rig = Array.isArray(qr.rigs) ? qr.rigs[0] : qr.rigs;
   return Response.json({ ...data, rig });
 }

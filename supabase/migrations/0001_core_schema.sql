@@ -111,7 +111,7 @@ create table laps (
 
 create index laps_driver_idx on laps (driver_id, completed_at desc);
 create index laps_tonight_idx on laps (is_valid, completed_at desc);
-create index laps_combo_idx on laps (track_name, car_name, is_valid, lap_time_ms);
+create index laps_combo_idx on laps (track_name, track_config, car_name, is_valid, lap_time_ms);
 
 create table staff_users (
   user_id uuid primary key references auth.users (id) on delete cascade,
@@ -166,19 +166,27 @@ declare
   v_needs jsonb := '{}'::jsonb;
   v_assignment_id uuid;
 begin
+  -- Lock every candidate open assignment (this driver's current one and the
+  -- target rig's occupant) in ONE ordered pass. Locking them in two separate
+  -- statements deadlocks when two drivers swap rigs simultaneously (AB-BA).
+  perform 1
+    from rig_assignments ra
+    where ra.ended_at is null
+      and (ra.driver_id = p_driver_id or ra.rig_id = p_rig_id)
+    order by ra.id
+    for update of ra;
+
   select ra.id, ra.rig_id, r.rig_number
     into v_current
     from rig_assignments ra
     join rigs r on r.id = ra.rig_id
-    where ra.driver_id = p_driver_id and ra.ended_at is null
-    for update of ra;
+    where ra.driver_id = p_driver_id and ra.ended_at is null;
 
   select ra.id, ra.driver_id, d.display_name as driver_name
     into v_occupant
     from rig_assignments ra
     join drivers d on d.id = ra.driver_id
-    where ra.rig_id = p_rig_id and ra.ended_at is null
-    for update of ra;
+    where ra.rig_id = p_rig_id and ra.ended_at is null;
 
   if v_occupant.id is not null and v_occupant.driver_id = p_driver_id then
     return jsonb_build_object('status', 'already_checked_in', 'assignmentId', v_occupant.id);

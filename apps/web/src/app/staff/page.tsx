@@ -12,7 +12,10 @@ export default async function StaffPage() {
   if (!staff) redirect("/staff/login");
 
   const db = serviceClient();
-  const [{ data: rigs }, { data: laps }] = await Promise.all([
+  const [
+    { data: rigs, error: rigsError },
+    { data: laps, error: lapsError },
+  ] = await Promise.all([
     db.from("v_rig_status").select("*"),
     db
       .from("laps")
@@ -22,6 +25,14 @@ export default async function StaffPage() {
       .order("completed_at", { ascending: false })
       .limit(30),
   ]);
+
+  // An empty dashboard that's actually a failed query would mislead staff into
+  // thinking every rig is free — fail loudly via the Next error boundary.
+  if (rigsError || lapsError) {
+    throw new Error(
+      `Staff dashboard query failed: ${rigsError?.message ?? lapsError?.message}`,
+    );
+  }
 
   const lapRows: StaffLapRow[] = (laps ?? []).map((lap) => {
     const driver = Array.isArray(lap.drivers) ? lap.drivers[0] : lap.drivers;

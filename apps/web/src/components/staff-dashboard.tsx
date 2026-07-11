@@ -58,18 +58,27 @@ export function StaffDashboard({
 
   async function post(url: string, body: object, busyKey: string) {
     setBusyId(busyKey);
-    await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    setBusyId(null);
-    router.refresh();
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        window.alert("That didn't go through — check the connection and try again.");
+        return;
+      }
+      router.refresh();
+    } catch {
+      window.alert("Network problem — the action was not applied.");
+    } finally {
+      setBusyId(null);
+    }
   }
 
   function clearRig(rig: RigStatusRow) {
     const reason = window.prompt(`Clear ${rig.driver_name} off Rig ${rig.rig_number}? Reason:`);
-    if (reason === null) return;
+    if (!reason?.trim()) return;
     void post("/api/staff/clear-rig", { rigId: rig.rig_id, reason }, rig.rig_id);
   }
 
@@ -156,9 +165,10 @@ export function StaffDashboard({
               <span className="laptime font-bold w-20">{formatLapTime(lap.lap_time_ms)}</span>
               <button
                 type="button"
+                disabled={busyId === lap.driver_id}
                 onClick={() => resetPin(lap.driver_id, lap.driver_name)}
                 title="Reset PIN"
-                className="w-32 truncate text-left underline decoration-dotted underline-offset-4"
+                className="w-32 truncate text-left underline decoration-dotted underline-offset-4 disabled:opacity-40"
               >
                 {lap.driver_name}
               </button>

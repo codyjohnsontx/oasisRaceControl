@@ -8,8 +8,9 @@ import { venueToday } from "@/lib/venue";
  * Idempotent agent event ingestion.
  *
  * PROVISIONAL CONTRACT: the event shape (src/lib/events.ts) may change when
- * the Phase 1 spike findings land — the C# Rig Agent must target the final
- * version. The fake-rig simulator (scripts/fake-rig.ts) is today's only client.
+ * the Phase 1 spike findings land (docs/spike-findings.md). The C# Rig Agent
+ * must be built against the final version. The fake-rig simulator
+ * (scripts/fake-rig.ts) is today's only client.
  */
 export async function POST(request: Request) {
   const db = serviceClient();
@@ -22,6 +23,17 @@ export async function POST(request: Request) {
       { error: "invalid_input", detail: parsed.error.issues },
       { status: 400 },
     );
+  }
+
+  // Tonight's combo applies to the whole batch — look it up once, not per lap.
+  let combo: FeaturedCombo | null = null;
+  if (parsed.data.events.some((event) => event.type === "LAP_COMPLETED")) {
+    const { data } = await db
+      .from("featured_combos")
+      .select("track_name, track_config, car_name, incident_limit")
+      .eq("combo_date", venueToday())
+      .maybeSingle<FeaturedCombo>();
+    combo = data ?? null;
   }
 
   const results: Array<{ type: string; status: string; eventId?: string }> = [];
@@ -37,7 +49,7 @@ export async function POST(request: Request) {
         .eq("id", rig.id);
       results.push({ type: event.type, status: "ok" });
     } else {
-      results.push(await ingestLap(db, rig.id, event));
+      results.push(await ingestLap(db, rig.id, event, combo));
     }
   }
 
@@ -51,6 +63,7 @@ async function ingestLap(
   db: ReturnType<typeof serviceClient>,
   rigId: string,
   lap: LapCompletedEvent,
+  combo: FeaturedCombo | null,
 ): Promise<{ type: string; status: string; eventId: string }> {
   const base = { type: lap.type, eventId: lap.eventId };
 
@@ -64,13 +77,7 @@ async function ingestLap(
     .maybeSingle();
   if (!assignment) return { ...base, status: "no_active_assignment" };
 
-  const { data: combo } = await db
-    .from("featured_combos")
-    .select("track_name, track_config, car_name, incident_limit")
-    .eq("combo_date", venueToday())
-    .maybeSingle<FeaturedCombo>();
-
-  const validity = computeValidity(lap, combo ?? null);
+  const validity = computeValidity(lap, combo);
 
   const { data: inserted, error } = await db
     .from("laps")
@@ -94,7 +101,15 @@ async function ingestLap(
     )
     .select("id");
 
-  if (error) return { ...base, status: "error" };
+  if (error) {
+    console.error("[agent/events] lap upsert failed", {
+      rigId,
+      eventId: lap.eventId,
+      code: error.code,
+      message: error.message,
+    });
+    return { ...base, status: "error" };
+  }
   if (!inserted || inserted.length === 0) return { ...base, status: "duplicate" };
   return { ...base, status: validity.isValid ? "accepted" : "accepted_invalid" };
 }

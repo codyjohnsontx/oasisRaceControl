@@ -25,7 +25,7 @@ docs/                # Plan, spike checklist, spike findings, ops runbook
 One-time setup:
 
 1. Create a Supabase project → copy `apps/web/.env.example` to `apps/web/.env.local` and fill it in.
-2. Apply the schema: `supabase login`, `supabase link --project-ref <ref>`, `supabase db push`, then paste `supabase/seed.sql` into the SQL editor (dev data: rigs 1–3, QR tokens `demo-rig-1..3`, drivers with PIN 1234, tonight's featured combo).
+2. Apply the schema: `supabase login`, `supabase link --project-ref <ref>`, `supabase db push`, then paste `supabase/seed.sql` into the SQL editor (dev data: rigs 1–3, QR tokens `demo-rig-1..3`, drivers with PIN 1234, tonight's featured combo). **`seed.sql` is for local/demo environments only** — its rig tokens, QR slugs, and PINs are deliberately guessable. In the production project, skip the seed entirely: enroll rigs with randomly generated tokens (e.g. `openssl rand -hex 32`), let QR tokens be random slugs, and let drivers pick their own PINs.
 3. First staff user: Supabase dashboard → Authentication → Add user, then insert a `staff_users` row (snippet at the bottom of `seed.sql`).
 4. Vercel: import this repo, set root directory to `apps/web`, paste the same env vars.
 

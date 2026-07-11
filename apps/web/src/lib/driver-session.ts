@@ -42,7 +42,7 @@ export async function getDriverSession(): Promise<DriverSession | null> {
   const token = store.get(COOKIE_NAME)?.value;
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, secret());
+    const { payload } = await jwtVerify(token, secret(), { algorithms: ["HS256"] });
     if (!payload.sub) return null;
     return {
       driverId: payload.sub,

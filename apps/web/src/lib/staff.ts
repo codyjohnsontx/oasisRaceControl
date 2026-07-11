@@ -53,7 +53,7 @@ export async function writeAudit(entry: {
   reason?: string;
   detail?: Record<string, unknown>;
 }): Promise<void> {
-  await serviceClient().from("audit_log").insert({
+  const { error } = await serviceClient().from("audit_log").insert({
     staff_user_id: entry.staffUserId,
     action: entry.action,
     target_type: entry.targetType,
@@ -61,4 +61,9 @@ export async function writeAudit(entry: {
     reason: entry.reason ?? null,
     detail: entry.detail ?? null,
   });
+  if (error) {
+    // The mutation already committed; losing the audit row must at least be
+    // loud. Making mutation+audit transactional is a post-MVP migration.
+    console.error("[audit] insert failed", { ...entry, code: error.code, message: error.message });
+  }
 }

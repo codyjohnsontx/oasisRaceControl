@@ -13,6 +13,12 @@
  * and an occasional deliberate duplicate eventId to prove idempotency.
  */
 
+import { z } from "zod";
+import { heartbeatEvent, type LapCompletedEvent } from "../src/lib/events";
+
+type HeartbeatEvent = z.infer<typeof heartbeatEvent>;
+type AgentEvent = HeartbeatEvent | LapCompletedEvent;
+
 const arg = (name: string, fallback: string): string => {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
@@ -32,7 +38,7 @@ const COMBO = {
 let lapNumber = 0;
 let lastEventId: string | null = null;
 
-async function post(events: object[]): Promise<void> {
+async function post(events: AgentEvent[]): Promise<void> {
   try {
     const res = await fetch(`${BASE}/api/agent/events`, {
       method: "POST",
@@ -49,7 +55,7 @@ async function post(events: object[]): Promise<void> {
   }
 }
 
-function nextLap(): object {
+function nextLap(): LapCompletedEvent {
   lapNumber += 1;
 
   // ~7%: resend the previous event verbatim to prove duplicates are dropped.

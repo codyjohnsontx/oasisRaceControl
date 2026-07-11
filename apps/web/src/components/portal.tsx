@@ -86,19 +86,27 @@ export function Portal({ driverId, displayName, isGuest, activeRigNumber, initia
   }, [filtered]);
 
   async function endSession() {
-    await fetch("/api/session/end", { method: "POST" });
+    try {
+      await fetch("/api/session/end", { method: "POST" });
+    } catch {
+      // Refresh anyway — the server state is what matters and will re-render.
+    }
     router.refresh();
   }
 
   async function claim() {
     setClaimState("busy");
-    const res = await fetch("/api/auth/claim", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pin }),
-    });
-    setClaimState(res.ok ? "done" : "idle");
-    if (res.ok) router.refresh();
+    try {
+      const res = await fetch("/api/auth/claim", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+      setClaimState(res.ok ? "done" : "idle");
+      if (res.ok) router.refresh();
+    } catch {
+      setClaimState("idle");
+    }
   }
 
   return (
