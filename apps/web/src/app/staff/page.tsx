@@ -29,9 +29,10 @@ export default async function StaffPage() {
   // An empty dashboard that's actually a failed query would mislead staff into
   // thinking every rig is free — fail loudly via the Next error boundary.
   if (rigsError || lapsError) {
-    throw new Error(
-      `Staff dashboard query failed: ${rigsError?.message ?? lapsError?.message}`,
-    );
+    const details = [rigsError?.message, lapsError?.message]
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(`Staff dashboard query failed: ${details}`);
   }
 
   const lapRows: StaffLapRow[] = (laps ?? []).map((lap) => {

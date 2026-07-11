@@ -256,7 +256,11 @@ export function Portal({ driverId, displayName, isGuest, activeRigNumber, initia
         <button
           type="button"
           onClick={async () => {
-            await fetch("/api/auth/logout", { method: "POST" });
+            try {
+              await fetch("/api/auth/logout", { method: "POST" });
+            } catch {
+              // Refresh regardless; the cookie state on the server decides.
+            }
             router.refresh();
           }}
           className="text-muted text-sm underline underline-offset-4"

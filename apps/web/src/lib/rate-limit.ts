@@ -10,7 +10,7 @@ const MAX_TRACKED_KEYS = 10_000;
 
 export function rateLimit(key: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
-  if (buckets.size > MAX_TRACKED_KEYS) buckets.clear();
+  if (buckets.size > MAX_TRACKED_KEYS) evict(now, windowMs);
 
   const hits = (buckets.get(key) ?? []).filter((t) => t > now - windowMs);
   if (hits.length >= limit) {
@@ -20,6 +20,20 @@ export function rateLimit(key: string, limit: number, windowMs: number): boolean
   hits.push(now);
   buckets.set(key, hits);
   return true;
+}
+
+/** Drop keys with no hits inside the window first (their limiters are inert);
+ * only if everything is somehow active, drop oldest-inserted keys. Never
+ * clears the whole map — that would reset active limiters mid-attack. */
+function evict(now: number, windowMs: number): void {
+  for (const [key, hits] of buckets) {
+    const newest = hits[hits.length - 1];
+    if (newest === undefined || newest <= now - windowMs) buckets.delete(key);
+  }
+  for (const key of buckets.keys()) {
+    if (buckets.size <= MAX_TRACKED_KEYS / 2) break;
+    buckets.delete(key);
+  }
 }
 
 export function clientIp(request: Request): string {
