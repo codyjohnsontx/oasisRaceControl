@@ -24,12 +24,14 @@ async function main() {
   const client = new Client({ connectionString: url });
   await client.connect();
 
-  // Serialize concurrent db:migrate runs (e.g. two deploys racing) — a session
-  // advisory lock is held for the whole run and auto-released on disconnect.
-  // The constant is an arbitrary app-wide key.
-  await client.query("select pg_advisory_lock(4915623001)");
-
+  let locked = false;
   try {
+    // Serialize concurrent db:migrate runs (e.g. two deploys racing) — a
+    // session advisory lock is held for the whole run and auto-released on
+    // disconnect. The constant is an arbitrary app-wide key.
+    await client.query("select pg_advisory_lock(4915623001)");
+    locked = true;
+
     await client.query(
       "create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())",
     );
@@ -66,7 +68,9 @@ async function main() {
       console.log("applied seed.sql");
     }
   } finally {
-    await client.query("select pg_advisory_unlock(4915623001)").catch(() => {});
+    if (locked) {
+      await client.query("select pg_advisory_unlock(4915623001)").catch(() => {});
+    }
     await client.end();
   }
 }
