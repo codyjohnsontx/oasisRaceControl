@@ -24,36 +24,43 @@ export async function POST(request: Request) {
     );
   }
 
-  // Tonight's combo applies to the whole batch — look it up once, not per lap.
-  let combo: FeaturedCombo | null = null;
-  if (parsed.data.events.some((event) => event.type === "LAP_COMPLETED")) {
-    combo = await queryOne<FeaturedCombo>(
-      `select track_name, track_config, car_name, incident_limit
-       from featured_combos where combo_date = $1`,
-      [venueToday()],
-    );
-  }
-
-  const results: Array<{ type: string; status: string; eventId?: string }> = [];
-
-  for (const event of parsed.data.events) {
-    if (event.type === "RIG_HEARTBEAT") {
-      await query(
-        `update rigs set last_seen_at = now(),
-           agent_version = coalesce($2, agent_version)
-         where id = $1`,
-        [rig.id, event.agentVersion ?? null],
+  try {
+    // Tonight's combo applies to the whole batch — look it up once, not per lap.
+    let combo: FeaturedCombo | null = null;
+    if (parsed.data.events.some((event) => event.type === "LAP_COMPLETED")) {
+      combo = await queryOne<FeaturedCombo>(
+        `select track_name, track_config, car_name, incident_limit
+         from featured_combos where combo_date = $1`,
+        [venueToday()],
       );
-      results.push({ type: event.type, status: "ok" });
-    } else {
-      results.push(await ingestLap(rig.id, event, combo));
     }
+
+    const results: Array<{ type: string; status: string; eventId?: string }> = [];
+
+    for (const event of parsed.data.events) {
+      if (event.type === "RIG_HEARTBEAT") {
+        await query(
+          `update rigs set last_seen_at = now(),
+             agent_version = coalesce($2, agent_version)
+           where id = $1`,
+          [rig.id, event.agentVersion ?? null],
+        );
+        results.push({ type: event.type, status: "ok" });
+      } else {
+        results.push(await ingestLap(rig.id, event, combo));
+      }
+    }
+
+    // Any activity proves the agent is alive.
+    await query("update rigs set last_seen_at = now() where id = $1", [rig.id]);
+
+    return Response.json({ results });
+  } catch (error) {
+    // The agent queues and retries on failure, so a 500 here is safe — its
+    // idempotency keys keep the retry from double-inserting.
+    console.error("[agent/events] batch failed", (error as Error).message);
+    return Response.json({ error: "server_error" }, { status: 500 });
   }
-
-  // Any activity proves the agent is alive.
-  await query("update rigs set last_seen_at = now() where id = $1", [rig.id]);
-
-  return Response.json({ results });
 }
 
 async function ingestLap(

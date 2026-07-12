@@ -3,18 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
+import type { PortalLap } from "@/lib/laps";
 
-export type PortalLap = {
-  id: string;
-  track_name: string;
-  track_config: string | null;
-  car_name: string;
-  lap_number: number | null;
-  lap_time_ms: number;
-  is_valid: boolean;
-  invalid_reason: string | null;
-  completed_at: string;
-};
+export type { PortalLap };
 
 type Props = {
   displayName: string;

@@ -15,6 +15,12 @@ export function db(): Pool {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error("Missing environment variable DATABASE_URL");
     pool = new Pool({ connectionString: url, max: 5 });
+    // Idle clients can error out from under us (Neon closes idle connections
+    // on the free tier). Without a listener pg re-throws it as an uncaught
+    // exception and takes the process down; log and let the pool recover.
+    pool.on("error", (error) => {
+      console.error("[db] idle client error", error.message);
+    });
   }
   return pool;
 }

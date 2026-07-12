@@ -1,4 +1,4 @@
-import { query } from "@/lib/db";
+import { getDriverLaps } from "@/lib/laps";
 import { getDriverSession } from "@/lib/driver-session";
 
 /** The signed-in driver's laps, polled by the portal for live updates. */
@@ -7,15 +7,7 @@ export async function GET() {
   if (!session) return Response.json({ error: "not_signed_in" }, { status: 401 });
 
   try {
-    const laps = await query(
-      `select id, track_name, track_config, car_name, lap_number, lap_time_ms,
-              is_valid, invalid_reason, completed_at
-       from laps
-       where driver_id = $1
-       order by completed_at desc
-       limit 200`,
-      [session.driverId],
-    );
+    const laps = await getDriverLaps(session.driverId);
     return Response.json({ laps });
   } catch (error) {
     console.error("[me/laps] failed", (error as Error).message);

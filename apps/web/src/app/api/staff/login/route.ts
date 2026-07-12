@@ -7,8 +7,10 @@ import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 const body = z.object({ email: z.email(), password: z.string().min(8).max(200) });
 
-// Same timing-equalization trick as driver login.
-const DUMMY_HASH = "$2b$10$KWAPErVpVeGiV16GbCVpheKt9v50acLl2VRdevylCNm7B6L4SC7ni";
+// Same timing-equalization trick as driver login. Cost 6 to match the
+// gen_salt('bf') default used for seeded staff hashes, so the unknown-user
+// path takes the same time as a real comparison.
+const DUMMY_HASH = "$2b$06$vqi2yyu/tEilR7qgT5WOPOPUPtE3Y5gNq5JCC2j2rO/Ms3hlQwNiy";
 
 export async function POST(request: Request) {
   if (!rateLimit(`staff-login:${clientIp(request)}`, 10, 60_000)) {
