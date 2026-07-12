@@ -1,0 +1,5 @@
+bin/
+obj/
+*.user
+outbox.db
+agent.config.json
