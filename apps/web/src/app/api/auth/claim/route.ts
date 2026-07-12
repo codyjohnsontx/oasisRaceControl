@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { serviceClient } from "@/lib/supabase";
+import { queryOne } from "@/lib/db";
 import { getDriverSession, setDriverSession } from "@/lib/driver-session";
 import { parseJsonBody } from "@/lib/http";
 import { pinSchema, hashPin } from "@/lib/driver-auth";
@@ -18,32 +18,29 @@ export async function POST(request: Request) {
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
 
-  const db = serviceClient();
-  const { data, error } = await db
-    .from("drivers")
-    .update({
-      pin_hash: await hashPin(input.pin),
-      is_guest: false,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", session.driverId)
-    .eq("is_guest", true)
-    .select("id, display_name")
-    .maybeSingle();
+  try {
+    const driver = await queryOne<{ id: string; display_name: string }>(
+      `update drivers
+       set pin_hash = $2, is_guest = false, updated_at = now()
+       where id = $1 and is_guest = true
+       returning id, display_name`,
+      [session.driverId, await hashPin(input.pin)],
+    );
 
-  if (error) {
+    // Zero rows: the row was already claimed (double-tap or a second device
+    // racing this one) — the profile exists, so tell the client it's done.
+    if (!driver) {
+      return Response.json({ error: "already_claimed" }, { status: 409 });
+    }
+
+    await setDriverSession({
+      driverId: driver.id,
+      displayName: driver.display_name,
+      isGuest: false,
+    });
+    return Response.json({ driverId: driver.id, displayName: driver.display_name });
+  } catch (error) {
+    console.error("[auth/claim] failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });
   }
-  // Zero rows: the row was already claimed (double-tap or a second device
-  // racing this one) — the profile exists, so tell the client it's done.
-  if (!data) {
-    return Response.json({ error: "already_claimed" }, { status: 409 });
-  }
-
-  await setDriverSession({
-    driverId: data.id,
-    displayName: data.display_name,
-    isGuest: false,
-  });
-  return Response.json({ driverId: data.id, displayName: data.display_name });
 }

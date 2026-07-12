@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { serviceClient } from "@/lib/supabase";
+import { queryOne } from "@/lib/db";
 import { getStaffUser, writeAudit } from "@/lib/staff";
 import { parseJsonBody } from "@/lib/http";
 import { pinSchema, hashPin, clearPinFailures } from "@/lib/driver-auth";
@@ -15,32 +15,30 @@ export async function POST(request: Request) {
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
 
-  const db = serviceClient();
-  const { data, error } = await db
-    .from("drivers")
-    .update({
-      pin_hash: await hashPin(input.newPin),
-      is_guest: false,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.driverId)
-    .select("id")
-    .maybeSingle();
+  try {
+    const driver = await queryOne<{ id: string }>(
+      `update drivers
+       set pin_hash = $2, is_guest = false, updated_at = now()
+       where id = $1
+       returning id`,
+      [input.driverId, await hashPin(input.newPin)],
+    );
 
-  if (error) {
+    if (!driver) {
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
+
+    await clearPinFailures(driver.id);
+    await writeAudit({
+      staffUserId: staff.userId,
+      action: "reset_pin",
+      targetType: "driver",
+      targetId: driver.id,
+    });
+
+    return Response.json({ ok: true });
+  } catch (error) {
+    console.error("[staff/reset-pin] failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });
   }
-  if (!data) {
-    return Response.json({ error: "not_found" }, { status: 404 });
-  }
-
-  await clearPinFailures(db, data.id);
-  await writeAudit({
-    staffUserId: staff.userId,
-    action: "reset_pin",
-    targetType: "driver",
-    targetId: data.id,
-  });
-
-  return Response.json({ ok: true });
 }

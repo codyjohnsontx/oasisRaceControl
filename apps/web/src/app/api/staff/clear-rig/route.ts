@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { serviceClient } from "@/lib/supabase";
+import { queryOne } from "@/lib/db";
 import { getStaffUser, writeAudit } from "@/lib/staff";
 import { parseJsonBody } from "@/lib/http";
 
@@ -12,30 +12,30 @@ export async function POST(request: Request) {
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
 
-  const db = serviceClient();
-  const { data, error } = await db
-    .from("rig_assignments")
-    .update({ ended_at: new Date().toISOString(), end_reason: "staff_cleared" })
-    .eq("rig_id", input.rigId)
-    .is("ended_at", null)
-    .select("id, driver_id")
-    .maybeSingle();
+  try {
+    const cleared = await queryOne<{ id: string; driver_id: string }>(
+      `update rig_assignments
+       set ended_at = now(), end_reason = 'staff_cleared'
+       where rig_id = $1 and ended_at is null
+       returning id, driver_id`,
+      [input.rigId],
+    );
 
-  if (error) {
+    if (cleared) {
+      await writeAudit({
+        staffUserId: staff.userId,
+        action: "clear_rig",
+        targetType: "rig_assignment",
+        targetId: cleared.id,
+        reason: input.reason,
+        detail: { rigId: input.rigId, driverId: cleared.driver_id },
+      });
+    }
+
+    // cleared: false = update succeeded but the rig had no open assignment.
+    return Response.json({ cleared: Boolean(cleared) });
+  } catch (error) {
+    console.error("[staff/clear-rig] failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });
   }
-
-  if (data) {
-    await writeAudit({
-      staffUserId: staff.userId,
-      action: "clear_rig",
-      targetType: "rig_assignment",
-      targetId: data.id,
-      reason: input.reason,
-      detail: { rigId: input.rigId, driverId: data.driver_id },
-    });
-  }
-
-  // cleared: false = update succeeded but the rig had no open assignment.
-  return Response.json({ cleared: Boolean(data) });
 }

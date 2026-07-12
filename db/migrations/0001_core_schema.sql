@@ -1,7 +1,8 @@
--- Oasis Race Control — core schema (Phase 2).
+-- Oasis Race Control — core schema (Phase 2, Neon/plain Postgres).
+-- All access goes through the Next.js API routes (single trust boundary);
+-- there is no direct browser-to-database path, so no RLS surface.
 -- Tables marked PROVISIONAL may be reshaped by a follow-up migration once the
--- Phase 1 iRacing spike findings land (docs/spike-findings.md). Everything else
--- is expected to be stable.
+-- Phase 1 iRacing spike findings land (docs/spike-findings.md).
 
 create extension if not exists citext;
 create extension if not exists pgcrypto;
@@ -113,15 +114,19 @@ create index laps_driver_idx on laps (driver_id, completed_at desc);
 create index laps_tonight_idx on laps (is_valid, completed_at desc);
 create index laps_combo_idx on laps (track_name, track_config, car_name, is_valid, lap_time_ms);
 
+-- Staff authenticate with email + password through the app's own auth
+-- (same JWT-cookie pattern as drivers; no external auth service).
 create table staff_users (
-  user_id uuid primary key references auth.users (id) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  email citext not null unique,
+  password_hash text not null,
   display_name text not null,
   created_at timestamptz not null default now()
 );
 
 create table audit_log (
   id bigint generated always as identity primary key,
-  staff_user_id uuid references staff_users (user_id),
+  staff_user_id uuid references staff_users (id),
   action text not null,
   target_type text not null,
   target_id text not null,
@@ -219,11 +224,8 @@ begin
 end;
 $$;
 
-revoke execute on function checkin_driver(uuid, uuid, boolean, boolean) from public, anon, authenticated;
-
 -- ---------------------------------------------------------------------------
--- Views (owned by postgres, run with owner privileges — they are the only
--- surface the anon key can read besides laps/rig_assignments realtime rows).
+-- Views used by the leaderboard and staff dashboard queries.
 
 -- Best valid lap per active driver tonight. If staff set a featured combo for
 -- today, only matching laps rank; otherwise all of tonight's valid laps do.
@@ -268,42 +270,3 @@ from rigs r
 left join rig_assignments ra on ra.rig_id = r.id and ra.ended_at is null
 left join drivers d on d.id = ra.driver_id
 order by r.rig_number;
-
--- ---------------------------------------------------------------------------
--- Row-level security. Service role (API routes) bypasses RLS; the anon key can
--- only read what is explicitly opened up here.
-
-alter table drivers enable row level security;
-alter table rigs enable row level security;
-alter table rig_qr_tokens enable row level security;
-alter table rig_assignments enable row level security;
-alter table sim_sessions enable row level security;
-alter table laps enable row level security;
-alter table staff_users enable row level security;
-alter table audit_log enable row level security;
-alter table featured_combos enable row level security;
-alter table pin_attempts enable row level security;
-
--- Laps and assignments carry no personal data (display names live in drivers,
--- which stays closed). Anon read enables Realtime change feeds on the TV,
--- portal, and check-in pages.
-create policy laps_public_read on laps for select to anon, authenticated using (true);
-create policy assignments_public_read on rig_assignments for select to anon, authenticated using (true);
-create policy featured_combos_public_read on featured_combos for select to anon, authenticated using (true);
-
-grant select on v_fastest_tonight to anon, authenticated;
-grant select on v_rig_status to anon, authenticated;
-
--- Explicit grants (don't rely on platform default privileges):
--- service_role is the API routes' key and needs full table access; anon and
--- authenticated need table-level SELECT on exactly the tables their RLS
--- policies open up, or PostgREST/Realtime deny before RLS is even consulted.
-grant all on all tables in schema public to service_role;
-grant usage, select on all sequences in schema public to service_role;
-grant select on laps, rig_assignments, featured_combos to anon, authenticated;
-grant execute on function checkin_driver(uuid, uuid, boolean, boolean) to service_role;
-grant execute on function venue_today() to service_role, anon, authenticated;
-
--- Realtime change feeds for live UI updates.
-alter publication supabase_realtime add table laps;
-alter publication supabase_realtime add table rig_assignments;

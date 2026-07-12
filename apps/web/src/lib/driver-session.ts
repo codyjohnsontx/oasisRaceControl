@@ -11,8 +11,8 @@ export type DriverSession = {
 };
 
 function secret(): Uint8Array {
-  const value = process.env.DRIVER_SESSION_SECRET;
-  if (!value) throw new Error("Missing environment variable DRIVER_SESSION_SECRET");
+  const value = process.env.SESSION_SECRET;
+  if (!value) throw new Error("Missing environment variable SESSION_SECRET");
   return new TextEncoder().encode(value);
 }
 
@@ -23,6 +23,7 @@ export async function setDriverSession(session: DriverSession): Promise<void> {
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(session.driverId)
+    .setAudience("driver")
     .setIssuedAt()
     .setExpirationTime(`${MAX_AGE_SECONDS}s`)
     .sign(secret());
@@ -42,7 +43,12 @@ export async function getDriverSession(): Promise<DriverSession | null> {
   const token = store.get(COOKIE_NAME)?.value;
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, secret(), { algorithms: ["HS256"] });
+    // Audience pins this to the driver plane — staff JWTs share the secret
+    // but carry aud "staff" and must never verify as a driver session.
+    const { payload } = await jwtVerify(token, secret(), {
+      algorithms: ["HS256"],
+      audience: "driver",
+    });
     if (!payload.sub) return null;
     return {
       driverId: payload.sub,

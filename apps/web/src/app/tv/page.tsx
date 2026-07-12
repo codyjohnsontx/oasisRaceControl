@@ -1,9 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { browserClient } from "@/lib/supabase-browser";
 import { formatLapTime, formatGap } from "@/lib/time";
-import { venueToday } from "@/lib/venue";
 
 type Row = {
   driver_id: string;
@@ -25,9 +23,11 @@ type Interstitial = {
 };
 
 const ROW_HEIGHT = 88;
+const POLL_MS = 5000;
 
-/** Front-of-store leaderboard. Fixed-position rows animate to their new rank
- * (poor man's FLIP: absolute rows + translateY transitions). */
+/** Front-of-store leaderboard. Polls the API every few seconds — at venue
+ * scale that's indistinguishable from push, with far fewer moving parts.
+ * Fixed-position rows animate to their new rank (absolute + translateY). */
 export default function TvPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [combo, setCombo] = useState<Combo | null>(null);
@@ -36,19 +36,20 @@ export default function TvPage() {
   const interstitialTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
-    const db = browserClient();
-    const { data, error } = await db
-      .from("v_fastest_tonight")
-      .select("driver_id, display_name, lap_time_ms")
-      .order("lap_time_ms", { ascending: true })
-      .limit(15);
-    // The TV runs unattended for hours: on a transient failure, keep showing
-    // the last known standings instead of a falsely empty board.
-    if (error) {
-      console.error("[tv] leaderboard refresh failed", error.message);
+    let payload: { rows: Row[]; combo: Combo | null };
+    try {
+      const res = await fetch("/api/leaderboard/tonight", { cache: "no-store" });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      payload = await res.json();
+    } catch (error) {
+      // The TV runs unattended for hours: on a transient failure, keep showing
+      // the last known standings instead of a falsely empty board.
+      console.error("[tv] leaderboard refresh failed", (error as Error).message);
       return;
     }
-    const next = (data ?? []) as Row[];
+
+    const next = payload.rows ?? [];
+    setCombo(payload.combo ?? null);
 
     // Personal-best interstitial: a driver's best tonight just improved.
     const prev = previousBests.current;
@@ -73,28 +74,12 @@ export default function TvPage() {
   }, []);
 
   useEffect(() => {
-    const db = browserClient();
-    void refresh();
-    void db
-      .from("featured_combos")
-      .select("track_name, track_config, car_name")
-      .eq("combo_date", venueToday())
-      .maybeSingle()
-      .then(({ data }) => setCombo((data as Combo | null) ?? null));
-
-    const channel = db
-      .channel("tv-laps")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "laps" },
-        () => void refresh(),
-      )
-      .subscribe();
-
-    // Belt and braces if the websocket drops (venue TVs run for hours).
-    const poll = setInterval(() => void refresh(), 30_000);
+    // First paint happens immediately with empty state; data arrives a tick
+    // later (also keeps setState out of the synchronous effect body).
+    const initial = setTimeout(() => void refresh(), 0);
+    const poll = setInterval(() => void refresh(), POLL_MS);
     return () => {
-      void db.removeChannel(channel);
+      clearTimeout(initial);
       clearInterval(poll);
       if (interstitialTimer.current) {
         clearTimeout(interstitialTimer.current);
