@@ -85,8 +85,10 @@ flowchart TB
 
 - **Only outbound connectivity at the venue.** The agent and TV both *call out*
   to Vercel over 443 — no inbound ports, no static IP, no firewall holes.
-- **Everything is polling, not push.** Deliberate: no websockets to keep warm,
-  so serverless cold starts are harmless and the whole app fits on Vercel.
+- **Reads poll; the agent pushes over plain HTTPS.** UI and cloud-to-venue
+  read/update flows poll on a timer, and the agent ships laps with outbound
+  `POST /api/agent/events` — no websockets to keep warm either way, so
+  serverless cold starts are harmless and the whole app fits on Vercel.
 - **The agent is the only durable buffer.** Laps land in its SQLite outbox the
   instant they're detected and are removed only once the backend accepts them,
   so a wifi drop or agent restart never loses a lap (idempotent on `event_id`).
@@ -104,4 +106,4 @@ flowchart TB
 | Postgres | **Neon** | serverless; pooled connection string |
 | `apps/rig-agent` | **each sim PC** | published single-file exe; auto-start via Task Scheduler |
 | TV board | **venue display** | any always-on browser pointed at `/tv` in kiosk mode |
-```
+
