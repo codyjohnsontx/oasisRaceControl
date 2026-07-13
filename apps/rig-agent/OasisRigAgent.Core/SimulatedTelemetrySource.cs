@@ -13,7 +13,6 @@ public sealed class SimulatedTelemetrySource : ITelemetrySource
     private const int PaceMs = 138_200;
 
     private readonly TimeSpan _interval;
-    private readonly Random _random = new();
     private Timer? _timer;
     private int _lapNumber;
 
@@ -30,23 +29,29 @@ public sealed class SimulatedTelemetrySource : ITelemetrySource
 
     public void Stop()
     {
-        _timer?.Dispose();
-        _timer = null;
+        // Dispose(WaitHandle) blocks until in-flight timer callbacks finish, so
+        // no lap can be emitted after Stop() returns.
+        var timer = Interlocked.Exchange(ref _timer, null);
+        if (timer is null) return;
+        using var callbacksDone = new ManualResetEvent(false);
+        if (timer.Dispose(callbacksDone)) callbacksDone.WaitOne();
     }
 
     private void EmitLap()
     {
-        _lapNumber++;
-        var dirty = _random.NextDouble() < 0.15;
-        var jitter = (int)((_random.NextDouble() - 0.35) * 2500);
+        // Timer callbacks may overlap; the atomic counter keeps lap numbers —
+        // and therefore event ids — unique even when the ms timestamp collides.
+        var lapNumber = Interlocked.Increment(ref _lapNumber);
+        var dirty = Random.Shared.NextDouble() < 0.15;
+        var jitter = (int)((Random.Shared.NextDouble() - 0.35) * 2500);
 
         LapCompleted?.Invoke(new LapCompleted
         {
-            EventId = $"sim-{Environment.MachineName}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{_lapNumber}",
+            EventId = $"sim-{Environment.MachineName}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{lapNumber}",
             TrackName = Track,
             TrackConfig = Config,
             CarName = Car,
-            LapNumber = _lapNumber,
+            LapNumber = lapNumber,
             LapTimeMs = Math.Max(60_000, PaceMs + jitter + (dirty ? 4000 : 0)),
             IncidentDelta = dirty ? 1 : 0,
             CompletedAt = DateTimeOffset.UtcNow,

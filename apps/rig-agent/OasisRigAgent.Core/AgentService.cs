@@ -36,7 +36,21 @@ public sealed class AgentService : IAsyncDisposable
     public void Start()
     {
         // A detected lap is durably queued before anything else can go wrong.
-        _telemetry.LapCompleted += lap => { _queue.Enqueue(lap); PublishStatus(); };
+        // The handler runs on the telemetry source's timer thread, so a queue
+        // failure must be contained here — an escaped exception would kill the
+        // process, not just drop the lap.
+        _telemetry.LapCompleted += lap =>
+        {
+            try
+            {
+                _queue.Enqueue(lap);
+                PublishStatus();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[agent] failed to queue lap {lap.EventId}: {ex.Message}");
+            }
+        };
         _telemetry.Start();
 
         _loops.Add(RunLoop(HeartbeatInterval, HeartbeatTick, runImmediately: true));
@@ -66,11 +80,13 @@ public sealed class AgentService : IAsyncDisposable
 
     private async Task PollAssignmentTick(CancellationToken ct)
     {
-        var next = await RunBackend(token => _client.GetAssignmentAsync(token));
-        // RunBackend returns default (null) on failure; only overwrite on success.
-        if (_connection == ConnectionState.Online)
+        // Success must come from this poll's own result — _connection is shared
+        // with the heartbeat/flush loops, so it can flip between our call and
+        // this check (e.g. clearing the assignment because a heartbeat failed).
+        var poll = await RunBackend(async token => (Ok: true, Assignment: await _client.GetAssignmentAsync(token)));
+        if (poll.Ok)
         {
-            _assignment = next;
+            _assignment = poll.Assignment;
             PublishStatus();
         }
     }
@@ -112,19 +128,38 @@ public sealed class AgentService : IAsyncDisposable
 
     private async Task RunLoop(TimeSpan interval, Func<CancellationToken, Task> tick, bool runImmediately)
     {
-        if (runImmediately)
-        {
-            try { await tick(_cts.Token); } catch (OperationCanceledException) { return; }
-        }
+        if (runImmediately && !await RunTick(tick)) return;
         using var timer = new PeriodicTimer(interval);
         try
         {
             while (await timer.WaitForNextTickAsync(_cts.Token))
             {
-                await tick(_cts.Token);
+                if (!await RunTick(tick)) return;
             }
         }
         catch (OperationCanceledException) { }
+    }
+
+    /// <summary>A failed tick must never kill its loop — RunBackend absorbs
+    /// backend errors, but local failures (e.g. the SQLite outbox) would
+    /// otherwise silently end heartbeats/polls/flushes for good. Returns false
+    /// only on cancellation.</summary>
+    private async Task<bool> RunTick(Func<CancellationToken, Task> tick)
+    {
+        try
+        {
+            await tick(_cts.Token);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[agent] tick failed: {ex.Message}");
+            return true;
+        }
     }
 
     private void SetConnection(ConnectionState state)

@@ -24,7 +24,7 @@ that wraps the same `OasisRigAgent.Core`.
 
 ## Projects
 
-```
+```text
 OasisRigAgent.Core    # cross-platform: config, queue, backend client, orchestrator
 OasisRigAgent         # console host
 OasisRigAgent.Tests   # xUnit (queue reliability + client contract)

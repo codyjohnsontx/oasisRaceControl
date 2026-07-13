@@ -28,6 +28,16 @@ public sealed class EventQueueTests : IDisposable
         Assert.Equal(1, queue.PendingCount());
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Enqueue_rejects_blank_event_ids(string eventId)
+    {
+        using var queue = new EventQueue(_dbPath);
+        Assert.Throws<ArgumentException>(() => queue.Enqueue(Lap(eventId)));
+        Assert.Equal(0, queue.PendingCount());
+    }
+
     [Fact]
     public void PendingBatch_returns_oldest_first_and_respects_limit()
     {

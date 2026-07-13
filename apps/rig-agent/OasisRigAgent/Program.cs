@@ -7,12 +7,25 @@ using OasisRigAgent.Core;
 // Phase 1 iRacing spike lands — run with SimulateTelemetry to exercise the full
 // path today. The tray/window UI is a later pass that wraps this same Core.
 
+// Startup failures (bad config, unwritable outbox db, invalid backend URL, …)
+// all get the same friendly message instead of a raw stack trace.
 var configPath = Path.Combine(AppContext.BaseDirectory, "agent.config.json");
 AgentConfig config;
+EventQueue queueInit;
+HttpClient httpInit;
+AgentService agentInit;
 try
 {
     config = AgentConfig.Load(configPath);
     config.Validate();
+
+    queueInit = new EventQueue(Path.Combine(AppContext.BaseDirectory, "outbox.db"));
+    httpInit = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+    var client = new BackendClient(httpInit, config.BackendBaseUrl, config.RigToken);
+    ITelemetrySource telemetry = config.SimulateTelemetry
+        ? new SimulatedTelemetrySource(TimeSpan.FromSeconds(8))
+        : new NullTelemetrySource();
+    agentInit = new AgentService(config, client, queueInit, telemetry);
 }
 catch (Exception ex)
 {
@@ -21,17 +34,9 @@ catch (Exception ex)
     return 1;
 }
 
-var dbPath = Path.Combine(AppContext.BaseDirectory, "outbox.db");
-using var queue = new EventQueue(dbPath);
-
-using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-var client = new BackendClient(http, config.BackendBaseUrl, config.RigToken);
-
-ITelemetrySource telemetry = config.SimulateTelemetry
-    ? new SimulatedTelemetrySource(TimeSpan.FromSeconds(8))
-    : new NullTelemetrySource();
-
-await using var agent = new AgentService(config, client, queue, telemetry);
+using var queue = queueInit;
+using var http = httpInit;
+await using var agent = agentInit;
 
 agent.StatusChanged += Render;
 agent.Start();

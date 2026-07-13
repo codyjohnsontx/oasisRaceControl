@@ -12,6 +12,10 @@ namespace OasisRigAgent.Core;
 /// </summary>
 public sealed class EventQueue : IDisposable
 {
+    // One SqliteConnection is shared by the telemetry thread (Enqueue), the
+    // flush loop, and status snapshots — SqliteConnection is not thread-safe,
+    // so every operation serializes on this lock.
+    private readonly object _lock = new();
     private readonly SqliteConnection _connection;
 
     public EventQueue(string databasePath)
@@ -33,6 +37,10 @@ public sealed class EventQueue : IDisposable
     /// was already queued (idempotent — safe to call on every detection).</summary>
     public bool Enqueue(LapCompleted lap)
     {
+        // A blank id would defeat idempotency here and at the backend.
+        if (string.IsNullOrWhiteSpace(lap.EventId))
+            throw new ArgumentException("EventId must not be blank", nameof(lap));
+
         var payload = new JsonObject
         {
             ["type"] = "LAP_COMPLETED",
@@ -46,56 +54,68 @@ public sealed class EventQueue : IDisposable
             ["completedAt"] = lap.CompletedAt.ToString("o"),
         }.ToJsonString();
 
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = """
-            insert into outbox (event_id, payload, created_at)
-            values ($id, $payload, $created)
-            on conflict (event_id) do nothing;
-            """;
-        cmd.Parameters.AddWithValue("$id", lap.EventId);
-        cmd.Parameters.AddWithValue("$payload", payload);
-        cmd.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow.ToString("o"));
-        return cmd.ExecuteNonQuery() > 0;
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                insert into outbox (event_id, payload, created_at)
+                values ($id, $payload, $created)
+                on conflict (event_id) do nothing;
+                """;
+            cmd.Parameters.AddWithValue("$id", lap.EventId);
+            cmd.Parameters.AddWithValue("$payload", payload);
+            cmd.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow.ToString("o"));
+            return cmd.ExecuteNonQuery() > 0;
+        }
     }
 
     /// <summary>Oldest-first batch of queued payloads (as parsed JSON nodes).</summary>
     public IReadOnlyList<QueuedEvent> PendingBatch(int limit)
     {
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "select event_id, payload from outbox order by created_at asc limit $limit";
-        cmd.Parameters.AddWithValue("$limit", limit);
-
-        var results = new List<QueuedEvent>();
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        lock (_lock)
         {
-            var id = reader.GetString(0);
-            var node = JsonNode.Parse(reader.GetString(1))!;
-            results.Add(new QueuedEvent(id, node));
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "select event_id, payload from outbox order by created_at asc limit $limit";
+            cmd.Parameters.AddWithValue("$limit", limit);
+
+            var results = new List<QueuedEvent>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var id = reader.GetString(0);
+                var node = JsonNode.Parse(reader.GetString(1))!;
+                results.Add(new QueuedEvent(id, node));
+            }
+            return results;
         }
-        return results;
     }
 
     /// <summary>Remove events the backend has accepted or deduplicated.</summary>
     public void Remove(IEnumerable<string> eventIds)
     {
-        using var tx = _connection.BeginTransaction();
-        foreach (var id in eventIds)
+        lock (_lock)
         {
-            using var cmd = _connection.CreateCommand();
-            cmd.Transaction = tx;
-            cmd.CommandText = "delete from outbox where event_id = $id";
-            cmd.Parameters.AddWithValue("$id", id);
-            cmd.ExecuteNonQuery();
+            using var tx = _connection.BeginTransaction();
+            foreach (var id in eventIds)
+            {
+                using var cmd = _connection.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandText = "delete from outbox where event_id = $id";
+                cmd.Parameters.AddWithValue("$id", id);
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
         }
-        tx.Commit();
     }
 
     public int PendingCount()
     {
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "select count(*) from outbox";
-        return Convert.ToInt32(cmd.ExecuteScalar());
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "select count(*) from outbox";
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
     }
 
     public void Dispose() => _connection.Dispose();

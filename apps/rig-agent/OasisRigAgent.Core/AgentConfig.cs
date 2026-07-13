@@ -40,7 +40,22 @@ public sealed record AgentConfig
             BackendBaseUrl = Env("OASIS_BACKEND_URL") ?? config.BackendBaseUrl,
             RigToken = Env("OASIS_RIG_TOKEN") ?? config.RigToken,
             RigNumber = int.TryParse(Env("OASIS_RIG_NUMBER"), out var n) ? n : config.RigNumber,
-            SimulateTelemetry = Env("OASIS_SIMULATE") is "1" or "true" || config.SimulateTelemetry,
+            SimulateTelemetry = ParseSimulateOverride() ?? config.SimulateTelemetry,
+        };
+    }
+
+    /// <summary>OASIS_SIMULATE is a true override: absent → keep the file value,
+    /// truthy/falsy → use it, anything else → fail loudly instead of silently
+    /// running without (or with) fake laps.</summary>
+    private static bool? ParseSimulateOverride()
+    {
+        var v = Env("OASIS_SIMULATE");
+        return v?.ToLowerInvariant() switch
+        {
+            null => null,
+            "1" or "true" => true,
+            "0" or "false" => false,
+            _ => throw new InvalidOperationException($"OASIS_SIMULATE must be 1, 0, true, or false (got \"{v}\")"),
         };
     }
 
@@ -48,6 +63,12 @@ public sealed record AgentConfig
     {
         if (string.IsNullOrWhiteSpace(BackendBaseUrl))
             throw new InvalidOperationException("BackendBaseUrl is not set (agent.config.json or OASIS_BACKEND_URL)");
+        // The rig token rides on every request, so plain http is only acceptable
+        // against a local dev backend.
+        if (!Uri.TryCreate(BackendBaseUrl, UriKind.Absolute, out var url)
+            || (url.Scheme != Uri.UriSchemeHttps && !(url.Scheme == Uri.UriSchemeHttp && url.IsLoopback)))
+            throw new InvalidOperationException(
+                $"BackendBaseUrl must be an absolute https:// URL (http:// only for localhost): \"{BackendBaseUrl}\"");
         if (string.IsNullOrWhiteSpace(RigToken))
             throw new InvalidOperationException("RigToken is not set (agent.config.json or OASIS_RIG_TOKEN)");
         if (RigNumber <= 0)
