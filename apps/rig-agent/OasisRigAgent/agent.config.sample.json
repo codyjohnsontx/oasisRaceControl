@@ -1,0 +1,6 @@
+{
+  "backendBaseUrl": "https://oasis-race-control.vercel.app",
+  "rigToken": "dev-rig-1-secret",
+  "rigNumber": 1,
+  "simulateTelemetry": false
+}
