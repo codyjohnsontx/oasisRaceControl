@@ -96,11 +96,11 @@ body {
 }
 
 .text-glow {
-  text-shadow: 0 0 18px currentColor;
+  text-shadow: 0 0 18px currentcolor;
 }
 
 .text-glow-subtle {
-  text-shadow: 0 0 10px color-mix(in srgb, currentColor 55%, transparent);
+  text-shadow: 0 0 10px color-mix(in srgb, currentcolor 55%, transparent);
 }
 
 /* Grid-line texture (from the brand site's gift-card page). */
