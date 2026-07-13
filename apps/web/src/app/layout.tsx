@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Orbitron, Rajdhani, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { DevNav } from "@/components/dev-nav";
 
 const orbitron = Orbitron({
   variable: "--font-orbitron",
@@ -39,7 +40,10 @@ export default function RootLayout({
       lang="en"
       className={`${orbitron.variable} ${rajdhani.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-bg text-ink">{children}</body>
+      <body className="min-h-full flex flex-col bg-bg text-ink">
+        {children}
+        <DevNav />
+      </body>
     </html>
   );
 }
