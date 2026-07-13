@@ -72,7 +72,7 @@ export default function StaffLoginPage() {
         <button
           type="submit"
           disabled={busy}
-          className="bg-accent rounded-lg py-3 font-bold uppercase tracking-wider disabled:opacity-40"
+          className="bg-accent text-bg rounded-lg py-3 font-bold uppercase tracking-wider disabled:opacity-40"
         >
           Sign in
         </button>

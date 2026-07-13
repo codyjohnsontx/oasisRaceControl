@@ -98,7 +98,7 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
     <main className="flex-1 flex flex-col gap-6 p-5 max-w-2xl w-full mx-auto">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-black">{displayName}</h1>
+          <h1 className="font-display text-2xl font-black">{displayName}</h1>
           {activeRigNumber !== null ? (
             <p className="text-valid text-sm font-semibold">
               On Rig {activeRigNumber.toString().padStart(2, "0")}
@@ -119,7 +119,7 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
       </header>
 
       {isGuest && claimState !== "done" && (
-        <section className="bg-surface border border-accent rounded-xl p-4">
+        <section className="bg-surface border border-accent glow-cyan rounded-xl p-4">
           <p className="font-bold">Keep tonight&apos;s results</p>
           <p className="text-muted text-sm mt-1">
             Set a 4-digit PIN and “{displayName}” becomes your permanent driver
@@ -137,7 +137,7 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
               type="button"
               disabled={pin.length !== 4 || claimState === "busy"}
               onClick={() => void claim()}
-              className="bg-accent rounded-lg px-4 py-2 font-bold uppercase tracking-wider text-sm disabled:opacity-40"
+              className="bg-accent text-bg rounded-lg px-4 py-2 font-bold uppercase tracking-wider text-sm disabled:opacity-40"
             >
               Save profile
             </button>
@@ -172,7 +172,7 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
 
       {personalBests.length > 0 && (
         <section>
-          <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-2">
+          <h2 className="font-display text-accent font-bold uppercase tracking-wider text-sm mb-2">
             Personal bests
           </h2>
           <div className="flex flex-col gap-2">
@@ -198,7 +198,7 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
       )}
 
       <section className="flex-1">
-        <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-2">
+        <h2 className="font-display text-accent font-bold uppercase tracking-wider text-sm mb-2">
           Laps
         </h2>
         {filtered.length === 0 ? (

@@ -66,7 +66,7 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
         setMessage(null);
       }}
       className={`flex-1 py-2 text-sm font-bold uppercase tracking-wider rounded-md ${
-        mode === m ? "bg-accent text-ink" : "text-muted"
+        mode === m ? "bg-accent text-bg" : "text-muted"
       }`}
     >
       {label}
@@ -124,7 +124,7 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
         <button
           type="submit"
           disabled={busy || name.trim().length < 2 || (mode !== "guest" && pin.length !== 4)}
-          className="bg-accent rounded-lg py-3 font-bold uppercase tracking-wider disabled:opacity-40"
+          className="bg-accent text-bg glow-cyan rounded-lg py-3 font-bold uppercase tracking-wider disabled:opacity-40"
         >
           {busy ? "…" : mode === "guest" ? "Drive as guest" : mode === "login" ? "Sign in" : "Create profile"}
         </button>
