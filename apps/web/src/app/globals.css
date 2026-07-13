@@ -1,16 +1,20 @@
 @import "tailwindcss";
 
-/* Oasis Race Control — placeholder dark motorsport theme.
-   All brand-swappable values live in :root; components reference the
-   semantic tokens below, so real Oasis branding drops in here later. */
+/* Oasis Race Control — synthwave brand theme (oasissimracing.com).
+   All brand values live in :root; components reference the semantic
+   tokens below. Functional colors stay off-palette on purpose:
+   green = valid, red = invalid, gold = P1. */
 :root {
-  --bg: #08080c;
-  --surface: #10101a;
-  --raised: #191926;
-  --edge: #272738;
-  --ink: #f2f2f7;
-  --muted: #8f8fa3;
-  --accent: #e10600;
+  --bg: #0a0a14;
+  --surface: #12121f;
+  --raised: #1a1a2e;
+  --edge: #2a2a44;
+  --ink: #f2f2fa;
+  --muted: #9494ad;
+  --accent: #5ce1e6;
+  --accent-2: #ff3ec8;
+  --purple: #8b5cf6;
+  --sunset: #ff8a3d;
   --valid: #2bcc6c;
   --invalid: #ff453a;
   --gold: #ffd60a;
@@ -24,20 +28,85 @@
   --color-ink: var(--ink);
   --color-muted: var(--muted);
   --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-purple: var(--purple);
+  --color-sunset: var(--sunset);
   --color-valid: var(--valid);
   --color-invalid: var(--invalid);
   --color-gold: var(--gold);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-rajdhani);
+  --font-display: var(--font-orbitron);
   --font-mono: var(--font-geist-mono);
 }
 
-/* Background/text colors come from the bg-bg/text-ink classes on <body>. */
+/* Background/text colors come from the bg-bg/text-ink classes on <body>.
+   Faint purple/pink radial washes give the near-black some synthwave depth. */
 body {
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-family: var(--font-rajdhani), system-ui, sans-serif;
+  background-image:
+    radial-gradient(ellipse 80% 55% at 18% -10%, rgba(139, 92, 246, 0.16), transparent 70%),
+    radial-gradient(ellipse 65% 45% at 92% 108%, rgba(255, 62, 200, 0.09), transparent 70%);
+  background-attachment: fixed;
 }
 
 /* Lap times and gaps always render in tabular mono so columns line up. */
 .laptime {
   font-family: var(--font-geist-mono), monospace;
   font-variant-numeric: tabular-nums;
+}
+
+.font-display {
+  font-family: var(--font-orbitron), sans-serif;
+}
+
+/* Two-tone headline treatment from the brand site: cyan → purple → pink. */
+.gradient-text {
+  background-image: linear-gradient(
+    100deg,
+    var(--accent) 15%,
+    var(--purple) 55%,
+    var(--accent-2) 90%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Horizontal rule / divider in the same brand gradient. */
+.gradient-rule {
+  background-image: linear-gradient(
+    90deg,
+    var(--accent),
+    var(--purple),
+    var(--accent-2)
+  );
+}
+
+/* Glows supplement contrast, never replace it. */
+.glow-cyan {
+  box-shadow:
+    0 0 20px rgba(92, 225, 230, 0.45),
+    0 0 55px rgba(92, 225, 230, 0.18);
+}
+
+.glow-pink {
+  box-shadow:
+    0 0 20px rgba(255, 62, 200, 0.45),
+    0 0 55px rgba(255, 62, 200, 0.18);
+}
+
+.text-glow {
+  text-shadow: 0 0 18px currentColor;
+}
+
+.text-glow-subtle {
+  text-shadow: 0 0 10px color-mix(in srgb, currentColor 55%, transparent);
+}
+
+/* Grid-line texture (from the brand site's gift-card page). */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(92, 225, 230, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(92, 225, 230, 0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { AuthForms } from "./auth-forms";
 
@@ -68,11 +69,19 @@ export function CheckInFlow({ qrToken, rigNumber, signedInAs }: Props) {
 
   return (
     <main className="flex-1 flex flex-col items-center justify-center gap-8 p-6">
-      <header className="text-center">
-        <p className="text-muted font-semibold tracking-[0.25em] uppercase text-sm">
+      <header className="text-center flex flex-col items-center">
+        <Image
+          src="/oasishelmet.png"
+          alt="Oasis Sim Racing"
+          width={98}
+          height={120}
+          priority
+          className="h-20 w-auto mb-4"
+        />
+        <p className="font-display text-muted font-semibold tracking-[0.25em] uppercase text-sm">
           You are checking into
         </p>
-        <h1 className="text-7xl font-black tracking-tight mt-1">
+        <h1 className="font-display text-7xl font-black tracking-tight mt-1 text-accent text-glow">
           RIG {rigNumber.toString().padStart(2, "0")}
         </h1>
       </header>
@@ -97,7 +106,7 @@ export function CheckInFlow({ qrToken, rigNumber, signedInAs }: Props) {
             type="button"
             disabled={busy}
             onClick={() => void checkin({ move: false, takeover: false })}
-            className="w-full bg-accent rounded-lg py-4 text-xl font-black uppercase tracking-wider disabled:opacity-40"
+            className="w-full bg-accent text-bg glow-cyan rounded-lg py-4 text-xl font-black uppercase tracking-wider disabled:opacity-40"
           >
             {busy ? "Checking in…" : `Check in to Rig ${rigNumber}`}
           </button>
@@ -148,7 +157,7 @@ export function CheckInFlow({ qrToken, rigNumber, signedInAs }: Props) {
                 takeover: stage.approved.takeover || Boolean(stage.needs.takeover),
               })
             }
-            className="bg-accent rounded-lg py-4 text-lg font-black uppercase tracking-wider disabled:opacity-40"
+            className="bg-accent text-bg glow-cyan rounded-lg py-4 text-lg font-black uppercase tracking-wider disabled:opacity-40"
           >
             {stage.needs.takeover ? "They're done — check me in" : `Move to Rig ${rigNumber}`}
           </button>

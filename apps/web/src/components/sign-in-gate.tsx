@@ -10,7 +10,9 @@ export function SignInGate() {
   return (
     <main className="flex-1 flex flex-col items-center justify-center gap-6 p-6">
       <div className="text-center">
-        <h1 className="text-3xl font-black">Your laps live here</h1>
+        <h1 className="font-display gradient-text text-3xl font-black">
+          Your laps live here
+        </h1>
         <p className="text-muted mt-2 max-w-xs">
           Sign in to see tonight&apos;s times, personal bests, and history.
         </p>

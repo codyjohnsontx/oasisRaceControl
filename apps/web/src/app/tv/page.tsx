@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { formatLapTime, formatGap } from "@/lib/time";
 
 type Row = {
@@ -91,10 +92,12 @@ export default function TvPage() {
   const leader = rows[0];
 
   return (
-    <main className="flex-1 flex flex-col p-10 select-none overflow-hidden">
-      <header className="flex items-end justify-between border-b-4 border-accent pb-4">
+    <main className="grid-bg flex-1 flex flex-col p-10 select-none overflow-hidden">
+      <header className="flex items-end justify-between pb-4">
         <div>
-          <h1 className="text-6xl font-black tracking-tight">FASTEST TONIGHT</h1>
+          <h1 className="font-display gradient-text text-6xl font-black tracking-tight">
+            FASTEST TONIGHT
+          </h1>
           {combo && (
             <p className="text-muted text-2xl mt-1">
               {combo.track_name}
@@ -103,10 +106,21 @@ export default function TvPage() {
             </p>
           )}
         </div>
-        <p className="text-accent font-bold tracking-[0.3em] text-xl uppercase pb-1">
-          Oasis Live Timing
-        </p>
+        <div className="flex items-center gap-4 pb-1">
+          <Image
+            src="/oasishelmet.png"
+            alt=""
+            width={49}
+            height={60}
+            priority
+            className="h-14 w-auto"
+          />
+          <p className="font-display text-accent text-glow-subtle font-bold tracking-[0.3em] text-xl uppercase">
+            Oasis Live Timing
+          </p>
+        </div>
       </header>
+      <div className="gradient-rule h-1 rounded-full" />
 
       <div className="relative flex-1 mt-6" style={{ minHeight: rows.length * ROW_HEIGHT }}>
         {rows.length === 0 && (
@@ -121,7 +135,9 @@ export default function TvPage() {
             style={{ height: ROW_HEIGHT, transform: `translateY(${index * ROW_HEIGHT}px)` }}
           >
             <span
-              className={`w-20 text-5xl font-black ${index === 0 ? "text-gold" : "text-muted"}`}
+              className={`w-20 text-5xl font-black font-display ${
+                index === 0 ? "text-gold text-glow-subtle" : "text-muted"
+              }`}
             >
               {index + 1}
             </span>
@@ -135,12 +151,14 @@ export default function TvPage() {
       </div>
 
       {interstitial && (
-        <div className="absolute inset-0 bg-bg/95 flex flex-col items-center justify-center gap-6 text-center">
-          <p className="text-accent font-black tracking-[0.3em] text-4xl uppercase">
+        <div className="grid-bg absolute inset-0 bg-bg/95 flex flex-col items-center justify-center gap-6 text-center">
+          <p className="font-display text-accent text-glow font-black tracking-[0.3em] text-4xl uppercase">
             New personal best
           </p>
-          <p className="text-8xl font-black">{interstitial.displayName}</p>
-          <p className="laptime text-9xl font-black text-valid">
+          <p className="font-display gradient-text text-8xl font-black">
+            {interstitial.displayName}
+          </p>
+          <p className="laptime text-9xl font-black text-valid text-glow-subtle">
             {formatLapTime(interstitial.lapTimeMs)}
           </p>
           <p className="text-4xl text-muted">
