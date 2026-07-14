@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { formatLapTime, formatGap } from "@/lib/time";
 import {
@@ -21,8 +21,12 @@ const POLL_MS = 5000;
 export function Leaderboards({ boards, viewerDriverId }: Props) {
   // Each board is a track layout; the car is shown per row, not selected.
   const [boardKey, setBoardKey] = useState<string>(boards[0] ? trackKey(boards[0]) : "");
-  const [window, setWindow] = useState<BoardWindow>("alltime");
+  const [boardWindow, setBoardWindow] = useState<BoardWindow>("alltime");
   const [rows, setRows] = useState<BoardRow[]>([]);
+  const [loading, setLoading] = useState<boolean>(boards.length > 0);
+  // Guards against a slow response for a previous track/window overwriting the
+  // current one: each request captures a generation, applied only if still current.
+  const requestId = useRef(0);
 
   const selected = useMemo(
     () => boards.find((b) => trackKey(b) === boardKey) ?? boards[0] ?? null,
@@ -32,19 +36,26 @@ export function Leaderboards({ boards, viewerDriverId }: Props) {
   const refresh = useCallback(
     async (clear: boolean) => {
       if (!selected) return;
-      if (clear) setRows([]); // drop the previous board while a new one loads
-      const params = new URLSearchParams({ track: selected.track_name, window });
+      const gen = ++requestId.current;
+      if (clear) {
+        setRows([]); // drop the previous board while a new one loads
+        setLoading(true);
+      }
+      const params = new URLSearchParams({ track: selected.track_name, window: boardWindow });
       if (selected.track_config) params.set("config", selected.track_config);
       try {
         const res = await fetch(`/api/leaderboards/board?${params}`, { cache: "no-store" });
         if (!res.ok) return; // keep last-known rows on a transient failure
         const data = (await res.json()) as { rows: BoardRow[] };
+        if (gen !== requestId.current) return; // a newer selection superseded this response
         if (Array.isArray(data.rows)) setRows(data.rows);
       } catch {
         // transient network failure — try again next tick
+      } finally {
+        if (gen === requestId.current) setLoading(false);
       }
     },
-    [selected, window],
+    [selected, boardWindow],
   );
 
   useEffect(() => {
@@ -61,7 +72,7 @@ export function Leaderboards({ boards, viewerDriverId }: Props) {
   const leader = rows[0];
 
   return (
-    <main className="grid-bg flex-1 flex flex-col gap-6 p-6 max-w-3xl w-full mx-auto">
+    <main className="flex-1 flex flex-col gap-6 p-6 max-w-3xl w-full mx-auto">
       <header className="flex items-center justify-between gap-4">
         <h1 className="font-display gradient-text text-4xl sm:text-5xl font-black tracking-tight">
           LEADERBOARDS
@@ -101,9 +112,10 @@ export function Leaderboards({ boards, viewerDriverId }: Props) {
                 <button
                   key={w}
                   type="button"
-                  onClick={() => setWindow(w)}
+                  aria-pressed={boardWindow === w}
+                  onClick={() => setBoardWindow(w)}
                   className={`px-4 py-1.5 text-sm font-bold uppercase tracking-wider rounded-md ${
-                    window === w ? "bg-accent text-bg" : "text-muted"
+                    boardWindow === w ? "bg-accent text-bg" : "text-muted"
                   }`}
                 >
                   {w === "alltime" ? "All-time" : "Tonight"}
@@ -113,9 +125,11 @@ export function Leaderboards({ boards, viewerDriverId }: Props) {
           </section>
 
           <section className="flex-1">
-            {rows.length === 0 ? (
+            {loading && rows.length === 0 ? (
+              <p className="text-muted text-sm">Loading…</p>
+            ) : rows.length === 0 ? (
               <p className="text-muted text-sm">
-                {window === "tonight"
+                {boardWindow === "tonight"
                   ? "No laps on this board yet tonight."
                   : "No laps on this board yet."}
               </p>
