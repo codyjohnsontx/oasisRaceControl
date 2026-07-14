@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/", label: "Home" },
   { href: "/r/demo-rig-1", label: "Check-in" },
   { href: "/me", label: "My laps" },
+  { href: "/leaderboards", label: "Leaderboards" },
   { href: "/tv", label: "TV board" },
   { href: "/staff", label: "Staff" },
   { href: "/staff/login", label: "Staff login" },

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
 
@@ -103,7 +104,15 @@ export function StaffDashboard({
     <main className="flex-1 flex flex-col gap-8 p-6 max-w-5xl w-full mx-auto">
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-black">Race Control — Staff</h1>
-        <p className="text-muted text-sm">{staffName}</p>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/leaderboards"
+            className="text-muted text-sm underline underline-offset-4"
+          >
+            Leaderboards
+          </Link>
+          <p className="text-muted text-sm">{staffName}</p>
+        </div>
       </header>
 
       <section>

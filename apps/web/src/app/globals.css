@@ -102,11 +102,3 @@ body {
 .text-glow-subtle {
   text-shadow: 0 0 10px color-mix(in srgb, currentcolor 55%, transparent);
 }
-
-/* Grid-line texture (from the brand site's gift-card page). */
-.grid-bg {
-  background-image:
-    linear-gradient(rgba(92, 225, 230, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(92, 225, 230, 0.05) 1px, transparent 1px);
-  background-size: 48px 48px;
-}

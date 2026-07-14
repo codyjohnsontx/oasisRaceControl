@@ -92,7 +92,7 @@ export default function TvPage() {
   const leader = rows[0];
 
   return (
-    <main className="grid-bg flex-1 flex flex-col p-10 select-none overflow-hidden">
+    <main className="flex-1 flex flex-col p-10 select-none overflow-hidden">
       <header className="flex items-end justify-between pb-4">
         <div>
           <h1 className="font-display gradient-text text-6xl font-black tracking-tight">
@@ -151,7 +151,7 @@ export default function TvPage() {
       </div>
 
       {interstitial && (
-        <div className="grid-bg absolute inset-0 bg-bg/95 flex flex-col items-center justify-center gap-6 text-center">
+        <div className="absolute inset-0 bg-bg/95 flex flex-col items-center justify-center gap-6 text-center">
           <p className="font-display text-accent text-glow font-black tracking-[0.3em] text-4xl uppercase">
             New personal best
           </p>

@@ -3,7 +3,7 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <main className="grid-bg flex-1 flex flex-col items-center justify-center gap-10 p-8">
+    <main className="flex-1 flex flex-col items-center justify-center gap-10 p-8">
       <div className="text-center flex flex-col items-center">
         <Image
           src="/Oasis_Logo_Vector.png"
@@ -27,6 +27,9 @@ export default function Home() {
           className="px-10 py-3 rounded-full bg-accent text-bg glow-cyan font-display font-bold uppercase tracking-wider"
         >
           My laps
+        </Link>
+        <Link href="/leaderboards" className="text-muted underline underline-offset-4">
+          Leaderboards
         </Link>
         <Link href="/tv" className="text-muted underline underline-offset-4">
           Live timing board
