@@ -28,6 +28,9 @@ export default function Home() {
         >
           My laps
         </Link>
+        <Link href="/leaderboards" className="text-muted underline underline-offset-4">
+          Leaderboards
+        </Link>
         <Link href="/tv" className="text-muted underline underline-offset-4">
           Live timing board
         </Link>

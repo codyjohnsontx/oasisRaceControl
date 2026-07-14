@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
 import type { PortalLap } from "@/lib/laps";
@@ -237,7 +238,7 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
         )}
       </section>
 
-      <footer className="flex justify-center pb-2">
+      <footer className="flex justify-center gap-6 pb-2">
         <button
           type="button"
           onClick={async () => {
@@ -252,6 +253,9 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
         >
           Sign out
         </button>
+        <Link href="/leaderboards" className="text-muted text-sm underline underline-offset-4">
+          Leaderboards
+        </Link>
       </footer>
     </main>
   );
