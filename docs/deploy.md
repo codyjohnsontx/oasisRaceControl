@@ -21,13 +21,24 @@ site — see step 4.
 **If standing up a fresh production database:**
 
 1. Create the database/branch in Neon.
-2. From `apps/web`, point at it and run the migrations:
+2. Put the pooled connection string in `apps/web/.env.local` — gitignored, and it
+   keeps the credential out of your shell history. The migration scripts load it
+   automatically. (Or source it from your secret manager into the environment;
+   just don't paste it inline on the command line.)
+
    ```bash
-   DATABASE_URL="<neon pooled url>" npm run db:migrate
-   # optional demo data (drivers, rigs, staff login):
-   DATABASE_URL="<neon pooled url>" npm run db:seed
+   # apps/web/.env.local
+   DATABASE_URL=<neon pooled url>
    ```
-3. Use the **pooled** connection string — the host with `-pooler` in it, plus
+
+3. From `apps/web`, run the migrations (and optional demo seed):
+
+   ```bash
+   npm run db:migrate
+   npm run db:seed   # optional demo data: drivers, rigs, staff login
+   ```
+
+4. Use the **pooled** connection string — the host with `-pooler` in it, plus
    `sslmode=require`. Serverless functions each open their own pool, and the
    pooler is what keeps that from exhausting Postgres.
 
@@ -48,8 +59,10 @@ The repo is a monorepo; the app lives in `apps/web`.
    | `DATABASE_URL` | Neon **pooled** connection string | `-pooler` host, `sslmode=require`. Server-only — never `NEXT_PUBLIC_`. |
    | `SESSION_SECRET` | long random string | signs driver + staff cookies. Generate: `openssl rand -base64 48` |
 
-   Both are read at runtime and throw loudly if missing, so a bad deploy fails
-   fast instead of silently.
+   Both are read lazily on the request paths that use them — a missing
+   `DATABASE_URL` throws the first time a route touches the database, and a
+   missing `SESSION_SECRET` throws the first time a session is signed or read.
+   Hit the site after deploying (or add a health check) to surface a bad config.
 4. **Deploy.** Note the assigned domain (e.g. `oasis-race-control.vercel.app`);
    the agents need it in step 3.
 
@@ -92,9 +105,9 @@ the agent handles heartbeat + assignment display + the durable outbox.
 
 ## 4. Before real customers
 
-- **Rotate every demo credential.** The seed ships known values: rig tokens
-  (`dev-rig-N-secret`), the staff login (`staff@oasis.test` / `oasis-staff-demo`),
-  and demo driver PINs. Replace them before the site is public.
+- **Rotate every demo credential.** The seed (`db/seed.sql`) ships known demo
+  values — rig bearer tokens, the staff login, and demo driver PINs. Replace all
+  of them before the site is public; see the seed for the exact values to rotate.
 - **Clear demo data** if prod shares the seeded database — otherwise the demo
   drivers show up on the live leaderboard.
 - **Point the TV** at `https://<your-vercel-domain>/tv` in a kiosk browser.
