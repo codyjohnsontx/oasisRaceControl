@@ -15,8 +15,9 @@ live backend:
 - ✅ Durable, idempotent lap outbox (SQLite) — survives outages and restarts
 - ✅ "Switch driver / sign out" (ends the assignment)
 - ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
-  source is built after the Phase 1 spike freezes the telemetry contract
-  (`docs/spike-findings.md`). `SimulatedTelemetrySource` stands in for testing.
+  source is built after the Phase 0 safety gate, Phase 1A supervised canary,
+  and Phase 1B telemetry spike freeze the contract (`docs/venue-safety.md` and
+  `docs/spike-findings.md`). `SimulatedTelemetrySource` stands in for testing.
 
 The current host is a **console app** (runs on macOS/Linux/Windows, so it can be
 tested anywhere). A tray-icon + status-window Windows shell is a later UI pass

@@ -17,8 +17,9 @@ docs/                # Plan, spike checklist, spike findings, ops runbook
 
 ## Status
 
-- **Phase 1 (iRacing spike): awaiting a venue recording session.** The `laps` table and agent event contract are provisional until the spike findings land. See `docs/spike-checklist.md`, `docs/spike-findings.md`, and `spike/`.
-- **Phase 2 (web slice): built.** Check-in, driver portal, TV leaderboard, staff dashboard, ingestion API, and a fake-rig simulator.
+- **Phase 0 (off-site venue safety gate): in progress and blocking all Oasis execution.** The recorder has a repository-owned, dependency-free read-only telemetry path and bounded logging, but it is **not authorized for venue use** until a signed candidate passes two clean Windows 11 VM rehearsals and independent technical review. See `docs/venue-safety.md`.
+- **Phase 1 (Oasis canary + iRacing spike): blocked by Phase 0.** The `laps` table and agent event contract remain provisional until an approved canary and recording session complete. See `docs/spike-checklist.md`, `docs/spike-findings.md`, and `spike/`.
+- **Phase 2 (simulated web/API slice): substantially built in parallel.** Check-in, driver portal, TV leaderboard, staff dashboard, ingestion API, fake-rig simulator, and most non-telemetry agent infrastructure work. Real iRacing lap detection and the Windows agent UI remain incomplete.
 
 ## Web app development
 
@@ -45,13 +46,14 @@ npm run db:migrate # apply any new migrations in db/migrations/
 
 Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Staff dashboard is at `/staff`.
 
-## Building the spike recorder (on this Mac, runs on Windows)
+## Building an unsigned spike test candidate
+
+This produces an **off-site test artifact only**. Do not take a locally built or unsigned executable to Oasis. Venue candidates must come from the protected `spike-v*` signing workflow and complete every gate in `docs/venue-safety.md`.
 
 ```bash
 export PATH="$HOME/.dotnet:$PATH"
-cd spike/OasisSpike
-dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
-# copy bin/Release/net8.0-windows/win-x64/publish/OasisSpike.exe to the rig (no .NET install needed there)
+dotnet test spike/OasisSpike.sln -c Release
+dotnet publish spike/OasisSpike/OasisSpike.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
-On the rig: ensure `irsdkEnableMem=1` in iRacing's `app.ini` (it is the default), run `OasisSpike.exe`, drive the checklist scenarios, then copy the `spike-logs/` folder back for analysis.
+The venue-facing interface has no default run mode: `--mode canary` enforces 10 minutes/25 MiB and `--mode full` enforces 120 minutes/100 MiB. Never inspect or edit iRacing configuration during the canary. A failure to connect is a stop-and-reschedule result.

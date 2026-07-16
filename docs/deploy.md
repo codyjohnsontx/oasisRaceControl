@@ -97,7 +97,8 @@ vars, which override the file):
 - Auto-start on login via Windows Task Scheduler is the simplest option; a
   Windows Service is sturdier if you want it.
 
-Lap detection itself is still stubbed pending the iRacing spike — until then run
+Lap detection itself is still stubbed pending the off-site safety gate, supervised
+canary, and iRacing spike — until then run
 with `simulateTelemetry: true` to exercise the full path, or leave it off and
 the agent handles heartbeat + assignment display + the durable outbox.
 
