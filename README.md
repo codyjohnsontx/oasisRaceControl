@@ -17,7 +17,7 @@ docs/                # Plan, spike checklist, spike findings, ops runbook
 
 ## Status
 
-- **Phase 0 (off-site venue safety gate): in progress and blocking all Oasis execution.** The recorder has a repository-owned, dependency-free read-only telemetry path and bounded logging, but it is **not authorized for venue use** until a signed candidate passes two clean Windows 11 VM rehearsals and independent technical review. See `docs/venue-safety.md`.
+- **Phase 0 (off-site venue safety gate): in progress and blocking all Oasis execution.** The recorder has a repository-owned, dependency-free read-only telemetry path and bounded logging, but it is **not authorized for venue use** until a signed candidate passes two clean Windows 11 VM rehearsals and project-owner safety sign-off. See `docs/venue-safety.md`.
 - **Phase 1 (Oasis canary + iRacing spike): blocked by Phase 0.** The `laps` table and agent event contract remain provisional until an approved canary and recording session complete. See `docs/spike-checklist.md`, `docs/spike-findings.md`, and `spike/`.
 - **Phase 2 (simulated web/API slice): substantially built in parallel.** Check-in, driver portal, TV leaderboard, staff dashboard, ingestion API, fake-rig simulator, and most non-telemetry agent infrastructure work. Real iRacing lap detection and the Windows agent UI remain incomplete.
 

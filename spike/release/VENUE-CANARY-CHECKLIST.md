@@ -7,7 +7,7 @@ Artifact version: __________  SHA-256: __________  Date: __________  Rig: ______
 - [ ] Oasis explicitly approved this time, rig, and operator.
 - [ ] Rig is idle and outside customer use.
 - [ ] Signature is valid and SHA-256 matches `SHA256SUMS.txt`.
-- [ ] `SAFETY-REPORT.md` is complete and independently approved.
+- [ ] `SAFETY-REPORT.md` is complete and signed off by the project owner.
 - [ ] Program is running from the controlled USB as a normal user.
 - [ ] No files were copied to the venue PC and no settings were changed.
 
@@ -18,7 +18,7 @@ Get-AuthenticodeSignature .\OasisSpike.exe
 Get-FileHash .\OasisSpike.exe -Algorithm SHA256
 ```
 
-The signature status must be `Valid`; the hash must exactly match the independently reviewed value. Any warning, lookup failure, or mismatch is an abort—do not bypass it.
+The signature status must be `Valid`; the hash must exactly match the project-owner-signed value. Any warning, lookup failure, or mismatch is an abort—do not bypass it.
 
 ## Canary
 

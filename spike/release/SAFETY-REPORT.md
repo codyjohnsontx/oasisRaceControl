@@ -22,19 +22,22 @@ Candidate SHA-256: _pending_  Commit: _pending_  Workflow: _pending_
 - [ ] CPU, memory, and handle growth stayed within documented bounds.
 - [ ] Graceful stop, kill, corrupt map, producer crash, and disk failure behaved safely.
 
-Evidence location and reviewer notes: _pending_
+Evidence location and owner notes: _pending_
 
 ## Windows 11 VM — restored snapshot run 2
 
 - [ ] Exact same signed SHA-256 used.
 - [ ] All run-1 checks repeated with the same result.
 
-Evidence location and reviewer notes: _pending_
+Evidence location and owner notes: _pending_
 
-## Independent technical approval
+## Project-owner safety sign-off
 
-- [ ] Read-only access and parser bounds reviewed.
-- [ ] Evidence and exact artifact reviewed.
-- [ ] Canary procedure and abort conditions reviewed.
+- [ ] Read-only access and parser bounds checked.
+- [ ] Evidence and exact artifact checked.
+- [ ] Canary procedure and abort conditions checked.
+- [ ] Every gate is PASS with no warning, unknown, or waiver.
 
-Reviewer name: _pending_  Date: _pending_  Decision: _pending_
+Project owner: _pending_  Date: _pending_  Decision: _pending_
+
+Optional peer reviewer/notes: _not required_

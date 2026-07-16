@@ -80,7 +80,7 @@ try {
         startedAtUtc = $startedAt.ToUniversalTime().ToString('O')
         completedAtUtc = (Get-Date).ToUniversalTime().ToString('O')
         samples = $samples
-        manualEvidenceStillRequired = @('Process Monitor write trace', 'Defender custom scan', 'SmartScreen launch observation', 'VM snapshot repeat', 'independent review')
+        manualEvidenceStillRequired = @('Process Monitor write trace', 'Defender custom scan', 'SmartScreen launch observation', 'VM snapshot repeat', 'project-owner sign-off')
     }
     $report | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $candidate 'VM-REHEARSAL-PARTIAL.json') -Encoding UTF8
     Write-Host 'Automated rehearsal checks passed. Complete the manual evidence checklist; this does not authorize venue use.'

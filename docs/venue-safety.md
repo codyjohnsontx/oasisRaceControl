@@ -2,7 +2,7 @@
 
 Status: **IN PROGRESS — NO OASIS EXECUTION AUTHORIZED**
 
-This gate protects equipment that Oasis owns and depends on. A passing build, a valid signature, or confidence in the source is not enough. The exact signed bytes must have complete off-site evidence and independent approval before the supervised canary in `spike-checklist.md`.
+This gate protects equipment that Oasis owns and depends on. A passing build, a valid signature, or confidence in the source is not enough. The exact signed bytes must have complete off-site evidence and project-owner safety sign-off before the supervised canary in `spike-checklist.md`.
 
 ## Threat model
 
@@ -45,7 +45,7 @@ The self-contained executable includes Microsoft's .NET runtime. That runtime ca
 ### Signed candidate
 
 - [ ] Azure Artifact Signing identity validation and public-trust profile are active, or the documented OV fallback is used.
-- [ ] GitHub `venue-release` environment requires an independent reviewer.
+- [ ] GitHub `venue-release` environment restricts deployment to `spike-v*` tags and holds only the signing identifiers required by the tag-gated job.
 - [ ] Tag is annotated and matches the reviewed commit.
 - [ ] Authenticode SHA-256 signature and RFC 3161 timestamp verify with no warning.
 - [ ] Microsoft Defender custom scan of the exact signed executable is clean.
@@ -74,12 +74,12 @@ The self-contained executable includes Microsoft's .NET runtime. That runtime ca
 - [ ] Repeat with the exact signed SHA-256.
 - [ ] Obtain the same result with no new warning or unexplained behavior.
 
-### Independent technical review
+### Project-owner safety sign-off
 
-- [ ] Reviewer is not the artifact author.
-- [ ] Reviewer examines source boundary, requested Windows rights, parser bounds, tests, CI run, signature, hash, Defender result, VM evidence, and canary procedure.
-- [ ] Reviewer approves the exact artifact without waiver.
-- [ ] Completed report records reviewer identity, date, evidence location, and decision.
+- [ ] Project owner examines the source boundary, requested Windows rights, parser bounds, tests, CI run, signature, hash, Defender result, VM evidence, and canary procedure.
+- [ ] Project owner records PASS for the exact artifact without waiver.
+- [ ] Completed report records owner identity, date, evidence location, and decision.
+- [ ] Optional peer review may be recorded, but is not required and cannot waive a failed or unknown gate.
 
 ## Release setup still requiring external configuration
 
@@ -87,20 +87,20 @@ Repository code cannot create or truthfully complete these controls:
 
 1. Create Azure Artifact Signing identity/certificate profile and GitHub OIDC trust. If unavailable, obtain a standard OV Authenticode certificate; never substitute self-signing.
 2. Add the workflow's Azure identifiers and Artifact Signing names as protected environment secrets.
-3. Configure the GitHub `venue-release` environment with an independent required reviewer.
+3. Configure the GitHub `venue-release` environment for `spike-v*` tags and environment-scoped signing identifiers.
 4. Run the two Windows 11 VM rehearsals and retain Process Monitor, Defender, resource, signature, hash, and cleanup evidence.
-5. Have the independent reviewer complete `SAFETY-REPORT.md` for the exact candidate.
+5. Have the project owner complete `SAFETY-REPORT.md` for the exact candidate.
 
-The automated portion of a rehearsal can be started with `spike/scripts/Invoke-VmRehearsal.ps1`, passing the signed-candidate directory, expected hash, expected Azure Trusted Signing subject from the reviewed release evidence, and the separately downloaded test-only synthetic publisher. The publisher must remain outside the signed venue package. Process Monitor, SmartScreen, Defender, snapshot-repeat, cleanup, and reviewer evidence remain manual mandatory checks.
+The automated portion of a rehearsal can be started with `spike/scripts/Invoke-VmRehearsal.ps1`, passing the signed-candidate directory, expected hash, expected Azure Trusted Signing subject from the release evidence, and the separately downloaded test-only synthetic publisher. The publisher must remain outside the signed venue package. Process Monitor, SmartScreen, Defender, snapshot-repeat, cleanup, and project-owner sign-off remain manual mandatory checks.
 
 Until all five are done, Phase 0 remains in progress.
 
-The `venue-release` environment must provide `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_ARTIFACT_SIGNING_ENDPOINT`, `AZURE_ARTIFACT_SIGNING_ACCOUNT`, and `AZURE_ARTIFACT_SIGNING_PROFILE`. Authentication uses GitHub OIDC; do not create or store a client secret or signing private key in the repository. Pin environment approval to the independent reviewer.
+The `venue-release` environment must provide `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_ARTIFACT_SIGNING_ENDPOINT`, `AZURE_ARTIFACT_SIGNING_ACCOUNT`, and `AZURE_ARTIFACT_SIGNING_PROFILE`. Authentication uses GitHub OIDC; do not create or store a client secret or signing private key in the repository. Restrict the environment to `spike-v*` tags.
 
 ## Data handling
 
-Raw `sessioninfo-NNN.yaml` may contain account or driver identifiers. Keep the USB in project-owner custody, transfer to encrypted storage, verify the copy before wiping the USB, limit access to owner/reviewer, never upload automatically, and delete raw metadata 30 days after the findings/schema decisions are approved.
+Raw `sessioninfo-NNN.yaml` may contain account or driver identifiers. Keep the USB in project-owner custody, transfer to encrypted storage, verify the copy before wiping the USB, limit access to the owner and any explicitly designated peer reviewer, never upload automatically, and delete raw metadata 30 days after the findings/schema decisions are approved.
 
 ## Phase transition
 
-Phase 0 completes only when every evidence item passes with no warning, unknown, or waiver. Phase 1A is then limited to the supervised canary. Any executable-byte change invalidates the VM evidence and approval and returns the work to Phase 0.
+Phase 0 completes only when every evidence item passes with no warning, unknown, or waiver and the project owner signs off on the exact SHA-256. Phase 1A is then limited to the supervised canary. Any executable-byte change invalidates the VM evidence and sign-off and returns the work to Phase 0.

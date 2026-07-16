@@ -125,7 +125,7 @@ jobs:
           "$hash  OasisSpike.exe" | Set-Content artifacts/signed-candidate/SHA256SUMS.txt -Encoding ascii
           [ordered]@{ schemaVersion = 1; status = 'SIGNED_CANDIDATE_NOT_YET_AUTHORIZED_FOR_VENUE_USE'; tag = $env:RELEASE_TAG; commit = $env:SOURCE_REVISION_ID; dotnetSdk = (dotnet --version); dotnetRuntime = '8.0.28'; runtimeIdentifier = 'win-x64'; sha256 = $hash; signedAtUtc = (Get-Date).ToUniversalTime().ToString('O'); workflowRun = $env:WORKFLOW_RUN_URL } | ConvertTo-Json | Set-Content artifacts/signed-candidate/RELEASE-MANIFEST.json -Encoding utf8NoBOM
           Compress-Archive artifacts/signed-candidate/* "artifacts/OasisSpike-$env:RELEASE_TAG-SIGNED-CANDIDATE.zip"
-      - name: Upload signed candidate for VM evidence and independent review
+      - name: Upload signed candidate for VM evidence and owner sign-off
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: OasisSpike-${{ github.ref_name }}-signed-candidate
