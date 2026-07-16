@@ -57,7 +57,7 @@ The self-contained executable includes Microsoft's .NET runtime. That runtime ca
 
 - [ ] Fully patched clean snapshot and standard non-administrator user.
 - [ ] Hash and Authenticode verification pass.
-- [ ] Default launch succeeds without SmartScreen bypass, UAC, firewall, or antivirus prompt.
+- [ ] Launching the exact signed `OasisSpike.exe --mode canary` command succeeds without SmartScreen bypass, UAC, firewall, or antivirus prompt.
 - [ ] Current Defender definitions report no threat.
 - [ ] Synthetic valid, malformed, reconnect, producer-exit, and recorder-stop cases exercised.
 - [ ] No child process or application-owned network connection.
@@ -91,7 +91,7 @@ Repository code cannot create or truthfully complete these controls:
 4. Run the two Windows 11 VM rehearsals and retain Process Monitor, Defender, resource, signature, hash, and cleanup evidence.
 5. Have the independent reviewer complete `SAFETY-REPORT.md` for the exact candidate.
 
-The automated portion of a rehearsal can be started with `spike/scripts/Invoke-VmRehearsal.ps1`, passing the signed-candidate directory, expected hash, and the separately downloaded test-only synthetic publisher. The publisher must remain outside the signed venue package. Process Monitor, SmartScreen, Defender, snapshot-repeat, cleanup, and reviewer evidence remain manual mandatory checks.
+The automated portion of a rehearsal can be started with `spike/scripts/Invoke-VmRehearsal.ps1`, passing the signed-candidate directory, expected hash, expected Azure Trusted Signing subject from the reviewed release evidence, and the separately downloaded test-only synthetic publisher. The publisher must remain outside the signed venue package. Process Monitor, SmartScreen, Defender, snapshot-repeat, cleanup, and reviewer evidence remain manual mandatory checks.
 
 Until all five are done, Phase 0 remains in progress.
 

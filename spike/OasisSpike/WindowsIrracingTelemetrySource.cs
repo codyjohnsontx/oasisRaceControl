@@ -7,16 +7,27 @@ namespace OasisSpike;
 
 public sealed class WindowsIrracingTelemetrySource : IIrracingTelemetrySource
 {
-    private const string MemoryMapName = "Local\\IRSDKMemMapFileName";
-    private const string DataEventName = "Local\\IRSDKDataValidEvent";
+    private const string ProductionMemoryMapName = "Local\\IRSDKMemMapFileName";
+    private const string ProductionDataEventName = "Local\\IRSDKDataValidEvent";
     private const uint Synchronize = 0x00100000;
     private const int ErrorFileNotFound = 2;
     private const int ErrorInvalidName = 123;
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(1);
 
     private readonly CancellationTokenSource _stop = new();
+    private readonly string _memoryMapName;
+    private readonly string _dataEventName;
     private Thread? _thread;
     private bool _connected;
+
+    public WindowsIrracingTelemetrySource()
+        : this(ProductionMemoryMapName, ProductionDataEventName) { }
+
+    internal WindowsIrracingTelemetrySource(string memoryMapName, string dataEventName)
+    {
+        _memoryMapName = memoryMapName;
+        _dataEventName = dataEventName;
+    }
 
     public event Action? Connected;
     public event Action? Disconnected;
@@ -54,7 +65,7 @@ public sealed class WindowsIrracingTelemetrySource : IIrracingTelemetrySource
         {
             try
             {
-                using var map = MemoryMappedFile.OpenExisting(MemoryMapName, MemoryMappedFileRights.Read);
+                using var map = MemoryMappedFile.OpenExisting(_memoryMapName, MemoryMappedFileRights.Read);
                 using var view = map.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
                 using var reader = new AccessorReader(view);
                 using var dataEvent = OpenSynchronizationEvent();
@@ -130,9 +141,9 @@ public sealed class WindowsIrracingTelemetrySource : IIrracingTelemetrySource
         }
     }
 
-    private static EventWaitHandle OpenSynchronizationEvent()
+    private EventWaitHandle OpenSynchronizationEvent()
     {
-        var handle = NativeMethods.OpenEvent(Synchronize, false, DataEventName);
+        var handle = NativeMethods.OpenEvent(Synchronize, false, _dataEventName);
         if (handle.IsInvalid)
         {
             var error = Marshal.GetLastWin32Error();

@@ -53,6 +53,22 @@ public sealed class RecorderTests : IDisposable
     }
 
     [Fact]
+    public void UnexpectedCallbackFailureProducesInternalFailureExit()
+    {
+        var source = new FakeSource();
+        var logs = new LogBudget(_directory, 1024 * 1024);
+        using var recorder = new Recorder(source, logs, RecorderMode.Canary, new SafetyLimits(TimeSpan.FromSeconds(5), 1024 * 1024), "test", "commit");
+        recorder.Start();
+        logs.Dispose();
+
+        source.EmitConnected();
+
+        Assert.True(recorder.Stopped);
+        Assert.Equal("internal-failure", recorder.ExitReason);
+        Assert.Equal(RecorderExitCode.InternalFailure, recorder.ExitCode);
+    }
+
+    [Fact]
     public void DisconnectResetsLapStateWithoutOverwritingVariableDump()
     {
         var source = new FakeSource();

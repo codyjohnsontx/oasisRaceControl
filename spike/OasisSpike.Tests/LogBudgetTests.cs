@@ -52,6 +52,18 @@ public sealed class LogBudgetTests : IDisposable
         Assert.True(error is IOException or UnauthorizedAccessException, error?.ToString());
     }
 
+    [Fact]
+    public void ManifestReplacementIsCompleteAndLeavesNoTemporaryFile()
+    {
+        using var logs = new LogBudget(_directory, 1024 * 1024);
+        logs.WriteManifest(new { state = "running" });
+        logs.WriteManifest(new { state = "stopped" });
+
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(_directory, "run-manifest.json")));
+        Assert.Equal("stopped", manifest.RootElement.GetProperty("state").GetString());
+        Assert.Single(Directory.GetFiles(_directory));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);

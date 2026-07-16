@@ -28,23 +28,32 @@ $forbidden = @(
 
 $source = Get-ChildItem $projectRoot -Filter '*.cs' -Recurse
 foreach ($pattern in $forbidden) {
-    $matches = $source | Select-String -Pattern $pattern
-    if ($matches) {
-        $details = ($matches | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }) -join "`n"
+    $foundMatches = $source | Select-String -Pattern $pattern
+    if ($foundMatches) {
+        $details = ($foundMatches | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }) -join "`n"
         throw "Forbidden venue-recorder capability matched '$pattern':`n$details"
     }
 }
 
 $readerSource = Get-Content -Raw (Join-Path $projectRoot 'WindowsIrracingTelemetrySource.cs')
-foreach ($required in @(
-    'MemoryMappedFileRights.Read',
-    'MemoryMappedFileAccess.Read',
-    'private const uint Synchronize = 0x00100000',
-    'OpenEvent(Synchronize'
-)) {
-    if (-not $readerSource.Contains($required)) {
-        throw "Required read-only control '$required' was not found."
+foreach ($required in @{
+    'read-only memory-map open' = 'MemoryMappedFile\s*\.\s*OpenExisting\s*\([^;]*?MemoryMappedFileRights\s*\.\s*Read\b'
+    'read-only view accessor' = 'CreateViewAccessor\s*\([^;]*?MemoryMappedFileAccess\s*\.\s*Read\b'
+}.GetEnumerator()) {
+    if (-not [regex]::IsMatch($readerSource, $required.Value, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+        throw "Required control '$($required.Key)' was not found."
     }
+}
+
+$synchronizeDeclaration = [regex]::Match(
+    $readerSource,
+    '\bconst\s+uint\s+(?<name>[A-Za-z_]\w*)\s*=\s*(?:0x0*100000|1048576)\b',
+    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+if (-not $synchronizeDeclaration.Success) { throw 'The SYNCHRONIZE-only event access constant was not found.' }
+$synchronizeName = [regex]::Escape($synchronizeDeclaration.Groups['name'].Value)
+$openEventPattern = "\bOpenEvent\s*\((?=[^;)]*\b$synchronizeName\b)[^;)]*\)"
+if (-not [regex]::IsMatch($readerSource, $openEventPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+    throw 'OpenEvent does not request the SYNCHRONIZE-only access constant.'
 }
 
 Write-Host 'PASS: venue recorder has no package dependencies or forbidden capability references.'

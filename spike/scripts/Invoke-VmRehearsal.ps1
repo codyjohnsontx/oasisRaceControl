@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)] [string] $CandidateDirectory,
     [Parameter(Mandatory = $true)] [string] $PublisherPath,
     [Parameter(Mandatory = $true)] [string] $ExpectedSha256,
+    [Parameter(Mandatory = $true)] [ValidateNotNullOrEmpty()] [string] $ExpectedSignerSubject,
     [ValidateSet('canary', 'full')] [string] $Mode = 'canary'
 )
 
@@ -18,11 +19,15 @@ if ($actualHash -ne $ExpectedSha256.ToLowerInvariant()) { throw "SHA-256 mismatc
 
 $signature = Get-AuthenticodeSignature $recorderPath
 if ($signature.Status -ne 'Valid') { throw "Authenticode signature is not valid: $($signature.Status)" }
+if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -cne $ExpectedSignerSubject) {
+    throw "Authenticode signer does not match the expected Azure Trusted Signing subject."
+}
 
 $startedAt = Get-Date
 $publisherInfo = [System.Diagnostics.ProcessStartInfo]::new($publisherPath)
 $publisherInfo.UseShellExecute = $false
 $publisherInfo.RedirectStandardInput = $true
+$recorder = $null
 $publisher = [System.Diagnostics.Process]::Start($publisherInfo)
 try {
     Start-Sleep -Seconds 2
@@ -78,8 +83,19 @@ try {
     Write-Host 'Automated rehearsal checks passed. Complete the manual evidence checklist; this does not authorize venue use.'
 }
 finally {
-    if ($publisher -and -not $publisher.HasExited) {
-        $publisher.StandardInput.WriteLine('q')
-        if (-not $publisher.WaitForExit(5000)) { $publisher.Kill() }
+    try {
+        if ($recorder -and -not $recorder.HasExited) {
+            try { $recorder.StandardInput.WriteLine('q') } catch {}
+            if (-not $recorder.WaitForExit(5000)) {
+                $recorder.Kill()
+                $recorder.WaitForExit(5000) | Out-Null
+            }
+        }
+    }
+    finally {
+        if ($publisher -and -not $publisher.HasExited) {
+            $publisher.StandardInput.WriteLine('q')
+            if (-not $publisher.WaitForExit(5000)) { $publisher.Kill() }
+        }
     }
 }

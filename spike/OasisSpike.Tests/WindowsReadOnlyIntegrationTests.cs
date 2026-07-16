@@ -10,14 +10,17 @@ public sealed class WindowsReadOnlyIntegrationTests
     {
         if (!OperatingSystem.IsWindows()) return;
 
+        var testId = Guid.NewGuid().ToString("N");
+        var memoryMapName = $"Local\\OasisSpike.Tests.Map.{testId}";
+        var dataEventName = $"Local\\OasisSpike.Tests.Event.{testId}";
         var fixture = new MemoryFixture().AddVariable("Lap", IrracingVariableType.Int, 0, 7);
-        using var map = MemoryMappedFile.CreateOrOpen("Local\\IRSDKMemMapFileName", fixture.Bytes.Length, MemoryMappedFileAccess.ReadWrite);
+        using var map = MemoryMappedFile.CreateOrOpen(memoryMapName, fixture.Bytes.Length, MemoryMappedFileAccess.ReadWrite);
         using var view = map.CreateViewAccessor(0, fixture.Bytes.Length, MemoryMappedFileAccess.ReadWrite);
         view.WriteArray(0, fixture.Bytes, 0, fixture.Bytes.Length);
         view.Flush();
-        using var dataEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\IRSDKDataValidEvent");
+        using var dataEvent = new EventWaitHandle(false, EventResetMode.AutoReset, dataEventName);
         using var observed = new ManualResetEventSlim(false);
-        using var source = new WindowsIrracingTelemetrySource();
+        using var source = new WindowsIrracingTelemetrySource(memoryMapName, dataEventName);
         source.Telemetry += _ => observed.Set();
 
         source.Start();

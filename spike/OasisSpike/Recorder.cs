@@ -24,6 +24,11 @@ public sealed class Recorder : IDisposable
 
     private static readonly string[] WatchedDoubles = ["SessionTime"];
     private static readonly string[] WatchedBitFields = ["SessionFlags"];
+    private static readonly string[] ChangeWatchedInts =
+    [
+        "SessionNum", "SessionState", "SessionUniqueID", "PlayerTrackSurface", "Lap", "EnterExitReset"
+    ];
+    private static readonly string[] ChangeWatchedBools = ["OnPitRoad", "IsOnTrack", "IsInGarage"];
 
     internal static readonly IReadOnlySet<string> WatchedVariableNames =
         new HashSet<string>(WatchedInts.Concat(WatchedFloats).Concat(WatchedBools)
@@ -169,7 +174,7 @@ public sealed class Recorder : IDisposable
 
     private void DetectChanges(IReadOnlyDictionary<string, object?> now)
     {
-        foreach (var name in new[] { "SessionNum", "SessionState", "SessionUniqueID", "PlayerTrackSurface", "Lap", "EnterExitReset" })
+        foreach (var name in ChangeWatchedInts)
         {
             if (GetInt(now, name) is not int value) continue;
             if (_previousInts.TryGetValue(name, out var previous) && previous != value)
@@ -181,7 +186,7 @@ public sealed class Recorder : IDisposable
             _previousInts[name] = value;
         }
 
-        foreach (var name in new[] { "OnPitRoad", "IsOnTrack", "IsInGarage" })
+        foreach (var name in ChangeWatchedBools)
         {
             if (GetBool(now, name) is not bool value) continue;
             if (_previousBools.TryGetValue(name, out var previous) && previous != value)
@@ -302,7 +307,9 @@ public sealed class Recorder : IDisposable
         try { callback(); }
         catch (LogLimitException) { Stop("log-limit", RecorderExitCode.LogLimit); }
         catch (MalformedTelemetryException) { Stop("malformed-telemetry", RecorderExitCode.MalformedTelemetry); }
-        catch (Exception) { Stop("output-failure", RecorderExitCode.OutputFailure); }
+        catch (IOException) { Stop("output-failure", RecorderExitCode.OutputFailure); }
+        catch (UnauthorizedAccessException) { Stop("output-failure", RecorderExitCode.OutputFailure); }
+        catch (Exception) { Stop("internal-failure", RecorderExitCode.InternalFailure); }
     }
 
     private static object? GetValue(IReadOnlyDictionary<string, object?> values, string key) =>
