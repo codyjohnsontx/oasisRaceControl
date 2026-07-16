@@ -81,6 +81,22 @@ public sealed class LogBudgetTests : IDisposable
         Assert.Equal(100, new FileInfo(Path.Combine(_directory, "run-manifest.json")).Length);
     }
 
+    [Fact]
+    public void PreexistingManifestCannotReduceThisInstancesBudget()
+    {
+        Directory.CreateDirectory(_directory);
+        File.WriteAllBytes(Path.Combine(_directory, "run-manifest.json"), new byte[1000]);
+        using var logs = new LogBudget(_directory, 100);
+        var tenByteManifest = new string('x', 8 - Environment.NewLine.Length);
+
+        logs.WriteManifest(tenByteManifest);
+        Assert.Equal(10, logs.BytesWritten);
+        logs.WriteTextFile("telemetry-vars.txt", new string('x', 90));
+
+        Assert.Equal(100, logs.BytesWritten);
+        Assert.Throws<LogLimitException>(() => logs.WriteJsonLine("events.jsonl", new { value = 1 }));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);

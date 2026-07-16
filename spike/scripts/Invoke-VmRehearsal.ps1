@@ -48,7 +48,7 @@ try {
         $cpu = $recorder.TotalProcessorTime
         $wallMilliseconds = ($sampleAt - $previousSampleAt).TotalMilliseconds
         $cpuPercentOfOneCore = if ($wallMilliseconds -gt 0) { 100 * ($cpu - $previousCpu).TotalMilliseconds / $wallMilliseconds } else { 0 }
-        $connections = @(Get-NetTCPConnection -OwningProcess $recorder.Id -ErrorAction Stop)
+        $connections = @(Get-CimInstance -Namespace 'root/StandardCimv2' -ClassName 'MSFT_NetTCPConnection' -Filter "OwningProcess = $($recorder.Id)" -ErrorAction Stop)
         $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($recorder.Id)" -ErrorAction Stop)
         $samples += [pscustomobject]@{
             at = $sampleAt.ToUniversalTime().ToString('O')

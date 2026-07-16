@@ -24,6 +24,7 @@ public sealed class LogBudget : IDisposable
     private readonly long _maximumBytes;
     private readonly object _lock = new();
     private long _bytesWritten;
+    private long _chargedManifestBytes;
     private bool _disposed;
 
     public long BytesWritten => Interlocked.Read(ref _bytesWritten);
@@ -71,9 +72,9 @@ public sealed class LogBudget : IDisposable
         {
             ThrowIfDisposed();
             var path = ApprovedPath("run-manifest.json");
-            var previousLength = File.Exists(path) ? new FileInfo(path).Length : 0;
-            var manifestDelta = (long)bytes.Length - previousLength;
-            if (manifestDelta > 0 && checked(_bytesWritten + manifestDelta) > _maximumBytes)
+            var manifestDelta = (long)bytes.Length - _chargedManifestBytes;
+            var bytesAfterWrite = checked(_bytesWritten + manifestDelta);
+            if (bytesAfterWrite > _maximumBytes)
                 throw new LogLimitException($"The {_maximumBytes / 1024 / 1024} MiB output limit was reached.");
 
             var temporaryPath = Path.Combine(_runDirectory, $"run-manifest-{Guid.NewGuid():N}.tmp");
@@ -87,7 +88,8 @@ public sealed class LogBudget : IDisposable
 
                 if (File.Exists(path)) File.Replace(temporaryPath, path, null);
                 else File.Move(temporaryPath, path);
-                _bytesWritten = checked(_bytesWritten + manifestDelta);
+                _bytesWritten = bytesAfterWrite;
+                _chargedManifestBytes = bytes.Length;
             }
             finally
             {
