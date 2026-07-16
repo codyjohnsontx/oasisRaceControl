@@ -1,0 +1,136 @@
+name: Spike safety gate
+
+on:
+  pull_request:
+    paths: ["spike/**", "docs/venue-safety.md", ".github/workflows/spike-safety.yml", "global.json"]
+  push:
+    branches: [main]
+    tags: ["spike-v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: spike-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+      - name: Enforce recorder capability boundary
+        shell: pwsh
+        run: ./spike/scripts/Test-SpikeArchitecture.ps1
+      - name: Restore hash-locked dependencies
+        run: dotnet restore spike/OasisSpike.sln --locked-mode
+      - name: Test parser, recorder, and bounded output
+        run: dotnet test spike/OasisSpike.sln --configuration Release --no-restore
+      - name: Publish unsigned VM candidate
+        shell: pwsh
+        env:
+          SOURCE_REVISION_ID: ${{ github.sha }}
+        run: |
+          dotnet publish spike/OasisSpike/OasisSpike.csproj --configuration Release --runtime win-x64 --self-contained true --output artifacts/recorder -p:RestoreLockedMode=true -p:NuGetLockFilePath=packages.win-x64.lock.json -p:PublishSingleFile=true "-p:SourceRevisionId=$env:SOURCE_REVISION_ID"
+          dotnet publish spike/OasisSpike.SyntheticPublisher/OasisSpike.SyntheticPublisher.csproj --configuration Release --runtime win-x64 --self-contained true --output artifacts/test-only -p:RestoreLockedMode=true -p:NuGetLockFilePath=packages.win-x64.lock.json -p:PublishSingleFile=true
+          if ((Get-ChildItem artifacts/recorder -File).Name -contains 'IRSDKSharper.dll') { throw 'Forbidden SDK dependency was published.' }
+          if ((Get-ChildItem artifacts/recorder -File).Name -contains 'YamlDotNet.dll') { throw 'Forbidden YAML dependency was published.' }
+      - name: Upload unsigned test bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: spike-unsigned-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  sign_candidate:
+    if: startsWith(github.ref, 'refs/tags/spike-v')
+    needs: verify
+    runs-on: windows-2025
+    timeout-minutes: 30
+    environment: venue-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out exact tagged source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require an annotated release tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $type = git cat-file -t "refs/tags/$env:RELEASE_TAG"
+          if ($type -ne 'tag') { throw 'Venue candidates require an annotated spike-v* tag.' }
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+      - name: Download exact verified candidate
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: spike-unsigned-${{ github.sha }}
+          path: artifacts
+      - name: Authenticate with Azure using OIDC
+        uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Authenticode sign and RFC 3161 timestamp recorder
+        uses: Azure/artifact-signing-action@c0ae2c1d0c1847ab81ac0ab8521bee597cfedd30 # v2
+        with:
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\artifacts\recorder\OasisSpike.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Oasis Race Control read-only telemetry safety recorder
+      - name: Verify signature, scan, hash, and package signed candidate
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_REVISION_ID: ${{ github.sha }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          $exe = (Resolve-Path artifacts/recorder/OasisSpike.exe).Path
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Where-Object FullName -Match '\\x64\\' | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe was not found.' }
+          & $signtool.FullName verify /pa /all /tw $exe
+          if ($LASTEXITCODE -ne 0) { throw 'Authenticode verification failed or warned.' }
+          $defender = Get-ChildItem "$env:ProgramData\Microsoft\Windows Defender\Platform" -Recurse -Filter MpCmdRun.exe | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $defender) { throw 'Microsoft Defender command-line scanner was not found.' }
+          & $defender.FullName -Scan -ScanType 3 -File $exe -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw 'Microsoft Defender scan did not pass cleanly.' }
+          New-Item artifacts/signed-candidate -ItemType Directory -Force | Out-Null
+          Copy-Item $exe artifacts/signed-candidate/OasisSpike.exe
+          Copy-Item spike/release/README-FIRST.txt artifacts/signed-candidate/
+          Copy-Item spike/release/VENUE-CANARY-CHECKLIST.md artifacts/signed-candidate/
+          Copy-Item spike/release/SAFETY-REPORT.md artifacts/signed-candidate/
+          $hash = (Get-FileHash artifacts/signed-candidate/OasisSpike.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  OasisSpike.exe" | Set-Content artifacts/signed-candidate/SHA256SUMS.txt -Encoding ascii
+          [ordered]@{ schemaVersion = 1; status = 'SIGNED_CANDIDATE_NOT_YET_AUTHORIZED_FOR_VENUE_USE'; tag = $env:RELEASE_TAG; commit = $env:SOURCE_REVISION_ID; dotnetSdk = (dotnet --version); dotnetRuntime = '8.0.28'; runtimeIdentifier = 'win-x64'; sha256 = $hash; signedAtUtc = (Get-Date).ToUniversalTime().ToString('O'); workflowRun = $env:WORKFLOW_RUN_URL } | ConvertTo-Json | Set-Content artifacts/signed-candidate/RELEASE-MANIFEST.json -Encoding utf8NoBOM
+          Compress-Archive artifacts/signed-candidate/* "artifacts/OasisSpike-$env:RELEASE_TAG-SIGNED-CANDIDATE.zip"
+      - name: Upload signed candidate for VM evidence and independent review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: OasisSpike-${{ github.ref_name }}-signed-candidate
+          path: |
+            artifacts/signed-candidate
+            artifacts/OasisSpike-${{ github.ref_name }}-SIGNED-CANDIDATE.zip
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OasisSpike", "OasisSpike\OasisSpike.csproj", "{E37F532A-6B82-46CC-BD80-D70701130C92}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OasisSpike.Tests", "OasisSpike.Tests\OasisSpike.Tests.csproj", "{9C68C19D-AC78-40FB-91E6-7FE82FD82BA9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OasisSpike.SyntheticPublisher", "OasisSpike.SyntheticPublisher\OasisSpike.SyntheticPublisher.csproj", "{FE11658D-B23E-4A3F-A2BE-E6CB22DAC010}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E37F532A-6B82-46CC-BD80-D70701130C92}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E37F532A-6B82-46CC-BD80-D70701130C92}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E37F532A-6B82-46CC-BD80-D70701130C92}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E37F532A-6B82-46CC-BD80-D70701130C92}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9C68C19D-AC78-40FB-91E6-7FE82FD82BA9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9C68C19D-AC78-40FB-91E6-7FE82FD82BA9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9C68C19D-AC78-40FB-91E6-7FE82FD82BA9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9C68C19D-AC78-40FB-91E6-7FE82FD82BA9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FE11658D-B23E-4A3F-A2BE-E6CB22DAC010}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FE11658D-B23E-4A3F-A2BE-E6CB22DAC010}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FE11658D-B23E-4A3F-A2BE-E6CB22DAC010}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FE11658D-B23E-4A3F-A2BE-E6CB22DAC010}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

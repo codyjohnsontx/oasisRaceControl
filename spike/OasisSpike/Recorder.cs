@@ -1,296 +1,320 @@
 using System.Text.Json;
-using IRSDKSharper;
 
 namespace OasisSpike;
 
-/// <summary>
-/// Records everything the Phase 1 spike needs to prove:
-///  - telemetry-vars.txt   every variable iRacing actually exposes (name, type, unit, description)
-///  - sessioninfo-NNN.yaml full session info YAML each time it changes
-///  - telemetry.jsonl      ~1 Hz snapshots of the variables Oasis Race Control cares about
-///  - events.jsonl         derived events: lap boundaries (with incident delta and surface history),
-///                         session/state changes, connect/disconnect, driver markers
-/// All files are append-only JSONL/YAML so a crash loses at most the last line.
-/// </summary>
-public sealed class Recorder
+public sealed class Recorder : IDisposable
 {
-    // Variables the product design depends on. Anything missing from the live var dump
-    // is a spike finding in itself — see docs/spike-findings.md.
     private static readonly string[] WatchedInts =
-    {
+    [
         "SessionNum", "SessionState", "SessionUniqueID", "SessionTick",
         "Lap", "LapCompleted", "PlayerCarIdx",
         "PlayerCarMyIncidentCount", "PlayerCarDriverIncidentCount", "PlayerCarTeamIncidentCount",
-        "PlayerTrackSurface", "EnterExitReset", "PitsOpen",
-    };
+        "PlayerTrackSurface", "EnterExitReset", "PitsOpen"
+    ];
 
     private static readonly string[] WatchedFloats =
-    {
-        "LapLastLapTime", "LapBestLapTime", "LapCurrentLapTime", "LapDistPct", "LapDist",
-    };
+    [
+        "LapLastLapTime", "LapBestLapTime", "LapCurrentLapTime", "LapDistPct", "LapDist", "Speed"
+    ];
 
     private static readonly string[] WatchedBools =
-    {
-        "OnPitRoad", "IsOnTrack", "IsOnTrackCar", "IsInGarage", "IsReplayPlaying",
-    };
+    [
+        "OnPitRoad", "IsOnTrack", "IsOnTrackCar", "IsInGarage", "IsReplayPlaying"
+    ];
 
-    private readonly string _runDir;
-    private readonly IRacingSdk _sdk;
-    private readonly object _lock = new();
-    private readonly StreamWriter _events;
-    private readonly StreamWriter _telemetry;
+    private static readonly string[] WatchedDoubles = ["SessionTime"];
+    private static readonly string[] WatchedBitFields = ["SessionFlags"];
+    private static readonly string[] ChangeWatchedInts =
+    [
+        "SessionNum", "SessionState", "SessionUniqueID", "PlayerTrackSurface", "Lap", "EnterExitReset"
+    ];
+    private static readonly string[] ChangeWatchedBools = ["OnPitRoad", "IsOnTrack", "IsInGarage"];
+
+    internal static readonly IReadOnlySet<string> WatchedVariableNames =
+        new HashSet<string>(WatchedInts.Concat(WatchedFloats).Concat(WatchedBools)
+            .Concat(WatchedDoubles).Concat(WatchedBitFields), StringComparer.Ordinal);
+
+    private readonly IIrracingTelemetrySource _source;
+    private readonly LogBudget _logs;
+    private readonly RecorderMode _mode;
+    private readonly SafetyLimits _limits;
+    private readonly string _version;
+    private readonly string _sourceRevision;
     private readonly ManualResetEventSlim _stopped = new(false);
-    private readonly JsonSerializerOptions _json = new() { WriteIndented = false };
-
-    private int _sessionInfoCount;
+    private int _stopStarted;
+    private Timer? _deadline;
+    private DateTimeOffset _startedAt;
     private long _lastSnapshotTick;
-    private bool _dumpedVars;
-
-    // Per-lap accumulators, reset at every lap boundary. These are the heart of the
-    // 0x validity question: can we attribute incidents and off-tracks to a specific lap?
+    private bool _dumpedVariables;
+    private int _sessionInfoCount;
     private int? _lastLapCompleted;
     private int? _lapStartIncidentCount;
     private bool _offTrackSeen;
     private bool _pitRoadSeen;
     private bool _resetSeen;
-
-    // Previous values for change detection between telemetry frames.
-    private readonly Dictionary<string, long> _prevInts = new();
-    private readonly Dictionary<string, bool> _prevBools = new();
+    private readonly Dictionary<string, long> _previousInts = new();
+    private readonly Dictionary<string, bool> _previousBools = new();
 
     public bool Stopped => _stopped.IsSet;
+    public RecorderExitCode ExitCode { get; private set; } = RecorderExitCode.Success;
+    public string ExitReason { get; private set; } = "running";
 
-    public Recorder(string runDir)
+    public Recorder(
+        IIrracingTelemetrySource source,
+        LogBudget logs,
+        RecorderMode mode,
+        SafetyLimits limits,
+        string version,
+        string sourceRevision)
     {
-        _runDir = runDir;
-        _events = new StreamWriter(Path.Combine(runDir, "events.jsonl")) { AutoFlush = true };
-        _telemetry = new StreamWriter(Path.Combine(runDir, "telemetry.jsonl")) { AutoFlush = true };
+        _source = source;
+        _logs = logs;
+        _mode = mode;
+        _limits = limits;
+        _version = version;
+        _sourceRevision = sourceRevision;
 
-        _sdk = new IRacingSdk
-        {
-            UpdateInterval = 6 // ~10 Hz at iRacing's 60 Hz — enough to catch brief surface changes
-        };
-
-        _sdk.OnConnected += () => Emit("CONNECTED", new { });
-        _sdk.OnDisconnected += () =>
+        source.Connected += () => SafeCallback(() => Emit("CONNECTED", new { }));
+        source.Disconnected += () => SafeCallback(() =>
         {
             Emit("DISCONNECTED", new { });
-            _dumpedVars = false; // re-dump vars on next connect; content may differ per car/track
-        };
-        _sdk.OnException += ex => Emit("SDK_EXCEPTION", new { message = ex.ToString() });
-        _sdk.OnSessionInfo += OnSessionInfo;
-        _sdk.OnTelemetryData += OnTelemetryData;
+            ResetTelemetryState();
+        });
+        source.SessionInfo += snapshot => SafeCallback(() => OnSessionInfo(snapshot));
+        source.Telemetry += snapshot => SafeCallback(() => OnTelemetry(snapshot));
+        source.Faulted += exception => SafeCallback(() =>
+        {
+            Emit("SOURCE_FAULT", new { message = exception.Message });
+            Stop(exception is MalformedTelemetryException ? "malformed-telemetry" : "source-failure",
+                exception is MalformedTelemetryException ? RecorderExitCode.MalformedTelemetry : RecorderExitCode.InternalFailure);
+        });
     }
 
     public void Start()
     {
-        Emit("RECORDER_STARTED", new { machine = Environment.MachineName, os = Environment.OSVersion.ToString() });
-        _sdk.Start();
+        _startedAt = DateTimeOffset.UtcNow;
+        WriteManifest("running");
+        Emit("RECORDER_STARTED", new
+        {
+            mode = _mode.ToCliValue(),
+            maxDurationSeconds = (long)_limits.MaxDuration.TotalSeconds,
+            maxOutputBytes = _limits.MaxOutputBytes
+        });
+        _deadline = new Timer(_ => Stop("duration-limit"), null, _limits.MaxDuration, Timeout.InfiniteTimeSpan);
+        _source.Start();
     }
 
-    public void Stop()
+    public void Stop(string reason, RecorderExitCode exitCode = RecorderExitCode.Success)
     {
-        if (_stopped.IsSet) return;
-        Emit("RECORDER_STOPPED", new { });
-        try { _sdk.Stop(); } catch { /* already stopping */ }
-        lock (_lock)
+        if (Interlocked.CompareExchange(ref _stopStarted, 1, 0) != 0) return;
+        ExitReason = reason;
+        ExitCode = exitCode;
+        _deadline?.Change(Timeout.Infinite, Timeout.Infinite);
+        try
         {
-            _events.Flush();
-            _telemetry.Flush();
+            try { Emit("RECORDER_STOPPED", new { reason, exitCode = (int)exitCode }); } catch { }
+            try { _source.Stop(); } catch { }
+            try { WriteManifest(reason); } catch { }
         }
-        _stopped.Set();
+        finally
+        {
+            _stopped.Set();
+        }
+    }
+
+    public void Marker(string note)
+    {
+        if (Stopped) return;
+        const int maximumMarkerLength = 512;
+        var truncated = note.Length > maximumMarkerLength;
+        if (truncated) note = note[..maximumMarkerLength];
+        SafeCallback(() => Emit("MARKER", new { note, truncated }));
     }
 
     public void WaitForStop() => _stopped.Wait();
 
-    public void Marker(string note) => Emit("MARKER", new { note });
-
-    private void OnSessionInfo()
+    public void Dispose()
     {
-        try
+        Stop("disposed");
+        _deadline?.Dispose();
+        _stopped.Dispose();
+    }
+
+    private void OnSessionInfo(SessionInfoSnapshot snapshot)
+    {
+        if (_sessionInfoCount >= LogBudget.MaximumSessionInfoFiles)
+            throw new LogLimitException("The session metadata file-count limit was reached.");
+        if (snapshot.RawBytes.Length > IrracingMemoryParser.MaximumSessionInfoBytes)
+            throw new MalformedTelemetryException("Session metadata exceeded 4 MiB.");
+
+        var number = ++_sessionInfoCount;
+        var file = $"sessioninfo-{number:000}.yaml";
+        _logs.WriteFile(file, snapshot.RawBytes);
+        Emit("SESSION_INFO", new { file, updateNumber = snapshot.UpdateNumber, bytes = snapshot.RawBytes.Length });
+    }
+
+    private void OnTelemetry(TelemetrySnapshot snapshot)
+    {
+        if (!_dumpedVariables)
         {
-            var n = ++_sessionInfoCount;
-            File.WriteAllText(Path.Combine(_runDir, $"sessioninfo-{n:000}.yaml"), _sdk.Data.SessionInfoYaml);
-
-            // Best-effort typed summary; raw YAML above is the source of truth for analysis.
-            string? summary = null;
-            try
-            {
-                var w = _sdk.Data.SessionInfo.WeekendInfo;
-                summary = $"track={w.TrackName} config={w.TrackConfigName} trackId={w.TrackID} sessionId={w.SessionID} subSessionId={w.SubSessionID}";
-            }
-            catch { summary = "(typed session info unavailable — see YAML)"; }
-
-            Emit("SESSION_INFO", new { file = $"sessioninfo-{n:000}.yaml", summary });
+            DumpVariableHeaders(snapshot.Variables);
+            _dumpedVariables = true;
         }
-        catch (Exception ex)
+
+        DetectChanges(snapshot.Values);
+        DetectLapBoundary(snapshot.Values);
+
+        var tick = Environment.TickCount64;
+        if (tick - _lastSnapshotTick >= 1000)
         {
-            Emit("RECORDER_ERROR", new { where = "OnSessionInfo", message = ex.ToString() });
+            _lastSnapshotTick = tick;
+            _logs.WriteJsonLine("telemetry.jsonl", new { t = DateTimeOffset.UtcNow, tick = snapshot.TickCount, vars = snapshot.Values });
         }
     }
 
-    private void OnTelemetryData()
+    private void DetectChanges(IReadOnlyDictionary<string, object?> now)
     {
-        try
+        foreach (var name in ChangeWatchedInts)
         {
-            if (!_dumpedVars)
+            if (GetInt(now, name) is not int value) continue;
+            if (_previousInts.TryGetValue(name, out var previous) && previous != value)
             {
-                _dumpedVars = true;
-                DumpVarHeaders();
+                Emit("CHANGE", new { var = name, from = previous, to = value, sessionTime = GetValue(now, "SessionTime") });
+                if (name == "PlayerTrackSurface" && value == 0) _offTrackSeen = true;
+                if (name == "Lap" && value < previous) _resetSeen = true;
             }
-
-            var now = ReadWatched();
-
-            DetectChanges(now);
-            DetectLapBoundary(now);
-
-            // 1 Hz snapshot regardless of changes, for offline timeline reconstruction.
-            var tick = Environment.TickCount64;
-            if (tick - _lastSnapshotTick >= 1000)
-            {
-                _lastSnapshotTick = tick;
-                WriteLine(_telemetry, new { t = DateTimeOffset.Now, vars = now });
-            }
-        }
-        catch (Exception ex)
-        {
-            Emit("RECORDER_ERROR", new { where = "OnTelemetryData", message = ex.ToString() });
-        }
-    }
-
-    private Dictionary<string, object?> ReadWatched()
-    {
-        var vars = new Dictionary<string, object?>();
-        var props = _sdk.Data.TelemetryDataProperties;
-
-        foreach (var name in WatchedInts)
-            vars[name] = props.ContainsKey(name) ? _sdk.Data.GetInt(name) : null;
-        foreach (var name in WatchedFloats)
-            vars[name] = props.ContainsKey(name) ? _sdk.Data.GetFloat(name) : null;
-        foreach (var name in WatchedBools)
-            vars[name] = props.ContainsKey(name) ? _sdk.Data.GetBool(name) : null;
-
-        vars["SessionTime"] = props.ContainsKey("SessionTime") ? _sdk.Data.GetDouble("SessionTime") : null;
-        vars["SessionFlags"] = props.ContainsKey("SessionFlags") ? _sdk.Data.GetBitField("SessionFlags") : null;
-
-        return vars;
-    }
-
-    private void DetectChanges(Dictionary<string, object?> now)
-    {
-        // Int-valued state whose every transition matters for session-end and reset detection.
-        foreach (var name in new[] { "SessionNum", "SessionState", "SessionUniqueID", "PlayerTrackSurface", "Lap", "EnterExitReset" })
-        {
-            if (now[name] is not int v) continue;
-            if (_prevInts.TryGetValue(name, out var prev) && prev != v)
-            {
-                Emit("CHANGE", new { var = name, from = prev, to = v, sessionTime = now["SessionTime"] });
-
-                if (name == "PlayerTrackSurface" && v == 0) _offTrackSeen = true; // 0 = OffTrack (verify in findings)
-                if (name == "Lap" && v < prev) _resetSeen = true;                 // lap counter went backwards
-            }
-            _prevInts[name] = v;
+            _previousInts[name] = value;
         }
 
-        foreach (var name in new[] { "OnPitRoad", "IsOnTrack", "IsInGarage" })
+        foreach (var name in ChangeWatchedBools)
         {
-            if (now[name] is not bool b) continue;
-            if (_prevBools.TryGetValue(name, out var prev) && prev != b)
+            if (GetBool(now, name) is not bool value) continue;
+            if (_previousBools.TryGetValue(name, out var previous) && previous != value)
             {
-                Emit("CHANGE", new { var = name, from = prev, to = b, sessionTime = now["SessionTime"] });
-                if (name == "OnPitRoad" && b) _pitRoadSeen = true;
+                Emit("CHANGE", new { var = name, from = previous, to = value, sessionTime = GetValue(now, "SessionTime") });
+                if (name == "OnPitRoad" && value) _pitRoadSeen = true;
             }
-            _prevBools[name] = b;
+            _previousBools[name] = value;
         }
 
-        // Incident count changes mid-lap are the raw material for per-lap attribution.
-        if (now["PlayerCarMyIncidentCount"] is int inc)
+        if (GetInt(now, "PlayerCarMyIncidentCount") is int incidents)
         {
-            if (_prevInts.TryGetValue("PlayerCarMyIncidentCount", out var prev) && prev != inc)
+            if (_previousInts.TryGetValue("PlayerCarMyIncidentCount", out var previous) && previous != incidents)
+            {
                 Emit("INCIDENT_COUNT_CHANGE", new
                 {
-                    from = prev,
-                    to = inc,
-                    lap = now["Lap"],
-                    lapDistPct = now["LapDistPct"],
-                    trackSurface = now["PlayerTrackSurface"],
-                    sessionTime = now["SessionTime"],
+                    from = previous,
+                    to = incidents,
+                    lap = GetValue(now, "Lap"),
+                    lapDistPct = GetValue(now, "LapDistPct"),
+                    trackSurface = GetValue(now, "PlayerTrackSurface"),
+                    sessionTime = GetValue(now, "SessionTime")
                 });
-            _prevInts["PlayerCarMyIncidentCount"] = inc;
+            }
+            _previousInts["PlayerCarMyIncidentCount"] = incidents;
         }
     }
 
-    private void DetectLapBoundary(Dictionary<string, object?> now)
+    private void DetectLapBoundary(IReadOnlyDictionary<string, object?> now)
     {
-        if (now["LapCompleted"] is not int lapCompleted) return;
-
+        if (GetInt(now, "LapCompleted") is not int lapCompleted) return;
         if (_lastLapCompleted is null)
         {
             _lastLapCompleted = lapCompleted;
-            _lapStartIncidentCount = now["PlayerCarMyIncidentCount"] as int?;
+            _lapStartIncidentCount = GetInt(now, "PlayerCarMyIncidentCount");
             return;
         }
-
         if (lapCompleted == _lastLapCompleted) return;
 
         if (lapCompleted < _lastLapCompleted)
         {
-            // Session restart / reset — the exact conditions here are a spike question.
-            Emit("LAP_COUNTER_RESET", new { from = _lastLapCompleted, to = lapCompleted, sessionTime = now["SessionTime"] });
+            Emit("LAP_COUNTER_RESET", new { from = _lastLapCompleted, to = lapCompleted, sessionTime = GetValue(now, "SessionTime") });
         }
         else
         {
-            var incNow = now["PlayerCarMyIncidentCount"] as int?;
-            var lastLapTime = now["LapLastLapTime"] as float?;
-
+            var incidentNow = GetInt(now, "PlayerCarMyIncidentCount");
+            var lastLapSeconds = GetFloat(now, "LapLastLapTime");
             Emit("LAP_BOUNDARY", new
             {
                 lapCompleted,
-                lapLastLapTimeSec = lastLapTime,
-                lapTimeMs = lastLapTime is > 0 ? (int)Math.Round(lastLapTime.Value * 1000) : (int?)null,
-                incidentDelta = (incNow is not null && _lapStartIncidentCount is not null) ? incNow - _lapStartIncidentCount : null,
+                lapLastLapTimeSec = lastLapSeconds,
+                lapTimeMs = lastLapSeconds is > 0 ? (int)Math.Round(lastLapSeconds.Value * 1000) : (int?)null,
+                incidentDelta = incidentNow is not null && _lapStartIncidentCount is not null ? incidentNow - _lapStartIncidentCount : null,
                 offTrackSeen = _offTrackSeen,
                 pitRoadSeen = _pitRoadSeen,
                 resetSeen = _resetSeen,
-                sessionNum = now["SessionNum"],
-                sessionUniqueId = now["SessionUniqueID"],
-                sessionTime = now["SessionTime"],
+                sessionNum = GetValue(now, "SessionNum"),
+                sessionUniqueId = GetValue(now, "SessionUniqueID"),
+                sessionTime = GetValue(now, "SessionTime")
             });
         }
 
         _lastLapCompleted = lapCompleted;
-        _lapStartIncidentCount = now["PlayerCarMyIncidentCount"] as int?;
+        _lapStartIncidentCount = GetInt(now, "PlayerCarMyIncidentCount");
         _offTrackSeen = false;
         _pitRoadSeen = false;
         _resetSeen = false;
     }
 
-    private void DumpVarHeaders()
+    private void DumpVariableHeaders(IReadOnlyDictionary<string, TelemetryVariable> variables)
     {
-        var path = Path.Combine(_runDir, "telemetry-vars.txt");
-        using var w = new StreamWriter(path);
-        foreach (var kvp in _sdk.Data.TelemetryDataProperties.OrderBy(k => k.Key))
-            w.WriteLine(JsonSerializer.Serialize(kvp.Value, _json));
+        var lines = variables.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => JsonSerializer.Serialize(pair.Value));
+        _logs.WriteTextFile("telemetry-vars.txt", string.Join(Environment.NewLine, lines) + Environment.NewLine);
+        var missing = WatchedVariableNames.Where(name => !variables.ContainsKey(name)).OrderBy(name => name).ToArray();
+        Emit("VAR_DUMP", new { file = "telemetry-vars.txt", count = variables.Count, missingWatchedVars = missing });
+    }
 
-        var missing = WatchedInts.Concat(WatchedFloats).Concat(WatchedBools)
-            .Where(name => !_sdk.Data.TelemetryDataProperties.ContainsKey(name))
-            .ToArray();
-
-        Emit("VAR_DUMP", new { file = "telemetry-vars.txt", count = _sdk.Data.TelemetryDataProperties.Count, missingWatchedVars = missing });
+    private void ResetTelemetryState()
+    {
+        _lastLapCompleted = null;
+        _lapStartIncidentCount = null;
+        _offTrackSeen = false;
+        _pitRoadSeen = false;
+        _resetSeen = false;
+        _previousInts.Clear();
+        _previousBools.Clear();
     }
 
     private void Emit(string type, object data)
     {
-        var record = new { t = DateTimeOffset.Now, type, data };
-        WriteLine(_events, record);
-        Console.WriteLine($"[{record.t:HH:mm:ss}] {type} {JsonSerializer.Serialize(data, _json)}");
+        var record = new { t = DateTimeOffset.UtcNow, type, data };
+        _logs.WriteJsonLine("events.jsonl", record);
+        Console.WriteLine($"[{record.t:HH:mm:ss}] {type} {JsonSerializer.Serialize(data)}");
     }
 
-    private void WriteLine(StreamWriter writer, object record)
+    private void WriteManifest(string state)
     {
-        lock (_lock)
+        _logs.WriteManifest(new
         {
-            writer.WriteLine(JsonSerializer.Serialize(record, _json));
-        }
+            formatVersion = 1,
+            recorderVersion = _version,
+            sourceRevision = _sourceRevision,
+            mode = _mode.ToCliValue(),
+            maxDurationSeconds = (long)_limits.MaxDuration.TotalSeconds,
+            maxOutputBytes = _limits.MaxOutputBytes,
+            startedAtUtc = _startedAt,
+            endedAtUtc = state == "running" ? (DateTimeOffset?)null : DateTimeOffset.UtcNow,
+            state,
+            exitCode = state == "running" ? null : (int?)ExitCode,
+            osVersion = Environment.OSVersion.VersionString
+        });
     }
+
+    private void SafeCallback(Action callback)
+    {
+        if (Stopped) return;
+        try { callback(); }
+        catch (LogLimitException) { Stop("log-limit", RecorderExitCode.LogLimit); }
+        catch (MalformedTelemetryException) { Stop("malformed-telemetry", RecorderExitCode.MalformedTelemetry); }
+        catch (IOException) { Stop("output-failure", RecorderExitCode.OutputFailure); }
+        catch (UnauthorizedAccessException) { Stop("output-failure", RecorderExitCode.OutputFailure); }
+        catch (Exception) { Stop("internal-failure", RecorderExitCode.InternalFailure); }
+    }
+
+    private static object? GetValue(IReadOnlyDictionary<string, object?> values, string key) =>
+        values.TryGetValue(key, out var value) ? value : null;
+    private static int? GetInt(IReadOnlyDictionary<string, object?> values, string key) => GetValue(values, key) as int?;
+    private static float? GetFloat(IReadOnlyDictionary<string, object?> values, string key) => GetValue(values, key) as float?;
+    private static bool? GetBool(IReadOnlyDictionary<string, object?> values, string key) => GetValue(values, key) as bool?;
 }

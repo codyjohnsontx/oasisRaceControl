@@ -4,16 +4,27 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AssemblyName>OasisSpike</AssemblyName>
     <RootNamespace>OasisSpike</RootNamespace>
+    <Version>0.2.0</Version>
+    <RuntimeFrameworkVersion>8.0.28</RuntimeFrameworkVersion>
+    <PublishSingleFile>true</PublishSingleFile>
+    <DebugType>embedded</DebugType>
+    <Deterministic>true</Deterministic>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
+  <!-- Deliberately no PackageReference items. The venue executable contains
+       only repository-owned recorder code and the pinned .NET runtime. -->
+
   <ItemGroup>
-    <PackageReference Include="IRSDKSharper" Version="1.1.9" />
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OasisSpike.Tests</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyMetadata Include="SourceRevisionId" Value="$(SourceRevisionId)" />
   </ItemGroup>
 
 </Project>

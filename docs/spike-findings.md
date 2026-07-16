@@ -4,6 +4,15 @@
 > and idempotency key are frozen only when every row below has a verdict.
 > Recording sessions: _(date / rig # / combo)_
 
+## Approved artifact used for collection
+
+- Recorder version: _(required)_
+- Git commit: _(required)_
+- SHA-256: _(required; must match the independently reviewed Phase 0 report)_
+- Authenticode signing subject/timestamp: _(required)_
+- Phase 1A canary approval/date: _(required)_
+- Run directory name(s): _(required)_
+
 ## Field availability
 
 | Product needs | Candidate SDK source | Verdict | Notes |
