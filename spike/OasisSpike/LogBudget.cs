@@ -72,8 +72,8 @@ public sealed class LogBudget : IDisposable
             ThrowIfDisposed();
             var path = ApprovedPath("run-manifest.json");
             var previousLength = File.Exists(path) ? new FileInfo(path).Length : 0;
-            var additionalBytes = Math.Max(0, bytes.Length - previousLength);
-            if (checked(_bytesWritten + additionalBytes) > _maximumBytes)
+            var manifestDelta = (long)bytes.Length - previousLength;
+            if (manifestDelta > 0 && checked(_bytesWritten + manifestDelta) > _maximumBytes)
                 throw new LogLimitException($"The {_maximumBytes / 1024 / 1024} MiB output limit was reached.");
 
             var temporaryPath = Path.Combine(_runDirectory, $"run-manifest-{Guid.NewGuid():N}.tmp");
@@ -87,7 +87,7 @@ public sealed class LogBudget : IDisposable
 
                 if (File.Exists(path)) File.Replace(temporaryPath, path, null);
                 else File.Move(temporaryPath, path);
-                _bytesWritten += additionalBytes;
+                _bytesWritten = checked(_bytesWritten + manifestDelta);
             }
             finally
             {

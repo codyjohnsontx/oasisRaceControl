@@ -38,17 +38,18 @@ try {
     $recorderInfo.RedirectStandardInput = $true
     $recorder = [System.Diagnostics.Process]::Start($recorderInfo)
     $samples = @()
+    $minimumSamples = 10
     $previousCpu = $recorder.TotalProcessorTime
     $previousSampleAt = Get-Date
-    for ($i = 0; $i -lt 10 -and -not $recorder.HasExited; $i++) {
+    for ($i = 0; $i -lt $minimumSamples -and -not $recorder.HasExited; $i++) {
         Start-Sleep -Seconds 1
         $recorder.Refresh()
         $sampleAt = Get-Date
         $cpu = $recorder.TotalProcessorTime
         $wallMilliseconds = ($sampleAt - $previousSampleAt).TotalMilliseconds
         $cpuPercentOfOneCore = if ($wallMilliseconds -gt 0) { 100 * ($cpu - $previousCpu).TotalMilliseconds / $wallMilliseconds } else { 0 }
-        $connections = @(Get-NetTCPConnection -OwningProcess $recorder.Id -ErrorAction SilentlyContinue)
-        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($recorder.Id)" -ErrorAction SilentlyContinue)
+        $connections = @(Get-NetTCPConnection -OwningProcess $recorder.Id -ErrorAction Stop)
+        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($recorder.Id)" -ErrorAction Stop)
         $samples += [pscustomobject]@{
             at = $sampleAt.ToUniversalTime().ToString('O')
             cpuPercentOfOneCore = [math]::Round($cpuPercentOfOneCore, 3)
@@ -62,6 +63,8 @@ try {
     }
     if (-not $recorder.HasExited) { $recorder.StandardInput.WriteLine('q') }
     if (-not $recorder.WaitForExit(5000)) { $recorder.Kill(); throw 'Recorder did not stop within five seconds.' }
+    if ($samples.Count -lt $minimumSamples) { throw "Recorder exited before producing $minimumSamples inspection samples." }
+    if ($recorder.ExitCode -ne 0) { throw "Recorder exited with nonzero code $($recorder.ExitCode)." }
     if ($samples | Where-Object tcpConnections -gt 0) { throw 'Recorder owned a TCP connection during rehearsal.' }
     if ($samples | Where-Object childProcesses -gt 0) { throw 'Recorder created a child process during rehearsal.' }
     if (($samples | Measure-Object workingSetBytes -Maximum).Maximum -gt 150MB) { throw 'Recorder exceeded the 150 MiB working-set gate.' }

@@ -64,6 +64,21 @@ public sealed class LogBudgetTests : IDisposable
         Assert.Single(Directory.GetFiles(_directory));
     }
 
+    [Fact]
+    public void ManifestBudgetTracksShrinkAndRegrowthByOnDiskSize()
+    {
+        using var logs = new LogBudget(_directory, 100);
+
+        logs.WriteManifest(new string('x', 97));
+        Assert.Equal(100, logs.BytesWritten);
+        logs.WriteManifest(new string('x', 7));
+        Assert.Equal(10, logs.BytesWritten);
+        logs.WriteManifest(new string('x', 97));
+
+        Assert.Equal(100, logs.BytesWritten);
+        Assert.Equal(100, new FileInfo(Path.Combine(_directory, "run-manifest.json")).Length);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);
