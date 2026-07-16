@@ -18,7 +18,7 @@ Get-AuthenticodeSignature .\OasisSpike.exe
 Get-FileHash .\OasisSpike.exe -Algorithm SHA256
 ```
 
-The signature status must be `Valid`; the hash must exactly match the project-owner-signed value. Any warning, lookup failure, or mismatch is an abort—do not bypass it.
+The signature status must be `Valid`; the hash must exactly match the value recorded in the project-owner safety sign-off. Any warning, lookup failure, or mismatch is an abort—do not bypass it.
 
 ## Canary
 

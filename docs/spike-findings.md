@@ -8,7 +8,7 @@
 
 - Recorder version: _(required)_
 - Git commit: _(required)_
-- SHA-256: _(required; must match the project-owner-signed Phase 0 report)_
+- SHA-256: _(required; must match the exact hash recorded in the project-owner safety sign-off)_
 - Authenticode signing subject/timestamp: _(required)_
 - Phase 1A canary approval/date: _(required)_
 - Run directory name(s): _(required)_
