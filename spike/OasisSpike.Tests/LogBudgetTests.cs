@@ -68,12 +68,14 @@ public sealed class LogBudgetTests : IDisposable
     public void ManifestBudgetTracksShrinkAndRegrowthByOnDiskSize()
     {
         using var logs = new LogBudget(_directory, 100);
+        var hundredByteManifest = new string('x', 98 - Environment.NewLine.Length);
+        var tenByteManifest = new string('x', 8 - Environment.NewLine.Length);
 
-        logs.WriteManifest(new string('x', 97));
+        logs.WriteManifest(hundredByteManifest);
         Assert.Equal(100, logs.BytesWritten);
-        logs.WriteManifest(new string('x', 7));
+        logs.WriteManifest(tenByteManifest);
         Assert.Equal(10, logs.BytesWritten);
-        logs.WriteManifest(new string('x', 97));
+        logs.WriteManifest(hundredByteManifest);
 
         Assert.Equal(100, logs.BytesWritten);
         Assert.Equal(100, new FileInfo(Path.Combine(_directory, "run-manifest.json")).Length);
