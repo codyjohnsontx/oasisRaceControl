@@ -8,7 +8,7 @@ This checklist is blocked until every Phase 0 item in [venue-safety.md](./venue-
 - Git commit: __________
 - SHA-256: __________
 - Signing subject: __________
-- Safety-report approval/date: __________
+- Project-owner safety sign-off/date: __________
 - Oasis-approved time, rig, and operator: __________
 
 ## Phase 1A — supervised canary
@@ -18,7 +18,7 @@ This checklist is blocked until every Phase 0 item in [venue-safety.md](./venue-
 - [ ] Obtain explicit Oasis permission for the time, idle rig, and operator.
 - [ ] Bring the controlled USB; do not copy the recorder onto the venue PC.
 - [ ] Verify the Authenticode signature and SHA-256 against the reviewed report.
-- [ ] Confirm the VM report contains two clean-snapshot passes and independent approval.
+- [ ] Confirm the VM report contains two clean-snapshot passes and project-owner safety sign-off.
 - [ ] Confirm the rig is idle and outside customer use.
 - [ ] Establish normal Task Manager CPU/memory and normal iRacing behavior.
 - [ ] Confirm the operator will not enter administrator credentials, approve a security bypass, or change settings.
@@ -136,6 +136,6 @@ Proves: disconnect timing and recorder stability without the simulator.
 - [ ] Keep the USB under project-owner control.
 - [ ] Transfer logs to encrypted storage on a trusted computer.
 - [ ] Verify the transferred archive before wiping the USB copy.
-- [ ] Restrict raw metadata to the project owner and independent reviewer.
+- [ ] Restrict raw metadata to the project owner and any explicitly designated peer reviewer.
 - [ ] Complete `docs/spike-findings.md` with the exact version and SHA-256.
 - [ ] Delete raw metadata 30 days after findings and schema decisions are approved.

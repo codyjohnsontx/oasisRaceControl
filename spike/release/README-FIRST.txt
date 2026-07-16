@@ -4,7 +4,7 @@ STOP: This package is not authorized for use at Oasis merely because it is signe
 
 Before venue use, SAFETY-REPORT.md must show two passing Windows 11 VM rehearsals,
 the exact SHA-256 in SHA256SUMS.txt, a clean Defender scan, no SmartScreen bypass,
-and independent technical approval. Every box must be complete with no waiver.
+and project-owner safety sign-off. Every box must be complete with no waiver.
 
 The only approved commands are:
   OasisSpike.exe --mode canary
