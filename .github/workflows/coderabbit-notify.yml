@@ -1,0 +1,46 @@
+name: Notify on CodeRabbit review
+
+# Fires when CodeRabbit submits an actual review — not when it posts its
+# "summary" comment ~20s after the PR opens. The real review lands several
+# minutes later, and pull_request_review is the only signal that tracks it.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  notify:
+    # CodeRabbit submits reviews with state COMMENTED, never CHANGES_REQUESTED,
+    # so do not filter on state here or this will never fire.
+    if: github.event.review.user.login == 'coderabbitai[bot]'
+    runs-on: ubuntu-latest
+    env:
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # Untrusted PR-controlled text goes through env, never inline ${{ }} in
+      # run: blocks — inline interpolation of a PR title is a shell injection.
+      REPO: ${{ github.repository }}
+      PR_NUM: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      REVIEW_URL: ${{ github.event.review.html_url }}
+
+    steps:
+      - name: Push to ntfy
+        if: env.NTFY_TOPIC != ''
+        run: |
+          curl -fsS \
+            -H "Title: CodeRabbit reviewed ${REPO} #${PR_NUM}" \
+            -H "Click: ${REVIEW_URL}" \
+            -H "Tags: rabbit" \
+            --data-raw "${PR_TITLE}" \
+            "https://ntfy.sh/${NTFY_TOPIC}"
+
+      - name: Post to Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        run: |
+          jq -n \
+            --arg text "*CodeRabbit reviewed <${REVIEW_URL}|${REPO} #${PR_NUM}>*"$'\n'"${PR_TITLE}" \
+            '{text: $text}' \
+          | curl -fsS -X POST -H 'Content-Type: application/json' \
+              --data-binary @- "${SLACK_WEBHOOK_URL}"
