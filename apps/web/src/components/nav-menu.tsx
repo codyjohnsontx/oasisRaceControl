@@ -218,7 +218,7 @@ export function NavMenu() {
                       key={link.href}
                       href={link.href}
                       aria-current={active ? "page" : undefined}
-                      onClick={() => setOpen(false)}
+                      onNavigate={() => setOpen(false)}
                       className={`group/link flex items-center gap-4 border-b border-edge py-3.5 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                         active ? "text-ink" : "text-muted hover:text-ink"
                       }`}
