@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Orbitron, Rajdhani, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { DevNav } from "@/components/dev-nav";
+import { NavMenu } from "@/components/nav-menu";
 
 const orbitron = Orbitron({
   variable: "--font-orbitron",
@@ -42,7 +42,7 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col bg-bg text-ink">
         {children}
-        <DevNav />
+        <NavMenu />
       </body>
     </html>
   );
