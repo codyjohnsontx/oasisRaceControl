@@ -18,7 +18,7 @@ import {
  * Real-Postgres coverage for the project's core invariant: every lap is
  * attributed to the correct driver, exactly once, and never reassigned.
  *
- * These cases exercise the parts that only the database can enforce — the
+ * These cases exercise the parts that only the database can enforce - the
  * unique event_id index behind `on conflict do nothing`, and attribution
  * against the rig's open assignment at ingestion time.
  */

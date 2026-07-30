@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { safeTestDatabaseUrl } from "./src/test/db-guard";
 
 /**
- * Integration suite: real Postgres, so it covers what mocks cannot — the
+ * Integration suite: real Postgres, so it covers what mocks cannot - the
  * on-conflict idempotency key, the one-open-assignment-per-rig/driver partial
  * unique indexes, and the checkin_driver() plpgsql function.
  *

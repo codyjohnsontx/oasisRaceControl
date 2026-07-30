@@ -40,16 +40,16 @@ Daily loop:
 cd apps/web
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulates Rig 01 sending heartbeats + laps (needs dev seed)
-npm test           # unit tests — no database, no network
+npm test           # unit tests - no database, no network
 npm run db:migrate # apply any new migrations in db/migrations/
 ```
 
 ### Integration tests
 
 `npm test` covers pure logic and the API routes' auth/validation branches. The
-guarantees that live in Postgres — the `event_id` idempotency key, the
+guarantees that live in Postgres - the `event_id` idempotency key, the
 one-open-assignment-per-rig/driver partial unique indexes, and the
-`checkin_driver()` function — are covered by a separate suite that needs a real
+`checkin_driver()` function - are covered by a separate suite that needs a real
 database:
 
 ```bash
@@ -62,7 +62,7 @@ npm run test:integration
 
 The suite **skips** (it does not fail) when `TEST_DATABASE_URL` is unset, so
 `npm test` and CI stay green without Postgres. It reads only
-`TEST_DATABASE_URL` — never `DATABASE_URL` — because these tests truncate every
+`TEST_DATABASE_URL` - never `DATABASE_URL` - because these tests truncate every
 table and `.env.local` normally points at live Neon. The URL must be a local
 host with `test` in the database name; managed hosts are refused outright before
 any connection is opened (`src/test/db-guard.ts`). Migrations are reapplied from

@@ -17,7 +17,7 @@ import {
  *
  * Only the session cookie is mocked. getDriverSession is the first await in the
  * handler, so a queued mock hands each concurrent POST a distinct driver in
- * call order — which is how the two-phones race is reproduced faithfully.
+ * call order - which is how the two-phones race is reproduced faithfully.
  */
 
 type Session = { driverId: string; displayName: string; isGuest: boolean };
@@ -256,16 +256,34 @@ describeDb("POST /api/checkin against real Postgres", () => {
     const rigTwo = await seedRig(2);
     const driver = await seedDriver("Cody J");
 
-    // Same driver, two rigs, at once — with move pre-confirmed both times.
+    // Same driver, two rigs, at once - with move pre-confirmed both times.
     queued = [
       { driverId: driver.id, displayName: "Cody J", isGuest: true },
       { driverId: driver.id, displayName: "Cody J", isGuest: true },
     ];
 
-    await Promise.all([
+    const responses = await Promise.all([
       POST(post(rigOne.qrToken, { confirmMove: true, confirmTakeover: true })),
       POST(post(rigTwo.qrToken, { confirmMove: true, confirmTakeover: true })),
     ]);
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+
+    // Two orderings are both correct: the second request either serialized
+    // behind the first (checking in, closing the first assignment as 'moved')
+    // or lost the per-driver unique-index race and is told to retry. A 500 is
+    // not correct, and asserting only the final count would not notice one.
+    expect(responses.map((response) => response.status).filter((s) => s >= 500)).toEqual(
+      [],
+    );
+    expect(bodies.filter((body) => body.status === "checked_in").length).toBeGreaterThan(
+      0,
+    );
+    bodies.forEach((body, index) => {
+      if (body.status !== "checked_in") {
+        expect(responses[index]!.status).toBe(409);
+        expect(body).toMatchObject({ error: "conflict_retry" });
+      }
+    });
 
     expect(await openAssignments()).toHaveLength(1);
   });

@@ -4,7 +4,7 @@
  * Integration tests TRUNCATE tables between cases, so pointing them at a real
  * database would destroy data. `apps/web/.env.local` normally holds a live Neon
  * URL, so the suite deliberately ignores DATABASE_URL and reads only
- * TEST_DATABASE_URL — and even then requires a local host and a database name
+ * TEST_DATABASE_URL - and even then requires a local host and a database name
  * containing "test". Anything else is a hard failure, never a warning.
  */
 
@@ -51,7 +51,7 @@ export function safeTestDatabaseUrl(
   const database = url.pathname.replace(/^\//, "");
   if (!/test/i.test(database)) {
     throw new UnsafeTestDatabaseError(
-      `Refusing to run destructive tests against database "${database}" — ` +
+      `Refusing to run destructive tests against database "${database}" - ` +
         `its name must contain "test" to prove it is disposable.`,
     );
   }

@@ -17,7 +17,7 @@ export async function setup() {
   const url = safeTestDatabaseUrl();
   if (!url) {
     console.log(
-      "[integration] TEST_DATABASE_URL not set — integration tests will skip.",
+      "[integration] TEST_DATABASE_URL not set - integration tests will skip.",
     );
     return;
   }

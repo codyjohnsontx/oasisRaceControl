@@ -6,7 +6,7 @@ import { resolve } from "node:path";
  *
  * The `@/` alias mirrors tsconfig paths so API route modules (which import
  * `@/lib/...`) can be imported directly by tests. Integration tests live in
- * *.integration.test.ts and are excluded here — see vitest.integration.config.ts.
+ * *.integration.test.ts and are excluded here - see vitest.integration.config.ts.
  */
 export default defineConfig({
   resolve: {
