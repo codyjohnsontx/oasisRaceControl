@@ -13,6 +13,22 @@ const MANAGED_HOST = /neon\.tech|supabase\.co|amazonaws\.com|azure\.com|render\.
 
 const LOCAL_HOST = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
+/**
+ * Query parameters that change where pg actually connects, overriding the URL's
+ * own hostname. `postgres://localhost/x_test?host=prod.neon.tech` looks local to
+ * `new URL()` but pg connects to prod, so checking only the hostname is not
+ * enough. Verified against pg-connection-string: `host` replaces the host and
+ * `hostaddr` replaces the resolved address.
+ */
+const ROUTING_PARAMS = new Set(["host", "hostaddr", "port", "dbname", "service"]);
+
+/**
+ * Parameters allowed to appear at all. An allowlist rather than a blocklist so a
+ * connection-string feature this code does not know about cannot reopen the
+ * hole above.
+ */
+const ALLOWED_PARAMS = new Set(["sslmode", "application_name", "connect_timeout"]);
+
 export class UnsafeTestDatabaseError extends Error {}
 
 /**
@@ -32,6 +48,25 @@ export function safeTestDatabaseUrl(
     throw new UnsafeTestDatabaseError(
       `TEST_DATABASE_URL is not a valid URL: ${redact(raw)}`,
     );
+  }
+
+  // Checked before the hostname: a routing override makes the hostname a lie.
+  for (const name of url.searchParams.keys()) {
+    const lower = name.toLowerCase();
+    if (ROUTING_PARAMS.has(lower)) {
+      throw new UnsafeTestDatabaseError(
+        `TEST_DATABASE_URL must not set the "${lower}" parameter: it overrides ` +
+          `where pg connects, so the URL's own hostname would no longer be the ` +
+          `real target.`,
+      );
+    }
+    if (!ALLOWED_PARAMS.has(lower)) {
+      throw new UnsafeTestDatabaseError(
+        `TEST_DATABASE_URL has an unrecognised parameter "${lower}". Only ` +
+          `${[...ALLOWED_PARAMS].join(", ")} are allowed, so an unknown ` +
+          `connection option cannot redirect these destructive tests.`,
+      );
+    }
   }
 
   if (MANAGED_HOST.test(url.hostname)) {

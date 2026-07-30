@@ -82,6 +82,42 @@ describe("safeTestDatabaseUrl", () => {
     ).toThrow(UnsafeTestDatabaseError);
   });
 
+  it.each([
+    ["host", "postgres://u:p@localhost:5433/oasis_test?host=ep-x.neon.tech"],
+    ["hostaddr", "postgres://u:p@localhost:5433/oasis_test?hostaddr=203.0.113.9"],
+    ["port", "postgres://u:p@localhost:5433/oasis_test?port=6543"],
+    ["dbname", "postgres://u:p@localhost:5433/oasis_test?dbname=neondb"],
+    ["service", "postgres://u:p@localhost:5433/oasis_test?service=prod"],
+  ])("refuses a local-looking URL that overrides routing via ?%s", (_name, url) => {
+    expect(() => safeTestDatabaseUrl(url)).toThrow(UnsafeTestDatabaseError);
+  });
+
+  it("names the offending routing parameter in the error", () => {
+    expect(() =>
+      safeTestDatabaseUrl("postgres://u:p@localhost/oasis_test?host=ep-x.neon.tech"),
+    ).toThrow(/must not set the "host" parameter/);
+  });
+
+  it("refuses unknown parameters so a new pg option cannot reopen the hole", () => {
+    expect(() =>
+      safeTestDatabaseUrl("postgres://u:p@localhost/oasis_test?some_future_option=x"),
+    ).toThrow(/unrecognised parameter/);
+  });
+
+  it("still accepts the harmless parameters", () => {
+    const url = "postgres://u:p@localhost/oasis_test?sslmode=disable";
+    expect(safeTestDatabaseUrl(url)).toBe(url);
+  });
+
+  it("refuses the exact bypass that URL.hostname alone would allow", () => {
+    // Verified against pg-connection-string: for this URL pg resolves the host
+    // to ep-x.neon.tech while new URL().hostname reports localhost. The guard
+    // must reject it on the parameter, not trust the hostname.
+    const sneaky = "postgres://u:p@localhost:5433/oasis_test?host=ep-x.neon.tech";
+    expect(new URL(sneaky).hostname).toBe("localhost");
+    expect(() => safeTestDatabaseUrl(sneaky)).toThrow(UnsafeTestDatabaseError);
+  });
+
   it("rejects an unparseable URL without leaking credentials", () => {
     try {
       safeTestDatabaseUrl("not a url with secret-password inside");
