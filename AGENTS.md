@@ -19,7 +19,9 @@ the wall and the phone agree by construction.
 
 A board can also take the wall over rather than take a turn on it, without any
 engine change: renew the contract's `hold()` on every refresh while the takeover
-condition holds. The league board does exactly that while a round is open.
+condition holds. The league board does exactly that while tonight's round is
+open. Bound any such condition by the venue day - nothing closes a round by
+itself, and an unbounded takeover owns the wall until someone notices.
 
 ## Verifying `/tv` failure behaviour needs a production build
 
@@ -42,8 +44,8 @@ Under `next start` the page stays put and self-heals, which is what the kiosk do
 - Two league surfaces, one API. `/league` (+ `/league/[roundId]`) is the
   full-detail page customers open on a phone; the wall's league board is a `/tv`
   board type like any other (see the section above), showing the top ten and
-  holding the screen while a round is open. Both read `/api/league/season`, so
-  neither wraps the other and neither can drift.
+  holding the screen while tonight's round is open. Both read
+  `/api/league/season`, so neither wraps the other and neither can drift.
 - Season points are one swappable module: `apps/web/src/lib/league-scoring.ts`.
   Nothing else in the codebase encodes a points table. The current default is
   documented at the top of that file and is pending the shop owner's confirmation.

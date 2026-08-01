@@ -5,6 +5,7 @@ import { formatLapTime } from "@/lib/time";
 import { type Board, type BoardRow, trackKey } from "@/lib/leaderboards";
 import { roundLabel, type LeagueRound } from "@/lib/league";
 import type { SeasonStanding } from "@/lib/league-scoring";
+import { venueToday } from "@/lib/venue";
 import {
   type AnyTvBoardDefinition,
   type TvBoardProps,
@@ -229,12 +230,27 @@ type LeagueData = {
 
 /**
  * How long the league board asks to keep the wall each time it refreshes, while
- * a round is open. Comfortably longer than the engine's own refresh interval,
- * so each live refresh renews the hold before the last one runs out; short
- * enough that the wall goes back to the arcade rotation within half a minute of
- * staff closing the round, or of the league feed going quiet.
+ * tonight's round is open. Comfortably longer than the engine's own refresh
+ * interval, so each live refresh renews the hold before the last one runs out;
+ * short enough that the wall goes back to the arcade rotation within half a
+ * minute of staff closing the round, of the venue day rolling over, or of the
+ * league feed going quiet.
  */
 const LEAGUE_TAKEOVER_MS = 30_000;
+
+/**
+ * Whether a round is the one the wall should be showing right now: still open,
+ * and belonging to the venue's current day.
+ *
+ * The venue-day half is what keeps a forgotten round off the wall. Nothing
+ * closes a round automatically - `rollLeagueSeason` refuses while one is open
+ * precisely because staff are expected to do it - so without this a Wednesday
+ * night nobody closed out would still own the TV on Saturday. `round_date` is
+ * the venue-local day the round opened (`venue_today()` at insert), compared
+ * against the same venue day the rest of the product means by "tonight".
+ */
+const ownsTheWall = (round: LeagueRound) =>
+  round.closed_at === null && round.round_date === venueToday();
 
 const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
   kind: "league",
@@ -259,28 +275,32 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
  * they go through `score`/`gap` rather than the lap-time formatter, and the
  * columns are renamed to match.
  *
- * League night takes the wall over rather than taking a turn on it: while a
- * round is open this board renews the rotation's own `hold` on every refresh,
- * so it stays up and keeps updating instead of cycling back to the arcade
- * boards every fifteen seconds. That is the whole takeover, expressed through
- * the board contract - the rotation engine is untouched. The hold lapses on its
- * own once the round closes, once the feed stops refreshing this board, or if
- * the wall is left on a night nobody closed out, and the arcade rotation
- * resumes. The rest of the week this is one slide among the others.
+ * League night takes the wall over rather than taking a turn on it: while
+ * tonight's round is open this board renews the rotation's own `hold` on every
+ * refresh, so it stays up and keeps updating instead of cycling back to the
+ * arcade boards every fifteen seconds. That is the whole takeover, expressed
+ * through the board contract - the rotation engine is untouched.
+ *
+ * The hold lapses on its own, and the arcade rotation resumes, when the round
+ * closes, when the feed stops refreshing this board, and at venue midnight - so
+ * a night nobody closed out stops owning the wall the next morning. Only the
+ * display lapses: the round stays open until staff close it, exactly as
+ * `rollLeagueSeason` expects. The rest of the week this is one slide among the
+ * others.
  */
 function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
   useEffect(() => {
     // Read off `data` rather than a memo so that every refresh - each one a
-    // fresh payload - renews the hold.
-    if (data.rounds.some((round) => round.closed_at === null)) hold(LEAGUE_TAKEOVER_MS);
+    // fresh payload - re-tests the venue day and renews the hold.
+    if (data.rounds.some(ownsTheWall)) hold(LEAGUE_TAKEOVER_MS);
   }, [data, hold]);
 
-  const liveRound = data.rounds.find((round) => round.closed_at === null) ?? null;
+  const tonightsRound = data.rounds.find(ownsTheWall) ?? null;
   const leader = data.standings[0];
 
   return (
     <ArcadeHighScores
-      eyebrow={liveRound ? `${roundLabel(liveRound)} · live now` : "Season standings"}
+      eyebrow={tonightsRound ? `${roundLabel(tonightsRound)} · live now` : "Season standings"}
       title={data.season?.league_name ?? "Oasis League"}
       subtitle={[data.season?.name, roundCount(data.rounds.length)]
         .filter(Boolean)

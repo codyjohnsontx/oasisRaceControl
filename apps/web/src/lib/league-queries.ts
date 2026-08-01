@@ -177,21 +177,26 @@ export function getSeasonRoundResults(seasonId: string): Promise<RoundResult[]> 
  * quietly drops a driver's laps would be worse than one that says it is
  * showing a subset.
  *
- * A request that names drivers budgets rows PER DRIVER (DRIVER_LAP_CAP), which
- * is why the cap is applied through a per-driver row_number rather than a plain
- * limit. One budget shared across the named set is spent in `completed_at`
- * order, so on a long night the drivers still running come back with a short
- * list or none at all - exactly the silent short-list this cap exists to
- * prevent, and the round page's poll asks for every expanded row at once. The
- * unfiltered call keeps one round-wide budget, because it renders the whole
- * round into a single page.
+ * Two budgets, both enforced. A request that names drivers budgets rows PER
+ * DRIVER (DRIVER_LAP_CAP), which is why that cap is applied through a
+ * per-driver row_number rather than a plain limit: one budget shared across the
+ * named set is spent in `completed_at` order, so on a long night the drivers
+ * still running come back with a short list or none at all - exactly the silent
+ * short-list this cap exists to prevent, and the round page's poll asks for
+ * every expanded row at once. ROUND_LAP_CAP then bounds the whole response
+ * whatever it was asked for, because this is a public unauthenticated endpoint
+ * polled every few seconds and `MAX_ROUND_DRIVERS` per-driver budgets multiply
+ * out well past what any one response should carry. Reaching that ceiling takes
+ * five or more expanded drivers on a round already past ROUND_LAP_CAP, where
+ * the round page is already showing its truncation notice and a single tap
+ * refetches that one driver on their own budget.
  */
 export async function getRoundLaps(
   roundId: string,
   driverIds?: string[],
 ): Promise<{ laps: RoundLap[]; truncated: boolean }> {
   const perDriverCap = driverIds ? DRIVER_LAP_CAP : ROUND_LAP_CAP;
-  const overallCap = driverIds ? driverIds.length * DRIVER_LAP_CAP : ROUND_LAP_CAP;
+  const overallCap = ROUND_LAP_CAP;
 
   const rows = await query<Omit<RoundLap, "completed_at"> & { completed_at: Date | string }>(
     `with attributed as (
