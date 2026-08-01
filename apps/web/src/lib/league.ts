@@ -71,6 +71,14 @@ export type LeagueSeason = {
   ended_on: string | null;
 };
 
+/**
+ * Most drivers whose laps one round request may ask for. A round's whole field
+ * fits well inside this; the cap keeps a crafted query from asking for
+ * thousands of drivers at once. Shared so the round page never builds a URL the
+ * API would reject.
+ */
+export const MAX_ROUND_DRIVERS = 60;
+
 // ---- Pure helpers (unit-tested; no DB) ------------------------------------
 
 /** "Week 3" if staff named it, otherwise "Round 3". */

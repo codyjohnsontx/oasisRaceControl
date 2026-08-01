@@ -8,6 +8,11 @@
 -- It does not alter, drop, or reinterpret any existing table, so it is safe to
 -- apply to a live venue database that already holds real laps.
 --
+-- This file changed after some local databases had already applied it (it has
+-- not shipped anywhere else). schema_migrations keys on filename, so those
+-- databases skip it and never gain prior_featured_combo; drop and re-migrate
+-- any local database created before this commit.
+--
 -- ATTRIBUTION MODEL (the one design decision worth reading):
 -- laps are NOT stamped with a round id. A round owns every lap that landed
 -- inside its open window on its own combo - see v_league_round_laps, which is

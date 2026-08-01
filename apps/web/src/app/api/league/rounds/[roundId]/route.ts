@@ -1,10 +1,6 @@
 import { z } from "zod";
-import { lapsByDriver } from "@/lib/league";
+import { lapsByDriver, MAX_ROUND_DRIVERS } from "@/lib/league";
 import { getRound, getRoundField, getRoundLaps } from "@/lib/league-queries";
-
-/** A round's whole field fits well inside this; the cap just keeps a crafted
- *  query from asking for thousands of drivers at once. */
-const MAX_DRIVERS = 60;
 
 /**
  * One round: the ranked field, plus the laps of the drivers asked for in
@@ -33,7 +29,7 @@ export async function GET(
     driverIds = [...new Set(driversParam.split(",").filter(Boolean))];
     if (
       driverIds.length === 0 ||
-      driverIds.length > MAX_DRIVERS ||
+      driverIds.length > MAX_ROUND_DRIVERS ||
       driverIds.some((id) => !z.uuid().safeParse(id).success)
     ) {
       return Response.json({ error: "invalid_input" }, { status: 400 });

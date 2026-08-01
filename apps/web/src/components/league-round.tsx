@@ -6,6 +6,7 @@ import { formatGap, formatLapTime } from "@/lib/time";
 import {
   comboLabel,
   invalidReasonLabel,
+  MAX_ROUND_DRIVERS,
   roundLabel,
   type LeagueRound,
   type RoundLap,
@@ -25,7 +26,8 @@ const POLL_MS = 6000;
 
 function roundUrl(roundId: string, driverIds: string[]): string {
   const base = `/api/league/rounds/${roundId}`;
-  return driverIds.length > 0 ? `${base}?drivers=${driverIds.join(",")}` : base;
+  const asked = driverIds.slice(0, MAX_ROUND_DRIVERS);
+  return asked.length > 0 ? `${base}?drivers=${asked.join(",")}` : base;
 }
 
 /**
