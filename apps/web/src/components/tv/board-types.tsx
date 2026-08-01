@@ -97,11 +97,25 @@ type TonightData = {
 /** How long a personal-best celebration owns the screen. */
 const CELEBRATION_MS = 7_000;
 
+/**
+ * Best time seen per driver tonight. Module-level precisely so the baseline
+ * survives `TonightBoard` unmounting, which the rotation does every time it
+ * moves to another slide: a per-mount baseline would start empty on every pass,
+ * so a lap set while a track board was up would read as a first load and never
+ * be celebrated.
+ */
+const previousBests = new Map<string, number>();
+
 const TONIGHT_BOARD = defineTvBoard<null, TonightData>({
   kind: "tonight",
   async load(_spec, signal) {
     const data = (await fetchJson("/api/leaderboard/tonight", signal)) as TonightData;
     if (!Array.isArray(data.rows)) throw new Error("malformed tonight response");
+    // An empty feed is the venue day rolling over. This runs on every pass,
+    // including the ones where the slide is then skipped as empty, so it is the
+    // only place that sees the rollover - drop the baseline here or the first
+    // lap of the new day gets celebrated against yesterday's combo.
+    if (data.rows.length === 0) previousBests.clear();
     return { rows: data.rows, combo: data.combo ?? null };
   },
   // No laps tonight is the normal state on a quiet afternoon - skip the slide
@@ -155,31 +169,25 @@ type Celebration = {
 };
 
 /**
- * Best time seen per driver, owned by the module rather than by the component.
- * The rotation unmounts `TonightBoard` every time it moves to another slide, so
- * a baseline created per mount would be empty on every pass - a lap set while a
- * track board was up would read as a first load and never be celebrated. The
- * ref below is only the handle React tracks this through; nothing else writes it.
- */
-const previousBests = new Map<string, number>();
-
-/**
  * Fires a full-screen celebration when a driver's best tonight improves on the
  * last one seen, and asks the rotation to hold the board while it plays so the
  * moment isn't cut off mid-cheer.
  */
 function usePersonalBest(rows: TonightRow[], hold: (ms: number) => void) {
   const [celebration, setCelebration] = useState<Celebration | null>(null);
-  const baseline = useRef(previousBests);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const previous = baseline.current;
     // The first load is a baseline, not an improvement.
-    if (previous.size > 0) {
+    if (previousBests.size > 0) {
       for (const [index, row] of rows.entries()) {
-        const before = previous.get(row.driver_id);
+        const before = previousBests.get(row.driver_id);
         if (before !== undefined && row.lap_time_ms < before) {
+          // The polled tonight feed is the external system this effect syncs
+          // with, and announcing an improvement between two of its loads is the
+          // whole point of the board. A handful of celebrations an evening is
+          // not the cascading-render case the rule is guarding against.
+          // eslint-disable-next-line react-hooks/set-state-in-effect
           setCelebration({
             displayName: row.display_name,
             lapTimeMs: row.lap_time_ms,
@@ -193,8 +201,8 @@ function usePersonalBest(rows: TonightRow[], hold: (ms: number) => void) {
         }
       }
     }
-    previous.clear();
-    for (const row of rows) previous.set(row.driver_id, row.lap_time_ms);
+    previousBests.clear();
+    for (const row of rows) previousBests.set(row.driver_id, row.lap_time_ms);
   }, [rows, hold]);
 
   useEffect(
