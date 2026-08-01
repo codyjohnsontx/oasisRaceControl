@@ -160,7 +160,9 @@ export function StaffLeaguePanel({
                   onClick={rollSeason}
                   className="text-xs font-bold uppercase tracking-wider bg-accent text-bg rounded-md px-3 py-1.5 disabled:opacity-40"
                 >
-                  Confirm: start {nextSeasonName}
+                  {nextSeasonName === seasonName
+                    ? "Confirm: start a new season"
+                    : `Confirm: start ${nextSeasonName}`}
                 </button>
               </>
             ) : (
@@ -180,10 +182,15 @@ export function StaffLeaguePanel({
       </div>
 
       {confirmingRoll && (
+        // One interpolated string, not JSX text around expressions: the season
+        // names sit right next to ordinary words, and this is the sentence a
+        // shop employee reads before ending a month for good.
         <p className="text-muted text-xs mb-3">
-          {seasonName} is closed for good and {nextSeasonName} starts in its place, so
-          the standings board begins again from zero. Close tonight&apos;s round first
-          if one is still open.
+          {`${seasonName} is closed for good and ${
+            nextSeasonName === seasonName
+              ? "a new season starts"
+              : `${nextSeasonName} starts`
+          } in its place, so the standings board begins again from zero. Close tonight's round first if one is still open.`}
         </p>
       )}
 
