@@ -108,7 +108,13 @@ body {
   text-shadow: 0 0 10px color-mix(in srgb, currentcolor 55%, transparent);
 }
 
-/* /tv slide timer: fills across the top edge over one board's hold. */
+/* /tv slide timer: fills across the top edge over one board's hold. The
+   component passes only the duration, as --tv-slide-duration, so the timing
+   stays single-sourced from SLIDE_MS while the animation itself lives here. */
+.tv-slide-progress {
+  animation: tv-slide-progress var(--tv-slide-duration, 15s) linear forwards;
+}
+
 @keyframes tv-slide-progress {
   from {
     transform: scaleX(0);
@@ -119,8 +125,8 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [style*="tv-slide-progress"] {
-    animation: none !important;
+  .tv-slide-progress {
+    animation: none;
     transform: scaleX(1);
   }
 }

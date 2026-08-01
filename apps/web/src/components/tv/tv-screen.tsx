@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import type { Board } from "@/lib/leaderboards";
 import type { TvSlide } from "@/lib/tv-rotation";
@@ -271,8 +271,8 @@ export function TvScreen({ initialBoards }: Props) {
         {view && (
           <div
             key={view.advanceId}
-            className="gradient-rule h-full origin-left"
-            style={{ animation: `tv-slide-progress ${SLIDE_MS}ms linear forwards` }}
+            className="tv-slide-progress gradient-rule h-full origin-left"
+            style={{ "--tv-slide-duration": `${SLIDE_MS}ms` } as CSSProperties}
           />
         )}
       </div>
