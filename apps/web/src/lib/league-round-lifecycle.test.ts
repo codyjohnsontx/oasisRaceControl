@@ -506,6 +506,61 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
     expect(await league.listSeasonRounds(endingSeason.id)).toHaveLength(1);
   });
 
+  it("recovers through the season savepoint when another opener creates the season first", async () => {
+    // A league with no open season. rollLeagueSeason always creates the
+    // replacement inside the transaction that ends the old one, and
+    // ensureOpenSeasonTx creates league and season together, so the app never
+    // leaves this state on its own - it is arranged here because it is what
+    // puts two openers on the same league_id, the only way to collide on
+    // one_open_season_per_league.
+    const league_ = await dbModule.queryOne<{ id: string }>(
+      "insert into leagues (name) values ('Wednesday Night League') returning id",
+    );
+
+    // The competing opener, held mid-transaction on its own client: it has run
+    // ensureOpenSeasonTx's insert but not committed. Promise.allSettled over
+    // two real calls cannot test this - whether the two transactions overlap in
+    // that window is up to connection timing, and when they do not the test
+    // passes with the savepoint removed. Holding one open makes the collision
+    // certain. It stops short of inserting a round on purpose: with no round in
+    // the way, the recovery's result is visible as success rather than being
+    // masked by one_open_round_venue_wide.
+    const other = await dbModule.db().connect();
+    let opening: ReturnType<typeof league.openLeagueRound> | undefined;
+    try {
+      await other.query("begin");
+      const otherSeason = await other.query<{ id: string }>(
+        "insert into league_seasons (league_id, name) values ($1, $2) returning id",
+        [league_!.id, "Held Season"],
+      );
+
+      opening = league.openLeagueRound(WEEK_ONE);
+      opening.catch(() => {}); // awaited below; don't trip on the gap
+
+      // The opener is now parked on one_open_season_per_league.
+      await waitForBlockedInsert();
+      await other.query("commit");
+
+      // Without the savepoint that collision aborts the whole open-round
+      // transaction and this rejects. With it, the opener rolls back just the
+      // failed insert, re-reads, and adopts the season the other one committed.
+      const opened = await opening;
+      expect(opened.seasonId).toBe(otherSeason.rows[0].id);
+      expect(opened.roundNumber).toBe(1);
+    } catch (error) {
+      await other.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      other.release();
+    }
+
+    // One league, one open season, one round - no duplicate season survived the
+    // race, and the round belongs to the season that won it.
+    expect(await counts()).toEqual({ leagues: 1, seasons: 1, rounds: 1 });
+    const season = await league.getActiveSeason();
+    expect(await league.listSeasonRounds(season!.id)).toHaveLength(1);
+  });
+
   it("ends the running season and starts the next one in its place", async () => {
     const round = await league.openLeagueRound(WEEK_ONE);
 
