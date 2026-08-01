@@ -1,7 +1,7 @@
 # Oasis Race Control — web app
 
 The Next.js app behind Oasis Race Control: mobile QR check-in (`/r/[token]`),
-driver portal (`/me`), staff dashboard (`/staff`), the TV leaderboard (`/tv`),
+driver portal (`/me`), staff dashboard (`/staff`), the unattended TV board (`/tv`),
 and all API routes (driver auth, check-in, agent event ingestion, staff
 actions).
 
