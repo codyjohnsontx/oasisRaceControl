@@ -46,6 +46,14 @@ type Props = {
   /** Headings for the three right-hand columns. The defaults describe a lap
    *  board; a board scoring something else renames them rather than lying. */
   columns?: { detail?: string; score?: string; gap?: string };
+  /**
+   * What an unclaimed slot shows in the score column. Defaults to the lap-time
+   * shape, because an open slot on a lap board is an unset time. A board whose
+   * score is not a duration passes its own, for the same reason it passes
+   * `score` rather than `timeMs` - "--.---" under a POINTS heading reads as a
+   * time nobody has driven.
+   */
+  emptyScore?: string;
   /** Last refresh failed; dim slightly so the room reads it as held, not live. */
   stale?: boolean;
 };
@@ -79,6 +87,7 @@ export function ArcadeHighScores({
   subtitle,
   entries,
   columns,
+  emptyScore = "--.---",
   stale = false,
 }: Props) {
   const leader = entries[0];
@@ -155,7 +164,7 @@ export function ArcadeHighScores({
                 </span>
                 <span className="flex-1" />
                 <span className="laptime text-muted w-64 text-right text-[2.5rem] font-bold">
-                  --.---
+                  {emptyScore}
                 </span>
                 <span className="w-44" />
               </>

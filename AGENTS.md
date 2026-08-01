@@ -30,6 +30,7 @@ is no root `package.json`), not `npm run dev`.
 Next's dev HMR client force-reloads the page when the dev server dies, so the tab
 lands on Chrome's own error page and you cannot tell whether the app recovered.
 Under `next start` the page stays put and self-heals, which is what the kiosk does.
+
 ## League night
 
 - Shop owner's shape for the league: a season IS a calendar month, and a round runs
@@ -41,14 +42,18 @@ Under `next start` the page stays put and self-heals, which is what the kiosk do
 - A round owns laps by time window + combo; laps carry no round id. The rule lives
   in one place, `v_league_round_laps` (`db/migrations/0002_league_night.sql`), and
   every league query joins through it. Change the rule there, nowhere else.
-- Two league surfaces, one API. `/league` (+ `/league/[roundId]`) is the
-  full-detail page customers open on a phone; the wall's league board is a `/tv`
-  board type like any other (see the section above), showing the top ten and
-  holding the screen while tonight's round is open. Both read
-  `/api/league/season`, so neither wraps the other and neither can drift.
+- Two league surfaces, and they read different endpoints. `/league` is the
+  full-detail season page customers open on a phone and the wall's league board
+  is a `/tv` board type like any other (see the section above); both take season
+  standings from `/api/league/season`. The round page `/league/[roundId]` is the
+  odd one out - it reads `/api/league/rounds/[roundId]` for one round's ranked
+  field and per-driver laps, which the season endpoint does not carry. Neither
+  surface wraps the other.
 - Season points are one swappable module: `apps/web/src/lib/league-scoring.ts`.
-  Nothing else in the codebase encodes a points table. The current default is
-  documented at the top of that file and is pending the shop owner's confirmation.
+  Nothing else in the codebase encodes a points table. The scale is the venue's
+  own and is final: P1-P5 score 5, 4, 3, 2, 1, and every other entrant scores 1.
+  Fifth place and the participation point being equal is intended. Season total
+  is the sum of every round entered - no drops, no bonus points.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the
   round restores whatever was there (`league_rounds.prior_featured_combo`, null

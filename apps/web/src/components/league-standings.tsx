@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { formatLapTime } from "@/lib/time";
@@ -132,6 +132,20 @@ export function LeagueStandings({
 }: Props) {
   const [standings, setStandings] = useState(initialStandings);
   const [rounds, setRounds] = useState(initialRounds);
+
+  // Seasons are calendar months, so staff rolling to a new one is routine, and
+  // React keeps this component mounted across that server re-render. Without
+  // this, last month's table stays on screen under the new month's name until
+  // a poll happens to replace it. Keyed on the season id alone: re-running on
+  // every fresh `initialStandings` array would fight the poll.
+  const seasonId = season?.id ?? null;
+  const shownSeason = useRef(seasonId);
+  if (shownSeason.current !== seasonId) {
+    shownSeason.current = seasonId;
+    setStandings(initialStandings);
+    setRounds(initialRounds);
+  }
+
   const roundSummaries = useMemo(() => summarizeRounds(standings), [standings]);
   const columns = useMemo(() => {
     if (standings.length <= 8) return [standings];

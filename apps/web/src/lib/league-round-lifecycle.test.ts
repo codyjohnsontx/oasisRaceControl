@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DRIVER_LAP_CAP, lapsByDriver, ROUND_LAP_CAP } from "./league";
+import { safeTestDatabaseUrl } from "../test/db-guard";
 import { computeValidity, type FeaturedCombo } from "./validity";
 import { venueMonthName, venueToday } from "./venue";
 
@@ -19,27 +20,8 @@ import { venueMonthName, venueToday } from "./venue";
  * apps/web/.env.local) and skips otherwise, so it never fires at a remote
  * database by accident. Point it somewhere explicitly with TEST_DATABASE_URL.
  */
-function serverUrl(): string | null {
-  const explicit = process.env.TEST_DATABASE_URL;
-  if (explicit) return explicit;
-  const configured = process.env.DATABASE_URL;
-  if (!configured) return null;
-  try {
-    const { hostname } = new URL(configured);
-    // WHATWG URL keeps the brackets on an IPv6 host, so "[::1]" is the form
-    // that actually turns up here; the bare one is accepted for good measure.
-    const local =
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "::1" ||
-      hostname === "[::1]";
-    return local ? configured : null;
-  } catch {
-    return null;
-  }
-}
-
-const SERVER_URL = serverUrl();
+/** The scratch database this run creates, drops, and truncates. Its name
+ *  carries "test" because db-guard requires that proof of disposability. */
 const TEST_DB = `oasis_league_test_${process.pid}`;
 
 function withDatabase(url: string, database: string): string {
@@ -47,6 +29,38 @@ function withDatabase(url: string, database: string): string {
   parsed.pathname = `/${database}`;
   return parsed.toString();
 }
+
+/**
+ * Which server to build the scratch database on: TEST_DATABASE_URL if set,
+ * otherwise a local DATABASE_URL.
+ *
+ * Both are validated by `safeTestDatabaseUrl` from the integration suite's
+ * guard rather than by a second, looser check of this file's own - it refuses
+ * managed hosts, non-local hosts, and connection parameters that could redirect
+ * where pg actually connects, all before anything opens a socket. What gets
+ * validated is the SCRATCH url (this file creates and drops its own database),
+ * so the guard's "name must contain test" rule is satisfied by TEST_DB rather
+ * than by whatever the developer's own database happens to be called.
+ *
+ * An explicit TEST_DATABASE_URL that fails the guard throws: it was an
+ * instruction, and silently ignoring it is how a destructive suite ends up
+ * believing it ran. An unusable DATABASE_URL just means "not a local box" and
+ * skips, which is what keeps `npm test` green on a machine pointed at Neon.
+ */
+function serverUrl(): string | null {
+  const explicit = process.env.TEST_DATABASE_URL;
+  if (explicit) return safeTestDatabaseUrl(withDatabase(explicit, TEST_DB)) && explicit;
+
+  const configured = process.env.DATABASE_URL;
+  if (!configured) return null;
+  try {
+    return safeTestDatabaseUrl(withDatabase(configured, TEST_DB)) && configured;
+  } catch {
+    return null;
+  }
+}
+
+const SERVER_URL = serverUrl();
 
 function migration(file: string): string {
   return readFileSync(new URL(`../../../../db/migrations/${file}`, import.meta.url), "utf8");
@@ -345,35 +359,35 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
     expect(page.truncated).toBe(true);
   });
 
-  it("rolls the losing round, its season and its league back when one is already open", async () => {
-    async function counts() {
-      const row = await dbModule.queryOne<{
-        rounds: number;
-        seasons: number;
-        leagues: number;
-      }>(
-        `select (select count(*) from league_rounds)::int  as rounds,
-                (select count(*) from league_seasons)::int as seasons,
-                (select count(*) from leagues)::int        as leagues`,
+  async function counts() {
+    const row = await dbModule.queryOne<{
+      rounds: number;
+      seasons: number;
+      leagues: number;
+    }>(
+      `select (select count(*) from league_rounds)::int  as rounds,
+              (select count(*) from league_seasons)::int as seasons,
+              (select count(*) from leagues)::int        as leagues`,
+    );
+    return row!;
+  }
+
+  /** Wait until some backend is blocked on a lock - a statement parked on
+   *  another transaction's uncommitted row. Deterministic without a sleep. */
+  async function waitForBlockedInsert() {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const row = await dbModule.queryOne<{ waiting: number }>(
+        `select count(*)::int as waiting from pg_stat_activity
+         where datname = current_database() and wait_event_type = 'Lock'`,
       );
-      return row!;
+      if ((row?.waiting ?? 0) > 0) return;
+      if (Date.now() > deadline) throw new Error("statement never blocked");
+      await new Promise((resolve) => setTimeout(resolve, 25));
     }
+  }
 
-    /** Wait until some backend is blocked on a lock - the losing insert parked
-     *  on the winner's uncommitted row. Deterministic without a sleep. */
-    async function waitForBlockedInsert() {
-      const deadline = Date.now() + 10_000;
-      for (;;) {
-        const row = await dbModule.queryOne<{ waiting: number }>(
-          `select count(*)::int as waiting from pg_stat_activity
-           where datname = current_database() and wait_event_type = 'Lock'`,
-        );
-        if ((row?.waiting ?? 0) > 0) return;
-        if (Date.now() > deadline) throw new Error("insert never blocked");
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-    }
-
+  it("rolls the losing round, its season and its league back when one is already open", async () => {
     // Both sides must start with NO committed open season, or the loser's
     // ensureOpenSeasonTx reuses the winner's and the season/league assertions
     // below can't fail whatever the rollback does. So the winner is held
@@ -433,6 +447,63 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
     expect(await counts()).toEqual({ rounds: 1, seasons: 1, leagues: 1 });
     // ...including the featured-combo overwrite it never got to commit.
     expect(await featuredCombo()).toBeNull();
+  });
+
+  it("puts a round opened during a season roll into the new season, not the ended one", async () => {
+    // Seed a committed open season with a finished round, the state a venue is
+    // in on the first of the month.
+    const first = await league.openLeagueRound(WEEK_ONE);
+    await league.closeLeagueRound(first.id);
+    const endingSeason = (await league.getActiveSeason())!;
+
+    // The roll is held mid-transaction on its own client, having taken the
+    // same `for update` lock rollLeagueSeason takes, while the real
+    // openLeagueRound() runs against it. Before ensureOpenSeasonTx locked that
+    // row, the opener read the pre-roll snapshot and attached tonight's round
+    // to the month being closed, where /league would never show it again.
+    const roller = await dbModule.db().connect();
+    let opening: ReturnType<typeof league.openLeagueRound> | undefined;
+    try {
+      await roller.query("begin");
+      await roller.query(
+        `select id from league_seasons where ended_on is null
+         order by started_on desc, created_at desc limit 1
+         for update`,
+      );
+      await roller.query("update league_seasons set ended_on = venue_today() where id = $1", [
+        endingSeason.id,
+      ]);
+      const replacement = await roller.query<{ id: string }>(
+        "insert into league_seasons (league_id, name) values ($1, $2) returning id",
+        [endingSeason.league_id, "Next Month"],
+      );
+
+      opening = league.openLeagueRound({
+        name: "Week 1",
+        trackName: "Monza",
+        trackConfig: null,
+        carName: "Mazda MX-5",
+        incidentLimit: 0,
+      });
+      opening.catch(() => {}); // awaited below; don't trip on the gap
+
+      await waitForBlockedInsert();
+      await roller.query("commit");
+
+      const opened = await opening;
+      expect(opened.seasonId).toBe(replacement.rows[0].id);
+      expect(opened.seasonId).not.toBe(endingSeason.id);
+      expect(opened.roundNumber).toBe(1);
+    } catch (error) {
+      await roller.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      roller.release();
+    }
+
+    // The ended month keeps only its own round, and no third season appeared.
+    expect(await counts()).toMatchObject({ seasons: 2, rounds: 2 });
+    expect(await league.listSeasonRounds(endingSeason.id)).toHaveLength(1);
   });
 
   it("ends the running season and starts the next one in its place", async () => {

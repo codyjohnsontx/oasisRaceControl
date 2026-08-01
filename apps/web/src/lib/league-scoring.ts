@@ -2,30 +2,32 @@
  * SEASON SCORING - the single, swappable rule.
  *
  * Ranking one round needs no rule at all (fastest valid lap wins). Rolling
- * rounds up into a season does, and the shop owner has not picked one yet, so
- * the whole rule lives in this file: change `POINTS_BY_POSITION`,
- * `PARTICIPATION_POINTS`, or `roundPoints()` and every standings surface
- * follows. Nothing else in the codebase encodes points.
+ * rounds up into a season does, and this file is the whole of that rule: change
+ * `POINTS_BY_POSITION`, `PARTICIPATION_POINTS`, or `roundPoints()` and every
+ * standings surface follows. Nothing else in the codebase encodes points.
  *
- * DEFAULT (chosen here, pending the shop owner's call):
- *   P1..P10 score 25, 18, 15, 12, 10, 8, 6, 4, 2, 1.
- *   Everyone else who took part scores 1 participation point - including a
- *   driver who showed up and never set a clean lap.
+ * THE RULE, as the venue runs it:
+ *   P1..P5 score 5, 4, 3, 2, 1.
+ *   Everyone else who took part scores 1 point - including a driver who showed
+ *   up and never set a clean lap.
  *   Season total = sum of every round entered. No drops, no bonus points.
  *
- * WHY THIS DEFAULT:
- *   - A fixed table is fair across uneven Wednesdays. League night attendance
- *     swings between ~8 and ~20 drivers; a field-size rule (points = N - pos)
- *     would make a win on a busy night worth triple a win on a quiet one.
- *   - It is the table sim racers already read at a glance (F1 2010-2018,
- *     and the default in most iRacing club leagues), so nobody has to be
- *     taught the season table on the wall.
+ * P5 and the participation point are both 1. That is the rule as given, not an
+ * oversight: fifth place and turning up are worth the same, and the scale is
+ * deliberately short.
+ *
+ * WHY A FIXED TABLE:
+ *   - It is fair across uneven Wednesdays. League night attendance swings
+ *     between ~8 and ~20 drivers; a field-size rule (points = N - pos) would
+ *     make a win on a busy night worth triple a win on a quiet one.
  *   - The participation point rewards turning up, which is the behaviour a
- *     weekly shop league actually wants to grow, without letting attendance
- *     alone outrank pace (10 nights of participation = 10 points, still less
- *     than a single win).
- *   - No drop weeks: they are the most commonly requested change, so they get
- *     a named seam below rather than an implementation nobody asked for.
+ *     weekly shop league wants to grow, without letting attendance alone
+ *     outrank pace - five nights of showing up still lose to a single win.
+ *   - No drop weeks: they get a named seam below rather than an implementation
+ *     nobody asked for.
+ *
+ * A short scale ties often, so the tiebreak below does real work: two drivers
+ * on equal points is the normal case here, not the exotic one.
  *
  * EASY KNOBS (each is a one-line change here):
  *   - Different table: edit POINTS_BY_POSITION.
@@ -38,8 +40,8 @@
 
 import type { RoundResult } from "./league";
 
-/** Points for P1..P10. Index 0 is P1. */
-export const POINTS_BY_POSITION = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1] as const;
+/** Points for P1..P5. Index 0 is P1. */
+export const POINTS_BY_POSITION = [5, 4, 3, 2, 1] as const;
 
 /** Awarded to every entrant who finishes outside the table, or sets no valid lap. */
 export const PARTICIPATION_POINTS = 1;

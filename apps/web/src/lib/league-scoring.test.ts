@@ -74,8 +74,10 @@ describe("computeSeasonStandings", () => {
     });
   });
 
-  it("breaks a points tie on wins, then podiums", () => {
-    // Both total 26: a win plus a nowhere finish, versus two solid ones.
+  it("breaks a points tie on wins", () => {
+    // Both total 6 on the venue's 5/4/3/2/1 scale: a win plus a fifth, versus
+    // a second plus a fourth. Ties like this are the normal case on a scale
+    // this short, which is why the tiebreak is not decoration.
     const standings = computeSeasonStandings([
       result({ driver_id: "winner", display_name: "Zoe", position: 1 }),
       result({
@@ -83,7 +85,7 @@ describe("computeSeasonStandings", () => {
         display_name: "Zoe",
         round_id: "round-2",
         round_number: 2,
-        position: 30,
+        position: 5,
       }),
       result({ driver_id: "steady", display_name: "Abe", position: 2 }),
       result({
@@ -91,12 +93,50 @@ describe("computeSeasonStandings", () => {
         display_name: "Abe",
         round_id: "round-2",
         round_number: 2,
-        position: 6,
+        position: 4,
       }),
     ]);
 
     expect(standings[0].points).toBe(standings[1].points);
-    expect(standings[0].driver_id).toBe("winner");
+    expect(standings.map((s) => s.driver_id)).toEqual(["winner", "steady"]);
+  });
+
+  it("breaks a points tie with equal wins on podiums", () => {
+    // Both total 6 with no wins: one podium against none. Name order would put
+    // "Abe" first, so this only passes if podiums are compared before the name.
+    const standings = computeSeasonStandings([
+      result({ driver_id: "podium", display_name: "Zoe", position: 2 }),
+      result({
+        driver_id: "podium",
+        display_name: "Zoe",
+        round_id: "round-2",
+        round_number: 2,
+        position: 4,
+      }),
+      ...[4, 4, 5, 5].map((position, index) =>
+        result({
+          driver_id: "grinder",
+          display_name: "Abe",
+          round_id: `round-${index + 1}`,
+          round_number: index + 1,
+          position,
+        }),
+      ),
+    ]);
+
+    expect(standings[0].points).toBe(standings[1].points);
+    expect(standings[0]).toMatchObject({ driver_id: "podium", wins: 0, podiums: 1 });
+    expect(standings[1]).toMatchObject({ driver_id: "grinder", wins: 0, podiums: 0 });
+  });
+
+  it("pays fifth place and mere participation the same, by design", () => {
+    // The venue's rule ends at P5 = 1 and pays 1 for turning up, so these two
+    // land on the same number through different branches of roundPoints.
+    expect(roundPoints({ position: POINTS_BY_POSITION.length })).toBe(PARTICIPATION_POINTS);
+    expect(roundPoints({ position: null })).toBe(PARTICIPATION_POINTS);
+    expect(roundPoints({ position: POINTS_BY_POSITION.length + 1 })).toBe(
+      PARTICIPATION_POINTS,
+    );
   });
 
   it("orders a dead-heat by name so the board never flickers", () => {
