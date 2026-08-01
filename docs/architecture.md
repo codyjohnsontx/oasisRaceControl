@@ -33,7 +33,7 @@ flowchart TB
     end
 
     agent ==>|"Bearer token<br/>POST /api/agent/events (heartbeat+laps)<br/>GET /api/agent/assignment<br/>POST /api/agent/checkout"| api
-    tv -->|"poll 5s · GET /api/leaderboard/tonight"| api
+    tv -->|"rotates boards · GET /api/leaderboards/{boards,board}<br/>GET /api/leaderboard/tonight"| api
     driver -->|"session cookie<br/>/api/checkin · /api/me/laps · /api/auth/*"| api
     staff -->|"staff cookie<br/>/api/staff/*"| api
 
@@ -61,8 +61,8 @@ flowchart TB
                                       │            │ pooled SQL  │
         VENUE (on-prem)               │       ┌────▼─────┐       │
    ┌───────────────┐                  │       │  Neon    │       │
-   │ TV browser    │──poll 5s────────▶│       │ Postgres │       │
-   │  /tv          │ /api/leaderboard │       └──────────┘       │
+   │ TV browser    │──rotates boards─▶│       │ Postgres │       │
+   │  /tv          │ /api/leaderboard*│       └──────────┘       │
    └───────────────┘                  └──────────────▲───────────┘
    ┌───────────────┐   Bearer token, outbound 443    │
    │ iRacing sim   │        ┌──────────────┐          │
@@ -77,7 +77,7 @@ flowchart TB
 | Actor | Auth | Endpoints | Cadence |
 |---|---|---|---|
 | **Rig Agent** | Bearer (rig token) | `POST /api/agent/events` (heartbeat + laps), `GET /api/agent/assignment`, `POST /api/agent/checkout` | heartbeat 30s · poll 10s · flush 5s |
-| **TV browser** | none (public) | `GET /api/leaderboard/tonight` | poll 5s |
+| **TV browser** | none (public) | `GET /api/leaderboards/boards`, `GET /api/leaderboards/board`, `GET /api/leaderboard/tonight` | board rotates 15s · on-screen board refreshes 5s · board list 120s |
 | **Driver** | session cookie (JWT) | `/api/auth/{guest,login,register,logout,claim}`, `POST /api/checkin`, `GET /api/me/laps`, `POST /api/session/end` | on action · portal polls laps 5s |
 | **Staff** | staff session cookie | `POST /api/staff/{login,logout,clear-rig,lap-validity,reset-pin}` | on action · dashboard refreshes 15s |
 
@@ -105,5 +105,5 @@ flowchart TB
 | `apps/web` (Next.js) | **Vercel** | root dir `apps/web`; env `DATABASE_URL` (pooled) + `SESSION_SECRET` |
 | Postgres | **Neon** | serverless; pooled connection string |
 | `apps/rig-agent` | **each sim PC** | published single-file exe; auto-start via Task Scheduler |
-| TV board | **venue display** | any always-on browser pointed at `/tv` in kiosk mode |
+| TV board | **venue display** | any always-on browser pointed at `/tv` in kiosk mode; unattended - it cycles every track board and recovers from feed failures without a reload |
 

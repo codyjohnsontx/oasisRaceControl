@@ -23,7 +23,7 @@ docs/                # Plan, spike checklist, spike findings, ops runbook
 
 ## Web app development
 
-The database is plain Postgres — **Neon** in production, any local Postgres in dev. All access goes through the Next.js API routes; there is no realtime service (the TV and portal poll every few seconds, which is indistinguishable from push at venue scale).
+The database is plain Postgres — **Neon** in production, any local Postgres in dev. All access is server-side (`docs/plan.md` has the access paths); there is no realtime service (the TV and portal poll every few seconds, which is indistinguishable from push at venue scale).
 
 One-time setup:
 

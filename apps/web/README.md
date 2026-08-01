@@ -1,12 +1,13 @@
 # Oasis Race Control — web app
 
 The Next.js app behind Oasis Race Control: mobile QR check-in (`/r/[token]`),
-driver portal (`/me`), staff dashboard (`/staff`), the TV leaderboard (`/tv`),
+driver portal (`/me`), staff dashboard (`/staff`), the unattended TV board (`/tv`),
 and all API routes (driver auth, check-in, agent event ingestion, staff
 actions).
 
-Setup (Supabase project, env vars, schema + seed, staff user) and the demo
-loop live in the [root README](../../README.md).
+Setup (Postgres database, env vars, migrations + dev seed) and the demo loop
+live in [Web app development](../../README.md#web-app-development) in the root
+README.
 
 Quick reference once set up:
 

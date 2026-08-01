@@ -1,5 +1,5 @@
 -- Oasis Race Control — core schema (Phase 2, Neon/plain Postgres).
--- All access goes through the Next.js API routes (single trust boundary);
+-- All access is server-side (API routes and server components; docs/plan.md);
 -- there is no direct browser-to-database path, so no RLS surface.
 -- Tables marked PROVISIONAL may be reshaped by a follow-up migration once the
 -- Phase 1 iRacing spike findings land (docs/spike-findings.md).

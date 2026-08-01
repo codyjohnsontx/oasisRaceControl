@@ -18,6 +18,9 @@
   --valid: #2bcc6c;
   --invalid: #ff453a;
   --gold: #ffd60a;
+  /* Podium metals for the /tv arcade board; gold above doubles as P1. */
+  --silver: #cbd2e0;
+  --bronze: #d08a4e;
 }
 
 @theme inline {
@@ -34,6 +37,8 @@
   --color-valid: var(--valid);
   --color-invalid: var(--invalid);
   --color-gold: var(--gold);
+  --color-silver: var(--silver);
+  --color-bronze: var(--bronze);
   --font-sans: var(--font-rajdhani);
   --font-display: var(--font-orbitron);
   --font-mono: var(--font-geist-mono);
@@ -101,4 +106,27 @@ body {
 
 .text-glow-subtle {
   text-shadow: 0 0 10px color-mix(in srgb, currentcolor 55%, transparent);
+}
+
+/* /tv slide timer: fills across the top edge over one board's hold. The
+   component passes only the duration, as --tv-slide-duration, so the timing
+   stays single-sourced from SLIDE_MS while the animation itself lives here. */
+.tv-slide-progress {
+  animation: tv-slide-progress var(--tv-slide-duration, 15s) linear forwards;
+}
+
+@keyframes tv-slide-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv-slide-progress {
+    animation: none;
+    transform: scaleX(1);
+  }
 }

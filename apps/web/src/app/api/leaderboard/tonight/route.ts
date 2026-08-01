@@ -5,8 +5,16 @@ import { venueToday } from "@/lib/venue";
 export async function GET() {
   try {
     const [rows, combo] = await Promise.all([
-      query<{ driver_id: string; display_name: string; lap_time_ms: number }>(
-        `select driver_id, display_name, lap_time_ms
+      // car_name comes along so the TV can show what each lap was set in. With
+      // a featured combo it's the same car on every row; without one, tonight's
+      // board spans combos and the car is the only thing telling them apart.
+      query<{
+        driver_id: string;
+        display_name: string;
+        lap_time_ms: number;
+        car_name: string;
+      }>(
+        `select driver_id, display_name, lap_time_ms, car_name
          from v_fastest_tonight
          order by lap_time_ms asc
          limit 15`,
