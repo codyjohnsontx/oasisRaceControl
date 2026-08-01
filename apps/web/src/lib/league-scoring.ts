@@ -2,12 +2,12 @@
  * SEASON SCORING - the single, swappable rule.
  *
  * Ranking one round needs no rule at all (fastest valid lap wins). Rolling
- * rounds up into a season does, and the captain has not picked one yet, so the
- * whole rule lives in this file: change `POINTS_BY_POSITION`,
+ * rounds up into a season does, and the shop owner has not picked one yet, so
+ * the whole rule lives in this file: change `POINTS_BY_POSITION`,
  * `PARTICIPATION_POINTS`, or `roundPoints()` and every standings surface
  * follows. Nothing else in the codebase encodes points.
  *
- * DEFAULT (chosen here, pending the captain's call):
+ * DEFAULT (chosen here, pending the shop owner's call):
  *   P1..P10 score 25, 18, 15, 12, 10, 8, 6, 4, 2, 1.
  *   Everyone else who took part scores 1 participation point - including a
  *   driver who showed up and never set a clean lap.
