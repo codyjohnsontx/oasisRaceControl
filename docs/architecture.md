@@ -25,7 +25,7 @@ flowchart TB
     subgraph cloud["☁️ CLOUD"]
         direction TB
         subgraph vercel["Vercel — apps/web (Next.js)"]
-            pages["Pages<br/>/ · /r/[token] · /me<br/>/tv · /staff"]
+            pages["Pages<br/>/ · /r/[token] · /me<br/>/tv · /staff<br/>/league · /league/[roundId]"]
             api["API routes (serverless)"]
         end
         neon[("Neon<br/>Postgres")]
@@ -52,8 +52,8 @@ flowchart TB
    ┌───────────────┐                 ┌──────────────────────────┐
    │ Driver phone  │──session cookie─▶│  Vercel  (apps/web)      │
    │  /r/[token]   │  /api/checkin    │  ┌────────────────────┐  │
-   │  /me          │  /api/me/laps    │  │ Pages  /  /me  /tv │  │
-   └───────────────┘  /api/auth/*     │  │        /r  /staff  │  │
+   │  /me          │  /api/me/laps    │  │ Pages / /me /tv /r │  │
+   └───────────────┘  /api/auth/*     │  │  /staff  /league   │  │
    ┌───────────────┐                  │  ├────────────────────┤  │
    │ Staff device  │──staff cookie───▶│  │ API routes         │  │
    │  /staff       │  /api/staff/*    │  │ (serverless funcs) │  │
@@ -79,7 +79,8 @@ flowchart TB
 | **Rig Agent** | Bearer (rig token) | `POST /api/agent/events` (heartbeat + laps), `GET /api/agent/assignment`, `POST /api/agent/checkout` | heartbeat 30s · poll 10s · flush 5s |
 | **TV browser** | none (public) | `GET /api/leaderboards/boards`, `GET /api/leaderboards/board`, `GET /api/leaderboard/tonight` | board rotates 15s · on-screen board refreshes 5s · board list 120s |
 | **Driver** | session cookie (JWT) | `/api/auth/{guest,login,register,logout,claim}`, `POST /api/checkin`, `GET /api/me/laps`, `POST /api/session/end` | on action · portal polls laps 5s |
-| **Staff** | staff session cookie | `POST /api/staff/{login,logout,clear-rig,lap-validity,reset-pin}` | on action · dashboard refreshes 15s |
+| **League board / round page** | none (public) | `GET /api/league/season`, `GET /api/league/rounds/[roundId]` | standings poll 10s · open round poll 6s (a closed round never polls) |
+| **Staff** | staff session cookie | `POST /api/staff/{login,logout,clear-rig,lap-validity,reset-pin}`, `POST /api/staff/league/{open-round,close-round}` | on action · dashboard refreshes 15s |
 
 ## Key properties
 
@@ -94,7 +95,13 @@ flowchart TB
   so a wifi drop or agent restart never loses a lap (idempotent on `event_id`).
 - **The database enforces the core invariant.** A partial unique index
   (`one_open_assignment_per_rig`) guarantees at most one open assignment per rig
-  even under concurrent check-ins — the app doesn't have to.
+  even under concurrent check-ins — the app doesn't have to. League night gets
+  the same treatment: `one_open_round_venue_wide` keeps at most one round open
+  across the venue, which is what makes "the lap that just landed belongs to
+  tonight's round" unambiguous.
+- **League rounds own laps by window and combo, not by a foreign key.** Laps
+  carry no round id, so ingestion is unchanged; the rule and its rationale live
+  once in the `v_league_round_laps` view (`db/migrations/0002_league_night.sql`).
 - **Auth is split by actor.** Rig agents use static bearer tokens; drivers and
   staff use separate signed-cookie sessions. No actor can act outside its scope.
 

@@ -39,7 +39,9 @@ This plan follows a completed product-discovery round with the owner. It covers 
 
 **In:** driver profile creation (name+PIN), guest check-in, permanent per-rig QR, mobile check-in/confirm/move/takeover flows, active rig assignments, real-time driver display on the agent, iRacing detection, automatic lap capture with validity + reason, lap storage with track/car association, Fastest Tonight TV leaderboard + personal-best interstitials, official hot-lap challenge leaderboards, personal lap history/PBs with track & car filters, staff dashboard (rig status, clear rig, invalidate/restore lap with reason, PIN reset, name moderation, challenge CRUD, TV mode selection), agent health/version reporting, idempotent event submission, local offline queue, inactivity session-end safeguards, audit log for staff actions.
 
-**Out (deferred):** payments/booking, native apps, points/championships, ratings/badges/teams, telemetry analysis, multi-venue, auto-update infra, animated TV graphics, driver-vs-driver comparisons.
+**Out (deferred):** payments/booking, native apps, ratings/badges/teams, telemetry analysis, multi-venue, auto-update infra, animated TV graphics.
+
+Points/championships and driver-vs-driver comparison were deferred here, then pulled forward as league night on confirmed customer and owner demand — see the League night section of the [root README](../README.md).
 
 ## User journeys (condensed)
 

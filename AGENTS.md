@@ -46,12 +46,10 @@ Under `next start` the page stays put and self-heals, which is what the kiosk do
 - `apps/web/.env.local` is gitignored and its comments have gone stale before.
   Read `DATABASE_URL` itself before assuming which database (local Docker
   `oasis-pg` on 5433, or Neon) a dev server or migration is pointed at.
-- `0002_league_night.sql` was edited after some local databases had already
-  applied it. `schema_migrations` keys on filename, so those report
-  `skip 0002_league_night.sql (already applied)` and stay without
-  `league_rounds.prior_featured_combo` and with a stale `league_round_entries`
-  table - opening a round then fails with `42703 undefined_column`. Drop and
-  re-migrate any local database created before this commit.
+- A local database that applied an earlier `0002_league_night.sql` reports
+  `skip 0002_league_night.sql (already applied)` and then fails to open a round
+  with `42703 undefined_column`. Drop and re-migrate it; the migration header
+  (`db/migrations/0002_league_night.sql`) explains why.
 
 ## Maintaining this file
 

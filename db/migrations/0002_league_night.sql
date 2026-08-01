@@ -10,8 +10,10 @@
 --
 -- This file changed after some local databases had already applied it (it has
 -- not shipped anywhere else). schema_migrations keys on filename, so those
--- databases skip it and never gain prior_featured_combo; drop and re-migrate
--- any local database created before this commit.
+-- databases skip it: they never gain prior_featured_combo and keep a stale
+-- league_round_entries table this migration no longer creates, and opening a
+-- round there fails with 42703 undefined_column. Drop and re-migrate any local
+-- database created before this commit.
 --
 -- ATTRIBUTION MODEL (the one design decision worth reading):
 -- laps are NOT stamped with a round id. A round owns every lap that landed
