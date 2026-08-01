@@ -65,10 +65,12 @@ const RANK_STYLES = [
 ] as const;
 
 /** The slot's score as text: a board's own preformatted score wins, otherwise
- *  the lap time, otherwise the empty-slot placeholder. */
-function scoreText(entry: ArcadeEntry): string {
+ *  the lap time, otherwise the board's empty-slot placeholder - the same one
+ *  the unclaimed rows below use, so a filled row carrying neither can't print a
+ *  lap-time shape under a heading that isn't a lap. */
+function scoreText(entry: ArcadeEntry, emptyScore: string): string {
   if (entry.score !== undefined) return entry.score;
-  return entry.timeMs === undefined ? "--.---" : formatLapTime(entry.timeMs);
+  return entry.timeMs === undefined ? emptyScore : formatLapTime(entry.timeMs);
 }
 
 /** Gap to the leader. Only meaningful between two lap times; a board scoring
@@ -151,7 +153,7 @@ export function ArcadeHighScores({
                   {entry.detail}
                 </span>
                 <span className="laptime w-64 text-right text-[2.5rem] font-bold">
-                  {scoreText(entry)}
+                  {scoreText(entry, emptyScore)}
                 </span>
                 <span className="laptime text-muted w-44 text-right text-2xl">
                   {gapText(entry, leader, index)}
