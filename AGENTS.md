@@ -24,6 +24,23 @@ is no root `package.json`), not `npm run dev`.
 Next's dev HMR client force-reloads the page when the dev server dies, so the tab
 lands on Chrome's own error page and you cannot tell whether the app recovered.
 Under `next start` the page stays put and self-heals, which is what the kiosk does.
+## League night
+
+- A round owns laps by time window + combo; laps carry no round id. The rule lives
+  in one place, `v_league_round_laps` (`db/migrations/0002_league_night.sql`), and
+  every league query joins through it. Change the rule there, nowhere else.
+- Season points are one swappable module: `apps/web/src/lib/league-scoring.ts`.
+  Nothing else in the codebase encodes a points table. The current default is
+  documented at the top of that file and is pending the shop owner's confirmation.
+- Opening a round also overwrites the day's `featured_combos` row, because lap
+  validity is judged against the featured combo at ingestion time. See the header
+  comment in `apps/web/src/app/api/staff/league/open-round/route.ts`.
+
+## Local dev
+
+- `apps/web/.env.local` is gitignored and its comments have gone stale before.
+  Read `DATABASE_URL` itself before assuming which database (local Docker
+  `oasis-pg` on 5433, or Neon) a dev server or migration is pointed at.
 
 ## Maintaining this file
 
