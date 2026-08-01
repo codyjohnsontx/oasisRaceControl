@@ -53,7 +53,7 @@ const TRACK_BOARD = defineTvBoard<TrackSpec, BoardRow[]>({
       <ArcadeHighScores
         eyebrow="All-time best laps"
         title={spec.track_name}
-        subtitle={[spec.track_config, driverCount(data.length)]
+        subtitle={[spec.track_config, driverCount(spec.driver_count)]
           .filter(Boolean)
           .join(" · ")}
         entries={data.slice(0, SLOT_COUNT).map(toEntry)}
@@ -76,6 +76,8 @@ const toEntry = (row: {
   timeMs: row.lap_time_ms,
 });
 
+/** Counted by `listBoards()` over the whole board, not by the rows on screen -
+ *  the board feed is capped at a page of rows and would freeze the number there. */
 const driverCount = (n: number) => `${n} driver${n === 1 ? "" : "s"}`;
 
 // ---- tonight board: the featured combo ------------------------------------
@@ -153,17 +155,26 @@ type Celebration = {
 };
 
 /**
- * Fires a full-screen celebration when a driver's best tonight improves between
- * two refreshes, and asks the rotation to hold the board while it plays so the
+ * Best time seen per driver, owned by the module rather than by the component.
+ * The rotation unmounts `TonightBoard` every time it moves to another slide, so
+ * a baseline created per mount would be empty on every pass - a lap set while a
+ * track board was up would read as a first load and never be celebrated. The
+ * ref below is only the handle React tracks this through; nothing else writes it.
+ */
+const previousBests = new Map<string, number>();
+
+/**
+ * Fires a full-screen celebration when a driver's best tonight improves on the
+ * last one seen, and asks the rotation to hold the board while it plays so the
  * moment isn't cut off mid-cheer.
  */
 function usePersonalBest(rows: TonightRow[], hold: (ms: number) => void) {
   const [celebration, setCelebration] = useState<Celebration | null>(null);
-  const previousBests = useRef<Map<string, number>>(new Map());
+  const baseline = useRef(previousBests);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const previous = previousBests.current;
+    const previous = baseline.current;
     // The first load is a baseline, not an improvement.
     if (previous.size > 0) {
       for (const [index, row] of rows.entries()) {
@@ -182,7 +193,8 @@ function usePersonalBest(rows: TonightRow[], hold: (ms: number) => void) {
         }
       }
     }
-    previousBests.current = new Map(rows.map((r) => [r.driver_id, r.lap_time_ms]));
+    previous.clear();
+    for (const row of rows) previous.set(row.driver_id, row.lap_time_ms);
   }, [rows, hold]);
 
   useEffect(

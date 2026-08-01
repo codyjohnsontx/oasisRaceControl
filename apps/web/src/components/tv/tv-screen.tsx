@@ -49,7 +49,18 @@ const TICK_MS = 500;
 /** Distinguishes "load failed" from a board type whose data legitimately is null. */
 const LOAD_FAILED = Symbol("load-failed");
 
-type View = { slide: TvSlide; index: number; data: unknown };
+type View = {
+  slide: TvSlide;
+  index: number;
+  data: unknown;
+  /**
+   * Bumped on every advance, including one that lands back on the same slide
+   * because it is the only playable one. Keys the slide-progress animation, so
+   * the bar restarts each pass instead of sitting pinned full on a wall that is
+   * supposed to look like it is moving.
+   */
+  advanceId: number;
+};
 
 export function TvScreen({ initialBoards }: Props) {
   const [slides, setSlides] = useState<TvSlide[]>(() => buildRotation(initialBoards));
@@ -75,7 +86,11 @@ export function TvScreen({ initialBoards }: Props) {
     let holdUntil = 0;
     let nextAdvanceAt = 0; // first tick advances immediately
     let nextRefreshAt = Number.POSITIVE_INFINITY;
-    let nextRotationAt = Date.now() + ROTATION_REFRESH_MS;
+    // An empty seed means either the server-side list failed or the venue has no
+    // boards yet. Re-read it on the first tick instead of standing by for a full
+    // refresh interval on a wall that has months of records behind it.
+    let nextRotationAt = initialBoards.length > 0 ? Date.now() + ROTATION_REFRESH_MS : 0;
+    let advanceId = 0;
     let ticking = false;
 
     holdRef.current = (ms) => {
@@ -108,7 +123,6 @@ export function TvScreen({ initialBoards }: Props) {
 
     /** Walk forward to the next slide that loads and has something to show. */
     const advance = async () => {
-      if (rotation.length === 0) await refreshRotation();
       nextAdvanceAt = Date.now() + RETRY_MS; // replaced on success
 
       let sawFailure = false;
@@ -127,7 +141,8 @@ export function TvScreen({ initialBoards }: Props) {
         if (!definition.hasContent(data)) continue; // empty board: never shown
 
         index = candidate;
-        show({ slide, index: candidate, data });
+        advanceId += 1;
+        show({ slide, index: candidate, data, advanceId });
         setStale(false);
         setOffline(false);
         nextAdvanceAt = Date.now() + SLIDE_MS;
@@ -166,6 +181,7 @@ export function TvScreen({ initialBoards }: Props) {
 
     /** Re-read the rotation list, staying on the current board if it survived. */
     const refreshRotation = async () => {
+      nextRotationAt = Date.now() + ROTATION_REFRESH_MS;
       try {
         const res = await fetch("/api/leaderboards/boards", {
           cache: "no-store",
@@ -180,9 +196,19 @@ export function TvScreen({ initialBoards }: Props) {
         setSlides(rotation);
         const activeKey = current?.slide.key;
         index = activeKey ? rotation.findIndex((s) => s.key === activeKey) : -1;
-        if (current && index >= 0) show({ ...current, index });
+        if (current) {
+          // A -1 index means the board on screen just dropped out of the
+          // rotation - its last valid lap was invalidated, say. Leave it up
+          // rather than blanking the wall, but stop claiming a position it no
+          // longer holds and move along on the next tick.
+          show({ ...current, index });
+          if (index < 0) nextAdvanceAt = 0;
+        }
       } catch (error) {
-        // Keep the rotation we already have; the next pass tries again.
+        // Keep the rotation we already have, and come back sooner than the
+        // normal cadence: what we're holding may be a seed that never loaded,
+        // and a wall that doesn't know its boards stands by looking empty.
+        nextRotationAt = Date.now() + RETRY_MS;
         if (!cancelled) {
           console.error("[tv] rotation refresh failed", (error as Error).message);
         }
@@ -194,10 +220,7 @@ export function TvScreen({ initialBoards }: Props) {
       ticking = true;
       try {
         const now = Date.now();
-        if (now >= nextRotationAt) {
-          nextRotationAt = now + ROTATION_REFRESH_MS;
-          await refreshRotation();
-        }
+        if (now >= nextRotationAt) await refreshRotation();
         if (now >= nextAdvanceAt && now >= holdUntil) await advance();
         else if (now >= nextRefreshAt) await refreshActive();
       } finally {
@@ -234,15 +257,20 @@ export function TvScreen({ initialBoards }: Props) {
   }, [initialBoards]);
 
   const definition = view ? TV_BOARD_TYPES[view.slide.kind] : undefined;
-  const upNext = view && slides.length > 1 ? slides[(view.index + 1) % slides.length] : null;
+  // -1 until the next advance whenever the board on screen has dropped out of a
+  // freshly re-read rotation: it is still worth showing, it just has no position.
+  const position = view ? view.index : -1;
+  const upNext = position >= 0 && slides.length > 1 ? slides[(position + 1) % slides.length] : null;
 
   return (
     <main className="relative flex h-dvh flex-col overflow-hidden p-10 select-none">
-      {/* Fills over one slide's hold, so the room can see the rotation coming. */}
+      {/* Fills over one slide's hold, so the room can see the rotation coming.
+          Keyed on the advance counter rather than the slide, so a rotation with
+          one playable board still restarts the fill every pass. */}
       <div className="absolute inset-x-0 top-0 h-1.5 overflow-hidden">
         {view && (
           <div
-            key={view.slide.key}
+            key={view.advanceId}
             className="gradient-rule h-full origin-left"
             style={{ animation: `tv-slide-progress ${SLIDE_MS}ms linear forwards` }}
           />
@@ -263,18 +291,20 @@ export function TvScreen({ initialBoards }: Props) {
                 <span
                   key={slide.key}
                   className={`h-2 rounded-full transition-all duration-500 ${
-                    view && i === view.index ? "bg-accent w-8" : "bg-edge w-2"
+                    i === position ? "bg-accent w-8" : "bg-edge w-2"
                   }`}
                 />
               ))}
             </div>
           )}
           <p className="text-ink/80 min-w-0 truncate text-xl font-bold uppercase tracking-[0.2em]">
-            {view ? (
+            {position >= 0 ? (
               <>
-                Board {view.index + 1} of {slides.length}
+                Board {position + 1} of {slides.length}
                 {upNext && <span className="text-muted"> · Up next {slideLabel(upNext)}</span>}
               </>
+            ) : view ? (
+              `Top ${SLOT_COUNT} per board`
             ) : (
               `Standing by · Top ${SLOT_COUNT} per board`
             )}

@@ -36,8 +36,6 @@ type Props = {
   entries: ArcadeEntry[];
   /** Last refresh failed; dim slightly so the room reads it as held, not live. */
   stale?: boolean;
-  /** Shown in place of the table when there are no entries at all. */
-  emptyNote?: string;
 };
 
 const RANK_STYLES = [
@@ -52,7 +50,6 @@ export function ArcadeHighScores({
   subtitle,
   entries,
   stale = false,
-  emptyNote,
 }: Props) {
   const leader = entries[0];
   const slots = Array.from({ length: SLOT_COUNT }, (_, i) => entries[i] ?? null);
@@ -77,72 +74,62 @@ export function ArcadeHighScores({
 
       <div className="gradient-rule mt-5 h-1 shrink-0 rounded-full" />
 
-      {entries.length === 0 && emptyNote ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-6">
-          <p className="font-display text-muted text-4xl font-bold uppercase tracking-[0.3em]">
-            {emptyNote}
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className="text-muted mt-4 flex shrink-0 items-center gap-8 text-lg font-bold uppercase tracking-[0.3em]">
-            <span className="w-24">Rank</span>
-            <span className="w-[30rem]">Driver</span>
-            <span className="flex-1">Car</span>
-            <span className="w-64 text-right">Lap</span>
-            <span className="w-44 text-right">Gap</span>
-          </div>
+      <div className="text-muted mt-4 flex shrink-0 items-center gap-8 text-lg font-bold uppercase tracking-[0.3em]">
+        <span className="w-24">Rank</span>
+        <span className="w-[30rem]">Driver</span>
+        <span className="flex-1">Car</span>
+        <span className="w-64 text-right">Lap</span>
+        <span className="w-44 text-right">Gap</span>
+      </div>
 
-          <ol className="mt-1 flex min-h-0 flex-1 flex-col">
-            {slots.map((entry, index) => (
-              <li
-                key={entry?.id ?? `open-${index}`}
-                className={`flex min-h-0 flex-1 items-center gap-8 border-b border-edge last:border-b-0 ${
-                  entry ? "" : "opacity-30"
-                }`}
-              >
-                <span
-                  className={`font-display w-24 text-[2.75rem] font-black tabular-nums ${
-                    entry ? RANK_STYLES[index] ?? "text-muted" : "text-muted"
-                  }`}
-                >
-                  {String(index + 1).padStart(2, "0")}
+      <ol className="mt-1 flex min-h-0 flex-1 flex-col">
+        {slots.map((entry, index) => (
+          <li
+            key={entry?.id ?? `open-${index}`}
+            className={`flex min-h-0 flex-1 items-center gap-8 border-b border-edge last:border-b-0 ${
+              entry ? "" : "opacity-30"
+            }`}
+          >
+            <span
+              className={`font-display w-24 text-[2.75rem] font-black tabular-nums ${
+                entry ? RANK_STYLES[index] ?? "text-muted" : "text-muted"
+              }`}
+            >
+              {String(index + 1).padStart(2, "0")}
+            </span>
+
+            {entry ? (
+              <>
+                <span className="w-[30rem] truncate text-[2.5rem] font-bold">
+                  {entry.name}
                 </span>
-
-                {entry ? (
-                  <>
-                    <span className="w-[30rem] truncate text-[2.5rem] font-bold">
-                      {entry.name}
-                    </span>
-                    <span className="text-muted flex-1 truncate text-2xl uppercase tracking-wide">
-                      {entry.detail}
-                    </span>
-                    <span className="laptime w-64 text-right text-[2.5rem] font-bold">
-                      {formatLapTime(entry.timeMs)}
-                    </span>
-                    <span className="laptime text-muted w-44 text-right text-2xl">
-                      {index === 0 || !leader
-                        ? "—"
-                        : formatGap(entry.timeMs - leader.timeMs)}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-muted w-[30rem] text-[2.5rem] font-bold tracking-[0.3em]">
-                      · · · · ·
-                    </span>
-                    <span className="flex-1" />
-                    <span className="laptime text-muted w-64 text-right text-[2.5rem] font-bold">
-                      --.---
-                    </span>
-                    <span className="w-44" />
-                  </>
-                )}
-              </li>
-            ))}
-          </ol>
-        </>
-      )}
+                <span className="text-muted flex-1 truncate text-2xl uppercase tracking-wide">
+                  {entry.detail}
+                </span>
+                <span className="laptime w-64 text-right text-[2.5rem] font-bold">
+                  {formatLapTime(entry.timeMs)}
+                </span>
+                <span className="laptime text-muted w-44 text-right text-2xl">
+                  {index === 0 || !leader
+                    ? "—"
+                    : formatGap(entry.timeMs - leader.timeMs)}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-muted w-[30rem] text-[2.5rem] font-bold tracking-[0.3em]">
+                  · · · · ·
+                </span>
+                <span className="flex-1" />
+                <span className="laptime text-muted w-64 text-right text-[2.5rem] font-bold">
+                  --.---
+                </span>
+                <span className="w-44" />
+              </>
+            )}
+          </li>
+        ))}
+      </ol>
     </section>
   );
 }
