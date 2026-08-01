@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { query, queryOne, withTransaction } from "./db";
-import { ROUND_LAP_CAP } from "./league";
+import { DRIVER_LAP_CAP, ROUND_LAP_CAP } from "./league";
 import type { LeagueRound, LeagueSeason, RoundLap, RoundResult } from "./league";
 import { venueMonthName } from "./venue";
 
@@ -92,8 +92,6 @@ export async function listSeasonRounds(seasonId: string): Promise<LeagueRound[]>
   return rows.map(normalizeRound);
 }
 
-type RawResult = Omit<RoundResult, "best_lap_at"> & { best_lap_at: Date | string | null };
-
 /**
  * The ranked field for a set of rounds. One query serves both the round view
  * (`scope: "round"`) and season standings (`scope: "season"`) so the two can
@@ -110,12 +108,9 @@ async function queryRoundResults(
 ): Promise<RoundResult[]> {
   const scopeClause = scope === "round" ? "id = $1" : "season_id = $1";
 
-  const rows = await query<RawResult>(
+  return query<RoundResult>(
     `with r as (
-       select id, round_number, coalesce(nullif(btrim(name), ''), 'Round ' || round_number) as round_name,
-              to_char(round_date, 'YYYY-MM-DD') as round_date, closed_at
-       from league_rounds
-       where ${scopeClause}
+       select id, round_number from league_rounds where ${scopeClause}
      ),
      rl as (
        select l.* from v_league_round_laps l join r on r.id = l.round_id
@@ -140,11 +135,10 @@ async function queryRoundResults(
        where rl.is_valid
        order by rl.round_id, rl.driver_id, rl.lap_time_ms asc, rl.completed_at asc, rl.lap_id asc
      )
-     select r.id as round_id, r.round_number, r.round_name, r.round_date,
-            (r.closed_at is not null) as closed,
+     select r.id as round_id, r.round_number,
             f.driver_id, f.display_name::text as display_name,
             c.lap_count, c.valid_lap_count,
-            b.lap_time_ms as best_lap_ms, b.completed_at as best_lap_at,
+            b.lap_time_ms as best_lap_ms,
             case when b.lap_time_ms is null then null else
               row_number() over (
                 partition by f.round_id
@@ -158,11 +152,6 @@ async function queryRoundResults(
      order by r.round_number asc, position asc nulls last, f.display_name asc`,
     [id],
   );
-
-  return rows.map((row) => ({
-    ...row,
-    best_lap_at: row.best_lap_at ? new Date(row.best_lap_at).toISOString() : null,
-  }));
 }
 
 /** One round's full field, ranked by best valid lap. Drivers with no valid lap
@@ -187,26 +176,57 @@ export function getSeasonRoundResults(seasonId: string): Promise<RoundResult[]> 
  * row past the cap and reports whether it hit it - a comparison view that
  * quietly drops a driver's laps would be worse than one that says it is
  * showing a subset.
+ *
+ * A request that names drivers budgets rows PER DRIVER (DRIVER_LAP_CAP), which
+ * is why the cap is applied through a per-driver row_number rather than a plain
+ * limit. One budget shared across the named set is spent in `completed_at`
+ * order, so on a long night the drivers still running come back with a short
+ * list or none at all - exactly the silent short-list this cap exists to
+ * prevent, and the round page's poll asks for every expanded row at once. The
+ * unfiltered call keeps one round-wide budget, because it renders the whole
+ * round into a single page.
  */
 export async function getRoundLaps(
   roundId: string,
   driverIds?: string[],
 ): Promise<{ laps: RoundLap[]; truncated: boolean }> {
+  const perDriverCap = driverIds ? DRIVER_LAP_CAP : ROUND_LAP_CAP;
+  const overallCap = driverIds ? driverIds.length * DRIVER_LAP_CAP : ROUND_LAP_CAP;
+
   const rows = await query<Omit<RoundLap, "completed_at"> & { completed_at: Date | string }>(
-    `select rl.lap_id as id, rl.driver_id, rl.lap_number, rl.lap_time_ms,
-            rl.incident_delta, rl.is_valid, rl.invalid_reason, rl.completed_at
-     from v_league_round_laps rl
-     join drivers d on d.id = rl.driver_id and d.status = 'active'
-     where rl.round_id = $1
-       and ($2::uuid[] is null or rl.driver_id = any ($2::uuid[]))
-     order by rl.completed_at asc, rl.lap_number asc nulls last, rl.lap_id asc
-     limit $3`,
-    [roundId, driverIds ?? null, ROUND_LAP_CAP + 1],
+    `with attributed as (
+       select rl.lap_id as id, rl.driver_id, rl.lap_number, rl.lap_time_ms,
+              rl.incident_delta, rl.is_valid, rl.invalid_reason, rl.completed_at,
+              row_number() over (
+                partition by rl.driver_id
+                order by rl.completed_at asc, rl.lap_number asc nulls last, rl.lap_id asc
+              ) as driver_lap_rank
+       from v_league_round_laps rl
+       join drivers d on d.id = rl.driver_id and d.status = 'active'
+       where rl.round_id = $1
+         and ($2::uuid[] is null or rl.driver_id = any ($2::uuid[]))
+     )
+     select id, driver_id, lap_number, lap_time_ms, incident_delta, is_valid,
+            invalid_reason, completed_at
+     from attributed
+     where driver_lap_rank <= $3
+     order by completed_at asc, lap_number asc nulls last, id asc
+     limit $4`,
+    [roundId, driverIds ?? null, perDriverCap, overallCap + 1],
   );
 
-  const truncated = rows.length > ROUND_LAP_CAP;
+  const perDriver = new Map<string, number>();
+  for (const row of rows) {
+    perDriver.set(row.driver_id, (perDriver.get(row.driver_id) ?? 0) + 1);
+  }
+  // Either budget running out means what came back is a subset of what was
+  // asked for, so say so rather than letting a caller treat a prefix as whole.
+  const truncated =
+    rows.length > overallCap ||
+    [...perDriver.values()].some((count) => count >= perDriverCap);
+
   return {
-    laps: (truncated ? rows.slice(0, ROUND_LAP_CAP) : rows).map((row) => ({
+    laps: rows.slice(0, overallCap).map((row) => ({
       ...row,
       completed_at: new Date(row.completed_at).toISOString(),
     })),

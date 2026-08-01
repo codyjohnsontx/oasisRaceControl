@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { DRIVER_LAP_CAP, lapsByDriver, ROUND_LAP_CAP } from "./league";
 import { computeValidity, type FeaturedCombo } from "./validity";
 import { venueMonthName, venueToday } from "./venue";
 
@@ -162,6 +163,33 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
     );
   }
 
+  /**
+   * Laps straight into the table, in the volumes the row caps are about.
+   * Validity is not what these ask about, so they skip computeValidity and land
+   * valid, on the round's combo, `offsetSeconds` from now.
+   */
+  function bulkLaps(driverId: string, count: number, offsetSeconds: number) {
+    return dbModule.query(
+      `insert into laps (
+         event_id, rig_id, rig_assignment_id, driver_id, track_name, track_config,
+         car_name, lap_time_ms, incident_delta, is_valid, invalid_reason, completed_at
+       )
+       select 'bulk-' || ($1::uuid)::text || '-' || g, $2, $3, $1::uuid, $4, $5, $6,
+              90000 + g, 0, true, null, now() + ($7::int * interval '1 second')
+       from generate_series(1, $8::int) g`,
+      [
+        driverId,
+        rigs[driverId],
+        assignments[driverId],
+        WEEK_ONE.trackName,
+        WEEK_ONE.trackConfig,
+        WEEK_ONE.carName,
+        offsetSeconds,
+        count,
+      ],
+    );
+  }
+
   function featuredCombo() {
     return dbModule.queryOne<FeaturedCombo>(
       `select track_name, track_config, car_name, incident_limit
@@ -294,6 +322,27 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
       valid_lap_count: 0,
     });
     expect(await league.countRoundDrivers(round.id)).toBe(1);
+  });
+
+  it("budgets laps per driver, so one long stint cannot empty another's list", async () => {
+    const grinder = await driver("Ran All Night");
+    const latecomer = await driver("Arrived Late");
+    const round = await league.openLeagueRound(WEEK_ONE);
+
+    // More laps than one round-wide request returns, all from one driver and
+    // all earlier than the other's. The round page polls every expanded row in
+    // a single call, so a budget shared across the named drivers and spent in
+    // completed_at order would hand the latecomer a short list or nothing -
+    // and the poll would then overwrite the laps their row already had.
+    await bulkLaps(grinder, ROUND_LAP_CAP + 100, 0);
+    await bulkLaps(latecomer, 3, 1);
+
+    const page = await league.getRoundLaps(round.id, [grinder, latecomer]);
+    const byDriver = lapsByDriver(page.laps);
+
+    expect(byDriver[latecomer]).toHaveLength(3);
+    expect(byDriver[grinder]).toHaveLength(DRIVER_LAP_CAP);
+    expect(page.truncated).toBe(true);
   });
 
   it("rolls the losing round, its season and its league back when one is already open", async () => {

@@ -22,8 +22,17 @@ export type ArcadeEntry = {
   name: string;
   /** Small line beside the name: the car the lap was set in. */
   detail: string;
-  /** The score itself, in milliseconds. */
-  timeMs: number;
+  /** The score itself, in milliseconds, rendered as a lap time. */
+  timeMs?: number;
+  /**
+   * Preformatted score, for a board whose score is not a duration (season
+   * points). Wins over `timeMs`: a number that is not a time must never reach
+   * the lap-time formatter, which would print 25 points as "0:00.025".
+   */
+  score?: string;
+  /** Preformatted gap, for the same reason. Lap-time boards leave it unset and
+   *  the table works the gap to the leader out itself. */
+  gap?: string;
 };
 
 type Props = {
@@ -34,6 +43,9 @@ type Props = {
   /** Optional line under the title, e.g. the layout and driver count. */
   subtitle?: string;
   entries: ArcadeEntry[];
+  /** Headings for the three right-hand columns. The defaults describe a lap
+   *  board; a board scoring something else renames them rather than lying. */
+  columns?: { detail?: string; score?: string; gap?: string };
   /** Last refresh failed; dim slightly so the room reads it as held, not live. */
   stale?: boolean;
 };
@@ -44,15 +56,38 @@ const RANK_STYLES = [
   "text-bronze",
 ] as const;
 
+/** The slot's score as text: a board's own preformatted score wins, otherwise
+ *  the lap time, otherwise the empty-slot placeholder. */
+function scoreText(entry: ArcadeEntry): string {
+  if (entry.score !== undefined) return entry.score;
+  return entry.timeMs === undefined ? "--.---" : formatLapTime(entry.timeMs);
+}
+
+/** Gap to the leader. Only meaningful between two lap times; a board scoring
+ *  anything else supplies its own `gap`. */
+function gapText(entry: ArcadeEntry, leader: ArcadeEntry | undefined, index: number): string {
+  if (entry.gap !== undefined) return entry.gap;
+  if (index === 0 || !leader || entry.timeMs === undefined || leader.timeMs === undefined) {
+    return "—";
+  }
+  return formatGap(entry.timeMs - leader.timeMs);
+}
+
 export function ArcadeHighScores({
   eyebrow,
   title,
   subtitle,
   entries,
+  columns,
   stale = false,
 }: Props) {
   const leader = entries[0];
   const slots = Array.from({ length: SLOT_COUNT }, (_, i) => entries[i] ?? null);
+  const {
+    detail: detailHeading = "Car",
+    score: scoreHeading = "Lap",
+    gap: gapHeading = "Gap",
+  } = columns ?? {};
 
   return (
     <section
@@ -77,9 +112,9 @@ export function ArcadeHighScores({
       <div className="text-muted mt-4 flex shrink-0 items-center gap-8 text-lg font-bold uppercase tracking-[0.3em]">
         <span className="w-24">Rank</span>
         <span className="w-[30rem]">Driver</span>
-        <span className="flex-1">Car</span>
-        <span className="w-64 text-right">Lap</span>
-        <span className="w-44 text-right">Gap</span>
+        <span className="flex-1">{detailHeading}</span>
+        <span className="w-64 text-right">{scoreHeading}</span>
+        <span className="w-44 text-right">{gapHeading}</span>
       </div>
 
       <ol className="mt-1 flex min-h-0 flex-1 flex-col">
@@ -107,12 +142,10 @@ export function ArcadeHighScores({
                   {entry.detail}
                 </span>
                 <span className="laptime w-64 text-right text-[2.5rem] font-bold">
-                  {formatLapTime(entry.timeMs)}
+                  {scoreText(entry)}
                 </span>
                 <span className="laptime text-muted w-44 text-right text-2xl">
-                  {index === 0 || !leader
-                    ? "—"
-                    : formatGap(entry.timeMs - leader.timeMs)}
+                  {gapText(entry, leader, index)}
                 </span>
               </>
             ) : (

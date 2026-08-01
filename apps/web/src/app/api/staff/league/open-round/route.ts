@@ -29,19 +29,22 @@ export async function POST(request: Request) {
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
 
-  const alreadyOpen = await getOpenRound();
-  if (alreadyOpen) {
-    return Response.json(
-      { error: "round_already_open", roundId: alreadyOpen.id },
-      { status: 409 },
-    );
-  }
-
   // The schema already trimmed these, so an all-whitespace layout arrives as ""
   // and normalizes to null here.
   const trackConfig = input.trackConfig || null;
 
   try {
+    // Inside the try like every other query here: a database failure while
+    // checking must come back as this route's JSON error contract, not as a
+    // bodyless Next 500 the staff panel reads as an undefined error.
+    const alreadyOpen = await getOpenRound();
+    if (alreadyOpen) {
+      return Response.json(
+        { error: "round_already_open", roundId: alreadyOpen.id },
+        { status: 409 },
+      );
+    }
+
     const round = await openLeagueRound({
       name: input.name || null,
       trackName: input.trackName,

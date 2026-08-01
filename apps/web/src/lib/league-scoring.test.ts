@@ -11,13 +11,9 @@ function result(overrides: Partial<RoundResult> & { driver_id: string }): RoundR
   return {
     round_id: "round-1",
     round_number: 1,
-    round_name: "Round 1",
-    round_date: "2026-07-29",
-    closed: true,
     display_name: overrides.driver_id,
     position: null,
     best_lap_ms: null,
-    best_lap_at: null,
     lap_count: 0,
     valid_lap_count: 0,
     ...overrides,

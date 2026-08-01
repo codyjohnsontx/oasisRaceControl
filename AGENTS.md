@@ -7,15 +7,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## The `/tv` board rotation
 
 `/tv` is an unattended wall display that cycles board types on a timer. Adding a
-new kind of board (league standings, rig status) means writing one
+new kind of board (rig status, an event countdown) means writing one
 `defineTvBoard` in `apps/web/src/components/tv/board-types.tsx`, registering it in
 `TV_BOARD_TYPES`, and emitting its slides from `buildRotation` - do not modify the
 rotation engine (`tv-screen.tsx`) or write a second ranking implementation. The
 contract and the rules the engine guarantees are documented in
 `apps/web/src/lib/tv-rotation.ts`.
 
-Board data comes from the same public APIs `/leaderboards` uses, so the wall and
-the phone agree by construction.
+Board data comes from the same public APIs `/leaderboards` and `/league` use, so
+the wall and the phone agree by construction.
+
+A board can also take the wall over rather than take a turn on it, without any
+engine change: renew the contract's `hold()` on every refresh while the takeover
+condition holds. The league board does exactly that while a round is open.
 
 ## Verifying `/tv` failure behaviour needs a production build
 
@@ -35,6 +39,11 @@ Under `next start` the page stays put and self-heals, which is what the kiosk do
 - A round owns laps by time window + combo; laps carry no round id. The rule lives
   in one place, `v_league_round_laps` (`db/migrations/0002_league_night.sql`), and
   every league query joins through it. Change the rule there, nowhere else.
+- Two league surfaces, one API. `/league` (+ `/league/[roundId]`) is the
+  full-detail page customers open on a phone; the wall's league board is a `/tv`
+  board type like any other (see the section above), showing the top ten and
+  holding the screen while a round is open. Both read `/api/league/season`, so
+  neither wraps the other and neither can drift.
 - Season points are one swappable module: `apps/web/src/lib/league-scoring.ts`.
   Nothing else in the codebase encodes a points table. The current default is
   documented at the top of that file and is pending the shop owner's confirmation.

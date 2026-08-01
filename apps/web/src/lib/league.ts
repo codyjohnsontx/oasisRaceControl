@@ -38,14 +38,10 @@ export type LeagueRound = {
 export type RoundResult = {
   round_id: string;
   round_number: number;
-  round_name: string;
-  round_date: string;
-  closed: boolean;
   driver_id: string;
   display_name: string;
   position: number | null;
   best_lap_ms: number | null;
-  best_lap_at: string | null;
   lap_count: number;
   valid_lap_count: number;
 };
@@ -80,11 +76,22 @@ export type LeagueSeason = {
 export const MAX_ROUND_DRIVERS = 60;
 
 /**
- * Most laps one round request returns. Reachable on a long night (25 rigs on
- * two-minute laps for four hours is roughly 3000), so callers are told when
- * they hit it rather than silently receiving a subset - see getRoundLaps.
+ * Most laps one unfiltered round request returns - the whole round rendered
+ * into one page. Reachable on a long night (25 rigs on two-minute laps for four
+ * hours is roughly 3000), so callers are told when they hit it rather than
+ * silently receiving a subset - see getRoundLaps.
  */
 export const ROUND_LAP_CAP = 2000;
+
+/**
+ * Most laps one named driver returns. A request that names drivers gets this
+ * budget per driver instead of sharing ROUND_LAP_CAP across the set: asking for
+ * a driver means wanting that driver's laps in full, and one shared budget spent
+ * in `completed_at` order hands the drivers still running a short list or an
+ * empty one. Four hours of one-minute laps is roughly 240, so this is a safety
+ * rail rather than a page size.
+ */
+export const DRIVER_LAP_CAP = 500;
 
 // ---- Pure helpers (unit-tested; no DB) ------------------------------------
 

@@ -115,9 +115,14 @@ function summarizeRounds(standings: SeasonStanding[]): Record<string, RoundSumma
 const POLL_MS = 10_000;
 
 /**
- * The league board. Its own route (never wired into /tv), sized to be read
- * across the room at 1920x1080 - every size is a clamp() against viewport
- * width, so the same page is a normal phone page at 390px.
+ * The full league surface: standings with every driver's per-round breakdown
+ * and the round strip that links into the comparison view. Every size is a
+ * clamp() against viewport width, so the one page is a phone page at 390px and
+ * still legible parked on a laptop or a second screen at 1920x1080.
+ *
+ * The unattended wall does not run this page - `/tv` has its own league board
+ * (`components/tv/board-types.tsx`), reading this same API, showing the top ten
+ * and nothing else. This page keeps the detail that board has no room for.
  */
 export function LeagueStandings({
   season,

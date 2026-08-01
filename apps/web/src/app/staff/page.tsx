@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { redirect } from "next/navigation";
 import { query, queryOne } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
@@ -14,6 +15,32 @@ import {
   type RigStatusRow,
   type StaffLapRow,
 } from "@/components/staff-dashboard";
+
+/**
+ * Combos the venue has actually run, so opening a round is picking from a list
+ * rather than retyping "Spa-Francorchamps" on a busy Wednesday. Most recently
+ * run first and bounded to a season of history: staff want the combos currently
+ * in rotation, not the alphabetically-first sixty ever.
+ *
+ * Cached rather than recomputed per render. This aggregates a quarter of the
+ * `laps` table to fill a datalist whose contents change a few times a week,
+ * while every open staff tablet re-runs this page four times a minute
+ * (`StaffDashboard` refreshes on a 15s timer) - so the cadence that matters is
+ * how often the answer changes, not how often the dashboard repaints.
+ */
+const listRecentCombos = unstable_cache(
+  () =>
+    query<ComboOption>(
+      `select track_name, track_config, car_name
+       from laps
+       where completed_at > now() - interval '90 days'
+       group by track_name, track_config, car_name
+       order by max(completed_at) desc
+       limit 60`,
+    ),
+  ["staff-league-combo-options"],
+  { revalidate: 600 },
+);
 
 export default async function StaffPage() {
   const staff = await getStaffUser();
@@ -45,22 +72,7 @@ export default async function StaffPage() {
   const [recentRounds, openRoundDrivers, comboOptions] = await Promise.all([
     season ? listSeasonRounds(season.id) : Promise.resolve([]),
     openRound ? countRoundDrivers(openRound.id) : Promise.resolve(0),
-    // Combos the venue has actually run, so opening a round is picking from a
-    // list rather than retyping "Spa-Francorchamps" on a busy Wednesday. Most
-    // recently run first and bounded to a season of history: staff want the
-    // combos currently in rotation, not the alphabetically-first sixty ever.
-    // Only the open-round form uses it, so while a round is open this page
-    // re-renders every 15 seconds without paying for the aggregate at all.
-    openRound
-      ? Promise.resolve([])
-      : query<ComboOption>(
-          `select track_name, track_config, car_name
-           from laps
-           where completed_at > now() - interval '90 days'
-           group by track_name, track_config, car_name
-           order by max(completed_at) desc
-           limit 60`,
-        ),
+    listRecentCombos(),
   ]);
 
   return (

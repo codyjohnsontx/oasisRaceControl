@@ -8,8 +8,9 @@ Customer flow: **scan the rig's QR code → confirm check-in on your phone → d
 
 The Wednesday in-house league. Staff open a round from `/staff` against one track/car combo; every lap driven on that combo while the round is open belongs to that round, so drivers just check in and drive as usual. Rounds roll up into a season, and a season is a calendar month.
 
-- `/league` — season standings across every round, sized to read across the room on the wall screen and still a normal page on a phone. Open rounds are included, so the board moves while the night is running.
+- `/league` — season standings across every round, with each driver's per-round breakdown and a strip of rounds to tap into. Open rounds are included, so the board moves while the night is running.
 - `/league/[roundId]` — one round's full field ranked by fastest valid lap; tap a driver to expand all of their laps. Phone-first, this is the post-race comparison.
+- `/tv` — the front-of-store TV carries a league standings board in its rotation, and while a round is open that board takes the screen over: league night owns the wall, the arcade boards have it the rest of the week. Nobody has to take the kiosk off rotation.
 - `/staff` — open a round against a combo, close it when the night is over, and at the turn of the month end the season and start the next one (named for the month, in one step, refused while a round is still open).
 
 **Opening a round also sets that day's featured combo to the round's combo**, because lap validity is judged against the featured combo when a lap is ingested; closing the round puts the previous combo back. Laps already logged keep the validity they were given.

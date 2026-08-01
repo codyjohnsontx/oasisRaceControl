@@ -84,7 +84,26 @@ export function LeagueRound({
       };
       if (payload.round) setCurrent(payload.round);
       if (Array.isArray(payload.field)) setField(payload.field);
-      if (payload.laps) setLaps((prev) => ({ ...prev, ...payload.laps }));
+      if (payload.laps) {
+        const incoming = payload.laps;
+        const claimed = new Map(
+          (payload.field ?? []).map((row) => [row.driver_id, row.lap_count] as const),
+        );
+        setLaps((prev) => {
+          const next = { ...prev };
+          for (const [driverId, driverLaps] of Object.entries(incoming)) {
+            // Never trade a list we already hold for a shorter one. The query
+            // budgets rows per driver so a full list is what normally arrives,
+            // but a response short of the count the field claims is a partial
+            // page, not a driver whose laps went away.
+            if (next[driverId] && driverLaps.length < (claimed.get(driverId) ?? 0)) {
+              continue;
+            }
+            next[driverId] = driverLaps;
+          }
+          return next;
+        });
+      }
       // Round-level, never the per-request flag: this poll asked for the
       // expanded rows only, and a subset that fits the cap says nothing about
       // whether the round as a whole overran it.
