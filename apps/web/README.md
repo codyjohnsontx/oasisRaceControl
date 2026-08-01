@@ -14,7 +14,7 @@ Quick reference once set up:
 ```bash
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulate a rig agent sending laps
-npm test           # vitest unit tests
+npm test           # vitest suites (see Integration tests in the root README)
 npm run build      # production build
 ```
 

@@ -51,7 +51,7 @@ Daily loop:
 cd apps/web
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulates Rig 01 sending heartbeats + laps (needs dev seed)
-npm test           # unit tests - no database, no network
+npm test           # unit tests, plus the league lifecycle suite when a local database is reachable
 npm run db:migrate # apply any new migrations in db/migrations/
 ```
 
@@ -78,6 +78,23 @@ table and `.env.local` normally points at live Neon. The URL must be a local
 host with `test` in the database name; managed hosts are refused outright before
 any connection is opened (`src/test/db-guard.ts`). Migrations are reapplied from
 scratch on each run, so a schema change can never leave the test database stale.
+
+One real-database suite runs under plain **`npm test`** rather than
+`test:integration`: `src/lib/league-round-lifecycle.test.ts`, which covers league
+night's effect on the rest of the venue day and the round/season concurrency
+rules. It builds its **own** throwaway database from `db/migrations` and drops it
+afterwards, so it never truncates anything you already have. It prefers
+`TEST_DATABASE_URL` and otherwise falls back to a local `DATABASE_URL`,
+rewriting either to that scratch database. Both paths go through the same
+`db-guard.ts` refusals - managed hosts, non-local hosts, and redirecting
+connection parameters - applied to the scratch URL before any connection opens.
+An explicit but unsafe `TEST_DATABASE_URL` is a hard error; an unusable
+`DATABASE_URL` just skips the suite, which is why it is quiet on a machine
+pointed at Neon. Nothing loads `.env.local` for tests, so give it a URL:
+
+```bash
+TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5433/oasis_test" npm test
+```
 
 Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Staff dashboard is at `/staff`. To try league night, open a round from `/staff` against the combo the fake rig drives, then watch `/league` and the round's page fill up.
 

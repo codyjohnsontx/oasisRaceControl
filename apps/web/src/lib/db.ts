@@ -80,3 +80,13 @@ export function isUniqueViolation(error: unknown): boolean {
     (error as { code?: string }).code === "23505"
   );
 }
+
+/**
+ * The index or constraint a unique violation came from, or null. Two different
+ * partial unique indexes can both fire during one league open, and they mean
+ * opposite things to the caller, so the name is what tells them apart.
+ */
+export function constraintName(error: unknown): string | null {
+  if (!isUniqueViolation(error)) return null;
+  return (error as { constraint?: string }).constraint ?? null;
+}

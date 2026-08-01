@@ -46,6 +46,14 @@ type Props = {
   /** Headings for the three right-hand columns. The defaults describe a lap
    *  board; a board scoring something else renames them rather than lying. */
   columns?: { detail?: string; score?: string; gap?: string };
+  /**
+   * What an unclaimed slot shows in the score column. Defaults to the lap-time
+   * shape, because an open slot on a lap board is an unset time. A board whose
+   * score is not a duration passes its own, for the same reason it passes
+   * `score` rather than `timeMs` - "--.---" under a POINTS heading reads as a
+   * time nobody has driven.
+   */
+  emptyScore?: string;
   /** Last refresh failed; dim slightly so the room reads it as held, not live. */
   stale?: boolean;
 };
@@ -57,10 +65,12 @@ const RANK_STYLES = [
 ] as const;
 
 /** The slot's score as text: a board's own preformatted score wins, otherwise
- *  the lap time, otherwise the empty-slot placeholder. */
-function scoreText(entry: ArcadeEntry): string {
+ *  the lap time, otherwise the board's empty-slot placeholder - the same one
+ *  the unclaimed rows below use, so a filled row carrying neither can't print a
+ *  lap-time shape under a heading that isn't a lap. */
+function scoreText(entry: ArcadeEntry, emptyScore: string): string {
   if (entry.score !== undefined) return entry.score;
-  return entry.timeMs === undefined ? "--.---" : formatLapTime(entry.timeMs);
+  return entry.timeMs === undefined ? emptyScore : formatLapTime(entry.timeMs);
 }
 
 /** Gap to the leader. Only meaningful between two lap times; a board scoring
@@ -79,6 +89,7 @@ export function ArcadeHighScores({
   subtitle,
   entries,
   columns,
+  emptyScore = "--.---",
   stale = false,
 }: Props) {
   const leader = entries[0];
@@ -142,7 +153,7 @@ export function ArcadeHighScores({
                   {entry.detail}
                 </span>
                 <span className="laptime w-64 text-right text-[2.5rem] font-bold">
-                  {scoreText(entry)}
+                  {scoreText(entry, emptyScore)}
                 </span>
                 <span className="laptime text-muted w-44 text-right text-2xl">
                   {gapText(entry, leader, index)}
@@ -155,7 +166,7 @@ export function ArcadeHighScores({
                 </span>
                 <span className="flex-1" />
                 <span className="laptime text-muted w-64 text-right text-[2.5rem] font-bold">
-                  --.---
+                  {emptyScore}
                 </span>
                 <span className="w-44" />
               </>

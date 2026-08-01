@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { query, queryOne, withTransaction } from "./db";
+import { constraintName, query, queryOne, withTransaction } from "./db";
 import { DRIVER_LAP_CAP, ROUND_LAP_CAP } from "./league";
 import type { LeagueRound, LeagueSeason, RoundLap, RoundResult } from "./league";
 import { venueMonthName } from "./venue";
@@ -282,9 +282,16 @@ const FEATURED_COMBO_UPSERT = `insert into featured_combos
  * orphan league or season behind for getActiveSeason() to find later.
  */
 async function ensureOpenSeasonTx(client: PoolClient): Promise<{ id: string }> {
+  // `for update`, matching rollLeagueSeason's own lock, so opening a round and
+  // rolling the month serialize instead of interleaving. Without it, opening a
+  // round could read the season a concurrent roll was in the middle of ending
+  // and attach tonight's round to a closed month, where /league would never
+  // show it. Blocking here means we re-read after the roll commits and find
+  // either its new season or none.
   const open = await client.query<{ id: string }>(
     `select id from league_seasons where ended_on is null
-     order by started_on desc, created_at desc limit 1`,
+     order by started_on desc, created_at desc limit 1
+     for update`,
   );
   if (open.rows[0]) return open.rows[0];
 
@@ -300,11 +307,33 @@ async function ensureOpenSeasonTx(client: PoolClient): Promise<{ id: string }> {
       )
     ).rows[0].id;
 
-  const season = await client.query<{ id: string }>(
-    "insert into league_seasons (league_id, name) values ($1, $2) returning id",
-    [leagueId, venueMonthName()],
-  );
-  return season.rows[0];
+  // Two openers can both reach here with no open season - or one can arrive
+  // just as a roll commits its replacement. Whoever loses hits
+  // one_open_season_per_league, which is NOT the "a round is already open"
+  // condition the caller reports, so it is resolved here instead of surfacing:
+  // the winner's season is exactly the one this round wanted. The savepoint is
+  // what makes that possible, since an unhandled error would abort the whole
+  // open-round transaction. one_open_round_venue_wide is deliberately left to
+  // propagate - that one really does mean a round is already open.
+  await client.query("savepoint ensure_open_season");
+  try {
+    const season = await client.query<{ id: string }>(
+      "insert into league_seasons (league_id, name) values ($1, $2) returning id",
+      [leagueId, venueMonthName()],
+    );
+    await client.query("release savepoint ensure_open_season");
+    return season.rows[0];
+  } catch (error) {
+    if (constraintName(error) !== "one_open_season_per_league") throw error;
+    await client.query("rollback to savepoint ensure_open_season");
+    const raced = await client.query<{ id: string }>(
+      `select id from league_seasons where ended_on is null
+       order by started_on desc, created_at desc limit 1
+       for update`,
+    );
+    if (!raced.rows[0]) throw error;
+    return raced.rows[0];
+  }
 }
 
 /**

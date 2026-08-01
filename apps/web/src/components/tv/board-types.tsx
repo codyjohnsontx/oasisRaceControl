@@ -313,6 +313,8 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
         gap: leagueGap(standing, leader, index),
       }))}
       columns={{ detail: "Record", score: "Points", gap: "Behind" }}
+      // An unclaimed slot here has no points, not an undriven lap time.
+      emptyScore="—"
       stale={stale}
     />
   );

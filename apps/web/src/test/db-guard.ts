@@ -14,6 +14,19 @@ const MANAGED_HOST = /neon\.tech|supabase\.co|amazonaws\.com|azure\.com|render\.
 const LOCAL_HOST = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 
 /**
+ * WHATWG URL keeps an IPv6 literal bracketed - `new URL("postgres://[::1]/x").hostname`
+ * is `"[::1]"`, not `"::1"` - so the brackets come off before any comparison.
+ * It also normalises the literal itself, so `[0:0:0:0:0:0:0:1]` arrives as `::1`
+ * and `[::ffff:127.0.0.1]` as `::ffff:7f00:1`, which is still not local and is
+ * still refused.
+ */
+function bareHost(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+}
+
+/**
  * Query parameters that change where pg actually connects, overriding the URL's
  * own hostname. `postgres://localhost/x_test?host=prod.neon.tech` looks local to
  * `new URL()` but pg connects to prod, so checking only the hostname is not
@@ -69,16 +82,18 @@ export function safeTestDatabaseUrl(
     }
   }
 
-  if (MANAGED_HOST.test(url.hostname)) {
+  const host = bareHost(url.hostname);
+
+  if (MANAGED_HOST.test(host)) {
     throw new UnsafeTestDatabaseError(
-      `Refusing to run destructive tests against managed host "${url.hostname}". ` +
+      `Refusing to run destructive tests against managed host "${host}". ` +
         `TEST_DATABASE_URL must be a local throwaway database.`,
     );
   }
 
-  if (!LOCAL_HOST.has(url.hostname)) {
+  if (!LOCAL_HOST.has(host)) {
     throw new UnsafeTestDatabaseError(
-      `Refusing to run destructive tests against non-local host "${url.hostname}". ` +
+      `Refusing to run destructive tests against non-local host "${host}". ` +
         `TEST_DATABASE_URL must point at localhost.`,
     );
   }
