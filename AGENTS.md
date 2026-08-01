@@ -59,9 +59,10 @@ Under `next start` the page stays put and self-heals, which is what the kiosk do
   round restores whatever was there (`league_rounds.prior_featured_combo`, null
   meaning there was no row). Both halves are transactional - see
   `openLeagueRound` / `closeLeagueRound` in `apps/web/src/lib/league-queries.ts`.
-- `league-round-lifecycle.test.ts` builds a scratch database from `db/migrations`
-  and runs against it. It skips unless `DATABASE_URL` is local or
-  `TEST_DATABASE_URL` is set, so it never touches Neon.
+- `league-round-lifecycle.test.ts` runs under plain `npm test` against a scratch
+  database it builds from `db/migrations`, so it never touches Neon. How to point
+  it, and when it skips versus hard-fails, is in the root README's
+  [Integration tests](README.md#integration-tests) section.
 
 ## Local dev
 
