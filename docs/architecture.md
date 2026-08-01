@@ -33,7 +33,7 @@ flowchart TB
     end
 
     agent ==>|"Bearer token<br/>POST /api/agent/events (heartbeat+laps)<br/>GET /api/agent/assignment<br/>POST /api/agent/checkout"| api
-    tv -->|"rotates boards · GET /api/leaderboards/{boards,board}<br/>GET /api/leaderboard/tonight"| api
+    tv -->|"rotates boards · GET /api/leaderboards/{boards,board}<br/>GET /api/leaderboard/tonight · GET /api/league/season"| api
     driver -->|"session cookie<br/>/api/checkin · /api/me/laps · /api/auth/*"| api
     staff -->|"staff cookie<br/>/api/staff/*"| api
 
