@@ -53,16 +53,22 @@ export async function withTransaction<T>(
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await db().connect();
+  // A rollback that itself fails leaves the connection in an unknown state -
+  // possibly still inside the transaction. Returning that to the pool hands the
+  // next request a poisoned client, so it gets destroyed instead.
+  let rollbackFailed = false;
   try {
     await client.query("begin");
     const result = await fn(client);
     await client.query("commit");
     return result;
   } catch (error) {
-    await client.query("rollback").catch(() => {});
+    await client.query("rollback").catch(() => {
+      rollbackFailed = true;
+    });
     throw error;
   } finally {
-    client.release();
+    client.release(rollbackFailed);
   }
 }
 

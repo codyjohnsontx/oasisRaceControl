@@ -1,17 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { formatGap, formatLapTime } from "@/lib/time";
 import {
   comboLabel,
   invalidReasonLabel,
   MAX_ROUND_DRIVERS,
+  ROUND_LAP_CAP,
   roundLabel,
   type LeagueRound,
   type RoundLap,
   type RoundResult,
 } from "@/lib/league";
+import { useVisiblePoll } from "@/components/use-visible-poll";
 
 type Props = {
   round: LeagueRound;
@@ -19,6 +21,9 @@ type Props = {
   /** Every attributed lap, grouped by driver, so the first tap expands with no
    *  network round trip. Polling then refreshes only what is open. */
   initialLaps: Record<string, RoundLap[]>;
+  /** The round had more laps than one request returns - say so rather than
+   *  showing a subset as if it were the whole round. */
+  initialTruncated: boolean;
   viewerDriverId: string | null;
 };
 
@@ -38,9 +43,20 @@ function roundUrl(roundId: string, driverIds: string[]): string {
  * targets, times sit in a fixed mono column so they compare down the page, and
  * nothing needs a horizontal scroll at 390px.
  */
-export function LeagueRound({ round, initialField, initialLaps, viewerDriverId }: Props) {
+export function LeagueRound({
+  round,
+  initialField,
+  initialLaps,
+  initialTruncated,
+  viewerDriverId,
+}: Props) {
+  // The round itself is state, not just a prop: staff can close it while a
+  // customer has this page open, and the poll response is how that phone finds
+  // out. Reading `closed_at` off the prop would leave it polling all night.
+  const [current, setCurrent] = useState(round);
   const [field, setField] = useState(initialField);
   const [laps, setLaps] = useState(initialLaps);
+  const [truncated, setTruncated] = useState(initialTruncated);
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     // Your own row starts open - the first thing a driver wants after a stint
     // is their own laps, without hunting for their name.
@@ -50,7 +66,7 @@ export function LeagueRound({ round, initialField, initialLaps, viewerDriverId }
     return new Set(viewerRow ? [viewerRow.driver_id] : []);
   });
 
-  const isOpen = round.closed_at === null;
+  const isOpen = current.closed_at === null;
 
   // One request per tick, carrying the ranking and every expanded driver's
   // laps - a phone with twenty rows open still polls once.
@@ -60,22 +76,25 @@ export function LeagueRound({ round, initialField, initialLaps, viewerDriverId }
       const res = await fetch(roundUrl(round.id, open), { cache: "no-store" });
       if (!res.ok) return; // keep the last good board on a transient failure
       const payload = (await res.json()) as {
+        round?: LeagueRound;
         field?: RoundResult[];
         laps?: Record<string, RoundLap[]> | null;
+        truncated?: boolean;
       };
+      if (payload.round) setCurrent(payload.round);
       if (Array.isArray(payload.field)) setField(payload.field);
       if (payload.laps) setLaps((prev) => ({ ...prev, ...payload.laps }));
+      if (typeof payload.truncated === "boolean" && open.length > 0) {
+        setTruncated(payload.truncated);
+      }
     } catch {
       // transient network failure - the next tick tries again
     }
   }, [round.id, expanded]);
 
-  useEffect(() => {
-    // A closed round can't change under you, so it never polls.
-    if (!isOpen) return;
-    const poll = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(poll);
-  }, [isOpen, refresh]);
+  // A closed round can't change under you, so it stops polling - including
+  // when it closes while this page is open.
+  useVisiblePoll(refresh, POLL_MS, isOpen);
 
   function toggle(driverId: string) {
     setExpanded((prev) => {
@@ -116,13 +135,13 @@ export function LeagueRound({ round, initialField, initialLaps, viewerDriverId }
             ← Season
           </Link>
           <span className="text-muted text-xs uppercase tracking-[0.18em] truncate">
-            {round.season_name}
+            {current.season_name}
           </span>
         </div>
 
         <div className="flex items-start justify-between gap-3">
           <h1 className="font-display gradient-text text-3xl sm:text-4xl font-black tracking-tight uppercase min-w-0">
-            {roundLabel(round)}
+            {roundLabel(current)}
           </h1>
           <span
             className={`shrink-0 mt-1 flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] ${
@@ -136,11 +155,17 @@ export function LeagueRound({ round, initialField, initialLaps, viewerDriverId }
           </span>
         </div>
 
-        <p className="text-muted text-sm leading-snug">{comboLabel(round)}</p>
+        <p className="text-muted text-sm leading-snug">{comboLabel(current)}</p>
         <p className="text-muted text-xs">
-          {round.round_date} · {field.length} {field.length === 1 ? "driver" : "drivers"} ·{" "}
+          {current.round_date} · {field.length} {field.length === 1 ? "driver" : "drivers"} ·{" "}
           {totalLaps} {totalLaps === 1 ? "lap" : "laps"}
         </p>
+        {truncated && (
+          <p className="text-sunset text-xs">
+            This round ran past {ROUND_LAP_CAP.toLocaleString("en-US")} laps - the
+            expanded lists show the earliest ones.
+          </p>
+        )}
       </header>
 
       <div className="gradient-rule h-1 rounded-full" />

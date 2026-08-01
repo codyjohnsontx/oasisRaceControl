@@ -76,7 +76,8 @@ create table league_rounds (
 -- floor actually runs: one league night, ~20 rigs, one combo.
 create unique index one_open_round_venue_wide
   on league_rounds ((closed_at is null)) where closed_at is null;
-create index league_rounds_season_idx on league_rounds (season_id, round_number);
+-- No separate (season_id, round_number) index: the unique constraint above
+-- already builds one, and it serves both the season lookups and the ordering.
 
 -- ---------------------------------------------------------------------------
 -- The attribution rule, in one place. Every league query joins through this
@@ -105,3 +106,22 @@ join laps l
  and l.track_name = r.track_name
  and coalesce(l.track_config, '') = coalesce(r.track_config, '')
  and l.car_name = r.car_name;
+
+-- ---------------------------------------------------------------------------
+-- Indexes on laps for the two league reads. Both are additive; laps itself is
+-- untouched.
+
+-- The attribution join above. The existing laps_combo_idx leads with the same
+-- three columns but stores track_config raw, and the join compares
+-- coalesce(track_config, ''), which a plain column index cannot answer - so
+-- the middle key is unusable there. This expression index matches the join's
+-- actual key, with completed_at last for the round's time window.
+create index laps_league_attribution_idx
+  on laps (track_name, (coalesce(track_config, '')), car_name, completed_at);
+
+-- The staff dashboard's combo history ("what has the venue run lately?"),
+-- which scans a 90-day window and groups by combo. completed_at leads because
+-- the window is the selective part; the combo columns follow so the aggregate
+-- can be answered from the index alone.
+create index laps_recent_combo_idx
+  on laps (completed_at desc, track_name, track_config, car_name);

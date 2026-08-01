@@ -46,17 +46,21 @@ describe("roundPoints", () => {
 
 describe("computeSeasonStandings", () => {
   it("sums points across rounds and ranks by total", () => {
+    // Round 2 is fed before round 1 for both drivers: the query orders by
+    // round, but nothing guarantees that, and the per-driver round list drives
+    // the season grid on the wall. Ascending input would assert nothing.
     const standings = computeSeasonStandings([
-      result({ driver_id: "a", position: 1 }),
-      result({ driver_id: "b", position: 2 }),
       result({ driver_id: "a", round_id: "round-2", round_number: 2, position: 3 }),
       result({ driver_id: "b", round_id: "round-2", round_number: 2, position: 1 }),
+      result({ driver_id: "a", position: 1 }),
+      result({ driver_id: "b", position: 2 }),
     ]);
 
     expect(standings.map((s) => s.driver_id)).toEqual(["b", "a"]);
     expect(standings[0].points).toBe(POINTS_BY_POSITION[1] + POINTS_BY_POSITION[0]);
     expect(standings[1].points).toBe(POINTS_BY_POSITION[0] + POINTS_BY_POSITION[2]);
     expect(standings[0].rounds.map((r) => r.round_number)).toEqual([1, 2]);
+    expect(standings[1].rounds.map((r) => r.round_number)).toEqual([1, 2]);
   });
 
   it("counts wins, podiums, best finish and rounds entered", () => {

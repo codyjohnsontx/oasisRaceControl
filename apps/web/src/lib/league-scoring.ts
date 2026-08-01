@@ -140,6 +140,11 @@ export function computeSeasonStandings(results: RoundResult[]): SeasonStanding[]
       b.wins - a.wins ||
       b.podiums - a.podiums ||
       b.rounds_entered - a.rounds_entered ||
-      a.display_name.localeCompare(b.display_name),
+      // Fixed locale: the runtime default varies by machine and ICU build, and
+      // the wall board must not reorder itself between two servers. driver_id
+      // then makes the comparator a total order regardless of the display_name
+      // uniqueness the schema happens to enforce.
+      a.display_name.localeCompare(b.display_name, "en-US") ||
+      (a.driver_id < b.driver_id ? -1 : a.driver_id > b.driver_id ? 1 : 0),
   );
 }

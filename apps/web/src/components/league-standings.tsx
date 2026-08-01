@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { formatLapTime } from "@/lib/time";
 import { comboLabel, roundLabel, type LeagueRound } from "@/lib/league";
 import { SCORING_RULE_SUMMARY, type SeasonStanding } from "@/lib/league-scoring";
+import { useVisiblePoll } from "@/components/use-visible-poll";
 
 type Props = {
   season: { id: string; name: string; league_name: string } | null;
@@ -152,10 +153,8 @@ export function LeagueStandings({
     }
   }, [season]);
 
-  useEffect(() => {
-    const poll = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(poll);
-  }, [refresh]);
+  // No season means nothing to poll for, so no timer is created at all.
+  useVisiblePoll(refresh, POLL_MS, season !== null);
 
   const liveRound = rounds.find((round) => round.closed_at === null) ?? null;
 

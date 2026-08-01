@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { query, queryOne, withTransaction } from "./db";
+import { ROUND_LAP_CAP } from "./league";
 import type { LeagueRound, LeagueSeason, RoundLap, RoundResult } from "./league";
 
 /**
@@ -180,13 +181,16 @@ export function getSeasonRoundResults(seasonId: string): Promise<RoundResult[]> 
  * of the comparison view. Pass driverIds to fetch just those drivers' laps;
  * one call covers every expanded row on the round page.
  *
- * The cap is a safety rail, not a product limit: a full league night at 25
- * rigs is a few hundred laps.
+ * The cap is a safety rail, but a reachable one: 25 rigs running two-minute
+ * laps for a four-hour evening is roughly 3000 laps. So the query asks for one
+ * row past the cap and reports whether it hit it - a comparison view that
+ * quietly drops a driver's laps would be worse than one that says it is
+ * showing a subset.
  */
 export async function getRoundLaps(
   roundId: string,
   driverIds?: string[],
-): Promise<RoundLap[]> {
+): Promise<{ laps: RoundLap[]; truncated: boolean }> {
   const rows = await query<Omit<RoundLap, "completed_at"> & { completed_at: Date | string }>(
     `select rl.lap_id as id, rl.driver_id, rl.lap_number, rl.lap_time_ms,
             rl.incident_delta, rl.is_valid, rl.invalid_reason, rl.completed_at
@@ -195,14 +199,18 @@ export async function getRoundLaps(
      where rl.round_id = $1
        and ($2::uuid[] is null or rl.driver_id = any ($2::uuid[]))
      order by rl.completed_at asc, rl.lap_number asc nulls last, rl.lap_id asc
-     limit 2000`,
-    [roundId, driverIds ?? null],
+     limit $3`,
+    [roundId, driverIds ?? null, ROUND_LAP_CAP + 1],
   );
 
-  return rows.map((row) => ({
-    ...row,
-    completed_at: new Date(row.completed_at).toISOString(),
-  }));
+  const truncated = rows.length > ROUND_LAP_CAP;
+  return {
+    laps: (truncated ? rows.slice(0, ROUND_LAP_CAP) : rows).map((row) => ({
+      ...row,
+      completed_at: new Date(row.completed_at).toISOString(),
+    })),
+    truncated,
+  };
 }
 
 /** How many drivers are in a round's field. Same rule as getRoundField, without

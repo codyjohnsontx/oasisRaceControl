@@ -40,7 +40,7 @@ export async function GET(
     const round = await getRound(roundId);
     if (!round) return Response.json({ error: "not_found" }, { status: 404 });
 
-    const [field, lapRows] = await Promise.all([
+    const [field, lapPage] = await Promise.all([
       getRoundField(roundId),
       driverIds ? getRoundLaps(roundId, driverIds) : Promise.resolve(null),
     ]);
@@ -48,10 +48,13 @@ export async function GET(
     // Every requested driver gets a key, so a driver whose laps all went away
     // reads as empty rather than leaving the client's last copy on screen.
     const laps = driverIds
-      ? { ...Object.fromEntries(driverIds.map((id) => [id, []])), ...lapsByDriver(lapRows ?? []) }
+      ? {
+          ...Object.fromEntries(driverIds.map((id) => [id, []])),
+          ...lapsByDriver(lapPage?.laps ?? []),
+        }
       : null;
 
-    return Response.json({ round, field, laps });
+    return Response.json({ round, field, laps, truncated: lapPage?.truncated ?? false });
   } catch (error) {
     console.error("[league/rounds] failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });

@@ -79,6 +79,13 @@ export type LeagueSeason = {
  */
 export const MAX_ROUND_DRIVERS = 60;
 
+/**
+ * Most laps one round request returns. Reachable on a long night (25 rigs on
+ * two-minute laps for four hours is roughly 3000), so callers are told when
+ * they hit it rather than silently receiving a subset - see getRoundLaps.
+ */
+export const ROUND_LAP_CAP = 2000;
+
 // ---- Pure helpers (unit-tested; no DB) ------------------------------------
 
 /** "Week 3" if staff named it, otherwise "Round 3". */
@@ -99,24 +106,27 @@ export function comboLabel(
  * version, and anything unmapped degrades to the enum with the underscores
  * taken out rather than to nothing.
  */
-const INVALID_REASON_LABELS: Record<string, string> = {
-  INCIDENT_LIMIT_EXCEEDED: "incident",
-  OFF_TRACK: "off track",
-  PIT_LANE_LAP: "pit lap",
-  INCOMPLETE_LAP: "incomplete",
-  SESSION_RESET: "session reset",
-  WRONG_TRACK_CONFIGURATION: "wrong layout",
-  WRONG_CAR: "wrong car",
-  WRONG_CAR_CLASS: "wrong class",
-  WRONG_SETUP_MODE: "wrong setup",
-  WRONG_CHALLENGE_CONFIGURATION: "wrong config",
-  DUPLICATE_EVENT: "duplicate",
-  MANUALLY_INVALIDATED: "voided by staff",
-};
+// A Map, not an object: the lookup key is a database string, and a plain
+// object would resolve inherited keys like "constructor" to something that is
+// not a label at all.
+const INVALID_REASON_LABELS = new Map<string, string>([
+  ["INCIDENT_LIMIT_EXCEEDED", "incident"],
+  ["OFF_TRACK", "off track"],
+  ["PIT_LANE_LAP", "pit lap"],
+  ["INCOMPLETE_LAP", "incomplete"],
+  ["SESSION_RESET", "session reset"],
+  ["WRONG_TRACK_CONFIGURATION", "wrong layout"],
+  ["WRONG_CAR", "wrong car"],
+  ["WRONG_CAR_CLASS", "wrong class"],
+  ["WRONG_SETUP_MODE", "wrong setup"],
+  ["WRONG_CHALLENGE_CONFIGURATION", "wrong config"],
+  ["DUPLICATE_EVENT", "duplicate"],
+  ["MANUALLY_INVALIDATED", "voided by staff"],
+]);
 
 export function invalidReasonLabel(reason: string | null): string {
   if (!reason) return "invalid";
-  return INVALID_REASON_LABELS[reason] ?? reason.replaceAll("_", " ").toLowerCase();
+  return INVALID_REASON_LABELS.get(reason) ?? reason.replaceAll("_", " ").toLowerCase();
 }
 
 /** Group a round's laps by driver, preserving each driver's lap order. */

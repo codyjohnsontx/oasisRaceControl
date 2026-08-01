@@ -54,6 +54,7 @@ flowchart TB
    │  /r/[token]   │  /api/checkin    │  ┌────────────────────┐  │
    │  /me          │  /api/me/laps    │  │ Pages / /me /tv /r │  │
    └───────────────┘  /api/auth/*     │  │  /staff  /league   │  │
+                                      │  │  /league/[roundId] │  │
    ┌───────────────┐                  │  ├────────────────────┤  │
    │ Staff device  │──staff cookie───▶│  │ API routes         │  │
    │  /staff       │  /api/staff/*    │  │ (serverless funcs) │  │

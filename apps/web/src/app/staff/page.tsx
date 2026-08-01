@@ -21,7 +21,7 @@ export default async function StaffPage() {
 
   // Failures throw to the error boundary — an empty dashboard that's actually
   // a failed query would mislead staff into thinking every rig is free.
-  const [rigs, laps, openRound, season, comboOptions, todaysCombo] = await Promise.all([
+  const [rigs, laps, openRound, season, todaysCombo] = await Promise.all([
     query<RigStatusRow>("select * from v_rig_status"),
     query<StaffLapRow>(
       `select l.id, l.lap_time_ms, l.is_valid, l.invalid_reason, l.track_name,
@@ -35,19 +35,6 @@ export default async function StaffPage() {
     ),
     getOpenRound(),
     getActiveSeason(),
-    // Combos the venue has actually run, so opening a round is picking from a
-    // list rather than retyping "Spa-Francorchamps" on a busy Wednesday. Most
-    // recently run first and bounded to a season of history: this page
-    // re-renders every 15 seconds on the venue tablet, and staff want the
-    // combos currently in rotation, not the alphabetically-first sixty ever.
-    query<ComboOption>(
-      `select track_name, track_config, car_name
-       from laps
-       where completed_at > now() - interval '90 days'
-       group by track_name, track_config, car_name
-       order by max(completed_at) desc
-       limit 60`,
-    ),
     queryOne<ComboOption>(
       `select track_name, track_config, car_name
        from featured_combos where combo_date = $1`,
@@ -55,9 +42,25 @@ export default async function StaffPage() {
     ),
   ]);
 
-  const [recentRounds, openRoundDrivers] = await Promise.all([
+  const [recentRounds, openRoundDrivers, comboOptions] = await Promise.all([
     season ? listSeasonRounds(season.id) : Promise.resolve([]),
     openRound ? countRoundDrivers(openRound.id) : Promise.resolve(0),
+    // Combos the venue has actually run, so opening a round is picking from a
+    // list rather than retyping "Spa-Francorchamps" on a busy Wednesday. Most
+    // recently run first and bounded to a season of history: staff want the
+    // combos currently in rotation, not the alphabetically-first sixty ever.
+    // Only the open-round form uses it, so while a round is open this page
+    // re-renders every 15 seconds without paying for the aggregate at all.
+    openRound
+      ? Promise.resolve([])
+      : query<ComboOption>(
+          `select track_name, track_config, car_name
+           from laps
+           where completed_at > now() - interval '90 days'
+           group by track_name, track_config, car_name
+           order by max(completed_at) desc
+           limit 60`,
+        ),
   ]);
 
   return (

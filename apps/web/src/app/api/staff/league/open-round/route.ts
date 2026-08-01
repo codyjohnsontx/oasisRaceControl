@@ -37,11 +37,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const trackConfig = input.trackConfig?.trim() ? input.trackConfig.trim() : null;
+  // The schema already trimmed these, so an all-whitespace layout arrives as ""
+  // and normalizes to null here.
+  const trackConfig = input.trackConfig || null;
 
   try {
     const round = await openLeagueRound({
-      name: input.name?.trim() || null,
+      name: input.name || null,
       trackName: input.trackName,
       trackConfig,
       carName: input.carName,

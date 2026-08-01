@@ -4,6 +4,14 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { comboLabel, roundLabel, type LeagueRound } from "@/lib/league";
+import { VENUE_TIMEZONE } from "@/lib/venue";
+
+const REQUEST_TIMEOUT_MS = 10_000;
+
+/** Server-side limits, mirrored so the form can't submit a value the API will
+ *  reject (see the zod schema in api/staff/league/open-round). */
+const MAX_NAME = 80;
+const MAX_COMBO_FIELD = 120;
 
 export type ComboOption = {
   track_name: string;
@@ -50,14 +58,25 @@ export function StaffLeaguePanel({
   async function post(url: string, body: object) {
     setBusy(true);
     setError(null);
+    // The venue tablet is on shop wifi; without a deadline a dropped request
+    // leaves the button disabled with no explanation until staff reload.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
       if (!res.ok) {
         const payload = (await res.json().catch(() => ({}))) as { error?: string };
+        if (payload.error === "not_open") {
+          // Someone else already closed it - the page is simply stale.
+          setError("That round is already closed or no longer available.");
+          router.refresh();
+          return;
+        }
         setError(
           payload.error === "round_already_open"
             ? "A round is already open. Close it first."
@@ -66,9 +85,14 @@ export function StaffLeaguePanel({
         return;
       }
       router.refresh();
-    } catch {
-      setError("Network problem - nothing was changed.");
+    } catch (error) {
+      setError(
+        (error as Error)?.name === "AbortError"
+          ? "Timed out - refresh to check whether it went through."
+          : "Network problem - nothing was changed.",
+      );
     } finally {
+      clearTimeout(timeout);
       setBusy(false);
     }
   }
@@ -121,7 +145,12 @@ export function StaffLeaguePanel({
             <p className="text-muted text-sm truncate">{comboLabel(openRound)}</p>
             <p className="text-muted text-xs">
               {openRoundDrivers} {openRoundDrivers === 1 ? "driver" : "drivers"} so far ·
-              opened {new Date(openRound.opened_at).toLocaleTimeString()}
+              {/* Venue time, not the tablet's - a device on the wrong zone
+                  would otherwise report the round opening at the wrong hour. */}
+              opened{" "}
+              {new Date(openRound.opened_at).toLocaleTimeString("en-US", {
+                timeZone: VENUE_TIMEZONE,
+              })}
             </p>
           </div>
           {/* Two-tap confirm rather than window.confirm: a native dialog on the
@@ -174,6 +203,7 @@ export function StaffLeaguePanel({
               <input
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
+                maxLength={MAX_NAME}
                 placeholder="Week 3 (optional)"
                 className="bg-bg border border-edge rounded-lg px-3 py-2"
               />
@@ -184,6 +214,7 @@ export function StaffLeaguePanel({
                 required
                 value={form.carName}
                 onChange={(e) => setForm({ ...form, carName: e.target.value })}
+                maxLength={MAX_COMBO_FIELD}
                 list="league-cars"
                 className="bg-bg border border-edge rounded-lg px-3 py-2"
               />
@@ -194,6 +225,7 @@ export function StaffLeaguePanel({
                 required
                 value={form.trackName}
                 onChange={(e) => setForm({ ...form, trackName: e.target.value })}
+                maxLength={MAX_COMBO_FIELD}
                 list="league-tracks"
                 className="bg-bg border border-edge rounded-lg px-3 py-2"
               />
@@ -203,6 +235,7 @@ export function StaffLeaguePanel({
               <input
                 value={form.trackConfig}
                 onChange={(e) => setForm({ ...form, trackConfig: e.target.value })}
+                maxLength={MAX_COMBO_FIELD}
                 list="league-configs"
                 placeholder="optional"
                 className="bg-bg border border-edge rounded-lg px-3 py-2"

@@ -25,7 +25,13 @@ function serverUrl(): string | null {
   if (!configured) return null;
   try {
     const { hostname } = new URL(configured);
-    const local = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+    // WHATWG URL keeps the brackets on an IPv6 host, so "[::1]" is the form
+    // that actually turns up here; the bare one is accepted for good measure.
+    const local =
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname === "[::1]";
     return local ? configured : null;
   } catch {
     return null;
@@ -288,5 +294,43 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
       valid_lap_count: 0,
     });
     expect(await league.countRoundDrivers(round.id)).toBe(1);
+  });
+
+  it("rolls the losing round and its season back when one is already open", async () => {
+    async function counts() {
+      const row = await dbModule.queryOne<{
+        rounds: number;
+        seasons: number;
+        leagues: number;
+      }>(
+        `select (select count(*) from league_rounds)::int  as rounds,
+                (select count(*) from league_seasons)::int as seasons,
+                (select count(*) from leagues)::int        as leagues`,
+      );
+      return row!;
+    }
+
+    const first = await league.openLeagueRound(WEEK_ONE);
+    const before = await counts();
+
+    // one_open_round_venue_wide rejects the second round. The whole
+    // transaction has to go with it - a leftover season would be picked up by
+    // getActiveSeason() later and quietly split the championship in two.
+    await expect(
+      league.openLeagueRound({
+        name: "Week 2",
+        trackName: "Monza",
+        trackConfig: null,
+        carName: "Mazda MX-5",
+        incidentLimit: 0,
+      }),
+    ).rejects.toMatchObject({ code: "23505" });
+
+    expect(await counts()).toEqual(before);
+
+    // The round that did win is untouched, and still the open one.
+    const open = await league.getOpenRound();
+    expect(open?.id).toBe(first.id);
+    expect(await featuredCombo()).toMatchObject({ track_name: WEEK_ONE.trackName });
   });
 });
