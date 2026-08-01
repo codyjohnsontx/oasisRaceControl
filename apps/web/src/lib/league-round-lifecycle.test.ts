@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { computeValidity, type FeaturedCombo } from "./validity";
-import { venueToday } from "./venue";
+import { venueMonthName, venueToday } from "./venue";
 
 /**
  * League night's effect on the rest of the venue day, end to end against a
@@ -296,7 +296,7 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
     expect(await league.countRoundDrivers(round.id)).toBe(1);
   });
 
-  it("rolls the losing round and its season back when one is already open", async () => {
+  it("rolls the losing round, its season and its league back when one is already open", async () => {
     async function counts() {
       const row = await dbModule.queryOne<{
         rounds: number;
@@ -310,27 +310,116 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
       return row!;
     }
 
-    const first = await league.openLeagueRound(WEEK_ONE);
-    const before = await counts();
+    /** Wait until some backend is blocked on a lock - the losing insert parked
+     *  on the winner's uncommitted row. Deterministic without a sleep. */
+    async function waitForBlockedInsert() {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const row = await dbModule.queryOne<{ waiting: number }>(
+          `select count(*)::int as waiting from pg_stat_activity
+           where datname = current_database() and wait_event_type = 'Lock'`,
+        );
+        if ((row?.waiting ?? 0) > 0) return;
+        if (Date.now() > deadline) throw new Error("insert never blocked");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
 
-    // one_open_round_venue_wide rejects the second round. The whole
-    // transaction has to go with it - a leftover season would be picked up by
-    // getActiveSeason() later and quietly split the championship in two.
-    await expect(
-      league.openLeagueRound({
+    // Both sides must start with NO committed open season, or the loser's
+    // ensureOpenSeasonTx reuses the winner's and the season/league assertions
+    // below can't fail whatever the rollback does. So the winner is held
+    // uncommitted on its own client while the real openLeagueRound() runs: it
+    // sees no open season, builds its own league and season, then parks on
+    // one_open_round_venue_wide until the winner commits.
+    const winner = await dbModule.db().connect();
+    let losing: ReturnType<typeof league.openLeagueRound> | undefined;
+    try {
+      await winner.query("begin");
+      const winningLeague = await winner.query<{ id: string }>(
+        "insert into leagues (name) values ($1) returning id",
+        ["Wednesday Night League"],
+      );
+      const winningSeason = await winner.query<{ id: string }>(
+        "insert into league_seasons (league_id, name) values ($1, $2) returning id",
+        [winningLeague.rows[0].id, "August 2026"],
+      );
+      const winningRound = await winner.query<{ id: string }>(
+        `insert into league_rounds (season_id, round_number, name, track_name, track_config, car_name)
+         values ($1, 1, $2, $3, $4, $5) returning id`,
+        [
+          winningSeason.rows[0].id,
+          WEEK_ONE.name,
+          WEEK_ONE.trackName,
+          WEEK_ONE.trackConfig,
+          WEEK_ONE.carName,
+        ],
+      );
+
+      losing = league.openLeagueRound({
         name: "Week 2",
         trackName: "Monza",
         trackConfig: null,
         carName: "Mazda MX-5",
         incidentLimit: 0,
-      }),
-    ).rejects.toMatchObject({ code: "23505" });
+      });
+      losing.catch(() => {}); // it is awaited below; don't trip on the gap
 
-    expect(await counts()).toEqual(before);
+      await waitForBlockedInsert();
+      await winner.query("commit");
 
-    // The round that did win is untouched, and still the open one.
-    const open = await league.getOpenRound();
-    expect(open?.id).toBe(first.id);
-    expect(await featuredCombo()).toMatchObject({ track_name: WEEK_ONE.trackName });
+      await expect(losing).rejects.toMatchObject({ code: "23505" });
+
+      const open = await league.getOpenRound();
+      expect(open?.id).toBe(winningRound.rows[0].id);
+    } catch (error) {
+      await winner.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      winner.release();
+    }
+
+    // The whole losing transaction had to go, not just its round: a leftover
+    // season would be picked up by getActiveSeason() later and quietly split
+    // the championship in two, and a leftover league would outlive it.
+    expect(await counts()).toEqual({ rounds: 1, seasons: 1, leagues: 1 });
+    // ...including the featured-combo overwrite it never got to commit.
+    expect(await featuredCombo()).toBeNull();
+  });
+
+  it("ends the running season and starts the next one in its place", async () => {
+    const round = await league.openLeagueRound(WEEK_ONE);
+
+    // A live round would be orphaned out of the standings, so the roll is
+    // refused rather than silently stranding it.
+    expect(await league.rollLeagueSeason()).toMatchObject({
+      status: "round_open",
+      roundId: round.id,
+    });
+
+    await league.closeLeagueRound(round.id);
+
+    const before = await league.getActiveSeason();
+    const rolled = await league.rollLeagueSeason();
+    if (rolled.status !== "rolled") throw new Error(`did not roll: ${rolled.status}`);
+    expect(rolled.endedSeasonId).toBe(before!.id);
+
+    // Exactly one season is open, it is the new one, and the old one keeps its
+    // rounds - so the standings board starts clean without losing history.
+    const after = await league.getActiveSeason();
+    expect(after!.id).toBe(rolled.seasonId);
+    expect(after!.name).toBe(venueMonthName());
+    expect(after!.league_id).toBe(before!.league_id);
+    expect((await league.getSeason(before!.id))!.ended_on).toBe(venueToday());
+    expect(await league.listSeasonRounds(before!.id)).toHaveLength(1);
+    expect(await league.listSeasonRounds(after!.id)).toHaveLength(0);
+
+    // The next round lands in the new season, numbered from one again.
+    const next = await league.openLeagueRound(WEEK_ONE);
+    expect(next.seasonId).toBe(after!.id);
+    expect(next.roundNumber).toBe(1);
+  });
+
+  it("has nothing to roll when no season has ever been opened", async () => {
+    expect(await league.rollLeagueSeason()).toEqual({ status: "no_season" });
   });
 });

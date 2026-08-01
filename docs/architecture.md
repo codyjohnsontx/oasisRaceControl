@@ -81,7 +81,7 @@ flowchart TB
 | **TV browser** | none (public) | `GET /api/leaderboards/boards`, `GET /api/leaderboards/board`, `GET /api/leaderboard/tonight` | board rotates 15s · on-screen board refreshes 5s · board list 120s |
 | **Driver** | session cookie (JWT) | `/api/auth/{guest,login,register,logout,claim}`, `POST /api/checkin`, `GET /api/me/laps`, `POST /api/session/end` | on action · portal polls laps 5s |
 | **League board / round page** | none (public) | `GET /api/league/season`, `GET /api/league/rounds/[roundId]` | standings poll 10s · open round poll 6s (a closed round never polls) |
-| **Staff** | staff session cookie | `POST /api/staff/{login,logout,clear-rig,lap-validity,reset-pin}`, `POST /api/staff/league/{open-round,close-round}` | on action · dashboard refreshes 15s |
+| **Staff** | staff session cookie | `POST /api/staff/{login,logout,clear-rig,lap-validity,reset-pin}`, `POST /api/staff/league/{open-round,close-round,roll-season}` | on action · dashboard refreshes 15s |
 
 ## Key properties
 

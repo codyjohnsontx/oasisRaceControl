@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { lapsByDriver, MAX_ROUND_DRIVERS } from "@/lib/league";
+import { lapsByDriver, MAX_ROUND_DRIVERS, roundLapsTruncated } from "@/lib/league";
 import { getRound, getRoundField, getRoundLaps } from "@/lib/league-queries";
 
 /**
@@ -54,7 +54,16 @@ export async function GET(
         }
       : null;
 
-    return Response.json({ round, field, laps, truncated: lapPage?.truncated ?? false });
+    // Two separate facts, deliberately not one flag: `truncated` is about this
+    // request's driver filter, `roundTruncated` is about the whole round. A
+    // poll asking for one expanded row must never clear the round-level notice.
+    return Response.json({
+      round,
+      field,
+      laps,
+      truncated: lapPage?.truncated ?? false,
+      roundTruncated: roundLapsTruncated(field),
+    });
   } catch (error) {
     console.error("[league/rounds] failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { query, queryOne } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
-import { venueToday } from "@/lib/venue";
+import { venueMonthName, venueToday } from "@/lib/venue";
 import {
   countRoundDrivers,
   getActiveSeason,
@@ -70,6 +70,7 @@ export default async function StaffPage() {
       laps={laps}
       league={{
         seasonName: season?.name ?? null,
+        nextSeasonName: venueMonthName(),
         openRound,
         openRoundDrivers,
         recentRounds: recentRounds.slice(0, 6),

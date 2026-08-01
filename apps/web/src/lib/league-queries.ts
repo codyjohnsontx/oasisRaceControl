@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { query, queryOne, withTransaction } from "./db";
 import { ROUND_LAP_CAP } from "./league";
 import type { LeagueRound, LeagueSeason, RoundLap, RoundResult } from "./league";
+import { venueMonthName } from "./venue";
 
 /**
  * Server-only league queries (imports pg). Kept separate from league.ts so
@@ -276,9 +277,68 @@ async function ensureOpenSeasonTx(client: PoolClient): Promise<{ id: string }> {
 
   const season = await client.query<{ id: string }>(
     "insert into league_seasons (league_id, name) values ($1, $2) returning id",
-    [leagueId, "Season 1"],
+    [leagueId, venueMonthName()],
   );
   return season.rows[0];
+}
+
+/**
+ * End the season that is running and start the next one, in one transaction so
+ * the venue is never left with no open season for rounds to land in.
+ *
+ * A season is a calendar month, so this is a routine monthly job for whoever is
+ * on shift, not a DBA operation - but the trigger stays explicitly human. The
+ * name is the only thing derived from the calendar; nothing rolls a season over
+ * on a date boundary by itself.
+ *
+ * Refuses while a round is open rather than orphaning tonight's round in a
+ * season the standings no longer show.
+ */
+export async function rollLeagueSeason(): Promise<
+  | { status: "rolled"; endedSeasonId: string; endedSeasonName: string; seasonId: string; seasonName: string }
+  | { status: "round_open"; roundId: string }
+  | { status: "no_season" }
+> {
+  return withTransaction(async (client) => {
+    // Locked before anything is written, so a double-tap on the venue tablet
+    // ends one season rather than ending the replacement it just created: the
+    // second transaction re-checks `ended_on is null` after taking the lock and
+    // comes back empty.
+    const current = await client.query<{ id: string; league_id: string; name: string }>(
+      `select id, league_id, name from league_seasons
+       where ended_on is null
+       order by started_on desc, created_at desc
+       limit 1
+       for update`,
+    );
+    const season = current.rows[0];
+    if (!season) return { status: "no_season" as const };
+
+    const open = await client.query<{ id: string }>(
+      "select id from league_rounds where closed_at is null limit 1",
+    );
+    if (open.rows[0]) {
+      return { status: "round_open" as const, roundId: open.rows[0].id };
+    }
+
+    await client.query(
+      "update league_seasons set ended_on = venue_today() where id = $1",
+      [season.id],
+    );
+
+    const next = await client.query<{ id: string; name: string }>(
+      "insert into league_seasons (league_id, name) values ($1, $2) returning id, name",
+      [season.league_id, venueMonthName()],
+    );
+
+    return {
+      status: "rolled" as const,
+      endedSeasonId: season.id,
+      endedSeasonName: season.name,
+      seasonId: next.rows[0].id,
+      seasonName: next.rows[0].name,
+    };
+  });
 }
 
 /**

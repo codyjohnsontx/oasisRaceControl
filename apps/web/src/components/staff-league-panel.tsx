@@ -13,6 +13,20 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_NAME = 80;
 const MAX_COMBO_FIELD = 120;
 
+/** A Map, not an object: the key is an error string off the wire, and a plain
+ *  object would resolve inherited keys like "constructor" to a non-message. */
+const ERROR_MESSAGES = new Map<string, string>([
+  // Someone else already closed it - this page is simply stale.
+  ["not_open", "That round is already closed or no longer available."],
+  ["round_already_open", "A round is already open. Close it first."],
+  ["round_open", "Close tonight's round before you end the season."],
+  ["no_season", "There is no open season to end - it has already been rolled over."],
+]);
+
+/** Errors that mean this page is behind the database rather than that the
+ *  action was wrong, so re-reading fixes what staff are looking at. */
+const STALE_ERRORS = new Set(["not_open", "no_season"]);
+
 export type ComboOption = {
   track_name: string;
   track_config: string | null;
@@ -21,6 +35,9 @@ export type ComboOption = {
 
 export type StaffLeagueProps = {
   seasonName: string | null;
+  /** What ending the season would name the next one - the current venue month.
+   *  Shown on the confirm so staff see the result before they commit to it. */
+  nextSeasonName: string;
   openRound: LeagueRound | null;
   /** Drivers already attributed to the open round. */
   openRoundDrivers: number;
@@ -38,6 +55,7 @@ export type StaffLeagueProps = {
  */
 export function StaffLeaguePanel({
   seasonName,
+  nextSeasonName,
   openRound,
   openRoundDrivers,
   recentRounds,
@@ -48,6 +66,7 @@ export function StaffLeaguePanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmingClose, setConfirmingClose] = useState(false);
+  const [confirmingRoll, setConfirmingRoll] = useState(false);
   const [form, setForm] = useState({
     name: "",
     trackName: todaysCombo?.track_name ?? "",
@@ -71,17 +90,9 @@ export function StaffLeaguePanel({
       });
       if (!res.ok) {
         const payload = (await res.json().catch(() => ({}))) as { error?: string };
-        if (payload.error === "not_open") {
-          // Someone else already closed it - the page is simply stale.
-          setError("That round is already closed or no longer available.");
-          router.refresh();
-          return;
-        }
-        setError(
-          payload.error === "round_already_open"
-            ? "A round is already open. Close it first."
-            : "That didn't go through - try again.",
-        );
+        const code = payload.error ?? "";
+        setError(ERROR_MESSAGES.get(code) ?? "That didn't go through - try again.");
+        if (STALE_ERRORS.has(code)) router.refresh();
         return;
       }
       router.refresh();
@@ -118,16 +129,63 @@ export function StaffLeaguePanel({
     void post("/api/staff/league/close-round", { roundId: openRound.id });
   }
 
+  function rollSeason() {
+    setConfirmingRoll(false);
+    void post("/api/staff/league/roll-season", {});
+  }
+
   return (
     <section>
-      <div className="flex items-baseline justify-between gap-3 mb-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2 mb-3">
         <h2 className="text-muted font-bold uppercase tracking-wider text-sm">
           League night{seasonName ? ` · ${seasonName}` : ""}
         </h2>
-        <Link href="/league" className="text-muted text-xs underline underline-offset-4">
-          Season standings
-        </Link>
+        {/* A season is a calendar month, so ending one is a monthly job for
+            whoever is on shift - same two-tap confirm as closing a round, and
+            the new season names itself. */}
+        <div className="flex items-baseline gap-3">
+          {seasonName &&
+            (confirmingRoll ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingRoll(false)}
+                  className="text-muted text-xs underline underline-offset-4"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={rollSeason}
+                  className="text-xs font-bold uppercase tracking-wider bg-accent text-bg rounded-md px-3 py-1.5 disabled:opacity-40"
+                >
+                  Confirm: start {nextSeasonName}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setConfirmingRoll(true)}
+                className="text-muted text-xs underline underline-offset-4 disabled:opacity-40"
+              >
+                End season
+              </button>
+            ))}
+          <Link href="/league" className="text-muted text-xs underline underline-offset-4">
+            Season standings
+          </Link>
+        </div>
       </div>
+
+      {confirmingRoll && (
+        <p className="text-muted text-xs mb-3">
+          {seasonName} is closed for good and {nextSeasonName} starts in its place, so
+          the standings board begins again from zero. Close tonight&apos;s round first
+          if one is still open.
+        </p>
+      )}
 
       {error && (
         <p role="alert" className="text-invalid text-sm mb-3">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { formatGap, formatLapTime } from "@/lib/time";
 import {
@@ -21,8 +21,9 @@ type Props = {
   /** Every attributed lap, grouped by driver, so the first tap expands with no
    *  network round trip. Polling then refreshes only what is open. */
   initialLaps: Record<string, RoundLap[]>;
-  /** The round had more laps than one request returns - say so rather than
-   *  showing a subset as if it were the whole round. */
+  /** The round had more laps than one request returns, so the payload above is
+   *  the earliest slice of it - say so rather than showing a subset as if it
+   *  were the whole round. */
   initialTruncated: boolean;
   viewerDriverId: string | null;
 };
@@ -79,13 +80,16 @@ export function LeagueRound({
         round?: LeagueRound;
         field?: RoundResult[];
         laps?: Record<string, RoundLap[]> | null;
-        truncated?: boolean;
+        roundTruncated?: boolean;
       };
       if (payload.round) setCurrent(payload.round);
       if (Array.isArray(payload.field)) setField(payload.field);
       if (payload.laps) setLaps((prev) => ({ ...prev, ...payload.laps }));
-      if (typeof payload.truncated === "boolean" && open.length > 0) {
-        setTruncated(payload.truncated);
+      // Round-level, never the per-request flag: this poll asked for the
+      // expanded rows only, and a subset that fits the cap says nothing about
+      // whether the round as a whole overran it.
+      if (typeof payload.roundTruncated === "boolean") {
+        setTruncated(payload.roundTruncated);
       }
     } catch {
       // transient network failure - the next tick tries again
@@ -96,17 +100,8 @@ export function LeagueRound({
   // when it closes while this page is open.
   useVisiblePoll(refresh, POLL_MS, isOpen);
 
-  function toggle(driverId: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(driverId)) next.delete(driverId);
-      else next.add(driverId);
-      return next;
-    });
-
-    // A driver who joined the round after this page rendered has no laps in
-    // the initial payload; fetch theirs on the tap rather than on the next poll.
-    if (!laps[driverId]) {
+  const loadDriverLaps = useCallback(
+    (driverId: string) => {
       void fetch(roundUrl(round.id, [driverId]), { cache: "no-store" })
         .then((res) => (res.ok ? res.json() : null))
         .then((body: { laps?: Record<string, RoundLap[]> | null } | null) => {
@@ -114,6 +109,39 @@ export function LeagueRound({
           if (Array.isArray(fresh)) setLaps((prev) => ({ ...prev, [driverId]: fresh }));
         })
         .catch(() => {});
+    },
+    [round.id],
+  );
+
+  // The viewer's own row opens without a tap, so it never passes through the
+  // completeness check in toggle(). On a round past the cap the first render
+  // carried only an earliest-first prefix of it, and a closed round never
+  // polls to fill the rest in.
+  const filledOpenRows = useRef(false);
+  useEffect(() => {
+    if (filledOpenRows.current || !initialTruncated) return;
+    filledOpenRows.current = true;
+    for (const driverId of expanded) loadDriverLaps(driverId);
+  }, [initialTruncated, expanded, loadDriverLaps]);
+
+  function toggle(driverId: string) {
+    const opening = !expanded.has(driverId);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(driverId)) next.delete(driverId);
+      else next.add(driverId);
+      return next;
+    });
+
+    // The cached list is the whole story only when it holds as many laps as
+    // the row itself claims. A driver who joined after this page rendered has
+    // none of theirs, and on a round past the cap the initial payload is an
+    // earliest-first prefix - either would otherwise expand to a silently
+    // short list, which is the loss this cap work exists to prevent.
+    const cached = laps[driverId];
+    const claimed = field.find((row) => row.driver_id === driverId)?.lap_count ?? 0;
+    if (opening && (!cached || cached.length < claimed)) {
+      loadDriverLaps(driverId);
     }
   }
 
@@ -162,8 +190,8 @@ export function LeagueRound({
         </p>
         {truncated && (
           <p className="text-sunset text-xs">
-            This round ran past {ROUND_LAP_CAP.toLocaleString("en-US")} laps - the
-            expanded lists show the earliest ones.
+            This round ran past {ROUND_LAP_CAP.toLocaleString("en-US")} laps, so they
+            don&apos;t all load at once - tap a driver to pull their laps in full.
           </p>
         )}
       </header>

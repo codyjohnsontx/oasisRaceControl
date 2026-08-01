@@ -129,6 +129,20 @@ export function invalidReasonLabel(reason: string | null): string {
   return INVALID_REASON_LABELS.get(reason) ?? reason.replaceAll("_", " ").toLowerCase();
 }
 
+/**
+ * Whether the round holds more laps than one unfiltered request returns.
+ *
+ * This is a different fact from the `truncated` a filtered getRoundLaps() call
+ * reports: that one is about the drivers that request asked for, and a poll
+ * asking for one expanded row is almost never truncated even on a round that
+ * is. Derived from the field's own lap counts (the same laps getRoundLaps
+ * counts, active drivers only) so it costs no extra query and stays true while
+ * the round grows.
+ */
+export function roundLapsTruncated(field: Pick<RoundResult, "lap_count">[]): boolean {
+  return field.reduce((sum, row) => sum + row.lap_count, 0) > ROUND_LAP_CAP;
+}
+
 /** Group a round's laps by driver, preserving each driver's lap order. */
 export function lapsByDriver(laps: RoundLap[]): Record<string, RoundLap[]> {
   const grouped: Record<string, RoundLap[]> = {};

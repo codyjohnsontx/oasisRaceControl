@@ -26,6 +26,12 @@ lands on Chrome's own error page and you cannot tell whether the app recovered.
 Under `next start` the page stays put and self-heals, which is what the kiosk does.
 ## League night
 
+- Shop owner's shape for the league: a season IS a calendar month, and a round runs
+  every Wednesday - roughly four or five rounds a season, twelve seasons a year.
+  So ending a season is a routine monthly job for whoever is on shift, not an admin
+  operation: `/staff` rolls it (`rollLeagueSeason` in `apps/web/src/lib/league-queries.ts`),
+  and a new season defaults to its venue-local month name (`venueMonthName`).
+  Nothing rolls a season on a date boundary by itself - the trigger stays human.
 - A round owns laps by time window + combo; laps carry no round id. The rule lives
   in one place, `v_league_round_laps` (`db/migrations/0002_league_night.sql`), and
   every league query joins through it. Change the rule there, nowhere else.
