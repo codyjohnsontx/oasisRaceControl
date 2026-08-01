@@ -50,6 +50,12 @@ const SCREEN_GROUPS: ScreenGroup[] = [
         match: (pathname) => pathname === "/leaderboards",
       },
       {
+        href: "/league",
+        label: "League",
+        description: "Season standings and round results",
+        match: (pathname) => pathname.startsWith("/league"),
+      },
+      {
         href: "/tv",
         label: "Live timing",
         description: "Front-of-store display",

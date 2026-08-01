@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
+import { StaffLeaguePanel, type StaffLeagueProps } from "@/components/staff-league-panel";
 
 export type RigStatusRow = {
   rig_id: string;
@@ -43,10 +44,12 @@ export function StaffDashboard({
   staffName,
   rigs,
   laps,
+  league,
 }: {
   staffName: string;
   rigs: RigStatusRow[];
   laps: StaffLapRow[];
+  league: StaffLeagueProps;
 }) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -158,6 +161,8 @@ export function StaffDashboard({
           })}
         </div>
       </section>
+
+      <StaffLeaguePanel {...league} />
 
       <section>
         <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">

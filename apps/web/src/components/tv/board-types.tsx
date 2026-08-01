@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { formatLapTime } from "@/lib/time";
 import { type Board, type BoardRow, trackKey } from "@/lib/leaderboards";
+import { roundLabel, type LeagueRound } from "@/lib/league";
+import type { SeasonStanding } from "@/lib/league-scoring";
+import { venueToday } from "@/lib/venue";
 import {
   type AnyTvBoardDefinition,
   type TvBoardProps,
@@ -15,13 +18,15 @@ import { ArcadeHighScores, SLOT_COUNT, type ArcadeEntry } from "./arcade-board";
  * The board types `/tv` knows how to play, and the order it plays them in.
  *
  * This file is the seam described in `lib/tv-rotation.ts`: adding a board type
- * (league standings, rig status, an event countdown) means adding one
- * `defineTvBoard` below, listing it in `TV_BOARD_TYPES`, and emitting its slides
- * from `buildRotation`. The rotation engine in `tv-screen.tsx` needs no change -
- * it only ever talks to a board through the `TvBoardDefinition` contract.
+ * (rig status, an event countdown) means adding one `defineTvBoard` below,
+ * listing it in `TV_BOARD_TYPES`, and emitting its slides from `buildRotation`.
+ * The rotation engine in `tv-screen.tsx` needs no change - it only ever talks to
+ * a board through the `TvBoardDefinition` contract. The league board below was
+ * added this way, takeover included.
  *
- * Neither loader reimplements ranking: both call the same public APIs the
- * `/leaderboards` browser uses, so the wall and the phone agree by construction.
+ * No loader reimplements ranking or scoring: they call the same public APIs
+ * `/leaderboards` and `/league` use, so the wall and the phone agree by
+ * construction.
  */
 
 // ---- track board: one track layout, all-time ------------------------------
@@ -215,17 +220,144 @@ function usePersonalBest(rows: TonightRow[], hold: (ms: number) => void) {
   return celebration;
 }
 
+// ---- league board: the season standings -----------------------------------
+
+type LeagueData = {
+  season: { id: string; name: string; league_name: string } | null;
+  rounds: LeagueRound[];
+  standings: SeasonStanding[];
+};
+
+/**
+ * How long the league board asks to keep the wall each time it refreshes, while
+ * tonight's round is open. Comfortably longer than the engine's own refresh
+ * interval, so each live refresh renews the hold before the last one runs out;
+ * short enough that the wall goes back to the arcade rotation within half a
+ * minute of staff closing the round, of the venue day rolling over, or of the
+ * league feed going quiet.
+ */
+const LEAGUE_TAKEOVER_MS = 30_000;
+
+/**
+ * Whether a round is the one the wall should be showing right now: still open,
+ * and belonging to the venue's current day.
+ *
+ * The venue-day half is what keeps a forgotten round off the wall. Nothing
+ * closes a round automatically - `rollLeagueSeason` refuses while one is open
+ * precisely because staff are expected to do it - so without this a Wednesday
+ * night nobody closed out would still own the TV on Saturday. `round_date` is
+ * the venue-local day the round opened (`venue_today()` at insert), compared
+ * against the same venue day the rest of the product means by "tonight".
+ */
+const ownsTheWall = (round: LeagueRound) =>
+  round.closed_at === null && round.round_date === venueToday();
+
+const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
+  kind: "league",
+  async load(_spec, signal) {
+    const data = (await fetchJson("/api/league/season", signal)) as LeagueData;
+    if (!Array.isArray(data.rounds) || !Array.isArray(data.standings)) {
+      throw new Error("malformed league response");
+    }
+    return { season: data.season ?? null, rounds: data.rounds, standings: data.standings };
+  },
+  // Before the venue's first league night there is no season and no round, so
+  // the slide is skipped like any other empty board. A season with rounds but
+  // no times yet still plays: an arcade table of unclaimed slots is the
+  // invitation this display is for, and it is what the wall shows in the hour
+  // between staff opening a round and the first lap landing.
+  hasContent: (data) => data.season !== null && data.rounds.length > 0,
+  Board: LeagueBoard,
+});
+
+/**
+ * Season standings, drawn as an arcade table. Points are NOT a lap time, so
+ * they go through `score`/`gap` rather than the lap-time formatter, and the
+ * columns are renamed to match.
+ *
+ * League night takes the wall over rather than taking a turn on it: while
+ * tonight's round is open this board renews the rotation's own `hold` on every
+ * refresh, so it stays up and keeps updating instead of cycling back to the
+ * arcade boards every fifteen seconds. That is the whole takeover, expressed
+ * through the board contract - the rotation engine is untouched.
+ *
+ * The hold lapses on its own, and the arcade rotation resumes, when the round
+ * closes, when the feed stops refreshing this board, and at venue midnight - so
+ * a night nobody closed out stops owning the wall the next morning. Only the
+ * display lapses: the round stays open until staff close it, exactly as
+ * `rollLeagueSeason` expects. The rest of the week this is one slide among the
+ * others.
+ */
+function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
+  useEffect(() => {
+    // Read off `data` rather than a memo so that every refresh - each one a
+    // fresh payload - re-tests the venue day and renews the hold.
+    if (data.rounds.some(ownsTheWall)) hold(LEAGUE_TAKEOVER_MS);
+  }, [data, hold]);
+
+  const tonightsRound = data.rounds.find(ownsTheWall) ?? null;
+  const leader = data.standings[0];
+
+  return (
+    <ArcadeHighScores
+      eyebrow={tonightsRound ? `${roundLabel(tonightsRound)} · live now` : "Season standings"}
+      title={data.season?.league_name ?? "Oasis League"}
+      subtitle={[data.season?.name, roundCount(data.rounds.length)]
+        .filter(Boolean)
+        .join(" · ")}
+      entries={data.standings.slice(0, SLOT_COUNT).map((standing, index) => ({
+        id: standing.driver_id,
+        name: standing.display_name,
+        detail: seasonRecord(standing),
+        score: String(standing.points),
+        gap: leagueGap(standing, leader, index),
+      }))}
+      columns={{ detail: "Record", score: "Points", gap: "Behind" }}
+      stale={stale}
+    />
+  );
+}
+
+const roundCount = (n: number) => `${n} round${n === 1 ? "" : "s"}`;
+
+/** What a driver has done this season, in the column a lap board uses for the car. */
+const seasonRecord = (standing: SeasonStanding) =>
+  [
+    `${standing.rounds_entered} ${standing.rounds_entered === 1 ? "round" : "rounds"}`,
+    standing.wins > 0 ? `${standing.wins} ${standing.wins === 1 ? "win" : "wins"}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+/** Points behind the leader. A driver level on points is behind on the
+ *  tiebreak, not by "-0". */
+function leagueGap(
+  standing: SeasonStanding,
+  leader: SeasonStanding | undefined,
+  index: number,
+): string {
+  if (index === 0 || !leader) return "—";
+  return leader.points === standing.points ? "level" : `-${leader.points - standing.points}`;
+}
+
 // ---- registry + rotation list ---------------------------------------------
 
 /** Every board type `/tv` can play, keyed by `kind`. */
 export const TV_BOARD_TYPES: Record<string, AnyTvBoardDefinition> = {
+  [LEAGUE_BOARD.kind]: LEAGUE_BOARD,
   [TRACK_BOARD.kind]: TRACK_BOARD,
   [TONIGHT_BOARD.kind]: TONIGHT_BOARD,
 };
 
 /**
- * The rotation: tonight's featured combo first, then every track with laps on
- * it, in the order `listBoards()` returns them (track name, then layout).
+ * The rotation: the league standings, then tonight's featured combo, then every
+ * track with laps on it, in the order `listBoards()` returns them (track name,
+ * then layout).
+ *
+ * League goes first so that on a Wednesday the wall reaches the board that
+ * holds it straight away rather than cycling the arcade boards first; on every
+ * other day it is an ordinary slide, and it drops out entirely until the venue
+ * has run a league round.
  *
  * Slides whose data fails to load or comes back empty are skipped at play time
  * by the engine, so this list can name a board optimistically - the tonight
@@ -233,6 +365,7 @@ export const TV_BOARD_TYPES: Record<string, AnyTvBoardDefinition> = {
  */
 export function buildRotation(boards: Board[]): TvSlide[] {
   return [
+    { key: "league", kind: "league", spec: null },
     { key: "tonight", kind: "tonight", spec: null },
     ...boards.map((board) => ({
       key: `track:${trackKey(board)}`,

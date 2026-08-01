@@ -8,3 +8,16 @@ export function venueToday(now: Date = new Date()): string {
     timeZone: VENUE_TIMEZONE,
   }).format(now);
 }
+
+/**
+ * Venue-local calendar month as "August 2026". A league season is a calendar
+ * month, so this is the name a new season gets by default - staff should not
+ * have to invent one twelve times a year.
+ */
+export function venueMonthName(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: VENUE_TIMEZONE,
+    month: "long",
+    year: "numeric",
+  }).format(now);
+}

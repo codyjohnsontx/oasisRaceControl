@@ -1,8 +1,19 @@
 # Oasis Race Control
 
-In-store driver check-in, live timing, lap history, and leaderboard platform for **Oasis Sim Racing** — a venue with ~20–25 Windows iRacing simulators.
+In-store driver check-in, live timing, lap history, leaderboard, and weekly league platform for **Oasis Sim Racing** — a venue with ~20–25 Windows iRacing simulators.
 
 Customer flow: **scan the rig's QR code → confirm check-in on your phone → drive.** Laps are captured automatically, attributed to the checked-in driver, and shown on the driver's phone, the staff dashboard, and the front-of-store TV leaderboard (**Oasis Live Timing**).
+
+## League night
+
+The Wednesday in-house league. Staff open a round from `/staff` against one track/car combo; every lap driven on that combo while the round is open belongs to that round, so drivers just check in and drive as usual. Rounds roll up into a season, and a season is a calendar month.
+
+- `/league` — season standings across every round, with each driver's per-round breakdown and a strip of rounds to tap into. Open rounds are included, so the board moves while the night is running.
+- `/league/[roundId]` — one round's full field ranked by fastest valid lap; tap a driver to expand all of their laps. Phone-first, this is the post-race comparison.
+- `/tv` — the front-of-store TV carries a league standings board in its rotation, and while a round is open that board takes the screen over: league night owns the wall, the arcade boards have it the rest of the week. Nobody has to take the kiosk off rotation.
+- `/staff` — open a round against a combo, close it when the night is over, and at the turn of the month end the season and start the next one (named for the month, in one step, refused while a round is still open).
+
+**Opening a round also sets that day's featured combo to the round's combo**, because lap validity is judged against the featured combo when a lap is ingested; closing the round puts the previous combo back. Laps already logged keep the validity they were given.
 
 ## Repository layout
 
@@ -19,7 +30,7 @@ docs/                # Plan, spike checklist, spike findings, ops runbook
 
 - **Phase 0 (off-site venue safety gate): in progress and blocking all Oasis execution.** The recorder has a repository-owned, dependency-free read-only telemetry path and bounded logging, but it is **not authorized for venue use** until a signed candidate passes two clean Windows 11 VM rehearsals and project-owner safety sign-off. See `docs/venue-safety.md`.
 - **Phase 1 (Oasis canary + iRacing spike): blocked by Phase 0.** The `laps` table and agent event contract remain provisional until an approved canary and recording session complete. See `docs/spike-checklist.md`, `docs/spike-findings.md`, and `spike/`.
-- **Phase 2 (simulated web/API slice): substantially built in parallel.** Check-in, driver portal, TV leaderboard, staff dashboard, ingestion API, fake-rig simulator, and most non-telemetry agent infrastructure work. Real iRacing lap detection and the Windows agent UI remain incomplete.
+- **Phase 2 (simulated web/API slice): substantially built in parallel.** Check-in, driver portal, TV leaderboard, staff dashboard, league night, ingestion API, fake-rig simulator, and most non-telemetry agent infrastructure work. Real iRacing lap detection and the Windows agent UI remain incomplete.
 
 ## Web app development
 
@@ -68,7 +79,7 @@ host with `test` in the database name; managed hosts are refused outright before
 any connection is opened (`src/test/db-guard.ts`). Migrations are reapplied from
 scratch on each run, so a schema change can never leave the test database stale.
 
-Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Staff dashboard is at `/staff`.
+Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Staff dashboard is at `/staff`. To try league night, open a round from `/staff` against the combo the fake rig drives, then watch `/league` and the round's page fill up.
 
 ## Building an unsigned spike test candidate
 

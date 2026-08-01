@@ -107,6 +107,7 @@ async function ingestLap(
     );
 
     if (!inserted) return { ...base, status: "duplicate" };
+
     return { ...base, status: validity.isValid ? "accepted" : "accepted_invalid" };
   } catch (error) {
     console.error("[agent/events] lap insert failed", {
