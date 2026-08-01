@@ -20,6 +20,43 @@ describe("safeTestDatabaseUrl", () => {
     expect(safeTestDatabaseUrl(url)).toBe(url);
   });
 
+  it("accepts IPv6 localhost, which new URL() reports bracketed", () => {
+    // This exact detail has regressed twice: URL keeps the brackets, so a guard
+    // comparing url.hostname against the bare "::1" refuses real localhost.
+    const url = "postgres://postgres@[::1]:5433/oasis_test";
+    expect(new URL(url).hostname).toBe("[::1]");
+    expect(safeTestDatabaseUrl(url)).toBe(url);
+  });
+
+  it("accepts the expanded spelling of IPv6 localhost", () => {
+    const url = "postgres://postgres@[0:0:0:0:0:0:0:1]:5433/oasis_test";
+    expect(safeTestDatabaseUrl(url)).toBe(url);
+  });
+
+  it("still refuses a non-local IPv6 host", () => {
+    expect(() => safeTestDatabaseUrl("postgres://u:p@[2001:db8::1]/oasis_test")).toThrow(
+      /non-local host/,
+    );
+  });
+
+  it("still refuses an IPv4-mapped address that is not loopback", () => {
+    expect(() =>
+      safeTestDatabaseUrl("postgres://u:p@[::ffff:203.0.113.9]/oasis_test"),
+    ).toThrow(/non-local host/);
+  });
+
+  it("holds every other refusal on a bracketed IPv6 localhost URL", () => {
+    expect(() => safeTestDatabaseUrl("postgres://u:p@[::1]:5433/oasis")).toThrow(
+      /must contain "test"/,
+    );
+    expect(() =>
+      safeTestDatabaseUrl("postgres://u:p@[::1]:5433/oasis_test?host=ep-x.neon.tech"),
+    ).toThrow(/must not set the "host" parameter/);
+    expect(() =>
+      safeTestDatabaseUrl("postgres://u:p@[::1]:5433/oasis_test?some_future_option=x"),
+    ).toThrow(/unrecognised parameter/);
+  });
+
   it("treats blank values as unset so the suite skips instead of failing", () => {
     expect(safeTestDatabaseUrl("")).toBeNull();
     expect(safeTestDatabaseUrl("   ")).toBeNull();
