@@ -55,17 +55,17 @@ This plan follows a completed product-discovery round with the owner. It covers 
 ```
 25× Rig: iRacing → Rig Agent (C#/.NET 8, WinForms tray+window)
                      │  HTTPS POST /api/agent/events (idempotent)
-                     │  Supabase Realtime subscribe (assignment pushed to rig)
+                     │  HTTPS GET /api/agent/assignment (polled every 10s)
                      ▼
-        Supabase (Postgres + Realtime + RLS + Edge/API routes in Next.js)
-                     ▼ realtime subscriptions
+        Next.js API routes on Vercel → Postgres (Neon)
+                     ▼ polled reads
    Mobile driver portal │ Staff dashboard │ TV kiosk (/tv)
         (one Next.js app on Vercel, three surfaces)
 ```
 
 - **Web:** Next.js (App Router) + TypeScript on Vercel. Routes: `/r/[qrToken]` (check-in), `/me` (driver portal), `/staff` (dashboard), `/tv` (kiosk leaderboard). Mobile-first, dark motorsport theme, TV route uses huge type + FLIP position animations only.
-- **Backend:** Supabase Postgres. All writes from agents and check-ins go through Next.js API routes (server-side validation, idempotency, audit) — clients never write laps directly. Realtime via Supabase channels: agents subscribe to their rig's assignment; TV/portal subscribe to leaderboard/lap inserts. RLS: public read on leaderboard views; drivers read own rows; staff role for mutations; agents restricted to their own rig via token claim.
-- **Auth:** three planes. *Drivers:* custom name+PIN → server issues a long-lived signed session cookie/JWT (stay signed in on the phone); PINs hashed (argon2/bcrypt); rate-limit + lockout on attempts. *Staff:* Supabase Auth email+password with a `staff` role. *Agents:* per-rig secret token issued at enrollment, sent as a bearer header, revocable/rotatable from the staff dashboard.
+- **Backend:** Postgres - Neon in production, any local Postgres in dev. All reads and writes go through Next.js API routes (server-side validation, idempotency, audit) - no client ever touches the database directly, so there is no row-level-security surface to configure. No realtime service: agents poll `GET /api/agent/assignment` for their rig's assignment, and the TV/portal poll the leaderboard endpoints every few seconds. Scoping is enforced in the API routes - agents are restricted to their own rig by their bearer token, drivers to their own rows by session cookie, and mutations to authenticated staff.
+- **Auth:** three planes. *Drivers:* custom name+PIN → server issues a long-lived signed session cookie/JWT (stay signed in on the phone); PINs hashed (argon2/bcrypt); rate-limit + lockout on attempts. *Staff:* app-owned email+password in `staff_users` (bcrypt-hashed); `POST /api/staff/login` issues a signed staff session cookie. *Agents:* per-rig secret token issued at enrollment, sent as a bearer header, revocable/rotatable from the staff dashboard.
 - **Rig Agent:** .NET 8 Windows app (auto-start, tray icon + status window). Reads iRacing via the memory-mapped-file SDK (evaluate `IRSDKSharper` / `irsdkSharp` in the spike — pick whichever proves reliable; field names below are to-verify, not assumed). Local SQLite event queue → POST with `eventId` idempotency key → delete on 2xx. Displays current driver + connection status; "Switch driver" button ends the assignment. Heartbeat every 30s with version + iRacing status.
 
 ## Data model (Postgres)
@@ -86,7 +86,7 @@ Lap times stored as integer ms; formatting (`2:18.103`, `+0.621`) is display-onl
 
 `RIG_HEARTBEAT`, `IRACING_SESSION_STARTED`, `LAP_COMPLETED`, `IRACING_SESSION_ENDED`, `DRIVER_SIGNED_OUT` (from agent UI), `RIG_IDLE_WARNING/RIG_IDLE_TIMEOUT`. Every event carries `eventId` (UUID minted when queued), rig identity (from token), and the active `rigAssignmentId` **as known by the agent at capture time** — the server rejects laps whose assignment is closed rather than guessing a new owner. `LAP_COMPLETED` payload mirrors the spec's illustrative JSON; exact iRacing fields are finalized after the spike. Server-side validity check re-runs independently (combo match vs tonight's/challenge config, incident_delta > 0 → `INCIDENT_LIMIT_EXCEEDED`, duplicate `event_id` → dropped).
 
-Check-in direction: web → API creates assignment → Supabase Realtime pushes to the rig's channel → agent displays the name. Agent falls back to polling `GET /api/agent/assignment` every 10s if the socket drops.
+Check-in direction: web → API creates assignment → the agent picks it up from its next `GET /api/agent/assignment` poll (every 10s) → agent displays the name. Polling is the only cloud-to-rig path; nothing is pushed into the venue.
 
 ## Security model
 
@@ -116,7 +116,7 @@ Per-rig bearer tokens (hashed at rest, staff-rotatable); agents can only write t
 
 **Phase 3 — three-rig pilot.** Simultaneous submissions, takeover/move flows under real customers, QR print quality, mobile-browser matrix, unplug-the-ethernet tests, staff corrections in anger, TV readability from the door, idle-timeout tuning. Add challenge CRUD + challenge leaderboard. Measure: % sessions attributed, scan→check-in completion, median check-in time, duplicate rate, staff corrections/night.
 
-**Phase 4 — full rollout (20–25 rigs).** Agent enrollment script + update script (scheduled task), rig health page, offline alerts, version reporting, production logging (structured, aggregated), Postgres backups (Supabase PITR), ops runbook (new rig, QR replacement, agent update, common failures).
+**Phase 4 — full rollout (20–25 rigs).** Agent enrollment script + update script (scheduled task), rig health page, offline alerts, version reporting, production logging (structured, aggregated), Postgres backups (Neon point-in-time restore), ops runbook (new rig, QR replacement, agent update, common failures).
 
 ## Repository structure
 
@@ -125,7 +125,7 @@ oasisRaceControl/
   apps/web/            # Next.js — portal, staff, tv, api routes
   apps/rig-agent/      # .NET 8 solution — Agent app + Agent.Core lib
   packages/shared/     # event schemas (zod) + generated TS types
-  supabase/migrations/
+  db/                  # SQL migrations + dev seed
   docs/                # spike findings, ops runbook, PRD/TDD
   spike/               # Phase 1 throwaway console app (kept for reference)
 ```
@@ -135,13 +135,13 @@ oasisRaceControl/
 - **Safety gate:** dependency/capability checks; parser fuzz and corrupt-range tests; read-only shared-memory integration; duration/disk/path limits; clean Windows 11 VM behavior; signature/hash/Defender verification; Process Monitor evidence; project-owner artifact sign-off.
 - **Spike checklist** doubles as the integration truth table for the agent.
 - **Agent:** unit tests around the telemetry-parsing/lap-boundary state machine using recorded telemetry fixtures from the spike (so iRacing isn't needed in CI); queue tests (kill process mid-flush, assert no loss/dupes).
-- **API:** integration tests against a local Supabase — idempotency (same event twice), assignment races (two check-ins), validity rules, takeover semantics, staff audit writes.
+- **API:** integration tests against a local Postgres — idempotency (same event twice), assignment races (two check-ins), validity rules, takeover semantics, staff audit writes.
 - **Web:** Playwright smoke for check-in flow (guest + returning) and staff invalidate/restore; visual check of `/tv` at 1080p/4K.
 - **Pilot metrics as tests:** the Phase 3 measurements above are the acceptance criteria for rollout.
 
 ## Deployment strategy
 
-- **Web/API:** Vercel (preview deploys per PR, prod on main). **DB:** Supabase cloud, migrations via CLI, PITR backups enabled before pilot.
+- **Web/API:** Vercel (preview deploys per PR, prod on main). **DB:** Neon, migrations via `npm run db:migrate` from `apps/web`, point-in-time restore enabled before pilot.
 - **Agent:** GitHub Release with a versioned zip + install script (creates auto-start scheduled task, writes rig token to DPAPI-protected config); update = script pulls latest release. Enrollment: staff runs installer, pastes a one-time enrollment code from the dashboard, backend issues the rig token.
 - **TV:** mini-PC, Chrome kiosk mode pointed at `/tv`, auto-login + auto-restart on boot.
 
