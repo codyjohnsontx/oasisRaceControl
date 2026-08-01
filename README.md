@@ -40,9 +40,33 @@ Daily loop:
 cd apps/web
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulates Rig 01 sending heartbeats + laps (needs dev seed)
-npm test           # unit tests
+npm test           # unit tests - no database, no network
 npm run db:migrate # apply any new migrations in db/migrations/
 ```
+
+### Integration tests
+
+`npm test` covers pure logic and the API routes' auth/validation branches. The
+guarantees that live in Postgres - the `event_id` idempotency key, the
+one-open-assignment-per-rig/driver partial unique indexes, and the
+`checkin_driver()` function - are covered by a separate suite that needs a real
+database:
+
+```bash
+docker start oasis-pg   # or: docker run -d --name oasis-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
+docker exec oasis-pg psql -U postgres -c 'create database oasis_test'
+
+export TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5433/oasis_test"
+npm run test:integration
+```
+
+The suite **skips** (it does not fail) when `TEST_DATABASE_URL` is unset, so
+`npm test` and CI stay green without Postgres. It reads only
+`TEST_DATABASE_URL` - never `DATABASE_URL` - because these tests truncate every
+table and `.env.local` normally points at live Neon. The URL must be a local
+host with `test` in the database name; managed hosts are refused outright before
+any connection is opened (`src/test/db-guard.ts`). Migrations are reapplied from
+scratch on each run, so a schema change can never leave the test database stale.
 
 Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Staff dashboard is at `/staff`.
 
