@@ -1,4 +1,5 @@
-import { isUniqueViolation, query, queryOne } from "./db";
+import type { PoolClient } from "pg";
+import { query, queryOne, withTransaction } from "./db";
 import type { LeagueRound, LeagueSeason, RoundLap, RoundResult } from "./league";
 
 /**
@@ -96,10 +97,10 @@ type RawResult = Omit<RoundResult, "best_lap_at"> & { best_lap_at: Date | string
  * (`scope: "round"`) and season standings (`scope: "season"`) so the two can
  * never disagree about who finished where.
  *
- * The field is every entrant UNION every driver with an attributed lap, so a
- * driver is on the board whether they were entered at check-in or simply
- * started driving. Banned/flagged drivers are filtered out BEFORE ranking, so
- * they never occupy a position.
+ * The field is every driver with a lap attributed to the round. Attribution
+ * ignores validity, so a driver who binned every lap is still on the board
+ * with position null. Banned/flagged drivers are filtered out BEFORE ranking,
+ * so they never occupy a position.
  */
 async function queryRoundResults(
   scope: "round" | "season",
@@ -118,15 +119,9 @@ async function queryRoundResults(
        select l.* from v_league_round_laps l join r on r.id = l.round_id
      ),
      field as (
-       select f.round_id, f.driver_id, d.display_name
-       from (
-         select e.round_id, e.driver_id
-         from league_round_entries e
-         join r on r.id = e.round_id
-         union
-         select rl.round_id, rl.driver_id from rl
-       ) f
-       join drivers d on d.id = f.driver_id and d.status = 'active'
+       select distinct rl.round_id, rl.driver_id, d.display_name
+       from rl
+       join drivers d on d.id = rl.driver_id and d.status = 'active'
      ),
      counts as (
        select f.round_id, f.driver_id,
@@ -182,14 +177,15 @@ export function getSeasonRoundResults(seasonId: string): Promise<RoundResult[]> 
 /**
  * Laps attributed to a round, oldest first (the order they were driven).
  * Invalid laps are included - seeing which laps were binned is half the point
- * of the comparison view. Pass a driverId for a single driver's laps.
+ * of the comparison view. Pass driverIds to fetch just those drivers' laps;
+ * one call covers every expanded row on the round page.
  *
  * The cap is a safety rail, not a product limit: a full league night at 25
  * rigs is a few hundred laps.
  */
 export async function getRoundLaps(
   roundId: string,
-  driverId?: string,
+  driverIds?: string[],
 ): Promise<RoundLap[]> {
   const rows = await query<Omit<RoundLap, "completed_at"> & { completed_at: Date | string }>(
     `select rl.lap_id as id, rl.driver_id, rl.lap_number, rl.lap_time_ms,
@@ -197,10 +193,10 @@ export async function getRoundLaps(
      from v_league_round_laps rl
      join drivers d on d.id = rl.driver_id and d.status = 'active'
      where rl.round_id = $1
-       and ($2::uuid is null or rl.driver_id = $2::uuid)
+       and ($2::uuid[] is null or rl.driver_id = any ($2::uuid[]))
      order by rl.completed_at asc, rl.lap_number asc nulls last, rl.lap_id asc
      limit 2000`,
-    [roundId, driverId ?? null],
+    [roundId, driverIds ?? null],
   );
 
   return rows.map((row) => ({
@@ -209,87 +205,183 @@ export async function getRoundLaps(
   }));
 }
 
-/**
- * Record that a driver took part in tonight's round, if this lap landed inside
- * an open round on that round's combo.
- *
- * Called from lap ingestion. Attribution itself does not depend on this row
- * (v_league_round_laps derives it from the lap) - the entry is what keeps a
- * driver in the field after every one of their laps is invalidated. Failure is
- * logged and swallowed: a missing participation row must never cost the venue
- * a lap.
- */
-export async function recordLeagueEntry(
-  driverId: string,
-  lap: {
-    trackName: string;
-    trackConfig?: string | null;
-    carName: string;
-    completedAt: string;
-  },
-): Promise<void> {
-  try {
-    await query(
-      `insert into league_round_entries (round_id, driver_id)
-       select r.id, $1
-       from league_rounds r
-       where r.closed_at is null
-         and $5::timestamptz >= r.opened_at
-         and r.track_name = $2
-         and coalesce(r.track_config, '') = coalesce($3, '')
-         and r.car_name = $4
-       on conflict do nothing`,
-      [driverId, lap.trackName, lap.trackConfig ?? null, lap.carName, lap.completedAt],
-    );
-  } catch (error) {
-    console.error("[league] entry insert failed", {
-      driverId,
-      message: (error as Error).message,
-    });
-  }
+/** How many drivers are in a round's field. Same rule as getRoundField, without
+ *  paying for the ranking - the staff dashboard only shows the number. */
+export async function countRoundDrivers(roundId: string): Promise<number> {
+  const row = await queryOne<{ drivers: number }>(
+    `select count(distinct rl.driver_id)::int as drivers
+     from v_league_round_laps rl
+     join drivers d on d.id = rl.driver_id and d.status = 'active'
+     where rl.round_id = $1`,
+    [roundId],
+  );
+  return row?.drivers ?? 0;
 }
+
+/** The featured combo a round found in place before it pinned its own, as
+ *  stored in league_rounds.prior_featured_combo. */
+type PriorFeaturedCombo = {
+  track_name: string;
+  track_config: string | null;
+  car_name: string;
+  incident_limit: number;
+};
+
+const FEATURED_COMBO_UPSERT = `insert into featured_combos
+    (combo_date, track_name, track_config, car_name, incident_limit)
+  values ($1::date, $2, $3, $4, $5)
+  on conflict (combo_date) do update
+    set track_name = excluded.track_name,
+        track_config = excluded.track_config,
+        car_name = excluded.car_name,
+        incident_limit = excluded.incident_limit`;
 
 /**
  * The season new rounds land in, creating the league and season on first use.
  * Staff never have to set up a league before opening round one; renaming
  * either row afterwards is a normal update.
+ *
+ * Runs on the caller's transaction, which is what makes the concurrent
+ * first-open safe: two staff opening round one at the same moment each build a
+ * league and a season, then collide on one_open_round_venue_wide when they
+ * insert the round. The loser's whole transaction rolls back, so it leaves no
+ * orphan league or season behind for getActiveSeason() to find later.
  */
-export async function ensureOpenSeason(): Promise<LeagueSeason> {
-  const existing = await getActiveSeason();
-  if (existing) return existing;
+async function ensureOpenSeasonTx(client: PoolClient): Promise<{ id: string }> {
+  const open = await client.query<{ id: string }>(
+    `select id from league_seasons where ended_on is null
+     order by started_on desc, created_at desc limit 1`,
+  );
+  if (open.rows[0]) return open.rows[0];
 
-  const league =
-    (await queryOne<{ id: string; name: string }>(
-      "select id, name from leagues order by created_at asc limit 1",
-    )) ??
-    (await queryOne<{ id: string; name: string }>(
-      "insert into leagues (name) values ($1) returning id, name",
-      ["Wednesday Night League"],
-    ));
-  if (!league) throw new Error("could not create a league");
+  const league = await client.query<{ id: string }>(
+    "select id from leagues order by created_at asc limit 1",
+  );
+  const leagueId =
+    league.rows[0]?.id ??
+    (
+      await client.query<{ id: string }>(
+        "insert into leagues (name) values ($1) returning id",
+        ["Wednesday Night League"],
+      )
+    ).rows[0].id;
 
-  // Two staff opening the first round at once: one_open_season_per_league
-  // makes the loser's insert fail, so re-read rather than duplicating.
-  try {
-    const season = await queryOne<{ id: string; name: string; started_on: string }>(
-      `insert into league_seasons (league_id, name)
-       values ($1, $2)
-       returning id, name, to_char(started_on, 'YYYY-MM-DD') as started_on`,
-      [league.id, "Season 1"],
+  const season = await client.query<{ id: string }>(
+    "insert into league_seasons (league_id, name) values ($1, $2) returning id",
+    [leagueId, "Season 1"],
+  );
+  return season.rows[0];
+}
+
+/**
+ * Open tonight's round, in one transaction: the season it belongs to, the
+ * round itself, the snapshot of the featured combo it is about to overwrite,
+ * and the overwrite. Either the round exists with its combo pinned or nothing
+ * happened - a half-open round would ingest the whole night's laps as
+ * WRONG_CAR while the 409 guard blocked staff from reopening it.
+ */
+export async function openLeagueRound(input: {
+  name: string | null;
+  trackName: string;
+  trackConfig: string | null;
+  carName: string;
+  incidentLimit: number;
+}): Promise<{ id: string; roundNumber: number; seasonId: string }> {
+  return withTransaction(async (client) => {
+    const season = await ensureOpenSeasonTx(client);
+
+    const inserted = await client.query<{
+      id: string;
+      round_number: number;
+      round_date: string;
+    }>(
+      `insert into league_rounds
+         (season_id, round_number, name, track_name, track_config, car_name,
+          incident_limit, prior_featured_combo)
+       select $1,
+              coalesce(max(round_number), 0) + 1,
+              $2, $3, $4, $5, $6,
+              (select to_jsonb(prior)
+               from (select track_name, track_config, car_name, incident_limit
+                     from featured_combos where combo_date = venue_today()) prior)
+       from league_rounds where season_id = $1
+       returning id, round_number, to_char(round_date, 'YYYY-MM-DD') as round_date`,
+      [
+        season.id,
+        input.name,
+        input.trackName,
+        input.trackConfig,
+        input.carName,
+        input.incidentLimit,
+      ],
     );
-    if (!season) throw new Error("could not create a season");
+    const round = inserted.rows[0];
+
+    // round_date defaults to venue_today(), the same date the snapshot above
+    // read, so the round overwrites and later restores one row.
+    await client.query(FEATURED_COMBO_UPSERT, [
+      round.round_date,
+      input.trackName,
+      input.trackConfig,
+      input.carName,
+      input.incidentLimit,
+    ]);
+
+    return { id: round.id, roundNumber: round.round_number, seasonId: season.id };
+  });
+}
+
+/**
+ * Close a round and put the featured combo back the way opening it found it -
+ * restoring the venue's own combo if it had one, deleting the row if it had
+ * none. Without this the round's combo stays pinned for the rest of the venue
+ * day and every ordinary customer lap on other content is stored invalid and
+ * drops off Fastest Tonight.
+ *
+ * Both halves share one transaction: a round whose combo was not restored
+ * would be final with no control left to undo it. Returns null when the round
+ * is already closed or unknown.
+ */
+export async function closeLeagueRound(roundId: string): Promise<{
+  id: string;
+  roundNumber: number;
+  restoredCombo: PriorFeaturedCombo | null;
+} | null> {
+  return withTransaction(async (client) => {
+    const closed = await client.query<{
+      id: string;
+      round_number: number;
+      round_date: string;
+      prior_featured_combo: PriorFeaturedCombo | null;
+    }>(
+      `update league_rounds set closed_at = now()
+       where id = $1 and closed_at is null
+       returning id, round_number, to_char(round_date, 'YYYY-MM-DD') as round_date,
+                 prior_featured_combo`,
+      [roundId],
+    );
+    const round = closed.rows[0];
+    if (!round) return null;
+
+    const prior = round.prior_featured_combo;
+    if (prior) {
+      await client.query(FEATURED_COMBO_UPSERT, [
+        round.round_date,
+        prior.track_name,
+        prior.track_config,
+        prior.car_name,
+        prior.incident_limit,
+      ]);
+    } else {
+      await client.query("delete from featured_combos where combo_date = $1::date", [
+        round.round_date,
+      ]);
+    }
+
     return {
-      id: season.id,
-      league_id: league.id,
-      league_name: league.name,
-      name: season.name,
-      started_on: season.started_on,
-      ended_on: null,
+      id: round.id,
+      roundNumber: round.round_number,
+      restoredCombo: prior,
     };
-  } catch (error) {
-    if (!isUniqueViolation(error)) throw error;
-    const raced = await getActiveSeason();
-    if (!raced) throw error;
-    return raced;
-  }
+  });
 }

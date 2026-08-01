@@ -51,6 +51,12 @@ create table league_rounds (
   track_config text,
   car_name text not null,
   incident_limit int not null default 0 check (incident_limit >= 0),
+  -- What featured_combos held for round_date before this round overwrote it,
+  -- as {track_name, track_config, car_name, incident_limit}. Null means there
+  -- was no row. Closing the round puts exactly this back (deleting the row
+  -- again when it is null), so ordinary customer laps on any other content
+  -- count for the rest of the venue day.
+  prior_featured_combo jsonb,
   opened_at timestamptz not null default now(),
   closed_at timestamptz,
   created_at timestamptz not null default now(),
@@ -65,20 +71,14 @@ create unique index one_open_round_venue_wide
   on league_rounds ((closed_at is null)) where closed_at is null;
 create index league_rounds_season_idx on league_rounds (season_id, round_number);
 
--- Who took part. Written by the ingestion path when a lap lands during an open
--- round, so a driver who showed up and binned every lap still appears in the
--- field (and still scores the participation point) instead of vanishing.
-create table league_round_entries (
-  round_id uuid not null references league_rounds (id) on delete cascade,
-  driver_id uuid not null references drivers (id),
-  joined_at timestamptz not null default now(),
-  primary key (round_id, driver_id)
-);
-create index league_round_entries_driver_idx on league_round_entries (driver_id);
-
 -- ---------------------------------------------------------------------------
 -- The attribution rule, in one place. Every league query joins through this
 -- view rather than re-deriving the window/combo predicate.
+--
+-- No is_valid predicate: a driver who showed up and binned every lap stays in
+-- the round's field (with no position, still scoring the participation point)
+-- rather than vanishing. That is the only reason the field needs no separate
+-- entry table.
 create view v_league_round_laps as
 select
   r.id           as round_id,

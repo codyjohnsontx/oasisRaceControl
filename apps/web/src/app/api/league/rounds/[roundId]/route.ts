@@ -1,14 +1,19 @@
 import { z } from "zod";
+import { lapsByDriver } from "@/lib/league";
 import { getRound, getRoundField, getRoundLaps } from "@/lib/league-queries";
 
+/** A round's whole field fits well inside this; the cap just keeps a crafted
+ *  query from asking for thousands of drivers at once. */
+const MAX_DRIVERS = 60;
+
 /**
- * One round: the ranked field, and optionally one driver's laps in that round
- * (`?driver=<uuid>`).
+ * One round: the ranked field, plus the laps of the drivers asked for in
+ * `?drivers=<uuid>,<uuid>` keyed by driver id.
  *
  * The round page server-renders the whole field with every driver's laps, then
- * polls this while the round is open - the field for the ranking, and just the
- * expanded driver's laps. That keeps a phone in the paddock refreshing a few KB
- * every few seconds instead of the whole night's laps.
+ * polls this while the round is open - one request per tick carrying the
+ * ranking and every expanded row, so twenty open rows cost one field
+ * aggregation rather than twenty-one.
  *
  * Public like /leaderboards and /tv: the wall screen and customers' phones both
  * read it with no session.
@@ -22,17 +27,33 @@ export async function GET(
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
-  const driverParam = new URL(request.url).searchParams.get("driver");
-  const driverId = driverParam && z.uuid().safeParse(driverParam).success ? driverParam : null;
+  const driversParam = new URL(request.url).searchParams.get("drivers");
+  let driverIds: string[] | null = null;
+  if (driversParam !== null) {
+    driverIds = [...new Set(driversParam.split(",").filter(Boolean))];
+    if (
+      driverIds.length === 0 ||
+      driverIds.length > MAX_DRIVERS ||
+      driverIds.some((id) => !z.uuid().safeParse(id).success)
+    ) {
+      return Response.json({ error: "invalid_input" }, { status: 400 });
+    }
+  }
 
   try {
     const round = await getRound(roundId);
     if (!round) return Response.json({ error: "not_found" }, { status: 404 });
 
-    const [field, laps] = await Promise.all([
+    const [field, lapRows] = await Promise.all([
       getRoundField(roundId),
-      driverId ? getRoundLaps(roundId, driverId) : Promise.resolve(null),
+      driverIds ? getRoundLaps(roundId, driverIds) : Promise.resolve(null),
     ]);
+
+    // Every requested driver gets a key, so a driver whose laps all went away
+    // reads as empty rather than leaving the client's last copy on screen.
+    const laps = driverIds
+      ? { ...Object.fromEntries(driverIds.map((id) => [id, []])), ...lapsByDriver(lapRows ?? []) }
+      : null;
 
     return Response.json({ round, field, laps });
   } catch (error) {

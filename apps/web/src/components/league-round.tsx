@@ -23,6 +23,11 @@ type Props = {
 
 const POLL_MS = 6000;
 
+function roundUrl(roundId: string, driverIds: string[]): string {
+  const base = `/api/league/rounds/${roundId}`;
+  return driverIds.length > 0 ? `${base}?drivers=${driverIds.join(",")}` : base;
+}
+
 /**
  * The post-race comparison customers asked for: the round's full field in one
  * ranked list, tap any driver to see every lap they ran.
@@ -45,27 +50,19 @@ export function LeagueRound({ round, initialField, initialLaps, viewerDriverId }
 
   const isOpen = round.closed_at === null;
 
+  // One request per tick, carrying the ranking and every expanded driver's
+  // laps - a phone with twenty rows open still polls once.
   const refresh = useCallback(async () => {
     const open = [...expanded];
     try {
-      const [fieldRes, ...lapRes] = await Promise.all([
-        fetch(`/api/league/rounds/${round.id}`, { cache: "no-store" }),
-        ...open.map((driverId) =>
-          fetch(`/api/league/rounds/${round.id}?driver=${driverId}`, { cache: "no-store" }),
-        ),
-      ]);
-      if (!fieldRes.ok) return; // keep the last good board on a transient failure
-      const payload = (await fieldRes.json()) as { field: RoundResult[] };
+      const res = await fetch(roundUrl(round.id, open), { cache: "no-store" });
+      if (!res.ok) return; // keep the last good board on a transient failure
+      const payload = (await res.json()) as {
+        field?: RoundResult[];
+        laps?: Record<string, RoundLap[]> | null;
+      };
       if (Array.isArray(payload.field)) setField(payload.field);
-
-      const fresh: Record<string, RoundLap[]> = {};
-      for (const [index, res] of lapRes.entries()) {
-        if (!res.ok) continue;
-        const body = (await res.json()) as { laps: RoundLap[] | null };
-        const driverId = open[index];
-        if (driverId && Array.isArray(body.laps)) fresh[driverId] = body.laps;
-      }
-      if (Object.keys(fresh).length > 0) setLaps((prev) => ({ ...prev, ...fresh }));
+      if (payload.laps) setLaps((prev) => ({ ...prev, ...payload.laps }));
     } catch {
       // transient network failure - the next tick tries again
     }
@@ -89,12 +86,11 @@ export function LeagueRound({ round, initialField, initialLaps, viewerDriverId }
     // A driver who joined the round after this page rendered has no laps in
     // the initial payload; fetch theirs on the tap rather than on the next poll.
     if (!laps[driverId]) {
-      void fetch(`/api/league/rounds/${round.id}?driver=${driverId}`, { cache: "no-store" })
+      void fetch(roundUrl(round.id, [driverId]), { cache: "no-store" })
         .then((res) => (res.ok ? res.json() : null))
-        .then((body: { laps?: RoundLap[] } | null) => {
-          if (Array.isArray(body?.laps)) {
-            setLaps((prev) => ({ ...prev, [driverId]: body.laps as RoundLap[] }));
-          }
+        .then((body: { laps?: Record<string, RoundLap[]> | null } | null) => {
+          const fresh = body?.laps?.[driverId];
+          if (Array.isArray(fresh)) setLaps((prev) => ({ ...prev, [driverId]: fresh }));
         })
         .catch(() => {});
     }

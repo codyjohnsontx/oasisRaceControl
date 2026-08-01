@@ -3,9 +3,9 @@ import { query, queryOne } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
 import { venueToday } from "@/lib/venue";
 import {
+  countRoundDrivers,
   getActiveSeason,
   getOpenRound,
-  getRoundField,
   listSeasonRounds,
 } from "@/lib/league-queries";
 import type { ComboOption } from "@/components/staff-league-panel";
@@ -36,11 +36,16 @@ export default async function StaffPage() {
     getOpenRound(),
     getActiveSeason(),
     // Combos the venue has actually run, so opening a round is picking from a
-    // list rather than retyping "Spa-Francorchamps" on a busy Wednesday.
+    // list rather than retyping "Spa-Francorchamps" on a busy Wednesday. Most
+    // recently run first and bounded to a season of history: this page
+    // re-renders every 15 seconds on the venue tablet, and staff want the
+    // combos currently in rotation, not the alphabetically-first sixty ever.
     query<ComboOption>(
-      `select distinct track_name, track_config, car_name
+      `select track_name, track_config, car_name
        from laps
-       order by track_name, track_config nulls first, car_name
+       where completed_at > now() - interval '90 days'
+       group by track_name, track_config, car_name
+       order by max(completed_at) desc
        limit 60`,
     ),
     queryOne<ComboOption>(
@@ -50,9 +55,9 @@ export default async function StaffPage() {
     ),
   ]);
 
-  const [recentRounds, openField] = await Promise.all([
+  const [recentRounds, openRoundDrivers] = await Promise.all([
     season ? listSeasonRounds(season.id) : Promise.resolve([]),
-    openRound ? getRoundField(openRound.id) : Promise.resolve([]),
+    openRound ? countRoundDrivers(openRound.id) : Promise.resolve(0),
   ]);
 
   return (
@@ -63,7 +68,7 @@ export default async function StaffPage() {
       league={{
         seasonName: season?.name ?? null,
         openRound,
-        openRoundDrivers: openField.length,
+        openRoundDrivers,
         recentRounds: recentRounds.slice(0, 6),
         comboOptions,
         todaysCombo,

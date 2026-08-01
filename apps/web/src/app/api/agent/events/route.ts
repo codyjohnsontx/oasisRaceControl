@@ -1,7 +1,6 @@
 import { query, queryOne } from "@/lib/db";
 import { rigFromBearer } from "@/lib/agent-auth";
 import { agentEventsBody, type LapCompletedEvent } from "@/lib/events";
-import { recordLeagueEntry } from "@/lib/league-queries";
 import { computeValidity, type FeaturedCombo } from "@/lib/validity";
 import { venueToday } from "@/lib/venue";
 
@@ -108,10 +107,6 @@ async function ingestLap(
     );
 
     if (!inserted) return { ...base, status: "duplicate" };
-
-    // League night: a lap on tonight's round combo enters the driver in that
-    // round. Never throws - see recordLeagueEntry.
-    await recordLeagueEntry(assignment.driver_id, lap);
 
     return { ...base, status: validity.isValid ? "accepted" : "accepted_invalid" };
   } catch (error) {

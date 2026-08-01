@@ -33,8 +33,13 @@ Under `next start` the page stays put and self-heals, which is what the kiosk do
   Nothing else in the codebase encodes a points table. The current default is
   documented at the top of that file and is pending the shop owner's confirmation.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
-  validity is judged against the featured combo at ingestion time. See the header
-  comment in `apps/web/src/app/api/staff/league/open-round/route.ts`.
+  validity is judged against the featured combo at ingestion time; closing the
+  round restores whatever was there (`league_rounds.prior_featured_combo`, null
+  meaning there was no row). Both halves are transactional - see
+  `openLeagueRound` / `closeLeagueRound` in `apps/web/src/lib/league-queries.ts`.
+- `league-round-lifecycle.test.ts` builds a scratch database from `db/migrations`
+  and runs against it. It skips unless `DATABASE_URL` is local or
+  `TEST_DATABASE_URL` is set, so it never touches Neon.
 
 ## Local dev
 

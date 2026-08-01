@@ -1,9 +1,8 @@
 import { z } from "zod";
-import { isUniqueViolation, query, queryOne } from "@/lib/db";
-import { ensureOpenSeason, getOpenRound } from "@/lib/league-queries";
+import { isUniqueViolation } from "@/lib/db";
+import { getOpenRound, openLeagueRound } from "@/lib/league-queries";
 import { getStaffUser, writeAudit } from "@/lib/staff";
 import { parseJsonBody } from "@/lib/http";
-import { venueToday } from "@/lib/venue";
 
 const body = z.object({
   trackName: z.string().trim().min(1).max(120),
@@ -20,7 +19,8 @@ const body = z.object({
  * the round's combo. Lap validity (src/lib/validity.ts) is judged against the
  * featured combo at ingestion time, so without this a league round on a
  * different combo than the day's featured one would mark every league lap
- * invalid. Laps already logged today keep the validity they were given.
+ * invalid. Laps already logged today keep the validity they were given, and
+ * closing the round puts whatever the combo was back (see closeLeagueRound).
  */
 export async function POST(request: Request) {
   const staff = await getStaffUser();
@@ -40,30 +40,13 @@ export async function POST(request: Request) {
   const trackConfig = input.trackConfig?.trim() ? input.trackConfig.trim() : null;
 
   try {
-    const season = await ensureOpenSeason();
-
-    const round = await queryOne<{ id: string; round_number: number }>(
-      `insert into league_rounds
-         (season_id, round_number, name, track_name, track_config, car_name, incident_limit)
-       select $1,
-              coalesce(max(round_number), 0) + 1,
-              $2, $3, $4, $5, $6
-       from league_rounds where season_id = $1
-       returning id, round_number`,
-      [season.id, input.name?.trim() || null, input.trackName, trackConfig, input.carName, input.incidentLimit],
-    );
-    if (!round) return Response.json({ error: "server_error" }, { status: 500 });
-
-    await query(
-      `insert into featured_combos (combo_date, track_name, track_config, car_name, incident_limit)
-       values ($1, $2, $3, $4, $5)
-       on conflict (combo_date) do update
-         set track_name = excluded.track_name,
-             track_config = excluded.track_config,
-             car_name = excluded.car_name,
-             incident_limit = excluded.incident_limit`,
-      [venueToday(), input.trackName, trackConfig, input.carName, input.incidentLimit],
-    );
+    const round = await openLeagueRound({
+      name: input.name?.trim() || null,
+      trackName: input.trackName,
+      trackConfig,
+      carName: input.carName,
+      incidentLimit: input.incidentLimit,
+    });
 
     await writeAudit({
       staffUserId: staff.userId,
@@ -71,8 +54,8 @@ export async function POST(request: Request) {
       targetType: "league_round",
       targetId: round.id,
       detail: {
-        seasonId: season.id,
-        roundNumber: round.round_number,
+        seasonId: round.seasonId,
+        roundNumber: round.roundNumber,
         trackName: input.trackName,
         trackConfig,
         carName: input.carName,
@@ -80,7 +63,7 @@ export async function POST(request: Request) {
       },
     });
 
-    return Response.json({ roundId: round.id, roundNumber: round.round_number });
+    return Response.json({ roundId: round.id, roundNumber: round.roundNumber });
   } catch (error) {
     // Two staff opening a round at the same moment: one_open_round_venue_wide
     // rejects the loser rather than leaving laps ambiguous.

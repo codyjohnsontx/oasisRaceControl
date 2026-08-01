@@ -231,7 +231,8 @@ export function StaffLeaguePanel({
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <p className="text-muted text-xs max-w-md">
               Opening a round also makes this tonight&apos;s featured combo, so clean
-              laps on it count. Laps already logged today keep their current validity.
+              laps on it count; closing the round puts the previous combo back. Laps
+              already logged today keep their current validity.
             </p>
             <button
               type="submit"
