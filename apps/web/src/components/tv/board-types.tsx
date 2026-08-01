@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatLapTime } from "@/lib/time";
-import { type Board, type BoardRow, trackKey, trackLabel } from "@/lib/leaderboards";
+import { type Board, type BoardRow, trackKey } from "@/lib/leaderboards";
 import {
   type AnyTvBoardDefinition,
   type TvBoardProps,
@@ -240,10 +240,4 @@ export function buildRotation(boards: Board[]): TvSlide[] {
       spec: board,
     })),
   ];
-}
-
-/** Label for a slide, used by the rotation footer's "up next". */
-export function slideLabel(slide: TvSlide): string {
-  if (slide.kind === "track") return trackLabel(slide.spec as Board);
-  return "Fastest tonight";
 }

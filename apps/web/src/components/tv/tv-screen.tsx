@@ -4,7 +4,7 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from "re
 import Image from "next/image";
 import type { Board } from "@/lib/leaderboards";
 import type { TvSlide } from "@/lib/tv-rotation";
-import { TV_BOARD_TYPES, buildRotation, slideLabel } from "./board-types";
+import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
 
 /**
@@ -260,7 +260,6 @@ export function TvScreen({ initialBoards }: Props) {
   // -1 until the next advance whenever the board on screen has dropped out of a
   // freshly re-read rotation: it is still worth showing, it just has no position.
   const position = view ? view.index : -1;
-  const upNext = position >= 0 && slides.length > 1 ? slides[(position + 1) % slides.length] : null;
 
   return (
     <main className="relative flex h-dvh flex-col overflow-hidden p-10 select-none">
@@ -299,10 +298,7 @@ export function TvScreen({ initialBoards }: Props) {
           )}
           <p className="text-ink/80 min-w-0 truncate text-xl font-bold uppercase tracking-[0.2em]">
             {position >= 0 ? (
-              <>
-                Board {position + 1} of {slides.length}
-                {upNext && <span className="text-muted"> · Up next {slideLabel(upNext)}</span>}
-              </>
+              `Board ${position + 1} of ${slides.length}`
             ) : view ? (
               `Top ${SLOT_COUNT} per board`
             ) : (
