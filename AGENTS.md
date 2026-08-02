@@ -74,6 +74,15 @@ Under `next start` the page stays put and self-heals, which is what the kiosk do
   with `42703 undefined_column`. Drop and re-migrate it; the migration header
   (`db/migrations/0002_league_night.sql`) explains why.
 
+## Pull request review
+
+CodeRabbit reviews a pull request once, when it opens, and does not re-review as
+further commits land - the setting and the reasoning live in `.coderabbit.yaml`
+(`reviews.auto_review.auto_incremental_review`). So `@coderabbitai review` has to
+be requested before merging any pull request that gained commits after it opened.
+Nothing in this repository enforces that, and skipping it merges those later
+commits - usually the fix rounds - unreviewed.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
