@@ -1,0 +1,52 @@
+# CodeRabbit configuration
+#
+# Goal: keep the full review quality Cody values, while cutting the number of
+# review runs and the amount of noise each one has to chew through.
+#
+# Schema confirmed against docs.coderabbit.ai. Defaults noted so it is obvious
+# what is actually being changed and what is just written down for clarity.
+
+reviews:
+  # Already the default. Stated explicitly so nobody "tunes" it to assertive
+  # later and wonders where the noise came from.
+  profile: chill
+
+  auto_review:
+    enabled: true
+
+    # THE ONE THAT MATTERS.
+    # Default is true: CodeRabbit re-reviews as new commits land. Our workflow
+    # pushes fix rounds after the first review, so that spends a second review
+    # on a pull request we are still working on.
+    # With this off, CodeRabbit reviews once, and re-reviews only when asked
+    # with `@coderabbitai review`. Same review, requested when the branch is
+    # actually ready.
+    auto_incremental_review: false
+
+    # Already the default. Draft pull requests are not reviewed, which is what
+    # makes "open early as a draft" safe if we ever want it.
+    drafts: false
+
+  # Skip what nobody should be reviewing. Every one of these is generated,
+  # vendored, or binary - reviewing them costs quota and returns nothing.
+  # Source and documentation are deliberately NOT filtered: today's most useful
+  # comments were on markdown, and that is worth paying for.
+  #
+  # This list is matched to what this repository actually tracks: an npm
+  # lockfile under apps/web, NuGet lockfiles under the .NET projects, and a
+  # handful of PNG brand assets. Build output (bin/, obj/, .next/, out/,
+  # *.tsbuildinfo) is gitignored and never reaches a pull request, so it needs
+  # no filter here.
+  path_filters:
+    - "!**/package-lock.json"
+    - "!**/packages.lock.json"
+    - "!**/packages.win-x64.lock.json"
+    - "!**/*.png"
+
+  # Keep. This is the summary Cody actually reads.
+  high_level_summary: true
+
+  # Keep. The status line is how we tell a finished review from a running one.
+  review_status: true
+
+  poem: false
