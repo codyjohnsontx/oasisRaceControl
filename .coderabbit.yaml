@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # CodeRabbit configuration
 #
 # Goal: keep the full review quality Cody values, while cutting the number of
@@ -18,9 +19,18 @@ reviews:
     # Default is true: CodeRabbit re-reviews as new commits land. Our workflow
     # pushes fix rounds after the first review, so that spends a second review
     # on a pull request we are still working on.
-    # With this off, CodeRabbit reviews once, and re-reviews only when asked
-    # with `@coderabbitai review`. Same review, requested when the branch is
-    # actually ready.
+    #
+    # What this setting does: CodeRabbit reviews once, when the pull request
+    # opens, and does NOT re-review automatically as further commits land.
+    #
+    # What it therefore REQUIRES: `@coderabbitai review` must be requested
+    # before merging any pull request that gained commits after it opened.
+    # This is an obligation, not a habit - nothing in this repository enforces
+    # it, so it is on whoever merges.
+    #
+    # What happens if that is skipped: those later commits merge unreviewed.
+    # They are usually the fix rounds, which is exactly the code that ends up
+    # on main.
     auto_incremental_review: false
 
     # Already the default. Draft pull requests are not reviewed, which is what
@@ -49,4 +59,7 @@ reviews:
   # Keep. The status line is how we tell a finished review from a running one.
   review_status: true
 
+  # Already the default - CodeRabbit does not add the poem unless you ask for
+  # it. Stated explicitly so every part of a review's output is accounted for
+  # in this file rather than inferred from what is missing.
   poem: false
