@@ -5,18 +5,21 @@ name: Notify on CodeRabbit review
 # minutes later, and pull_request_review is the only signal that tracks it.
 #
 # Expected volume, so you can predict it rather than test it: one notification
-# when the pull request opens, plus one for every explicit `@coderabbitai
-# review` request. Nothing else fires this - in particular, not a push. A pull
-# request opened as a draft still gets its one, just later: drafts are not
-# reviewed until the pull request is marked ready for review.
+# when the pull request opens, and that is it. A push does not fire this, and
+# neither does an explicit `@coderabbitai review` request - CodeRabbit answers
+# that with an ordinary issue comment, not a submitted review, so anyone who
+# asks for a re-review and waits for a ping will not get one. A pull request
+# opened as a draft still gets its one, just later: drafts are not reviewed
+# until the pull request is marked ready for review.
 #
 # The automatic one lands on open and does not repeat as commits land, because
 # auto_incremental_review is off in .coderabbit.yaml. Going quiet after a fix
-# round is the expected behaviour, not a broken webhook.
+# round is expected, not a broken webhook.
 #
-# A requested re-review submits a review of its own, so each request costs one
-# more notification. It is not a full re-read: CodeRabbit skips commits it has
-# already reviewed, so a request covers only what landed since the last one.
+# A requested re-review is also not a full re-read: CodeRabbit reviews new
+# changes only and skips commits it has already reviewed
+# (docs.coderabbit.ai/reference/review-commands). That governs what the review
+# covers, not whether a notification fires.
 on:
   pull_request_review:
     types: [submitted]
