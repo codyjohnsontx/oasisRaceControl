@@ -4,11 +4,19 @@ name: Notify on CodeRabbit review
 # "summary" comment ~20s after the PR opens. The real review lands several
 # minutes later, and pull_request_review is the only signal that tracks it.
 #
-# Expect one notification per pull request, not one per push: CodeRabbit reviews
-# when the PR opens and does not re-review as commits land, because
+# Expected volume, so you can predict it rather than test it: one notification
+# when the pull request opens, plus one for every explicit `@coderabbitai
+# review` request. Nothing else fires this - in particular, not a push.
+#
+# The automatic one lands on open and does not repeat as commits land, because
 # auto_incremental_review is off in .coderabbit.yaml. Going quiet after a fix
-# round is the expected behaviour, not a broken webhook - this fires again only
-# when someone comments `@coderabbitai review`.
+# round is the expected behaviour, not a broken webhook.
+#
+# A requested re-review submits a review of its own, so each request costs one
+# more notification. It is not a full re-read: CodeRabbit skips commits it has
+# already reviewed, so a request covers only what landed since the last one.
+# The command applies only while automatic reviews are paused, which is the
+# state this repository is in.
 on:
   pull_request_review:
     types: [submitted]
