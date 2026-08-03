@@ -43,10 +43,13 @@ reviews:
   # Read this before deleting a line. CodeRabbit applies a built-in default
   # ignore list on top of whatever is written here - lock files, binaries,
   # generated code, media. 137 patterns, counted from the tables under the
-  # `### Default ignored paths` heading in docs.coderabbit.ai/llms-full.txt,
-  # which is where the full list is published; re-count it there rather than
-  # trusting this number. An entry with `!` adds to that list; an entry
-  # WITHOUT `!` force-includes a path the defaults would otherwise skip.
+  # "Default ignored paths" heading of
+  # docs.coderabbit.ai/configuration/path-instructions, which is where the full
+  # list is published (the same section also appears in
+  # docs.coderabbit.ai/llms-full.txt if you would rather count it in plain
+  # text); re-count it there rather than trusting this number. An entry with
+  # `!` adds to that list; an entry WITHOUT `!` force-includes a path the
+  # defaults would otherwise skip.
   # Mixing the two does not narrow review to only the included paths. So a `!`
   # line that merely restates a default changes nothing, and every entry below
   # is labelled with which of those it is.
