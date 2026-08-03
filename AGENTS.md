@@ -78,10 +78,25 @@ Under `next start` the page stays put and self-heals, which is what the kiosk do
 
 CodeRabbit reviews a pull request once, when it opens, and does not re-review as
 further commits land - the setting and the reasoning live in `.coderabbit.yaml`
-(`reviews.auto_review.auto_incremental_review`). So `@coderabbitai review` has to
-be requested before merging any pull request that gained commits after it opened.
-Nothing in this repository enforces that, and skipping it merges those later
-commits - usually the fix rounds - unreviewed.
+(`reviews.auto_review.auto_incremental_review`).
+
+What asking for a review of the later commits actually does is not settled.
+Observed on `codyjohnsontx/DiazOnDemand#9`, where the same config is live: the
+automatic review ran when the pull request opened (a submitted review with
+line-level comments at 2026-08-03T00:09:56Z); 8 further commits landed after it,
+between 01:00 and 03:35 that morning; and an `@coderabbitai review` at 03:40 and
+an `@coderabbitai full review` at 04:13 were each answered by an ordinary issue
+comment, with no submitted review and no new line-level comments. The 04:13 reply
+also reported that the account's included review limit was reached under
+CodeRabbit's Fair Usage Limits Policy.
+
+Not established: whether those requests left the later commits unreviewed, or
+reviewed them and had nothing to say. A review that finds nothing may simply
+leave no submitted-review artifact, and nothing gathered rules that out; the
+quota message confounds the trial as well.
+
+So do not treat an `@coderabbitai review` request, or the reply to it, as proof
+that the later commits were reviewed. It is not evidence either way.
 
 ## Maintaining this file
 
