@@ -70,17 +70,32 @@ reviews:
     # stating it keeps the outcome the same if CodeRabbit ever adds these names
     # to its defaults.
     #
-    # That intent is the npm lockfile's supply-chain argument, only stronger.
-    # .github/workflows/spike-safety.yml restores the spike solution with
-    # `dotnet restore --locked-mode`, then publishes a self-contained unsigned
-    # win-x64 VM candidate using -p:RestoreLockedMode=true and
-    # -p:NuGetLockFilePath=packages.win-x64.lock.json, hard-failing if
-    # IRSDKSharper.dll or YamlDotNet.dll reach the published output. These
-    # hashes are the live enforcement boundary for a build that goes to the
-    # venue canary on real hardware, not prototype scaffolding. And the
-    # recurring cost is lower than the npm case, not higher: each of the five
-    # lockfiles has changed exactly once in this repository's history, against
-    # four times for apps/web/package-lock.json.
+    # The intent is NOT the npm lockfile's argument above. That one is about a
+    # large transitive graph: apps/web/package-lock.json is 7,706 lines. These
+    # are the opposite. spike/OasisSpike/packages.lock.json and its win-x64
+    # twin, which are the venue executable's, each resolve exactly one package,
+    # Microsoft.NET.ILLink.Tasks 8.0.28, a first-party .NET SDK trimming task
+    # the SDK pulls in for PublishSingleFile, with zero transitive entries.
+    # OasisSpike.csproj says why: "Deliberately no PackageReference items. The
+    # venue executable contains only repository-owned recorder code and the
+    # pinned .NET runtime." SyntheticPublisher's pair is that same one package
+    # plus a project reference. Only OasisSpike.Tests carries a real graph, and
+    # that project never ships.
+    #
+    # The pin is exactly why these are worth reviewing. A lockfile that is
+    # supposed to sit at a single first-party package makes ANY new entry a
+    # high-signal diff: a dependency turning up here at all is the event worth
+    # seeing, and nothing else in a pull request shows it as plainly.
+    # .github/workflows/spike-safety.yml is what keeps the pin honest - it
+    # restores with `dotnet restore --locked-mode` and publishes win-x64 with
+    # -p:RestoreLockedMode=true and
+    # -p:NuGetLockFilePath=packages.win-x64.lock.json - but locked mode only
+    # fails a restore that would resolve something the lockfile does not
+    # already list. It has nothing to say about a lockfile change arriving in
+    # the pull request itself. That is the part a human reads.
+    #
+    # Recurring cost is negligible: each of the five lockfiles has changed
+    # exactly once in this repository's history.
     - "**/packages.lock.json"
     - "**/packages.win-x64.lock.json"
 
