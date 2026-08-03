@@ -41,12 +41,15 @@ reviews:
   # comments were on markdown, and that is worth paying for.
   #
   # Read this before deleting a line. CodeRabbit applies a built-in default
-  # ignore list of ~180 patterns on top of whatever is written here - lock
-  # files, binaries, generated code, media. An entry with `!` adds to that
-  # list; an entry WITHOUT `!` force-includes a path the defaults would
-  # otherwise skip. Mixing the two does not narrow review to only the included
-  # paths. So a `!` line that merely restates a default changes nothing, and
-  # the only lines doing real work are the ones marked load-bearing below.
+  # ignore list on top of whatever is written here - lock files, binaries,
+  # generated code, media. 137 patterns, counted from the tables under the
+  # `### Default ignored paths` heading in docs.coderabbit.ai/llms-full.txt,
+  # which is where the full list is published; re-count it there rather than
+  # trusting this number. An entry with `!` adds to that list; an entry
+  # WITHOUT `!` force-includes a path the defaults would otherwise skip.
+  # Mixing the two does not narrow review to only the included paths. So a `!`
+  # line that merely restates a default changes nothing, and every entry below
+  # is labelled with which of those it is.
   path_filters:
     # LOAD-BEARING - force-include. The npm lockfile is in CodeRabbit's
     # defaults, so without this line it is never reviewed. We want it reviewed:
@@ -57,13 +60,29 @@ reviews:
     # recurring cost - a rare high-value review, not a per-pull-request tax.
     - "apps/web/package-lock.json"
 
-    # LOAD-BEARING - exclude. These are NOT in CodeRabbit's defaults, despite
-    # looking like they should be: the default list carries `!**/package-lock.json`
+    # FORCE-INCLUDE - no-op today, deliberate anyway. Unlike the npm lockfile
+    # above, these filenames are NOT in CodeRabbit's defaults, despite looking
+    # like they should be: the default list carries `!**/package-lock.json`
     # (an exact name, not these) and `!**/*.lock` (an extension these do not
-    # have). Delete these two lines and the five NuGet lockfiles under spike/
-    # start being reviewed.
-    - "!**/packages.lock.json"
-    - "!**/packages.win-x64.lock.json"
+    # have). So the five NuGet lockfiles under spike/ are already reviewed and
+    # these two lines change nothing right now. They are written as includes
+    # rather than dropped because the intent belongs in this file, and because
+    # stating it keeps the outcome the same if CodeRabbit ever adds these names
+    # to its defaults.
+    #
+    # That intent is the npm lockfile's supply-chain argument, only stronger.
+    # .github/workflows/spike-safety.yml restores the spike solution with
+    # `dotnet restore --locked-mode`, then publishes a self-contained unsigned
+    # win-x64 VM candidate using -p:RestoreLockedMode=true and
+    # -p:NuGetLockFilePath=packages.win-x64.lock.json, hard-failing if
+    # IRSDKSharper.dll or YamlDotNet.dll reach the published output. These
+    # hashes are the live enforcement boundary for a build that goes to the
+    # venue canary on real hardware, not prototype scaffolding. And the
+    # recurring cost is lower than the npm case, not higher: each of the five
+    # lockfiles has changed exactly once in this repository's history, against
+    # four times for apps/web/package-lock.json.
+    - "**/packages.lock.json"
+    - "**/packages.win-x64.lock.json"
 
     # REDUNDANT with CodeRabbit's defaults, kept only so this file states its
     # whole intent rather than leaning on a list that lives elsewhere and can
@@ -77,10 +96,12 @@ reviews:
     # inline <svg>, no dangerouslySetInnerHTML, and no svgr loader. If SVG is
     # ever inlined here, force-include it the way the lockfile is above.
 
-  # Keep. This is the summary Cody actually reads.
+  # Already the default, restated because this is the summary Cody actually
+  # reads and nobody should switch it off without knowing that.
   high_level_summary: true
 
-  # Keep. The status line is how we tell a finished review from a running one.
+  # Already the default, restated because the status line is how we tell a
+  # finished review from a running one.
   review_status: true
 
   # Already the default - CodeRabbit does not add the poem unless you ask for
