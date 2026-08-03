@@ -23,14 +23,21 @@ reviews:
     # What this setting does: CodeRabbit reviews once, when the pull request
     # opens, and does NOT re-review automatically as further commits land.
     #
-    # What it therefore REQUIRES: `@coderabbitai review` must be requested
-    # before merging any pull request that gained commits after it opened.
-    # This is an obligation, not a habit - nothing in this repository enforces
-    # it, so it is on whoever merges.
+    # What was observed, on a sibling repository running this same config:
+    # commits that landed after the on-open review were followed by explicit
+    # `@coderabbitai review` and `@coderabbitai full review` requests, and each
+    # was answered by an ordinary issue comment - no submitted review, no new
+    # line-level comments.
     #
-    # What happens if that is skipped: those later commits merge unreviewed.
-    # They are usually the fix rounds, which is exactly the code that ends up
-    # on main.
+    # What could not be established: whether those requests left the later
+    # commits unreviewed, or reviewed them and found nothing to say. A review
+    # that finds nothing may leave no submitted-review artifact, and nothing
+    # gathered rules that out; the trial also reported the account's included
+    # review limit reached under CodeRabbit's Fair Usage Limits Policy.
+    #
+    # So do not treat a request, or its reply, as proof that the later commits
+    # were reviewed. AGENTS.md's "## Pull request review" section carries the
+    # fuller account, with timestamps and counts.
     auto_incremental_review: false
 
     # Already the default. Draft pull requests are not reviewed, which is what
