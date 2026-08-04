@@ -96,7 +96,8 @@ reviews:
     # markup that can carry <script>, on* handlers, or javascript: hrefs. This
     # repository inlines none: it tracks zero .svg files, and apps/web has no
     # inline <svg>, no dangerouslySetInnerHTML, and no svgr loader. If SVG is
-    # ever inlined here, force-include it the way the lockfile is above.
+    # ever inlined here, do not add an include line for it: see the `!`-only
+    # rule above and raise the question instead.
 
   # Already the default, restated because this is the summary Cody actually
   # reads and nobody should switch it off without knowing that.
