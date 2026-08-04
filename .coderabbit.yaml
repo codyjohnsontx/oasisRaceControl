@@ -1,0 +1,135 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration
+#
+# Goal: keep the full review quality Cody values, while cutting the number of
+# review runs and the amount of noise each one has to chew through.
+#
+# Schema confirmed against docs.coderabbit.ai. Defaults noted so it is obvious
+# what is actually being changed and what is just written down for clarity.
+
+reviews:
+  # Already the default. Stated explicitly so nobody "tunes" it to assertive
+  # later and wonders where the noise came from.
+  profile: chill
+
+  auto_review:
+    enabled: true
+
+    # THE ONE THAT MATTERS.
+    # Default is true: CodeRabbit re-reviews as new commits land. Our workflow
+    # pushes fix rounds after the first review, so that spends a second review
+    # on a pull request we are still working on.
+    #
+    # What this setting does: CodeRabbit reviews once, when the pull request
+    # opens, and does NOT re-review automatically as further commits land.
+    #
+    # What was observed, on a sibling repository running this same config:
+    # commits that landed after the on-open review were followed by explicit
+    # `@coderabbitai review` and `@coderabbitai full review` requests, and each
+    # was answered by an ordinary issue comment - no submitted review, no new
+    # line-level comments.
+    #
+    # What could not be established: whether those requests left the later
+    # commits unreviewed, or reviewed them and found nothing to say. A review
+    # that finds nothing may leave no submitted-review artifact, and nothing
+    # gathered rules that out; the trial also reported the account's included
+    # review limit reached under CodeRabbit's Fair Usage Limits Policy.
+    #
+    # So do not treat a request, or its reply, as proof that the later commits
+    # were reviewed. AGENTS.md's "## Pull request review" section carries the
+    # fuller account, with timestamps and counts.
+    auto_incremental_review: false
+
+    # Already the default. Draft pull requests are not reviewed, which is what
+    # makes "open early as a draft" safe if we ever want it.
+    drafts: false
+
+  # Source and documentation are deliberately NOT filtered: today's most useful
+  # comments were on markdown, and that is worth paying for.
+  #
+  # Read this before deleting a line. CodeRabbit applies a built-in default
+  # ignore list on top of whatever is written here - lock files, binaries,
+  # generated code, media. 137 patterns, counted from the tables under the
+  # "Default ignored paths" heading of
+  # docs.coderabbit.ai/configuration/path-instructions, which is where the full
+  # list is published (the same section also appears in
+  # docs.coderabbit.ai/llms-full.txt if you would rather count it in plain
+  # text); re-count it there rather than trusting this number. An entry with
+  # `!` adds to that list; an entry WITHOUT `!` force-includes a path the
+  # defaults would otherwise skip.
+  # Mixing the two does not narrow review to only the included paths. So a `!`
+  # line that merely restates a default changes nothing, and every entry below
+  # is labelled with which of those it is.
+  path_filters:
+    # LOAD-BEARING - force-include. The npm lockfile is in CodeRabbit's
+    # defaults, so without this line it is never reviewed. We want it reviewed:
+    # a lockfile is where a transitive dependency first appears, where an
+    # integrity hash changes, and where a registry URL gets rewritten, and
+    # nothing else in a diff shows those. It has changed 4 times in this
+    # repository's history, so this buys supply-chain review at close to no
+    # recurring cost - a rare high-value review, not a per-pull-request tax.
+    - "apps/web/package-lock.json"
+
+    # FORCE-INCLUDE - no-op today, deliberate anyway. Unlike the npm lockfile
+    # above, these filenames are NOT in CodeRabbit's defaults, despite looking
+    # like they should be: the default list carries `!**/package-lock.json`
+    # (an exact name, not these) and `!**/*.lock` (an extension these do not
+    # have). So the five NuGet lockfiles under spike/ are already reviewed and
+    # these two lines change nothing right now. They are written as includes
+    # rather than dropped because the intent belongs in this file, and because
+    # stating it keeps the outcome the same if CodeRabbit ever adds these names
+    # to its defaults.
+    #
+    # The intent is NOT the npm lockfile's argument above. That one is about a
+    # large transitive graph: apps/web/package-lock.json is 7,706 lines. These
+    # are the opposite. spike/OasisSpike/packages.lock.json and its win-x64
+    # twin, which are the venue executable's, each resolve exactly one package,
+    # Microsoft.NET.ILLink.Tasks 8.0.28, a first-party .NET SDK trimming task
+    # the SDK pulls in for PublishSingleFile, with zero transitive entries.
+    # OasisSpike.csproj says why: "Deliberately no PackageReference items. The
+    # venue executable contains only repository-owned recorder code and the
+    # pinned .NET runtime." SyntheticPublisher's pair is that same one package
+    # plus a project reference. Only OasisSpike.Tests carries a real graph, and
+    # that project never ships.
+    #
+    # The pin is exactly why these are worth reviewing. A lockfile that is
+    # supposed to sit at a single first-party package makes ANY new entry a
+    # high-signal diff: a dependency turning up here at all is the event worth
+    # seeing, and nothing else in a pull request shows it as plainly.
+    # .github/workflows/spike-safety.yml is what keeps the pin honest - it
+    # restores with `dotnet restore --locked-mode` and publishes win-x64 with
+    # -p:RestoreLockedMode=true and
+    # -p:NuGetLockFilePath=packages.win-x64.lock.json - but locked mode only
+    # fails a restore that would resolve something the lockfile does not
+    # already list. It has nothing to say about a lockfile change arriving in
+    # the pull request itself. That is the part a human reads.
+    #
+    # Recurring cost is negligible: each of the five lockfiles has changed
+    # exactly once in this repository's history.
+    - "**/packages.lock.json"
+    - "**/packages.win-x64.lock.json"
+
+    # REDUNDANT with CodeRabbit's defaults, kept only so this file states its
+    # whole intent rather than leaning on a list that lives elsewhere and can
+    # change. Removing it changes nothing today.
+    - "!**/*.png"
+
+    # Not listed, on purpose: *.svg. It is default-ignored, and the usual reason
+    # to override that is inline SVG in a web app, where an SVG is executable
+    # markup that can carry <script>, on* handlers, or javascript: hrefs. This
+    # repository inlines none: it tracks zero .svg files, and apps/web has no
+    # inline <svg>, no dangerouslySetInnerHTML, and no svgr loader. If SVG is
+    # ever inlined here, force-include it the way the lockfile is above.
+
+  # Already the default, restated because this is the summary Cody actually
+  # reads and nobody should switch it off without knowing that.
+  high_level_summary: true
+
+  # Already the default, restated because the status line is how we tell a
+  # finished review from a running one.
+  review_status: true
+
+  # Already the default - CodeRabbit does not add the poem unless you ask for
+  # it. Stated explicitly so every part of a review's output is accounted for
+  # in this file rather than inferred from what is missing.
+  poem: false
