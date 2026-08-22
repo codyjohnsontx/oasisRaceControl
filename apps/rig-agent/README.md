@@ -21,7 +21,9 @@ live backend:
   backend - a rig PC that reboots during an outage cannot say who is in the
   seat, so those laps are held **unresolved**: durable, but unsendable until the
   first successful assignment poll stamps them. Sending an explicit null there
-  would tell the backend the rig was empty and lose a checked-in driver's laps
+  would tell the backend the rig was empty and lose a checked-in driver's laps.
+  An outbox left behind by a pre-`0.2` build upgrades the same way: nothing in it
+  carries a stamp, so its whole backlog is held unresolved until that first poll
 - ✅ "Switch driver / sign out" (ends the assignment)
 - ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
   source is built after the Phase 0 safety gate, Phase 1A supervised canary,
