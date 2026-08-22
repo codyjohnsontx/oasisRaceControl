@@ -31,6 +31,11 @@ Next's dev HMR client force-reloads the page when the dev server dies, so the ta
 lands on Chrome's own error page and you cannot tell whether the app recovered.
 Under `next start` the page stays put and self-heals, which is what the kiosk does.
 
+Build while the database is still reachable: with `DATABASE_URL` set, `npm run
+build` fails when it cannot verify that database ([the gate
+below](#migrations-ship-before-code-and-the-build-enforces-it)), so a rebuild
+during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
+
 ## League night
 
 - Shop owner's shape for the league: a season IS a calendar month, and a round runs
