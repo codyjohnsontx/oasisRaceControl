@@ -45,8 +45,11 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   and a new season defaults to its venue-local month name (`venueMonthName`).
   Nothing rolls a season on a date boundary by itself - the trigger stays human.
 - A round owns laps by time window + combo; laps carry no round id. The rule lives
-  in one place, `v_league_round_laps` (`db/migrations/0002_league_night.sql`), and
-  every league query joins through it. Change the rule there, nowhere else.
+  in one place, `v_league_round_laps` - introduced in
+  `db/migrations/0002_league_night.sql`, and last redefined by
+  `db/migrations/0003_unattributed_laps.sql`, which is where the current
+  definition is - and every league query joins through it. Change the rule in
+  that latest definition, nowhere else.
 - Two league surfaces, and they read different endpoints. `/league` is the
   full-detail season page customers open on a phone and the wall's league board
   is a `/tv` board type like any other (see the section above); both take season

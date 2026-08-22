@@ -60,8 +60,9 @@ npm run db:migrate # apply any new migrations in db/migrations/
 
 `npm test` covers pure logic and the API routes' auth/validation branches. The
 guarantees that live in Postgres - the `event_id` idempotency key, the
-one-open-assignment-per-rig/driver partial unique indexes, and the
-`checkin_driver()` function - are covered by a separate suite that needs a real
+one-open-assignment-per-rig/driver partial unique indexes, the
+`checkin_driver()` function, and the check constraints that keep an
+unattributed lap unrankable - are covered by a separate suite that needs a real
 database:
 
 ```bash

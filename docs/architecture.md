@@ -108,7 +108,10 @@ flowchart TB
   tonight's round" unambiguous.
 - **League rounds own laps by window and combo, not by a foreign key.** Laps
   carry no round id, so ingestion is unchanged; the rule and its rationale live
-  once in the `v_league_round_laps` view (`db/migrations/0002_league_night.sql`).
+  once in the `v_league_round_laps` view (introduced in
+  `db/migrations/0002_league_night.sql`; current definition in
+  `db/migrations/0003_unattributed_laps.sql`, which also excludes unattributed
+  laps from every round).
 - **Auth is split by actor.** Rig agents use static bearer tokens; drivers and
   staff use separate signed-cookie sessions. No actor can act outside its scope.
 
