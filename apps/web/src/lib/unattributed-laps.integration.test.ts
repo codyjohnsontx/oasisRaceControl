@@ -58,7 +58,7 @@ describeDb("listUnattributedLaps", () => {
     expect(times).toEqual([...times].sort((a, b) => b - a));
   });
 
-  it("does not report a total when the whole window fits in the list", async () => {
+  it("reports a total equal to the list when the whole window fits", async () => {
     const rig = await seedRig(1);
     await seedUnattributedLaps(rig.id, 3);
 

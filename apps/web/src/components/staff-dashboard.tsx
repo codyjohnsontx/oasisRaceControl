@@ -231,8 +231,10 @@ export function StaffDashboard({
             say who was driving, when it names an assignment this rig has never
             owned, or when its finish time falls outside the assignment it does
             name (a drifted rig clock, or a rig offline while the seat changed
-            hands). The lap itself does not carry which of the four it was; only
-            the server log line for that batch names it.
+            hands). The lap itself does not carry which of the four it was. The
+            three abnormal causes each leave a server log line naming which one;
+            the ordinary drove-before-scanning case leaves none, because it is
+            not an error.
           </p>
           <p className="text-muted text-xs mb-3">
             If a customer says their laps are missing, find them here by rig and
