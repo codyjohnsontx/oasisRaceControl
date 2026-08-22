@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
 import { StaffLeaguePanel, type StaffLeagueProps } from "@/components/staff-league-panel";
+import type { UnattributedLapRow } from "@/lib/unattributed-laps";
 
 export type RigStatusRow = {
   rig_id: string;
@@ -31,20 +32,6 @@ export type StaffLapRow = {
   rig_number: number | null;
 };
 
-/** A lap the system could not credit to anyone: nobody was checked in when it
- *  was driven, or the rig's agent is too old to say who was. Stored, invalid,
- *  and unrankable - it has no driver, so there is nothing to reset a PIN on and
- *  no validity to argue about. */
-export type UnattributedLapRow = {
-  id: string;
-  lap_time_ms: number;
-  track_name: string;
-  track_config: string | null;
-  car_name: string;
-  completed_at: string;
-  rig_number: number | null;
-};
-
 const AGENT_ONLINE_WINDOW_MS = 90_000;
 
 function agentStatus(lastSeenAt: string | null): "online" | "offline" {
@@ -59,12 +46,14 @@ export function StaffDashboard({
   rigs,
   laps,
   unattributedLaps,
+  unattributedLapTotal,
   league,
 }: {
   staffName: string;
   rigs: RigStatusRow[];
   laps: StaffLapRow[];
   unattributedLaps: UnattributedLapRow[];
+  unattributedLapTotal: number;
   league: StaffLeagueProps;
 }) {
   const router = useRouter();
@@ -236,10 +225,19 @@ export function StaffDashboard({
             Unclaimed laps · last 7 days
           </h2>
           <p className="text-muted text-xs mb-3">
-            Driven with nobody checked in, so nobody can be credited with them.
-            They are kept but can never reach a leaderboard. If a customer says
-            their laps are missing, they most likely drove before scanning the
-            QR code — find the lap here by rig and time.
+            Laps nobody can be credited with. They are kept but can never reach a
+            leaderboard. Usually the customer drove before scanning the QR code -
+            but a lap also lands here when the rig is on an agent build too old to
+            say who was driving, when it names an assignment this rig has never
+            owned, or when its finish time falls outside the assignment it does
+            name (a drifted rig clock, or a rig offline while the seat changed
+            hands). The lap itself does not carry which of the four it was; only
+            the server log line for that batch names it.
+          </p>
+          <p className="text-muted text-xs mb-3">
+            If a customer says their laps are missing, find them here by rig and
+            time. If that customer was checked in, this was not their mistake and
+            the rig needs looking at.
           </p>
           <div className="flex flex-col">
             {unattributedLaps.map((lap) => (
@@ -273,6 +271,13 @@ export function StaffDashboard({
               </div>
             ))}
           </div>
+          {unattributedLapTotal > unattributedLaps.length && (
+            <p className="text-muted text-xs mt-3">
+              Showing the {unattributedLaps.length} most recent of{" "}
+              {unattributedLapTotal} unclaimed laps in the last 7 days. The rest
+              are stored but not listed here.
+            </p>
+          )}
         </section>
       )}
     </main>

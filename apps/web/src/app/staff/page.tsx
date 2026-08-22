@@ -10,11 +10,11 @@ import {
   listSeasonRounds,
 } from "@/lib/league-queries";
 import type { ComboOption } from "@/components/staff-league-panel";
+import { listUnattributedLaps } from "@/lib/unattributed-laps";
 import {
   StaffDashboard,
   type RigStatusRow,
   type StaffLapRow,
-  type UnattributedLapRow,
 } from "@/components/staff-dashboard";
 
 /**
@@ -49,7 +49,7 @@ export default async function StaffPage() {
 
   // Failures throw to the error boundary — an empty dashboard that's actually
   // a failed query would mislead staff into thinking every rig is free.
-  const [rigs, laps, unattributedLaps, openRound, season, todaysCombo] = await Promise.all([
+  const [rigs, laps, unattributed, openRound, season, todaysCombo] = await Promise.all([
     query<RigStatusRow>("select * from v_rig_status"),
     query<StaffLapRow>(
       `select l.id, l.lap_time_ms, l.is_valid, l.invalid_reason, l.track_name,
@@ -61,21 +61,11 @@ export default async function StaffPage() {
        order by l.completed_at desc
        limit 30`,
     ),
-    // Laps nobody can be credited with - driven with nobody checked in, or sent
-    // by a rig agent too old to say who was driving. They are stored invalid and
-    // cannot rank (db/migrations/0003); this list is how staff find out they
-    // exist at all. Read-only for now: attributing one to a driver is a separate
-    // piece of work.
-    query<UnattributedLapRow>(
-      `select l.id, l.lap_time_ms, l.track_name, l.track_config, l.car_name,
-              l.completed_at, r.rig_number
-       from laps l
-       join rigs r on r.id = l.rig_id
-       where l.driver_id is null
-         and l.completed_at > now() - interval '7 days'
-       order by l.completed_at desc
-       limit 30`,
-    ),
+    // Laps nobody can be credited with, whatever the reason. They are stored
+    // invalid and cannot rank (db/migrations/0003); this list is how staff find
+    // out they exist at all. Read-only for now: attributing one to a driver is a
+    // separate piece of work.
+    listUnattributedLaps(),
     getOpenRound(),
     getActiveSeason(),
     queryOne<ComboOption>(
@@ -93,7 +83,8 @@ export default async function StaffPage() {
 
   return (
     <StaffDashboard
-      unattributedLaps={unattributedLaps}
+      unattributedLaps={unattributed.laps}
+      unattributedLapTotal={unattributed.total}
       staffName={staff.displayName}
       rigs={rigs}
       laps={laps}
