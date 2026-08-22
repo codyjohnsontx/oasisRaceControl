@@ -121,12 +121,15 @@ public sealed class AgentService : IAsyncDisposable
         lock (_stampLock)
         {
             // The first answer the agent has ever had also settles every lap it
-            // captured before it had one. Resolving before publishing the new
-            // assignment means anything that observes _assignment is already
-            // looking at an outbox whose backlog has been stamped.
+            // captured before it had one. The whole assignment goes in, not just
+            // its id: a lap driven before this driver checked in belongs to
+            // nobody, and only its own completedAt can say which side of that
+            // line it falls on. Resolving before publishing the new assignment
+            // means anything that observes _assignment is already looking at an
+            // outbox whose backlog has been stamped.
             if (!_hasPolled)
             {
-                _queue.ResolveUnresolved(poll.Assignment?.Id);
+                _queue.ResolveUnresolved(poll.Assignment);
                 _hasPolled = true;
             }
             _assignment = poll.Assignment;

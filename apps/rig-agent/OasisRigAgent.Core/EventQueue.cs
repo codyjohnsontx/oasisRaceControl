@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
@@ -84,10 +85,18 @@ public sealed class EventQueue : IDisposable
         => Insert(lap.EventId, BuildPayload(lap), resolved: false);
 
     /// <summary>Stamp every unresolved lap with the answer the agent's first
-    /// successful assignment poll returned - the assignment id, or an explicit
-    /// null if nobody was checked in - and make them sendable. Returns how many
-    /// rows it resolved. Laps already stamped at capture are untouched.</summary>
-    public int ResolveUnresolved(string? rigAssignmentId)
+    /// successful assignment poll returned, and make them sendable. Returns how
+    /// many rows it resolved. Laps already stamped at capture are untouched.
+    ///
+    /// The answer is decided PER ROW, against that lap's own `completedAt`. A
+    /// lap only takes <paramref name="assignment"/>'s id if it was driven at or
+    /// after that assignment started; a lap driven before the driver sat down
+    /// takes an explicit null, because nobody owns it. Stamping the whole
+    /// backlog with one id would credit a guest's warm-up laps to the first
+    /// customer to check in afterwards, which is the misattribution the
+    /// capture-time stamp exists to remove. A poll that finds nobody checked in
+    /// resolves every row to an explicit null.</summary>
+    public int ResolveUnresolved(Assignment? assignment)
     {
         lock (_lock)
         {
@@ -105,7 +114,7 @@ public sealed class EventQueue : IDisposable
 
             foreach (var (eventId, payload) in pending)
             {
-                payload["rigAssignmentId"] = rigAssignmentId;
+                payload["rigAssignmentId"] = OwnerOf(payload, assignment);
                 using var update = _connection.CreateCommand();
                 update.Transaction = tx;
                 update.CommandText =
@@ -118,6 +127,23 @@ public sealed class EventQueue : IDisposable
             tx.Commit();
             return pending.Count;
         }
+    }
+
+    /// <summary>Which assignment, if any, a queued lap belongs to given what the
+    /// first successful poll reported. An unreadable `completedAt` cannot be
+    /// shown to fall inside the assignment, so it resolves to null rather than
+    /// blocking the whole backlog on one damaged row.</summary>
+    private static string? OwnerOf(JsonNode payload, Assignment? assignment)
+    {
+        if (assignment is null) return null;
+
+        var completedAt = payload["completedAt"]?.GetValue<string>();
+        return DateTimeOffset.TryParse(
+                   completedAt, CultureInfo.InvariantCulture,
+                   DateTimeStyles.RoundtripKind, out var driven)
+               && driven >= assignment.StartedAt
+            ? assignment.Id
+            : null;
     }
 
     private static JsonObject BuildPayload(LapCompleted lap)
