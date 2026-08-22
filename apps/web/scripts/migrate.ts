@@ -4,11 +4,15 @@
  *
  * Usage: DATABASE_URL=postgres://... npx tsx scripts/migrate.ts [--seed]
  * (reads .env.local automatically in dev)
+ *
+ * To see what is outstanding without applying it, use scripts/check-migrations.ts
+ * (`npm run db:check`), which is read-only and shares this file's bookkeeping.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
 import { config } from "dotenv";
+import { appliedMigrations, migrationFiles } from "./migrations";
 
 config({ path: [".env.local", ".env"], quiet: true });
 
@@ -36,16 +40,13 @@ async function main() {
       "create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())",
     );
 
-    const files = readdirSync(join(DB_DIR, "migrations"))
-      .filter((f) => f.endsWith(".sql"))
-      .sort();
+    // Read once, under the lock, rather than re-asking per file: the set
+    // cannot change while this run holds it.
+    const files = migrationFiles(join(DB_DIR, "migrations"));
+    const applied = await appliedMigrations(client);
 
     for (const file of files) {
-      const { rowCount } = await client.query(
-        "select 1 from schema_migrations where version = $1",
-        [file],
-      );
-      if (rowCount) {
+      if (applied.has(file)) {
         console.log(`skip    ${file} (already applied)`);
         continue;
       }

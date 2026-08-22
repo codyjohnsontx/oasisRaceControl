@@ -52,6 +52,7 @@ cd apps/web
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulates Rig 01 sending heartbeats + laps (needs dev seed)
 npm test           # unit tests, plus the league lifecycle suite when a local database is reachable
+npm run db:check   # read-only: is DATABASE_URL's database behind db/migrations?
 npm run db:migrate # apply any new migrations in db/migrations/
 ```
 

@@ -98,6 +98,23 @@ quota message confounds the trial as well.
 So do not treat an `@coderabbitai review` request, or the reply to it, as proof
 that the later commits were reviewed. It is not evidence either way.
 
+## Migrations ship before code, and the build enforces it
+
+`npm run build` (from `apps/web`) runs `scripts/check-migrations.ts` before
+`next build` and fails when `DATABASE_URL`'s database is behind
+`db/migrations`, or when it is set but unreachable. That is deliberate: Vercel
+rejects the deploy and the previous, schema-matching deployment keeps serving
+the venue. It never writes - applying stays `npm run db:migrate`, run by a
+human. `npm run db:check` runs the same check alone; `SKIP_MIGRATION_CHECK=1`
+bypasses it, and so does overriding Vercel's Build Command to a bare
+`next build`.
+
+It compares filenames against `schema_migrations`, not content, so it cannot
+see a migration file edited after a database recorded it. The runbook for a
+production database that is behind the code - including the object-existence
+checks that do catch that case - is in
+[docs/deploy.md](docs/deploy.md#recovering-a-database-that-is-behind-the-code).
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

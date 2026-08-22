@@ -14,6 +14,10 @@ import { resolve } from "node:path";
  * explicit but unsafe TEST_DATABASE_URL is a hard error instead, since it was an
  * instruction.
  *
+ * `scripts/` is in the include glob for one file: the migration bookkeeping
+ * behind `npm run db:check`, the deploy gate that refuses to build against a
+ * database that is behind db/migrations. It is pure and needs no database.
+ *
  * The `@/` alias mirrors tsconfig paths so API route modules (which import
  * `@/lib/...`) can be imported directly by tests. Integration tests live in
  * *.integration.test.ts and are excluded here - see vitest.integration.config.ts.
@@ -23,7 +27,7 @@ export default defineConfig({
     alias: { "@": resolve(__dirname, "src") },
   },
   test: {
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
     exclude: ["src/**/*.integration.test.ts", "node_modules/**"],
   },
 });
