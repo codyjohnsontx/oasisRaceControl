@@ -11,16 +11,16 @@ public sealed class EventQueueTests : IDisposable
 
     private static LapCompleted Lap(
         string eventId, int lapTimeMs = 138_000, DateTimeOffset? completedAt = null) => new()
-    {
-        EventId = eventId,
-        TrackName = "Spa-Francorchamps",
-        TrackConfig = "Grand Prix Pits",
-        CarName = "Porsche 911 GT3 R",
-        LapNumber = 1,
-        LapTimeMs = lapTimeMs,
-        IncidentDelta = 0,
-        CompletedAt = completedAt ?? DateTimeOffset.UtcNow,
-    };
+        {
+            EventId = eventId,
+            TrackName = "Spa-Francorchamps",
+            TrackConfig = "Grand Prix Pits",
+            CarName = "Porsche 911 GT3 R",
+            LapNumber = 1,
+            LapTimeMs = lapTimeMs,
+            IncidentDelta = 0,
+            CompletedAt = completedAt ?? DateTimeOffset.UtcNow,
+        };
 
     /// <summary>The assignment a first successful poll would report, checked in
     /// at <paramref name="startedAt"/>.</summary>
