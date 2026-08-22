@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
 using OasisRigAgent.Core;
 using Xunit;
 
@@ -235,6 +237,102 @@ public sealed class EventQueueTests : IDisposable
             AssignmentId,
             batch.Single(e => e.EventId == "evt-1").Payload["rigAssignmentId"]!.GetValue<string>());
         Assert.Null(batch.Single(e => e.EventId == "evt-2").Payload["rigAssignmentId"]);
+    }
+
+    /// <summary>The in-place upgrade of an outbox left behind by a pre-0.2
+    /// build: no `resolved` column, and no `rigAssignmentId` in any payload
+    /// because that build's Enqueue never wrote one. Back-filling those rows as
+    /// resolved would flush them with the key absent, which the backend reads as
+    /// "this agent is too old to say" - a checked-in driver's queued laps landing
+    /// unclaimed on the upgrade that was supposed to stamp them. They arrive
+    /// unresolved instead, and the first successful poll settles them per row
+    /// against their own completedAt, exactly like any other unresolved row.</summary>
+    [Fact]
+    public void A_pre_0_2_outbox_upgrades_with_its_backlog_unresolved()
+    {
+        var checkIn = DateTimeOffset.Parse("2026-08-22T09:12:00Z");
+        WriteLegacyOutbox(
+            ("evt-before", checkIn.AddMinutes(-7)),
+            ("evt-after", checkIn.AddMinutes(3)));
+
+        using var upgraded = new EventQueue(_dbPath);
+
+        // Held, not lost, and above all not sendable: a flush landing before the
+        // first poll must not hand these to the backend.
+        Assert.Equal(2, upgraded.PendingCount());
+        Assert.Empty(upgraded.PendingBatch(10));
+
+        Assert.Equal(2, upgraded.ResolveUnresolved(CheckedInAt(checkIn)));
+
+        var batch = upgraded.PendingBatch(10);
+        Assert.Equal(2, batch.Count);
+        var before = batch.Single(e => e.EventId == "evt-before").Payload;
+        Assert.True(before.AsObject().ContainsKey("rigAssignmentId"));
+        Assert.Null(before["rigAssignmentId"]);
+        Assert.Equal(
+            AssignmentId,
+            batch.Single(e => e.EventId == "evt-after").Payload["rigAssignmentId"]!.GetValue<string>());
+    }
+
+    /// <summary>The back-fill only ever reaches the rows the ALTER touches -
+    /// every Insert names `resolved` itself - so a lap stamped after the upgrade
+    /// is sendable straight away, legacy backlog or not.</summary>
+    [Fact]
+    public void Upgrading_a_legacy_outbox_does_not_hold_back_newly_stamped_laps()
+    {
+        WriteLegacyOutbox(("evt-legacy", DateTimeOffset.Parse("2026-08-22T09:05:00Z")));
+
+        using var upgraded = new EventQueue(_dbPath);
+        Assert.True(upgraded.Enqueue(Lap("evt-new"), AssignmentId));
+
+        Assert.Equal("evt-new", upgraded.PendingBatch(10).Single().EventId);
+    }
+
+    /// <summary>An outbox in the exact shape a pre-0.2 build left it: the table
+    /// has no `resolved` column, and the payloads carry no `rigAssignmentId`
+    /// key at all.</summary>
+    private void WriteLegacyOutbox(params (string EventId, DateTimeOffset CompletedAt)[] laps)
+    {
+        using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        connection.Open();
+
+        using (var create = connection.CreateCommand())
+        {
+            create.CommandText = """
+                create table outbox (
+                  event_id   text primary key,
+                  payload    text not null,
+                  created_at text not null
+                );
+                """;
+            create.ExecuteNonQuery();
+        }
+
+        foreach (var (eventId, completedAt) in laps)
+        {
+            var payload = new JsonObject
+            {
+                ["type"] = "LAP_COMPLETED",
+                ["eventId"] = eventId,
+                ["trackName"] = "Spa-Francorchamps",
+                ["trackConfig"] = "Grand Prix Pits",
+                ["carName"] = "Porsche 911 GT3 R",
+                ["lapNumber"] = 1,
+                ["lapTimeMs"] = 138_000,
+                ["incidentDelta"] = 0,
+                ["completedAt"] = completedAt.ToString("o"),
+            };
+
+            using var insert = connection.CreateCommand();
+            insert.CommandText = """
+                insert into outbox (event_id, payload, created_at)
+                values ($id, $payload, $created);
+                """;
+            insert.Parameters.AddWithValue("$id", eventId);
+            insert.Parameters.AddWithValue("$payload", payload.ToJsonString());
+            insert.Parameters.AddWithValue("$created", completedAt.ToString("o"));
+            insert.ExecuteNonQuery();
+        }
     }
 
     public void Dispose()

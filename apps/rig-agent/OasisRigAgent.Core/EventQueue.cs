@@ -38,8 +38,22 @@ public sealed class EventQueue : IDisposable
 
     /// <summary>An outbox written by an agent build that predates the unresolved
     /// state has no `resolved` column, and `create table if not exists` will not
-    /// add one. Every row it holds was stamped at capture, so they default to
-    /// resolved and stay sendable straight through the upgrade.</summary>
+    /// add one. The only builds that wrote such a file are pre-0.2, and their
+    /// Enqueue wrote no `rigAssignmentId` key at all, so not one of the rows they
+    /// left behind carries an owner. Flushing them as they stand would reach the
+    /// backend with the key absent, which it reads as "this agent is too old to
+    /// say" and stores unattributed - a checked-in driver's queued laps landing
+    /// unclaimed on the very upgrade that was meant to stamp them.
+    ///
+    /// So the back-fill marks them UNRESOLVED, and the first successful poll
+    /// stamps each one against its own completedAt through ResolveUnresolved,
+    /// exactly like every other unresolved row. The column default only ever
+    /// applies to the rows this ALTER back-fills: every Insert names `resolved`
+    /// explicitly.
+    ///
+    /// This path is reasoned, not walked. The agent is still a Phase 2 skeleton
+    /// on simulated telemetry, so no real rig has yet been upgraded holding a
+    /// queued backlog.</summary>
     private void AddResolvedColumnIfMissing()
     {
         using var probe = _connection.CreateCommand();
@@ -48,7 +62,7 @@ public sealed class EventQueue : IDisposable
         if (Convert.ToInt32(probe.ExecuteScalar()) > 0) return;
 
         using var alter = _connection.CreateCommand();
-        alter.CommandText = "alter table outbox add column resolved integer not null default 1";
+        alter.CommandText = "alter table outbox add column resolved integer not null default 0";
         alter.ExecuteNonQuery();
     }
 

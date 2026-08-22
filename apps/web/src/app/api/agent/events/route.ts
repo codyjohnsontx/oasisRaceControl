@@ -216,8 +216,8 @@ function warnAboutAbnormalCauses(rigNumber: number, causes: UnattributedCause[])
   if (outOfWindow > 0) {
     console.warn(
       `[agent/events] rig ${rigNumber}: stored ${outOfWindow} lap(s) unattributed - ` +
-        `their completedAt falls outside the assignment they name. Check the rig ` +
-        `PC's clock.`,
+        `their completedAt falls outside the assignment they name. Either the rig ` +
+        `PC's clock has drifted, or the rig was offline while the seat changed hands.`,
     );
   }
 }
@@ -229,13 +229,14 @@ async function ingestLap(
   attribution: Attribution,
 ): Promise<{ type: string; status: string; eventId: string }> {
   const base = { type: lap.type, eventId: lap.eventId };
-  const attributed = attribution.kind === "attributed";
+  const assignment =
+    attribution.kind === "attributed" ? attribution.assignment : null;
 
   // An unattributed lap is stored invalid with the UNATTRIBUTED reason, and the
   // database will not accept any other combination (laps_unattributed_is_invalid
   // in db/migrations/0003). Combo and incident checks are moot: no owner means
   // it cannot rank whatever it did on track.
-  const validity = attributed
+  const validity = assignment
     ? computeValidity(lap, combo)
     : { isValid: false, invalidReason: "UNATTRIBUTED" as const };
 
@@ -251,8 +252,8 @@ async function ingestLap(
       [
         lap.eventId,
         rigId,
-        attribution.kind === "attributed" ? attribution.assignment.id : null,
-        attribution.kind === "attributed" ? attribution.assignment.driver_id : null,
+        assignment?.id ?? null,
+        assignment?.driver_id ?? null,
         lap.trackName,
         lap.trackConfig ?? null,
         lap.carName,
@@ -266,7 +267,7 @@ async function ingestLap(
     );
 
     if (!inserted) return { ...base, status: "duplicate" };
-    if (!attributed) return { ...base, status: "accepted_unattributed" };
+    if (!assignment) return { ...base, status: "accepted_unattributed" };
 
     return { ...base, status: validity.isValid ? "accepted" : "accepted_invalid" };
   } catch (error) {
