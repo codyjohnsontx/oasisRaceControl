@@ -17,8 +17,9 @@ each sim PC, and the TV is just a browser pointed at `/tv`.
 
 The app expects an already-migrated Postgres. Vercel does **not** run migrations
 on deploy, so the database has to be ready first. That order is enforced rather
-than remembered: `npm run build` refuses to build when the database is behind
-`db/migrations` - see [Migration order](#migration-order-and-the-gate-that-enforces-it).
+than remembered: `npm run build` refuses to build production when the database
+is behind `db/migrations` - see
+[Migration order](#migration-order-and-the-gate-that-enforces-it).
 
 **If reusing the existing dev Neon database** (already migrated + seeded): skip
 to step 2. Note that the demo data and demo logins will be live on the public
@@ -72,8 +73,20 @@ The repo is a monorepo; the app lives in `apps/web`.
    `DATABASE_URL` throws the first time a route touches the database, and a
    missing `SESSION_SECRET` throws the first time a session is signed or read.
    Hit the site after deploying (or add a health check) to surface a bad config.
-4. **Deploy.** Note the assigned domain (e.g. `oasis-race-control.vercel.app`);
-   the agents need it in step 3.
+4. **Deploy, then read the top of the build log.** The migration gate runs
+   before `next build` and names the database it checked:
+
+   ```
+   migration check target: ep-...-pooler.<region>.aws.neon.tech/<database>
+   migration check ok: 2 migration(s) in db/migrations, all applied to ep-...
+   ```
+
+   Confirm those two lines on the first deploy. If they are missing the gate did
+   not run - the Build Command was overridden, or the build could not see
+   `db/migrations` - and every way it can be switched off is otherwise
+   invisible. A guard nobody has watched work is not yet a guard.
+5. Note the assigned domain (e.g. `oasis-race-control.vercel.app`); the agents
+   need it in step 3.
 
 ---
 
@@ -132,19 +145,37 @@ harmless; a database that is *behind* it means the app queries tables that do
 not exist and the routes needing them return HTTP 500.
 
 `npm run build` runs `scripts/check-migrations.ts` before `next build`. It
-reads `schema_migrations`, compares it with `db/migrations`, and:
+prints which database it is pointed at - host and database name, never the
+credentials - reads `schema_migrations`, and compares it with `db/migrations`.
+
+What it does about a database it cannot vouch for depends on where the build is
+running, because only one of these builds is what the venue sees:
+
+| Build | Database behind `db/migrations`, unreachable, `DATABASE_URL` unset, or `db/migrations` not visible |
+|---|---|
+| Vercel **production** (`VERCEL_ENV=production`) | **build fails**, naming what is wrong |
+| Vercel preview or development | warning, build proceeds |
+| Local, `DATABASE_URL` set | **build fails**, naming what is wrong |
+| Local, `DATABASE_URL` unset | skipped - no database is configured, so there is nothing to check |
+
+The rest is the same wherever it runs:
 
 | Situation | Result |
 |---|---|
 | Every migration applied | build proceeds |
-| Database behind `db/migrations` | **build fails**, naming the missing files |
-| `DATABASE_URL` set but unreachable | **build fails** (the schema cannot be verified) |
-| `DATABASE_URL` unset | skipped - a build with no database is not a deploy |
 | Database ahead of the checkout | warning only, build proceeds (that is a rollback) |
-| `SKIP_MIGRATION_CHECK=1` | skipped, loudly |
+| `SKIP_MIGRATION_CHECK=1` or `=true` | skipped, loudly |
+| `SKIP_MIGRATION_CHECK=` anything else | ignored with a warning; the gate stays on |
 
-A failed build is the desired outcome: Vercel rejects the deploy and the
-previous deployment, which does match the database, keeps serving the venue.
+A failed production build is the desired outcome: Vercel rejects the deploy and
+the previous deployment, which does match the database, keeps serving the
+venue.
+
+A preview only warns because a pull request that adds a migration is exactly
+the one whose preview has to stay openable. Failing it would block review of
+the unrelated code in that change, not just its deploy. Preview is also where
+`DATABASE_URL` is most often simply absent: a variable scoped to the Production
+environment is not present in any other environment's build.
 
 It is deliberately a *check*, not an auto-migrate. Running `db:migrate` from a
 build container would apply DDL to the live venue database unattended, and a
@@ -152,10 +183,10 @@ preview build would do it to production. The gate blocks the bad ordering
 without ever writing.
 
 `db/migrations` sits outside `apps/web`, which is Vercel's Root Directory, so
-the gate depends on **Settings → General → Root Directory → "Include files
+the gate depends on **Settings -> General -> Root Directory -> "Include files
 outside of the Root Directory in the Build Step"** staying enabled (it is on by
-default). If it is ever turned off the build fails and says so by name, rather
-than passing with nothing to compare against.
+default). If it is ever turned off, a production build fails and says so by
+name rather than passing with nothing to compare against.
 
 Two limits worth knowing:
 
@@ -165,11 +196,26 @@ Two limits worth knowing:
 - It runs at build time. Nothing re-checks after the deploy, so a database
   rolled back later is not detected until something 500s.
 
-Run it on its own any time, against whatever `DATABASE_URL` points at:
+Run it on its own any time. It names the database it reached before saying
+anything about it, so this is also how you answer "which database am I pointed
+at":
 
 ```bash
 cd apps/web && npm run db:check
 ```
+
+### The gate blocks production deploys until 0002 is applied
+
+Production is behind by `0002_league_night.sql` today. So the first production
+build after this lands **fails the gate**, and no production deploy succeeds
+until the runbook below has been run against the Neon database. That is the
+design working, and the previous deployment keeps serving throughout - but two
+consequences follow:
+
+- This gate does not fix `/league` or `/staff`. Applying the migration does,
+  with no redeploy at all.
+- An unrelated production hotfix attempted before the migration is applied
+  needs `SKIP_MIGRATION_CHECK=1` on that build.
 
 ---
 
@@ -195,24 +241,35 @@ A mixture of 200s and 500s is this problem. Everything 500 is a different one
 (bad `DATABASE_URL`, database down). `/staff` answers 307 to `/staff/login`
 until you are signed in, so it cannot be probed this way.
 
-### 2. Point at production
+### 2. Point at production, and prove it
 
 Put the Neon **pooled** connection string in `apps/web/.env.local` (gitignored,
-and it keeps the credential out of your shell history). Everything below reads
-it automatically.
+so the credential never reaches your shell history). `npm run db:check` and
+`npm run db:migrate` read that file.
 
 ```bash
 # apps/web/.env.local
 DATABASE_URL=<neon pooled url>
 ```
 
-Confirm which database that is before going further - `.env.local` has pointed
-at local Docker before now:
+The `psql` steps below need the same value in the shell, and `.env.local` alone
+does not put it there. Load it from the file rather than pasting it, so it stays
+out of your history and cannot disagree with what the npm scripts use:
 
 ```bash
 cd apps/web
-grep -o '@[^/]*' .env.local | head -1     # expect the -pooler Neon host
+export DATABASE_URL="$(node -e 'process.stdout.write(require("dotenv").parse(require("node:fs").readFileSync(".env.local")).DATABASE_URL ?? "")')"
+[ -n "$DATABASE_URL" ] || echo "read nothing from .env.local - fix that before going on"
 ```
+
+Exporting it also settles the hazard that runs the other way. `dotenv` never
+overrides a `DATABASE_URL` that is already exported, so a value left over from
+an earlier session silently wins over `.env.local` - while a `grep` of the file
+keeps reporting the Neon host, confidently and wrongly. The command above
+overwrites whatever was there, so the shell and the file now agree.
+
+Do not verify by grepping. Every command below names the host and database it
+is talking to; read that line.
 
 ### 3. Read the gap. This writes nothing.
 
@@ -220,8 +277,11 @@ grep -o '@[^/]*' .env.local | head -1     # expect the -pooler Neon host
 npm run db:check
 ```
 
-It names every migration the database has not applied. To see the same thing
-straight from psql:
+Its first line is `migration check target: <host>/<database>` - confirm that is
+the Neon `-pooler` host and not a local one before believing anything after it.
+It then names every migration the database has not applied.
+
+The same thing straight from psql, against the value exported in step 2:
 
 ```bash
 psql "$DATABASE_URL" -c 'select version, applied_at from schema_migrations order by version'
@@ -233,7 +293,9 @@ psql "$DATABASE_URL" -c 'select version, applied_at from schema_migrations order
 npm run db:migrate
 ```
 
-Expect one `applied` line per missing file and `skip` for the rest. It is safe
+It prints `migrating <host>/<database>` before it touches anything - read that
+line one more time, since this is the step that writes. Then expect one
+`applied` line per missing file and `skip` for the rest. It is safe
 on a database holding real laps: each file runs in its own transaction, the run
 holds a session advisory lock so two of them cannot interleave, and
 `0002_league_night.sql` is additive only (its header says what it creates and
@@ -245,14 +307,15 @@ bearer tokens and demo driver PINs, all of them published in `db/seed.sql`.
 ### 5. Verify the bookkeeping, then the schema itself
 
 ```bash
-npm run db:check      # expect: migration check ok: N migration(s) ... all applied
+npm run db:check      # expect: migration check ok: N migration(s) ... all applied to <host>/<database>
 ```
 
 That only proves `schema_migrations` agrees with the filenames. Check the
 objects exist too - a database that once applied an earlier copy of a migration
-keeps its row and gets skipped:
+keeps its row and gets skipped. Against the same exported connection string:
 
-```sql
+```bash
+psql "$DATABASE_URL" <<'SQL'
 select c.relname, c.relkind
 from pg_class c join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public'
@@ -263,6 +326,7 @@ order by 1;
 select column_name from information_schema.columns
 where table_name = 'league_rounds' and column_name = 'prior_featured_combo';
 -- expect 1 row; without it, opening a round fails with 42703 undefined_column
+SQL
 ```
 
 If either query comes up short, **stop**. That is a schema repair, not a
@@ -291,6 +355,6 @@ day's featured combo and restores it on close.
 |---|---|---|
 | Web app | Vercel | Root Directory `apps/web`; env `DATABASE_URL` + `SESSION_SECRET` |
 | Database | Neon | pooled connection string; migrate before first deploy |
-| Migration gate | `npm run build` | fails the build when the database is behind `db/migrations`; `npm run db:check` runs it alone |
+| Migration gate | `npm run build` | fails a **production** build when the database is behind `db/migrations` (a preview only warns); `npm run db:check` runs it alone and names the database it read |
 | Rig agent | each sim PC | `backendBaseUrl` = Vercel domain; per-rig `rigToken` |
 | TV board | venue display | browser at `/tv`, kiosk mode |

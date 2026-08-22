@@ -2,8 +2,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   appliedMigrations,
+  describeTarget,
+  gateMode,
   migrationFiles,
   pendingMigrations,
+  skipRequested,
   unknownApplied,
 } from "./migrations";
 
@@ -91,5 +94,83 @@ describe("unknownApplied", () => {
     expect(
       unknownApplied(["0001_a.sql"], new Set(["0001_a.sql", "0002_gone.sql"])),
     ).toStrictEqual(["0002_gone.sql"]);
+  });
+});
+
+describe("gateMode", () => {
+  // The four bad states share one decision, so what matters here is only where
+  // the build runs and whether a database was configured at all. "behind"
+  // stands in for every state the gate can reach with a DATABASE_URL set.
+  const behind = { DATABASE_URL: "postgres://x/y" };
+
+  it("fails a production build with no DATABASE_URL", () => {
+    expect(gateMode({ VERCEL: "1", VERCEL_ENV: "production" })).toBe("fail");
+  });
+
+  it("fails a production build against a database that is behind", () => {
+    expect(gateMode({ VERCEL: "1", VERCEL_ENV: "production", ...behind })).toBe("fail");
+  });
+
+  it("only warns on a preview build with no DATABASE_URL", () => {
+    // Which is the ordinary case: a DATABASE_URL scoped to Production only is
+    // not present in a preview build at all.
+    expect(gateMode({ VERCEL: "1", VERCEL_ENV: "preview" })).toBe("warn");
+  });
+
+  it("only warns on a preview build against a database that is behind", () => {
+    // The pull request that adds a migration is exactly the one whose preview
+    // has to stay reviewable.
+    expect(gateMode({ VERCEL: "1", VERCEL_ENV: "preview", ...behind })).toBe("warn");
+  });
+
+  it("warns on a Vercel build that names no environment", () => {
+    expect(gateMode({ VERCEL: "1" })).toBe("warn");
+  });
+
+  it("skips a local build with no DATABASE_URL", () => {
+    expect(gateMode({})).toBe("skip");
+  });
+
+  it("fails a local build against a database that is behind", () => {
+    // A developer who configured a database gets told to run db:migrate.
+    expect(gateMode(behind)).toBe("fail");
+  });
+});
+
+describe("skipRequested", () => {
+  it("turns the gate off only for the documented values", () => {
+    for (const value of ["1", "true", "TRUE", " true "]) {
+      expect(skipRequested(value)).toBe(true);
+    }
+  });
+
+  it("leaves the gate on for anything else", () => {
+    // "0" and "false" most of all: someone writing those means "run the
+    // check", and reading them as "skip" inverts the intent.
+    for (const value of [undefined, "", "  ", "0", "false", "no", "yes"]) {
+      expect(skipRequested(value)).toBe(false);
+    }
+  });
+});
+
+describe("describeTarget", () => {
+  it("names host and database without the credentials", () => {
+    const target = describeTarget(
+      "postgresql://oasis:hunter2@ep-cool-1-pooler.us-east-2.aws.neon.tech/oasis?sslmode=require",
+    );
+
+    expect(target).toBe("ep-cool-1-pooler.us-east-2.aws.neon.tech/oasis");
+    expect(target).not.toContain("hunter2");
+  });
+
+  it("keeps the port, which is what tells local Docker apart from Neon", () => {
+    expect(describeTarget("postgres://oasis:oasis@localhost:5433/oasis")).toBe(
+      "localhost:5433/oasis",
+    );
+  });
+
+  it("says so rather than throwing when the value is not a URL", () => {
+    // Printing the target must never be the thing that breaks the run.
+    expect(describeTarget("not a url")).toBe("(unparseable DATABASE_URL)");
   });
 });

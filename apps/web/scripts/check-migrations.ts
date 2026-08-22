@@ -1,5 +1,6 @@
 /**
- * Deploy gate: refuses to build when the database is behind db/migrations.
+ * Deploy gate: refuses to build production when the database is behind
+ * db/migrations.
  *
  * This exists because the opposite order shipped once. League night's code
  * went to Vercel while 0002_league_night.sql had never been applied to the
@@ -8,9 +9,13 @@
  * deliberately, see docs/deploy.md - so nothing else enforced "migrate first,
  * then deploy".
  *
- * Failing the build is the point: the deploy is rejected and the previous
- * deployment, which matches the database, stays live. A site that keeps
- * working beats a site that ships and 500s.
+ * Failing the production build is the point: the deploy is rejected and the
+ * previous deployment, which matches the database, stays live. A site that
+ * keeps working beats a site that ships and 500s.
+ *
+ * How hard it is about a database it cannot verify depends on where the build
+ * runs - production refuses, a preview warns, a local build without a database
+ * skips. That decision is gateMode() in ./migrations, which documents why.
  *
  * READ ONLY. It never creates schema_migrations and never applies anything;
  * applying stays scripts/migrate.ts, run by a human against a named database.
@@ -23,9 +28,14 @@ import { Client } from "pg";
 import { config } from "dotenv";
 import {
   appliedMigrations,
+  describeError,
+  describeTarget,
+  gateMode,
   migrationFiles,
   pendingMigrations,
+  skipRequested,
   unknownApplied,
+  type GateMode,
 } from "./migrations";
 
 config({ path: [".env.local", ".env"], quiet: true });
@@ -42,28 +52,32 @@ function fail(message: string): never {
 }
 
 /**
- * A readable one-liner for a thrown error. Node's happy-eyeballs dialer
- * rejects a refused connection with an AggregateError whose own `message` is
- * empty, so printing that verbatim would report "cannot reach the database:"
- * and nothing else - exactly when the reason matters most.
+ * Reports a state the gate could not verify, at the severity this build
+ * environment calls for. It returns when the environment only warns, and there
+ * is never anything left to check after one of these, so every caller stops.
  */
-function describeError(error: unknown): string {
-  const err = error as { message?: string; code?: string; errors?: unknown[] };
-  if (err?.message) return err.message;
-
-  const attempts = Array.isArray(err?.errors)
-    ? err.errors.map((inner) => (inner as Error)?.message).filter(Boolean)
-    : [];
-  if (attempts.length) return `${err.code ?? "connection failed"}: ${attempts.join("; ")}`;
-
-  return err?.code ?? String(error);
+function report(mode: GateMode, message: string): void {
+  if (mode === "fail") fail(message);
+  console.warn(`\n! ${message}\n`);
 }
 
 async function main() {
-  if (process.env.SKIP_MIGRATION_CHECK) {
+  const skipFlag = process.env.SKIP_MIGRATION_CHECK;
+  if (skipRequested(skipFlag)) {
     console.warn(
       "! migration check skipped by SKIP_MIGRATION_CHECK - this build may need a schema the database does not have",
     );
+    return;
+  }
+  if (skipFlag?.trim()) {
+    console.warn(
+      `! SKIP_MIGRATION_CHECK=${skipFlag} ignored - only "1" or "true" turns the gate off, so it stays on`,
+    );
+  }
+
+  const mode = gateMode(process.env);
+  if (mode === "skip") {
+    console.log("migration check skipped: DATABASE_URL is not set");
     return;
   }
 
@@ -71,24 +85,34 @@ async function main() {
   // is there because "Include files outside of the Root Directory in the Build
   // Step" is on by default - but if it is ever turned off, this gate would have
   // nothing to compare against, and a gate that quietly disables itself is
-  // worse than none. Fail, and name the setting.
+  // worse than none. Say so, and name the setting.
   if (!existsSync(MIGRATIONS_DIR)) {
-    fail(
+    report(
+      mode,
       `cannot find db/migrations at ${MIGRATIONS_DIR}\n` +
         `  On Vercel this means the build cannot see files outside the Root Directory:\n` +
         `  Settings -> General -> Root Directory -> "Include files outside of the Root Directory\n` +
         `  in the Build Step" must stay enabled.`,
     );
+    return;
   }
 
   const url = process.env.DATABASE_URL;
   if (!url) {
-    // A build with no database configured cannot be a deploy of a working app;
-    // every route throws on the first query regardless. Blocking it would only
-    // stop contributors building the app without Postgres running.
-    console.log("migration check skipped: DATABASE_URL is not set");
+    report(
+      mode,
+      `DATABASE_URL is not set, so this build's database cannot be checked at all.\n` +
+        `  On Vercel, set it for the environment being built:\n` +
+        `  Settings -> Environment Variables. One scoped to Production only is absent\n` +
+        `  from every preview build.`,
+    );
     return;
   }
+
+  // Which database, before anything else, so nobody has to infer it from
+  // .env.local - an exported DATABASE_URL wins over that file silently.
+  const target = describeTarget(url);
+  console.log(`migration check target: ${target}`);
 
   const client = new Client({
     connectionString: url,
@@ -98,11 +122,13 @@ async function main() {
   try {
     await client.connect();
   } catch (error) {
-    fail(
-      `cannot reach the database to verify its schema: ${describeError(error)}\n` +
+    report(
+      mode,
+      `cannot reach ${target} to verify its schema: ${describeError(error)}\n` +
         `  DATABASE_URL is set, so this build is meant for a real database and cannot be checked.\n` +
         `  Fix the connection, or override with SKIP_MIGRATION_CHECK=1 if you know the schema is current.`,
     );
+    return;
   }
 
   let files: string[];
@@ -118,29 +144,31 @@ async function main() {
   const unknown = unknownApplied(files, applied);
 
   if (unknown.length) {
-    // Not fatal: a deliberate rollback deploys code older than the database,
-    // and blocking that would be worse than the confusion it prevents.
+    // Not fatal anywhere: a deliberate rollback deploys code older than the
+    // database, and blocking that would be worse than the confusion it prevents.
     console.warn(
-      `! the database has recorded ${unknown.length} migration(s) this checkout does not contain: ${unknown.join(", ")}`,
+      `! ${target} has recorded ${unknown.length} migration(s) this checkout does not contain: ${unknown.join(", ")}`,
     );
   }
 
   if (pending.length) {
-    fail(
-      `the database is behind db/migrations - ${pending.length} migration(s) not applied:\n` +
+    report(
+      mode,
+      `${target} is behind db/migrations - ${pending.length} migration(s) not applied:\n` +
         pending.map((file) => `      ${file}`).join("\n") +
         `\n\n  Apply them to that same database first, then deploy:\n` +
         `      cd apps/web && npm run db:migrate\n\n` +
         `  Deploying this build would return HTTP 500 from every route that needs the missing schema.\n` +
         `  Override with SKIP_MIGRATION_CHECK=1 only if you know why.`,
     );
+    return;
   }
 
   console.log(
-    `migration check ok: ${files.length} migration(s) in db/migrations, all applied`,
+    `migration check ok: ${files.length} migration(s) in db/migrations, all applied to ${target}`,
   );
 }
 
 main().catch((error) => {
-  fail(`migration check failed: ${describeError(error)}`);
+  report(gateMode(process.env), `migration check failed: ${describeError(error)}`);
 });

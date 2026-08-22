@@ -12,7 +12,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
 import { config } from "dotenv";
-import { appliedMigrations, migrationFiles } from "./migrations";
+import {
+  appliedMigrations,
+  describeError,
+  describeTarget,
+  migrationFiles,
+} from "./migrations";
 
 config({ path: [".env.local", ".env"], quiet: true });
 
@@ -24,6 +29,11 @@ async function main() {
     console.error("DATABASE_URL is not set");
     process.exit(1);
   }
+
+  // Name the database before changing it. .env.local has pointed at local
+  // Docker and at Neon at different times, and an already-exported
+  // DATABASE_URL beats the file without saying so.
+  console.log(`migrating ${describeTarget(url)}`);
 
   const client = new Client({ connectionString: url });
   await client.connect();
@@ -77,6 +87,9 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error.message);
+  // An unreachable database rejects with an AggregateError whose own message
+  // is empty, so the reason has to be dug out of it - applying migrations must
+  // never fail with a blank line.
+  console.error(describeError(error));
   process.exit(1);
 });
