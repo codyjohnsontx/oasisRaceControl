@@ -347,6 +347,26 @@ Open a round from `/staff`, check it appears on `/league`, then close it. This
 is the path the migration exists for, and it is also the path that rewrites the
 day's featured combo and restores it on close.
 
+### 8. Delete the warning this procedure just made false
+
+Last, because it only becomes true once the steps above are done: [Migration
+order](#migration-order-and-the-gate-that-enforces-it) still carries a
+subsection saying production is behind the code, and it no longer is. Delete
+it.
+
+- The heading, verbatim: `### The gate blocks production deploys until 0002 is applied`
+- Lines **207-219** of this file: the heading on line 207 through the blank
+  line on line 219.
+- **Not line 220.** That `---` ends the Migration order section and starts this
+  one. Take it as well and the two sections merge, and the ordering rule they
+  separate goes with them.
+
+This instruction lives at the end of the procedure rather than in a tracker
+because a filed follow-up is a thing nobody runs, while the last step of a
+procedure someone is already executing is a thing that actually happens.
+Delete this step along with it: once that subsection is gone, step 8 has
+nothing left to retire and the line numbers it names stop meaning anything.
+
 ---
 
 ## Quick reference
