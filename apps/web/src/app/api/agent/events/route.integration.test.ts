@@ -23,7 +23,8 @@ import {
  * against the assignment the agent stamped on the lap when it captured it.
  * Attribution deliberately does NOT consult whichever assignment happens to be
  * open when the batch arrives, which is what used to credit a queued lap to the
- * next driver to check in.
+ * next driver to check in. A lap that cannot be attributed is stored with no
+ * driver, invalid and unrankable, rather than guessed at or discarded.
  */
 
 const LAP = {
@@ -177,35 +178,43 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     expect(laps[0]!.rig_assignment_id).not.toBe(secondAssignment);
   });
 
-  it("does not hand a lap captured with nobody checked in to the next driver", async () => {
+  it("stores a lap captured with nobody checked in unattributed, never to the next driver", async () => {
     const rig = await seedRig(1);
     const second = await seedDriver("SecondDriver");
     // The agent knew the rig was unassigned when it captured this lap.
     const orphan = { ...LAP, eventId: "evt-orphan-0001", rigAssignmentId: null };
 
-    // It stays queued while nobody is checked in...
     await expect((await POST(post(rig, [orphan]))).json()).resolves.toEqual({
       results: [
         {
           type: "LAP_COMPLETED",
           eventId: "evt-orphan-0001",
-          status: "no_active_assignment",
+          status: "accepted_unattributed",
         },
       ],
     });
 
-    // ...and is still refused once SecondDriver checks in and it retries.
-    await openAssignment(rig.id, second.id);
-    await expect((await POST(post(rig, [orphan]))).json()).resolves.toMatchObject({
-      results: [{ status: "no_active_assignment" }],
+    const laps = await lapRows();
+    expect(laps).toHaveLength(1);
+    expect(laps[0]).toMatchObject({
+      driver_id: null,
+      rig_assignment_id: null,
+      is_valid: false,
+      invalid_reason: "UNATTRIBUTED",
     });
 
-    expect(await lapRows()).toHaveLength(0);
+    // A retry after SecondDriver checks in still does not hand it to them.
+    await openAssignment(rig.id, second.id);
+    await expect((await POST(post(rig, [orphan]))).json()).resolves.toMatchObject({
+      results: [{ status: "duplicate" }],
+    });
+    expect((await lapRows())[0]!.driver_id).toBeNull();
   });
 
-  it("refuses to attribute a lap from an agent that sends no assignment id", async () => {
+  it("stores a lap from an agent that sends no assignment id unattributed", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
+    // An assignment IS open, so guessing would have looked plausible here.
     await openAssignment(rig.id, driver.id);
 
     // An older agent: the key is absent entirely, which is not the same as the
@@ -217,18 +226,20 @@ describeDb("POST /api/agent/events against real Postgres", () => {
         {
           type: "LAP_COMPLETED",
           eventId: "evt-legacy-0001",
-          status: "attribution_unsupported",
+          status: "accepted_unattributed",
         },
       ],
     });
-    expect(await lapRows()).toHaveLength(0);
+    const laps = await lapRows();
+    expect(laps[0]).toMatchObject({ driver_id: null, invalid_reason: "UNATTRIBUTED" });
+    expect(laps[0]!.driver_id).not.toBe(driver.id);
   });
 
-  it("refuses an assignment id this rig has never had", async () => {
+  it("stores a lap naming an assignment this rig has never had unattributed", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
     // A live assignment exists, so a fallback to "whatever is open" would hide
-    // the bad id instead of reporting it.
+    // the bad id instead of storing the lap ownerless.
     await openAssignment(rig.id, driver.id);
 
     const response = await POST(
@@ -242,9 +253,78 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     );
 
     await expect(response.json()).resolves.toMatchObject({
-      results: [{ status: "unknown_assignment" }],
+      results: [{ status: "accepted_unattributed" }],
     });
-    expect(await lapRows()).toHaveLength(0);
+    const laps = await lapRows();
+    expect(laps[0]).toMatchObject({ driver_id: null, rig_assignment_id: null });
+  });
+
+  it("keeps an unattributed lap off every leaderboard and out of every round", async () => {
+    const rig = await seedRig(1);
+    await setFeaturedCombo({
+      trackName: LAP.trackName,
+      trackConfig: LAP.trackConfig,
+      carName: LAP.carName,
+    });
+    // A blistering lap that would top the board if it were rankable at all.
+    await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-unranked-0001",
+          rigAssignmentId: null,
+          lapTimeMs: 60_001,
+        },
+      ]),
+    );
+    expect(await lapRows()).toHaveLength(1);
+
+    // Fastest Tonight, the board queries, and the league round view all skip it.
+    const fastest = await testDb().query("select * from v_fastest_tonight");
+    expect(fastest.rows).toHaveLength(0);
+
+    const boards = await testDb().query(
+      `select l.track_name, count(*) as n from laps l
+       join drivers d on d.id = l.driver_id
+       where l.is_valid and d.status = 'active'
+       group by l.track_name`,
+    );
+    expect(boards.rows).toHaveLength(0);
+
+    const roundLaps = await testDb().query("select * from v_league_round_laps");
+    expect(roundLaps.rows).toHaveLength(0);
+  });
+
+  it("will not let an unattributed lap be marked valid", async () => {
+    const rig = await seedRig(1);
+    await POST(
+      post(rig, [{ ...LAP, eventId: "evt-noflip-0001", rigAssignmentId: null }]),
+    );
+
+    // The database refuses it, so no route, migration, or console can undo the
+    // unrankability of a lap that has no owner.
+    await expect(
+      testDb().query(
+        "update laps set is_valid = true, invalid_reason = null where event_id = $1",
+        ["evt-noflip-0001"],
+      ),
+    ).rejects.toThrow(/laps_unattributed_is_invalid/);
+  });
+
+  it("will not let a lap be half-attributed", async () => {
+    const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+    await POST(
+      post(rig, [{ ...LAP, eventId: "evt-half-0001", rigAssignmentId: null }]),
+    );
+
+    // Giving it a driver without an assignment is a half-written attribution.
+    await expect(
+      testDb().query("update laps set driver_id = $1 where event_id = $2", [
+        driver.id,
+        "evt-half-0001",
+      ]),
+    ).rejects.toThrow(/laps_attribution_all_or_none/);
   });
 
   it("never reassigns an earlier driver's lap after a takeover", async () => {
@@ -394,10 +474,13 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       ]),
     );
 
+    // Stored, but with no owner - rig 1's token cannot reach Bob.
     await expect(response.json()).resolves.toMatchObject({
-      results: [{ status: "unknown_assignment" }],
+      results: [{ status: "accepted_unattributed" }],
     });
-    expect(await lapRows()).toHaveLength(0);
+    const laps = await lapRows();
+    expect(laps).toHaveLength(1);
+    expect(laps[0]).toMatchObject({ driver_id: null, rig_assignment_id: null });
     // Bob's assignment is untouched.
     const assignments = await assignmentRows();
     expect(assignments).toHaveLength(1);

@@ -19,7 +19,9 @@ import { venueToday } from "@/lib/venue";
  *
  * Attribution comes from the rigAssignmentId the agent stamped on each lap when
  * it captured it, never from the rig's currently-open assignment - a queued lap
- * can arrive long after its driver has left.
+ * can arrive long after its driver has left. A lap that cannot be attributed is
+ * stored with no driver and no assignment, invalid and unrankable, rather than
+ * being credited to the next driver or dropped (db/migrations/0003).
  */
 export async function POST(request: Request) {
   const rig = await rigFromBearer(request.headers.get("authorization"));
@@ -46,6 +48,7 @@ export async function POST(request: Request) {
     const assignments = await loadStampedAssignments(rig.id, parsed.data.events);
 
     const results: Array<{ type: string; status: string; eventId?: string }> = [];
+    const causes: UnattributedCause[] = [];
 
     for (const event of parsed.data.events) {
       if (event.type === "RIG_HEARTBEAT") {
@@ -57,20 +60,12 @@ export async function POST(request: Request) {
         );
         results.push({ type: event.type, status: "ok" });
       } else {
-        results.push(await ingestLap(rig.id, event, combo, assignments));
+        const attribution = attributeLap(event, assignments);
+        if (attribution.kind === "unattributed") causes.push(attribution.cause);
+        results.push(await ingestLap(rig.id, event, combo, attribution));
       }
     }
-
-    // An agent that cannot stamp its laps is stuck: nothing it drives will ever
-    // be stored. Say so once per batch, so a rig left on an old build shows up
-    // in the logs instead of just going quiet on the leaderboard.
-    const unstamped = results.filter((r) => r.status === "attribution_unsupported").length;
-    if (unstamped > 0) {
-      console.warn(
-        `[agent/events] rig ${rig.rig_number}: refused ${unstamped} lap(s) from an ` +
-          `agent that sends no rigAssignmentId - update the rig agent`,
-      );
-    }
+    warnAboutAbnormalCauses(rig.rig_number, causes);
 
     // Any activity proves the agent is alive.
     await query("update rigs set last_seen_at = now() where id = $1", [rig.id]);
@@ -120,35 +115,80 @@ async function loadStampedAssignments(
   return new Map(rows.map((row) => [row.id, row]));
 }
 
+/** Why a lap ended up with no owner. Two of the three are operator problems. */
+type UnattributedCause =
+  | "nobody_checked_in"
+  | "agent_sends_no_assignment_id"
+  | "unknown_assignment";
+
+type Attribution =
+  | { kind: "attributed"; assignment: StampedAssignment }
+  | { kind: "unattributed"; cause: UnattributedCause };
+
+/**
+ * Who owns this lap, decided only from what the agent stamped on it at capture
+ * time. Reading the rig's currently-open assignment here is the defect this
+ * replaces: a lap driven at 18:40 with nobody checked in was credited to
+ * whoever checked in at 18:41.
+ */
+function attributeLap(
+  lap: LapCompletedEvent,
+  assignments: Map<string, StampedAssignment>,
+): Attribution {
+  // An agent too old to stamp its laps. It cannot say who was driving, and we
+  // will not guess - even though an assignment may well have been open.
+  if (!statesCaptureTimeAttribution(lap)) {
+    return { kind: "unattributed", cause: "agent_sends_no_assignment_id" };
+  }
+  // The agent knew the rig was unassigned. Nobody owns this lap and nobody
+  // ever will: there is no later moment at which the system learns who drove.
+  if (lap.rigAssignmentId == null) {
+    return { kind: "unattributed", cause: "nobody_checked_in" };
+  }
+  // Unknown to this rig: a stale outbox from a rebuilt database, or one rig's
+  // token quoting another rig's assignment. Never falls back to a live lookup.
+  const assignment = assignments.get(lap.rigAssignmentId);
+  if (!assignment) return { kind: "unattributed", cause: "unknown_assignment" };
+
+  return { kind: "attributed", assignment };
+}
+
+/** Two of the three causes mean somebody has to go fix something. The third -
+ *  a rig driven by nobody checked in - is ordinary venue life, not an error. */
+function warnAboutAbnormalCauses(rigNumber: number, causes: UnattributedCause[]): void {
+  const stale = causes.filter((c) => c === "agent_sends_no_assignment_id").length;
+  if (stale > 0) {
+    console.warn(
+      `[agent/events] rig ${rigNumber}: stored ${stale} lap(s) unattributed - this ` +
+        `agent sends no rigAssignmentId, so nothing it records can reach a ` +
+        `leaderboard. Update the rig agent.`,
+    );
+  }
+  const unknown = causes.filter((c) => c === "unknown_assignment").length;
+  if (unknown > 0) {
+    console.warn(
+      `[agent/events] rig ${rigNumber}: stored ${unknown} lap(s) unattributed - the ` +
+        `assignment id they carry does not belong to this rig.`,
+    );
+  }
+}
+
 async function ingestLap(
   rigId: string,
   lap: LapCompletedEvent,
   combo: FeaturedCombo | null,
-  assignments: Map<string, StampedAssignment>,
+  attribution: Attribution,
 ): Promise<{ type: string; status: string; eventId: string }> {
   const base = { type: lap.type, eventId: lap.eventId };
+  const attributed = attribution.kind === "attributed";
 
-  // Attribution is whatever the agent knew when it captured the lap, never
-  // whatever is open now. Reading the rig's current assignment here is the
-  // defect this replaces: a lap driven at 18:40 with nobody checked in was
-  // credited to whoever checked in at 18:41.
-  if (!statesCaptureTimeAttribution(lap)) {
-    // An agent too old to stamp the lap. It cannot be attributed and must not
-    // be guessed at, so it is refused - loudly enough to name the cause.
-    return { ...base, status: "attribution_unsupported" };
-  }
-  if (lap.rigAssignmentId == null) {
-    // Genuinely nobody in the seat when this was driven. Refused, and the agent
-    // leaves it in its outbox; see docs/plan.md on unattributable laps.
-    return { ...base, status: "no_active_assignment" };
-  }
-
-  const assignment = assignments.get(lap.rigAssignmentId);
-  // Unknown to this rig: a stale outbox from a rebuilt database, or one rig's
-  // token quoting another rig's assignment. Never falls back to a live lookup.
-  if (!assignment) return { ...base, status: "unknown_assignment" };
-
-  const validity = computeValidity(lap, combo);
+  // An unattributed lap is stored invalid with the UNATTRIBUTED reason, and the
+  // database will not accept any other combination (laps_unattributed_is_invalid
+  // in db/migrations/0003). Combo and incident checks are moot: no owner means
+  // it cannot rank whatever it did on track.
+  const validity = attributed
+    ? computeValidity(lap, combo)
+    : { isValid: false, invalidReason: "UNATTRIBUTED" as const };
 
   try {
     const inserted = await queryOne<{ id: string }>(
@@ -162,8 +202,8 @@ async function ingestLap(
       [
         lap.eventId,
         rigId,
-        assignment.id,
-        assignment.driver_id,
+        attribution.kind === "attributed" ? attribution.assignment.id : null,
+        attribution.kind === "attributed" ? attribution.assignment.driver_id : null,
         lap.trackName,
         lap.trackConfig ?? null,
         lap.carName,
@@ -177,6 +217,7 @@ async function ingestLap(
     );
 
     if (!inserted) return { ...base, status: "duplicate" };
+    if (!attributed) return { ...base, status: "accepted_unattributed" };
 
     return { ...base, status: validity.isValid ? "accepted" : "accepted_invalid" };
   } catch (error) {

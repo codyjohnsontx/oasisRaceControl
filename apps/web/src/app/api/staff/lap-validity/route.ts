@@ -21,11 +21,27 @@ export async function POST(request: Request) {
   const invalidate = input.action === "invalidate";
 
   try {
+    const existing = await queryOne<{ driver_id: string | null }>(
+      "select driver_id from laps where id = $1",
+      [input.lapId],
+    );
+    if (!existing) {
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
+    // A lap nobody owns has no validity to argue about: it is invalid because
+    // it has no driver, and restoring it would put an unrankable lap on a
+    // leaderboard with an empty name. The database refuses this too
+    // (laps_unattributed_is_invalid), so this is the readable answer rather
+    // than the guard - attributing it to a driver is the real fix.
+    if (existing.driver_id === null) {
+      return Response.json({ error: "lap_is_unattributed" }, { status: 409 });
+    }
+
     const lap = await queryOne<{ id: string; is_valid: boolean }>(
       `update laps
        set is_valid = $2,
            invalid_reason = case when $2 then null else 'MANUALLY_INVALIDATED'::invalid_reason end
-       where id = $1
+       where id = $1 and driver_id is not null
        returning id, is_valid`,
       [input.lapId, !invalidate],
     );

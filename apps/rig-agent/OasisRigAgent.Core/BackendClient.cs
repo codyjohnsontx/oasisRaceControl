@@ -34,18 +34,23 @@ public sealed class BackendClient
         res.EnsureSuccessStatusCode();
     }
 
-    /// <summary>Statuses that mean the backend is done with a lap and the agent
-    /// may delete it from the outbox. Anything else - a lap the backend could
-    /// not attribute, or a status this agent version does not recognise - keeps
-    /// the lap queued, because the only durable copy is the one on this disk.</summary>
+    /// <summary>Statuses that mean the lap is now the backend's problem and the
+    /// agent may delete it from the outbox. "accepted_unattributed" counts: the
+    /// lap IS stored, just with no driver, so keeping it here would grow the
+    /// outbox without bound on a rig nobody checks into. Anything else - an
+    /// error, or a status this agent version does not recognise - keeps the lap
+    /// queued, because the only durable copy is the one on this disk.</summary>
     private static readonly HashSet<string> SettledStatuses =
-        new(StringComparer.Ordinal) { "accepted", "accepted_invalid", "duplicate" };
+        new(StringComparer.Ordinal)
+        {
+            "accepted", "accepted_invalid", "accepted_unattributed", "duplicate",
+        };
 
     /// <summary>Submit a batch of queued lap payloads. Returns the event_ids the
-    /// backend accepted or deduplicated (safe to remove from the queue). Laps the
-    /// backend refuses - because nobody was checked in when they were captured,
-    /// or because it does not recognise the assignment - are NOT returned, so
-    /// they stay queued rather than being silently dropped.</summary>
+    /// backend has stored or deduplicated (safe to remove from the queue).
+    /// Anything it did not store - a transient error, or a status this agent is
+    /// too old to understand - is NOT returned, so the lap stays queued rather
+    /// than being silently dropped.</summary>
     public async Task<IReadOnlyList<string>> SendLapsAsync(IReadOnlyList<QueuedEvent> events, CancellationToken ct)
     {
         var array = new JsonArray();

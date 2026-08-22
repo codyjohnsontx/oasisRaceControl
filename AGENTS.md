@@ -85,9 +85,15 @@ backward-compatibility story. The contract is documented on `lapCompletedEvent` 
 `apps/web/src/lib/events.ts`; both ends of the wire change together, and the only
 producers are `EventQueue.Enqueue` in the .NET agent and `scripts/fake-rig.ts`.
 
-Laps the backend cannot attribute are refused and stay in the agent's outbox -
-never credited to the next driver, never dropped. What should finally happen to
-them is an open product decision (`docs/plan.md`, failure & edge cases).
+Laps the backend cannot attribute are STORED with a null `driver_id` and a null
+`rig_assignment_id`, invalid with reason `UNATTRIBUTED` - never credited to the
+next driver, never dropped, and settled by the agent so an unattended rig cannot
+fill its outbox. Unrankability is a database constraint, not a query convention:
+`laps_unattributed_is_invalid` makes a valid ownerless lap unrepresentable, so do
+not add a `driver_id is not null` filter to prove it - add a test that the
+constraint bites. `/staff` lists them under *Unclaimed laps*; attributing one to
+a driver is deliberately not built (see the SAFETY NOTE in
+`db/migrations/0003_unattributed_laps.sql` before building it).
 
 ## Local dev
 

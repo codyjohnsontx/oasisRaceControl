@@ -122,8 +122,9 @@ export async function setFeaturedCombo(combo: {
 export async function lapRows(): Promise<
   Array<{
     event_id: string;
-    driver_id: string;
-    rig_assignment_id: string;
+    // Null on a lap nobody can be credited with - see db/migrations/0003.
+    driver_id: string | null;
+    rig_assignment_id: string | null;
     is_valid: boolean;
     invalid_reason: string | null;
     lap_time_ms: number;

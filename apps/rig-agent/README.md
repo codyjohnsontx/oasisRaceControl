@@ -78,7 +78,8 @@ capture-time stamping across a checkout, and the backend client's result mapping
 are covered by 21 unit tests.
 
 A lap the backend cannot attribute — nobody was checked in when it was captured,
-or it names an assignment this rig has never had — is **not** settled, so it
-stays in the outbox instead of being deleted. That is deliberate: the outbox is
-the only durable copy. It also means an unattended rig driven by nobody checked
-in accumulates queued laps indefinitely; see the event model in `docs/plan.md`.
+or it names an assignment this rig has never had — comes back as
+`accepted_unattributed`: the backend stored it with no driver, so the agent
+settles it and the outbox drains. Only laps the backend did **not** store (an
+error, or a status this agent is too old to recognise) stay queued, because the
+outbox holds the only durable copy. See the event model in `docs/plan.md`.

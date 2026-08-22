@@ -57,12 +57,24 @@ function lookedUpAssignments(): boolean {
   );
 }
 
-/** Makes the rig lookup succeed and everything else return nothing. */
+/** Makes the rig lookup succeed, lap inserts report a new row, and everything
+ *  else return nothing. */
 function authenticateRig() {
   queryOne.mockImplementation(async (sql: string) => {
     if (sql.includes("from rigs where agent_token_hash")) return RIG;
+    if (sql.includes("insert into laps")) return { id: "lap-uuid" };
     return null;
   });
+}
+
+/** The (rig_assignment_id, driver_id) pair a lap insert was given. */
+function insertedAttribution(): [unknown, unknown] | null {
+  const call = [...query.mock.calls, ...queryOne.mock.calls].find(([sql]) =>
+    String(sql).includes("insert into laps"),
+  );
+  if (!call) return null;
+  const params = call[1] as unknown[];
+  return [params[2], params[3]];
 }
 
 beforeEach(() => {
@@ -173,7 +185,7 @@ describe("POST /api/agent/events behaviour", () => {
     expect(versionUpdate?.[1]).toEqual([RIG.id, "1.2.3"]);
   });
 
-  it("refuses a lap from an agent that sends no assignment id", async () => {
+  it("stores a lap from an agent that sends no assignment id with no owner", async () => {
     // LAP has no rigAssignmentId: the shape an agent built before the field
     // existed still sends. It must never fall back to a live lookup.
     const response = await POST(post({ events: [LAP] }));
@@ -183,27 +195,41 @@ describe("POST /api/agent/events behaviour", () => {
         {
           type: "LAP_COMPLETED",
           eventId: LAP.eventId,
-          status: "attribution_unsupported",
+          status: "accepted_unattributed",
         },
       ],
     });
-    expect(insertedLaps()).toBe(false);
+    expect(insertedLaps()).toBe(true);
+    expect(insertedAttribution()).toEqual([null, null]);
     // Not even asked - there is no assignment this lap could belong to.
     expect(lookedUpAssignments()).toBe(false);
   });
 
-  it("refuses a lap the agent captured with nobody checked in", async () => {
-    const response = await POST(
-      post({ events: [{ ...LAP, rigAssignmentId: null }] }),
-    );
+  it("stores a lap the agent captured with nobody checked in with no owner", async () => {
+    const response = await POST(post({ events: [{ ...LAP, rigAssignmentId: null }] }));
 
     await expect(response.json()).resolves.toEqual({
       results: [
-        { type: "LAP_COMPLETED", eventId: LAP.eventId, status: "no_active_assignment" },
+        {
+          type: "LAP_COMPLETED",
+          eventId: LAP.eventId,
+          status: "accepted_unattributed",
+        },
       ],
     });
-    expect(insertedLaps()).toBe(false);
+    expect(insertedAttribution()).toEqual([null, null]);
     expect(lookedUpAssignments()).toBe(false);
+  });
+
+  it("marks an unattributed lap invalid so it can never rank", async () => {
+    await POST(post({ events: [{ ...LAP, rigAssignmentId: null }] }));
+
+    const call = [...query.mock.calls, ...queryOne.mock.calls].find(([sql]) =>
+      String(sql).includes("insert into laps"),
+    )!;
+    const params = call[1] as unknown[];
+    expect(params[10]).toBe(false); // is_valid
+    expect(params[11]).toBe("UNATTRIBUTED"); // invalid_reason
   });
 
   it("looks up stamped assignments once per batch, scoped to the rig", async () => {
@@ -223,18 +249,40 @@ describe("POST /api/agent/events behaviour", () => {
     expect(lookups[0]![1]).toEqual([RIG.id, [ASSIGNMENT_ID, OTHER_ASSIGNMENT_ID]]);
   });
 
-  it("refuses a stamped assignment that does not belong to this rig", async () => {
-    // The scoped lookup comes back empty, so there is nothing to attribute to.
+  it("stores a lap naming an assignment that is not this rig's with no owner", async () => {
+    // The scoped lookup comes back empty, so there is nothing to attribute to -
+    // and the currently-open assignment is never consulted as a fallback.
     const response = await POST(
       post({ events: [{ ...LAP, rigAssignmentId: ASSIGNMENT_ID }] }),
     );
 
     await expect(response.json()).resolves.toEqual({
       results: [
-        { type: "LAP_COMPLETED", eventId: LAP.eventId, status: "unknown_assignment" },
+        {
+          type: "LAP_COMPLETED",
+          eventId: LAP.eventId,
+          status: "accepted_unattributed",
+        },
       ],
     });
-    expect(insertedLaps()).toBe(false);
+    expect(insertedAttribution()).toEqual([null, null]);
+  });
+
+  it("attributes a lap to the assignment the agent stamped on it", async () => {
+    query.mockImplementation(async (sql: string) =>
+      String(sql).includes("from rig_assignments")
+        ? [{ id: ASSIGNMENT_ID, driver_id: "driver-uuid" }]
+        : [],
+    );
+
+    const response = await POST(
+      post({ events: [{ ...LAP, rigAssignmentId: ASSIGNMENT_ID }] }),
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      results: [{ type: "LAP_COMPLETED", eventId: LAP.eventId, status: "accepted" }],
+    });
+    expect(insertedAttribution()).toEqual([ASSIGNMENT_ID, "driver-uuid"]);
   });
 
   it("rejects a malformed assignment id rather than ignoring it", async () => {

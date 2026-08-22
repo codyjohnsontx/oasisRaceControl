@@ -31,6 +31,20 @@ export type StaffLapRow = {
   rig_number: number | null;
 };
 
+/** A lap the system could not credit to anyone: nobody was checked in when it
+ *  was driven, or the rig's agent is too old to say who was. Stored, invalid,
+ *  and unrankable - it has no driver, so there is nothing to reset a PIN on and
+ *  no validity to argue about. */
+export type UnattributedLapRow = {
+  id: string;
+  lap_time_ms: number;
+  track_name: string;
+  track_config: string | null;
+  car_name: string;
+  completed_at: string;
+  rig_number: number | null;
+};
+
 const AGENT_ONLINE_WINDOW_MS = 90_000;
 
 function agentStatus(lastSeenAt: string | null): "online" | "offline" {
@@ -44,11 +58,13 @@ export function StaffDashboard({
   staffName,
   rigs,
   laps,
+  unattributedLaps,
   league,
 }: {
   staffName: string;
   rigs: RigStatusRow[];
   laps: StaffLapRow[];
+  unattributedLaps: UnattributedLapRow[];
   league: StaffLeagueProps;
 }) {
   const router = useRouter();
@@ -213,6 +229,52 @@ export function StaffDashboard({
           Tip: tap a driver&apos;s name to reset their PIN.
         </p>
       </section>
+
+      {unattributedLaps.length > 0 && (
+        <section>
+          <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">
+            Unclaimed laps · last 7 days
+          </h2>
+          <p className="text-muted text-xs mb-3">
+            Driven with nobody checked in, so nobody can be credited with them.
+            They are kept but can never reach a leaderboard. If a customer says
+            their laps are missing, they most likely drove before scanning the
+            QR code — find the lap here by rig and time.
+          </p>
+          <div className="flex flex-col">
+            {unattributedLaps.map((lap) => (
+              <div
+                key={lap.id}
+                className="flex items-center gap-3 border-b border-edge py-2 text-sm opacity-60"
+              >
+                <span className="laptime font-bold w-20">
+                  {formatLapTime(lap.lap_time_ms)}
+                </span>
+                <span className="text-muted w-32 truncate">
+                  {new Date(lap.completed_at).toLocaleString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+                <span className="text-muted w-12">
+                  {lap.rig_number
+                    ? `R${lap.rig_number.toString().padStart(2, "0")}`
+                    : "—"}
+                </span>
+                <span className="text-muted flex-1 truncate">
+                  {lap.track_name}
+                  {lap.track_config ? ` (${lap.track_config})` : ""} · {lap.car_name}
+                </span>
+                <span className="text-invalid text-[10px] uppercase font-bold">
+                  Unclaimed
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </main>
   );
 }

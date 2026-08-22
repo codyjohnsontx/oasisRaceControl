@@ -77,19 +77,38 @@ public sealed class BackendClientTests
     }
 
     [Fact]
-    public async Task SendLaps_settles_accepted_and_duplicate_but_not_rejected()
+    public async Task SendLaps_settles_every_status_that_means_the_lap_is_stored()
     {
-        // Two laps sent; backend accepts the first, rejects the second because
-        // no driver is checked in. Only the accepted one should be settled.
+        // Attributed, attributed-but-invalid, stored-with-no-owner, and already
+        // present. All four are safely gone from the outbox.
         var handler = new StubHandler(_ => (HttpStatusCode.OK, """
             {"results":[
               {"type":"LAP_COMPLETED","eventId":"evt-1","status":"accepted"},
-              {"type":"LAP_COMPLETED","eventId":"evt-2","status":"no_active_assignment"}
+              {"type":"LAP_COMPLETED","eventId":"evt-2","status":"accepted_invalid"},
+              {"type":"LAP_COMPLETED","eventId":"evt-3","status":"accepted_unattributed"},
+              {"type":"LAP_COMPLETED","eventId":"evt-4","status":"duplicate"}
             ]}
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        var settled = await client.SendLapsAsync(new[] { Queued("evt-1"), Queued("evt-2") }, CancellationToken.None);
+        var settled = await client.SendLapsAsync(
+            new[] { Queued("evt-1"), Queued("evt-2"), Queued("evt-3"), Queued("evt-4") },
+            CancellationToken.None);
+
+        Assert.Equal(new[] { "evt-1", "evt-2", "evt-3", "evt-4" }, settled);
+    }
+
+    /// <summary>A rig nobody checks into still drains: its laps are stored
+    /// unattributed, so the outbox cannot grow without bound.</summary>
+    [Fact]
+    public async Task SendLaps_settles_a_lap_stored_with_no_owner()
+    {
+        var handler = new StubHandler(_ => (HttpStatusCode.OK, """
+            {"results":[{"type":"LAP_COMPLETED","eventId":"evt-1","status":"accepted_unattributed"}]}
+            """));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        var settled = await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
 
         Assert.Equal(new[] { "evt-1" }, settled);
     }
@@ -108,21 +127,21 @@ public sealed class BackendClientTests
     }
 
     [Fact]
-    public async Task SendLaps_does_not_settle_a_lap_the_backend_could_not_attribute()
+    public async Task SendLaps_does_not_settle_a_lap_the_backend_did_not_store()
     {
-        // Both refusals are permanent for this payload, but the durable copy is
-        // the one on the rig's disk - dropping it would destroy the lap.
+        // "error" is transient and must be retried; an unrecognised status comes
+        // from a backend newer than this agent and must not be guessed at.
+        // Either way the outbox keeps the only durable copy.
         var handler = new StubHandler(_ => (HttpStatusCode.OK, """
             {"results":[
-              {"type":"LAP_COMPLETED","eventId":"evt-1","status":"no_active_assignment"},
-              {"type":"LAP_COMPLETED","eventId":"evt-2","status":"unknown_assignment"},
-              {"type":"LAP_COMPLETED","eventId":"evt-3","status":"attribution_unsupported"}
+              {"type":"LAP_COMPLETED","eventId":"evt-1","status":"error"},
+              {"type":"LAP_COMPLETED","eventId":"evt-2","status":"something_invented_later"}
             ]}
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
         var settled = await client.SendLapsAsync(
-            new[] { Queued("evt-1"), Queued("evt-2"), Queued("evt-3") }, CancellationToken.None);
+            new[] { Queued("evt-1"), Queued("evt-2") }, CancellationToken.None);
 
         Assert.Empty(settled);
     }
@@ -136,7 +155,7 @@ public sealed class BackendClientTests
         var handler = new StubHandler(_ => (HttpStatusCode.OK, """
             {"results":[
               {"type":"LAP_COMPLETED","eventId":"evt-2","status":"accepted"},
-              {"type":"LAP_COMPLETED","eventId":"evt-1","status":"no_active_assignment"}
+              {"type":"LAP_COMPLETED","eventId":"evt-1","status":"error"}
             ]}
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
