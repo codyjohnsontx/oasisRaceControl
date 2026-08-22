@@ -45,8 +45,15 @@ const POLL_MS = 10_000;
 
 let lapNumber = 0;
 let lastEventId: string | null = null;
-/** The rig's open assignment as last polled, or null if nobody is checked in. */
-let assignmentId: string | null = null;
+/**
+ * The rig's open assignment as last polled: a string id, or null when the poll
+ * came back saying nobody is checked in. It stays `undefined` until a poll has
+ * actually SUCCEEDED, which is the same distinction the real agent draws - and
+ * the whole point of this contract. Sending `rigAssignmentId: null` before ever
+ * getting an answer would assert "nobody was checked in" on a rig that may well
+ * have a driver, and store their laps as unclaimed.
+ */
+let assignmentId: string | null | undefined;
 
 async function pollAssignment(): Promise<void> {
   try {
@@ -57,9 +64,9 @@ async function pollAssignment(): Promise<void> {
     const body = (await res.json()) as { assignment: { id: string } | null };
     const next = body.assignment?.id ?? null;
     if (next !== assignmentId) {
-      assignmentId = next;
-      console.log(`[fake-rig] assignment: ${assignmentId ?? "nobody checked in"}`);
+      console.log(`[fake-rig] assignment: ${next ?? "nobody checked in"}`);
     }
+    assignmentId = next;
   } catch (error) {
     console.error(`[fake-rig] assignment poll failed:`, (error as Error).message);
   }
@@ -82,7 +89,8 @@ async function post(events: AgentEvent[]): Promise<void> {
   }
 }
 
-function nextLap(): LapCompletedEvent {
+/** Only called once a poll has succeeded, so assignmentId is a real answer. */
+function nextLap(assignment: string | null): LapCompletedEvent {
   lapNumber += 1;
 
   // ~7%: resend the previous event verbatim to prove duplicates are dropped.
@@ -91,7 +99,7 @@ function nextLap(): LapCompletedEvent {
     return {
       type: "LAP_COMPLETED",
       eventId: lastEventId,
-      rigAssignmentId: assignmentId,
+      rigAssignmentId: assignment,
       ...COMBO,
       lapNumber: lapNumber - 1,
       lapTimeMs: PACE_MS,
@@ -107,7 +115,7 @@ function nextLap(): LapCompletedEvent {
   return {
     type: "LAP_COMPLETED",
     eventId: lastEventId,
-    rigAssignmentId: assignmentId,
+    rigAssignmentId: assignment,
     ...COMBO,
     lapNumber,
     lapTimeMs: Math.max(60_000, PACE_MS + jitter + (dirty ? 4000 : 0)),
@@ -123,4 +131,13 @@ void pollAssignment();
 setInterval(() => void pollAssignment(), POLL_MS);
 void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]);
 setInterval(() => void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]), 30_000);
-setInterval(() => void post([nextLap()]), INTERVAL_MS);
+setInterval(() => {
+  // The real agent queues these laps unresolved and stamps them once a poll
+  // gets through; a simulator with no outbox just waits for the answer rather
+  // than inventing one.
+  if (assignmentId === undefined) {
+    console.log("[fake-rig] no assignment poll has succeeded yet - skipping this lap");
+    return;
+  }
+  void post([nextLap(assignmentId)]);
+}, INTERVAL_MS);
