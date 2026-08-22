@@ -60,11 +60,11 @@ public sealed class BackendClientTests
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        var assignment = await client.GetAssignmentAsync(CancellationToken.None);
+        var poll = await client.GetAssignmentAsync(CancellationToken.None);
 
-        Assert.NotNull(assignment);
-        Assert.Equal("a1", assignment!.Id);
-        Assert.Equal("Cody J.", assignment.DriverDisplayName);
+        Assert.NotNull(poll.Assignment);
+        Assert.Equal("a1", poll.Assignment!.Id);
+        Assert.Equal("Cody J.", poll.Assignment.DriverDisplayName);
     }
 
     [Fact]
@@ -73,7 +73,7 @@ public sealed class BackendClientTests
         var handler = new StubHandler(_ => (HttpStatusCode.OK, """{"assignment":null}"""));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        Assert.Null(await client.GetAssignmentAsync(CancellationToken.None));
+        Assert.Null((await client.GetAssignmentAsync(CancellationToken.None)).Assignment);
     }
 
     [Fact]

@@ -81,21 +81,32 @@ public sealed class BackendClient
         return settled;
     }
 
-    /// <summary>The rig's current driver assignment, or null if nobody is checked in.</summary>
-    public async Task<Assignment?> GetAssignmentAsync(CancellationToken ct)
+    /// <summary>The rig's current driver assignment (null if nobody is checked
+    /// in), together with the offset between this machine's clock and the
+    /// server's, read from the response's Date header. Attribution compares a
+    /// rig-stamped completedAt against a server-stamped StartedAt, so it needs
+    /// that offset to stay within one clock; a missing Date header falls back to
+    /// zero, which is the old same-clock assumption and no worse than it.</summary>
+    public async Task<AssignmentPoll> GetAssignmentAsync(CancellationToken ct)
     {
         using var res = await _http.GetAsync("api/agent/assignment", ct);
         res.EnsureSuccessStatusCode();
 
+        // Read the clock before touching the body: the closer this is to the
+        // response arriving, the less network time leaks into the offset.
+        var offset = res.Headers.Date is { } serverNow
+            ? serverNow - DateTimeOffset.UtcNow
+            : TimeSpan.Zero;
+
         var json = JsonNode.Parse(await res.Content.ReadAsStringAsync(ct));
         var a = json?["assignment"];
-        if (a is null || a is JsonValue) return null;
+        if (a is null || a is JsonValue) return new AssignmentPoll(null, offset);
 
-        return new Assignment(
+        return new AssignmentPoll(new Assignment(
             a["id"]!.GetValue<string>(),
             a["driver"]!["id"]!.GetValue<string>(),
             a["driver"]!["displayName"]!.GetValue<string>(),
-            DateTimeOffset.Parse(a["startedAt"]!.GetValue<string>()));
+            DateTimeOffset.Parse(a["startedAt"]!.GetValue<string>())), offset);
     }
 
     /// <summary>End the rig's current assignment (the "switch driver" button).</summary>

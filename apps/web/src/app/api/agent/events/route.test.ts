@@ -247,10 +247,12 @@ describe("POST /api/agent/events behaviour", () => {
     expect(lookups).toHaveLength(1);
     // The rig comes from the bearer token, and each lap carries the id it
     // stamped alongside the moment it was driven, so the window check below
-    // can be made per lap rather than per assignment.
+    // can be made per lap rather than per assignment. Laps are identified by
+    // their POSITION in the batch, not their eventId - a batch may repeat an
+    // eventId, and two entries sharing one would otherwise share a verdict.
     expect(lookups[0]![1]).toEqual([
       RIG.id,
-      ["event-00000001", "event-00000002", "event-00000003"],
+      [0, 1, 2],
       [ASSIGNMENT_ID, ASSIGNMENT_ID, OTHER_ASSIGNMENT_ID],
       [LAP.completedAt, LAP.completedAt, LAP.completedAt],
       "15 minutes",
@@ -273,11 +275,15 @@ describe("POST /api/agent/events behaviour", () => {
   });
 
   it("stores a lap driven outside the window of the assignment it names with no owner", async () => {
+    // lap_index, not event_id: matches are keyed by batch position. Getting this
+    // wrong would make the lookup miss and the case pass as unknown_assignment
+    // instead, which produces the same status - hence the warn assertion below,
+    // which is the only thing that tells the two causes apart.
     query.mockImplementation(async (sql: string) =>
       String(sql).includes("rig_assignments")
         ? [
             {
-              event_id: LAP.eventId,
+              lap_index: 0,
               id: ASSIGNMENT_ID,
               driver_id: "driver-uuid",
               in_window: false,
@@ -285,6 +291,7 @@ describe("POST /api/agent/events behaviour", () => {
           ]
         : [],
     );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const response = await POST(
       post({ events: [{ ...LAP, rigAssignmentId: ASSIGNMENT_ID }] }),
@@ -299,6 +306,10 @@ describe("POST /api/agent/events behaviour", () => {
         },
       ],
     });
+    // The rig HAS this assignment, so the refusal must be the window one - not
+    // the "never owned it" one that an index mismatch would produce.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("falls outside the assignment"));
+    warn.mockRestore();
     // Stored, not dropped - but the driver it named is never credited.
     expect(insertedLaps()).toBe(true);
     expect(insertedAttribution()).toEqual([null, null]);
@@ -328,7 +339,7 @@ describe("POST /api/agent/events behaviour", () => {
       String(sql).includes("rig_assignments")
         ? [
             {
-              event_id: LAP.eventId,
+              lap_index: 0,
               id: ASSIGNMENT_ID,
               driver_id: "driver-uuid",
               in_window: true,

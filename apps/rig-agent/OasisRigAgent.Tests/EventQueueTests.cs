@@ -165,7 +165,7 @@ public sealed class EventQueueTests : IDisposable
         Assert.Equal(1, reopened.PendingCount());
         Assert.Empty(reopened.PendingBatch(10));
 
-        Assert.Equal(1, reopened.ResolveUnresolved(CheckedInAt(DateTimeOffset.UtcNow.AddHours(-1))));
+        Assert.Equal(1, reopened.ResolveUnresolved(CheckedInAt(DateTimeOffset.UtcNow.AddHours(-1)), TimeSpan.Zero));
         Assert.Equal(
             AssignmentId,
             reopened.PendingBatch(10).Single().Payload["rigAssignmentId"]!.GetValue<string>());
@@ -179,7 +179,7 @@ public sealed class EventQueueTests : IDisposable
         using var queue = new EventQueue(_dbPath);
         queue.EnqueueUnresolved(Lap("evt-1"));
 
-        queue.ResolveUnresolved(null);
+        queue.ResolveUnresolved(null, TimeSpan.Zero);
 
         var payload = queue.PendingBatch(10).Single().Payload;
         Assert.True(payload.AsObject().ContainsKey("rigAssignmentId"));
@@ -199,13 +199,52 @@ public sealed class EventQueueTests : IDisposable
         queue.EnqueueUnresolved(Lap("evt-before", completedAt: checkIn.AddMinutes(-7)));
         queue.EnqueueUnresolved(Lap("evt-after", completedAt: checkIn.AddMinutes(3)));
 
-        Assert.Equal(2, queue.ResolveUnresolved(CheckedInAt(checkIn)));
+        Assert.Equal(2, queue.ResolveUnresolved(CheckedInAt(checkIn), TimeSpan.Zero));
 
         var batch = queue.PendingBatch(10);
         Assert.Null(batch.Single(e => e.EventId == "evt-before").Payload["rigAssignmentId"]);
         Assert.Equal(
             AssignmentId,
             batch.Single(e => e.EventId == "evt-after").Payload["rigAssignmentId"]!.GetValue<string>());
+    }
+
+    /// <summary>completedAt comes from the rig and StartedAt from the server, so
+    /// a rig clock running FAST would otherwise date a warm-up lap after a
+    /// check-in it actually preceded - and hand a walk-up guest's laps to the
+    /// next customer, which is the defect this whole path exists to prevent.
+    /// The offset taken from the poll response puts both sides in server
+    /// time.</summary>
+    [Fact]
+    public void ResolveUnresolved_does_not_credit_a_pre_check_in_lap_on_a_fast_rig_clock()
+    {
+        var checkIn = DateTimeOffset.Parse("2026-08-22T09:12:00Z");
+        // The rig's clock is ten minutes fast, so a lap really driven at 09:07 -
+        // five minutes BEFORE the check-in - is stamped 09:17 locally.
+        var rigIsFastBy = TimeSpan.FromMinutes(10);
+        using var queue = new EventQueue(_dbPath);
+        queue.EnqueueUnresolved(Lap("evt-warmup", completedAt: checkIn.AddMinutes(-5) + rigIsFastBy));
+
+        queue.ResolveUnresolved(CheckedInAt(checkIn), serverClockOffset: -rigIsFastBy);
+
+        Assert.Null(queue.PendingBatch(10).Single().Payload["rigAssignmentId"]);
+    }
+
+    /// <summary>The same correction the other way: a rig clock running SLOW must
+    /// not send a lap the driver really did drive to the unclaimed pile.</summary>
+    [Fact]
+    public void ResolveUnresolved_still_credits_a_post_check_in_lap_on_a_slow_rig_clock()
+    {
+        var checkIn = DateTimeOffset.Parse("2026-08-22T09:12:00Z");
+        var rigIsSlowBy = TimeSpan.FromMinutes(10);
+        // Really driven at 09:15, three minutes AFTER check-in, stamped 09:05.
+        using var queue = new EventQueue(_dbPath);
+        queue.EnqueueUnresolved(Lap("evt-theirs", completedAt: checkIn.AddMinutes(3) - rigIsSlowBy));
+
+        queue.ResolveUnresolved(CheckedInAt(checkIn), serverClockOffset: rigIsSlowBy);
+
+        Assert.Equal(
+            AssignmentId,
+            queue.PendingBatch(10).Single().Payload["rigAssignmentId"]!.GetValue<string>());
     }
 
     /// <summary>A lap driven at the very moment of check-in is the driver's.</summary>
@@ -216,7 +255,7 @@ public sealed class EventQueueTests : IDisposable
         using var queue = new EventQueue(_dbPath);
         queue.EnqueueUnresolved(Lap("evt-1", completedAt: checkIn));
 
-        queue.ResolveUnresolved(CheckedInAt(checkIn));
+        queue.ResolveUnresolved(CheckedInAt(checkIn), TimeSpan.Zero);
 
         Assert.Equal(
             AssignmentId,
@@ -230,7 +269,7 @@ public sealed class EventQueueTests : IDisposable
         queue.Enqueue(Lap("evt-1"), AssignmentId);
         queue.EnqueueUnresolved(Lap("evt-2"));
 
-        Assert.Equal(1, queue.ResolveUnresolved(null));
+        Assert.Equal(1, queue.ResolveUnresolved(null, TimeSpan.Zero));
 
         var batch = queue.PendingBatch(10);
         Assert.Equal(
@@ -262,7 +301,7 @@ public sealed class EventQueueTests : IDisposable
         Assert.Equal(2, upgraded.PendingCount());
         Assert.Empty(upgraded.PendingBatch(10));
 
-        Assert.Equal(2, upgraded.ResolveUnresolved(CheckedInAt(checkIn)));
+        Assert.Equal(2, upgraded.ResolveUnresolved(CheckedInAt(checkIn), TimeSpan.Zero));
 
         var batch = upgraded.PendingBatch(10);
         Assert.Equal(2, batch.Count);

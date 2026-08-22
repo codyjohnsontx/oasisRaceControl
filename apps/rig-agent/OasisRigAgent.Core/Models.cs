@@ -23,6 +23,20 @@ public sealed record LapCompleted
 /// <summary>The rig's current driver assignment, as reported by the backend.</summary>
 public sealed record Assignment(string Id, string DriverId, string DriverDisplayName, DateTimeOffset StartedAt);
 
+/// <summary>
+/// What one assignment poll learned: the rig's assignment (null if nobody is
+/// checked in), and how far this machine's clock sits from the server's.
+///
+/// The offset exists because attribution compares two timestamps that come from
+/// DIFFERENT machines - a lap's completedAt is stamped by the rig, an
+/// assignment's StartedAt by the server - and a rig clock that drifts a few
+/// minutes would otherwise decide a lap was driven on the wrong side of a
+/// check-in. Adding this to a rig timestamp puts it in server time, so the
+/// comparison happens within one clock. It is measured from the response's
+/// Date header, so it costs no extra call and no wire change.
+/// </summary>
+public sealed record AssignmentPoll(Assignment? Assignment, TimeSpan ServerClockOffset);
+
 /// <summary>Whether the agent can currently reach the backend.</summary>
 public enum ConnectionState
 {

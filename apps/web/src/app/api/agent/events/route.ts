@@ -50,7 +50,7 @@ export async function POST(request: Request) {
     const results: Array<{ type: string; status: string; eventId?: string }> = [];
     const causes: UnattributedCause[] = [];
 
-    for (const event of parsed.data.events) {
+    for (const [index, event] of parsed.data.events.entries()) {
       if (event.type === "RIG_HEARTBEAT") {
         await query(
           `update rigs set last_seen_at = now(),
@@ -60,7 +60,7 @@ export async function POST(request: Request) {
         );
         results.push({ type: event.type, status: "ok" });
       } else {
-        const attribution = attributeLap(event, matches);
+        const attribution = attributeLap(event, index, matches);
         if (attribution.kind === "unattributed") causes.push(attribution.cause);
         results.push(await ingestLap(rig.id, event, combo, attribution));
       }
@@ -113,29 +113,36 @@ const ASSIGNMENT_WINDOW_CLOCK_SKEW = "15 minutes";
  * that rig has ever held and credit a months-old driver with a lap they never
  * drove. A lap only attaches to an assignment that was actually running when it
  * was driven, give or take ASSIGNMENT_WINDOW_CLOCK_SKEW.
+ *
+ * Keyed by each lap's POSITION in the batch, never by its eventId. A batch may
+ * legitimately repeat an eventId - that is what the idempotency key is for - but
+ * a crafted one could repeat it with a different assignment or completedAt, and
+ * keying by eventId would let the last entry's window verdict decide the first
+ * entry's owner. That would turn the guard above into one a caller can talk its
+ * way around. Position is unique per row by construction.
  */
 async function loadStampedAssignments(
   rigId: string,
   events: AgentEventsBody["events"],
-): Promise<Map<string, AssignmentMatch>> {
-  const stamped = events.flatMap((event) =>
+): Promise<Map<number, AssignmentMatch>> {
+  const stamped = events.flatMap((event, index) =>
     event.type === "LAP_COMPLETED" && event.rigAssignmentId
-      ? [{ eventId: event.eventId, id: event.rigAssignmentId, at: event.completedAt }]
+      ? [{ index, id: event.rigAssignmentId, at: event.completedAt }]
       : [],
   );
   if (stamped.length === 0) return new Map();
 
-  const rows = await query<StampedAssignment & { event_id: string; in_window: boolean }>(
-    `select lap.event_id, a.id, a.driver_id,
+  const rows = await query<StampedAssignment & { lap_index: number; in_window: boolean }>(
+    `select lap.lap_index, a.id, a.driver_id,
             lap.completed_at >= a.started_at - $5::interval
               and lap.completed_at < coalesce(a.ended_at, 'infinity'::timestamptz) + $5::interval
               as in_window
-     from unnest($2::text[], $3::uuid[], $4::timestamptz[])
-       as lap (event_id, assignment_id, completed_at)
+     from unnest($2::int[], $3::uuid[], $4::timestamptz[])
+       as lap (lap_index, assignment_id, completed_at)
      join rig_assignments a on a.id = lap.assignment_id and a.rig_id = $1`,
     [
       rigId,
-      stamped.map((lap) => lap.eventId),
+      stamped.map((lap) => lap.index),
       stamped.map((lap) => lap.id),
       stamped.map((lap) => lap.at),
       ASSIGNMENT_WINDOW_CLOCK_SKEW,
@@ -143,7 +150,7 @@ async function loadStampedAssignments(
   );
   return new Map(
     rows.map((row) => [
-      row.event_id,
+      row.lap_index,
       { assignment: { id: row.id, driver_id: row.driver_id }, inWindow: row.in_window },
     ]),
   );
@@ -168,7 +175,8 @@ type Attribution =
  */
 function attributeLap(
   lap: LapCompletedEvent,
-  matches: Map<string, AssignmentMatch>,
+  lapIndex: number,
+  matches: Map<number, AssignmentMatch>,
 ): Attribution {
   // An agent too old to stamp its laps. It cannot say who was driving, and we
   // will not guess - even though an assignment may well have been open.
@@ -182,7 +190,7 @@ function attributeLap(
   }
   // Unknown to this rig: a stale outbox from a rebuilt database, or one rig's
   // token quoting another rig's assignment. Never falls back to a live lookup.
-  const match = matches.get(lap.eventId);
+  const match = matches.get(lapIndex);
   if (!match) return { kind: "unattributed", cause: "unknown_assignment" };
   // Real assignment, wrong moment: the driver it names was not in that seat
   // when this lap was driven, so crediting them would be the same invented

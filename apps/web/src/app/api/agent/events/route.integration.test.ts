@@ -440,6 +440,47 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     ).rejects.toThrow(/laps_attribution_all_or_none/);
   });
 
+  it("judges each entry in a batch on its own window, even sharing an event_id", async () => {
+    const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+    const assignmentId = await openAssignment(rig.id, driver.id);
+    // A stint that ran from two hours ago until one hour ago.
+    await testDb().query(
+      `update rig_assignments
+       set started_at = now() - interval '2 hours',
+           ended_at = now() - interval '1 hour',
+           end_reason = 'driver_ended'
+       where id = $1`,
+      [assignmentId],
+    );
+
+    // Two entries sharing one event_id. The first was driven well after that
+    // stint closed and must not be credited; the second sits inside it. A
+    // lookup keyed on event_id would collapse them and let the second entry's
+    // verdict decide the first entry's owner, which is a guard a caller can
+    // talk its way around.
+    const outOfWindow = {
+      ...LAP,
+      eventId: "evt-dupe-window-0001",
+      rigAssignmentId: assignmentId,
+      completedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+    };
+    const inWindow = { ...outOfWindow, completedAt: new Date(Date.now() - 90 * 60_000).toISOString() };
+
+    const response = await POST(post(rig, [outOfWindow, inWindow]));
+
+    const body = await response.json();
+    expect(body.results.map((r: { status: string }) => r.status)).toEqual([
+      "accepted_unattributed",
+      "duplicate",
+    ]);
+
+    const laps = await lapRows();
+    expect(laps).toHaveLength(1);
+    expect(laps[0]).toMatchObject({ driver_id: null, rig_assignment_id: null });
+    expect(laps[0]!.driver_id).not.toBe(driver.id);
+  });
+
   it("never reassigns an earlier driver's lap after a takeover", async () => {
     const rig = await seedRig(1);
     const alice = await seedDriver("Alice");

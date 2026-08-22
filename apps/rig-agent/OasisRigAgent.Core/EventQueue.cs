@@ -110,7 +110,7 @@ public sealed class EventQueue : IDisposable
     /// customer to check in afterwards, which is the misattribution the
     /// capture-time stamp exists to remove. A poll that finds nobody checked in
     /// resolves every row to an explicit null.</summary>
-    public int ResolveUnresolved(Assignment? assignment)
+    public int ResolveUnresolved(Assignment? assignment, TimeSpan serverClockOffset)
     {
         lock (_lock)
         {
@@ -128,7 +128,7 @@ public sealed class EventQueue : IDisposable
 
             foreach (var (eventId, payload) in pending)
             {
-                payload["rigAssignmentId"] = OwnerOf(payload, assignment);
+                payload["rigAssignmentId"] = OwnerOf(payload, assignment, serverClockOffset);
                 using var update = _connection.CreateCommand();
                 update.Transaction = tx;
                 update.CommandText =
@@ -147,15 +147,22 @@ public sealed class EventQueue : IDisposable
     /// first successful poll reported. An unreadable `completedAt` cannot be
     /// shown to fall inside the assignment, so it resolves to null rather than
     /// blocking the whole backlog on one damaged row.</summary>
-    private static string? OwnerOf(JsonNode payload, Assignment? assignment)
+    private static string? OwnerOf(JsonNode payload, Assignment? assignment, TimeSpan serverClockOffset)
     {
         if (assignment is null) return null;
 
         var completedAt = payload["completedAt"]?.GetValue<string>();
+        // completedAt is stamped by THIS machine and StartedAt by the server, so
+        // comparing them raw would let a rig clock that runs a few minutes fast
+        // decide a warm-up lap was driven after a check-in it actually preceded
+        // - and credit that customer with someone else's laps, which is the
+        // whole defect this path exists to prevent. serverClockOffset comes from
+        // the same poll that produced the assignment and moves the rig timestamp
+        // into server time, so both sides of the comparison share a clock.
         return DateTimeOffset.TryParse(
                    completedAt, CultureInfo.InvariantCulture,
                    DateTimeStyles.RoundtripKind, out var driven)
-               && driven >= assignment.StartedAt
+               && driven + serverClockOffset >= assignment.StartedAt
             ? assignment.Id
             : null;
     }

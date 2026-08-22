@@ -115,8 +115,9 @@ public sealed class AgentService : IAsyncDisposable
         // Success must come from this poll's own result — _connection is shared
         // with the heartbeat/flush loops, so it can flip between our call and
         // this check (e.g. clearing the assignment because a heartbeat failed).
-        var poll = await RunBackend(async token => (Ok: true, Assignment: await _client.GetAssignmentAsync(token)));
+        var poll = await RunBackend(async token => (Ok: true, Poll: await _client.GetAssignmentAsync(token)));
         if (!poll.Ok) return;
+        var assignment = poll.Poll!.Assignment;
 
         lock (_stampLock)
         {
@@ -129,10 +130,12 @@ public sealed class AgentService : IAsyncDisposable
             // outbox whose backlog has been stamped.
             if (!_hasPolled)
             {
-                _queue.ResolveUnresolved(poll.Assignment);
+                // The offset comes from this same response, so the comparison
+                // inside runs in server time even on a rig whose clock drifts.
+                _queue.ResolveUnresolved(assignment, poll.Poll.ServerClockOffset);
                 _hasPolled = true;
             }
-            _assignment = poll.Assignment;
+            _assignment = assignment;
         }
         PublishStatus();
     }
