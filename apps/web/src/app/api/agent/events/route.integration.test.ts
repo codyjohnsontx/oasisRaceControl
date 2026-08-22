@@ -20,7 +20,10 @@ import {
  *
  * These cases exercise the parts that only the database can enforce - the
  * unique event_id index behind `on conflict do nothing`, and attribution
- * against the rig's open assignment at ingestion time.
+ * against the assignment the agent stamped on the lap when it captured it.
+ * Attribution deliberately does NOT consult whichever assignment happens to be
+ * open when the batch arrives, which is what used to credit a queued lap to the
+ * next driver to check in.
  */
 
 const LAP = {
@@ -45,12 +48,14 @@ describeDb("POST /api/agent/events against real Postgres", () => {
   beforeEach(resetDb);
   afterAll(closeTestDb);
 
-  it("stores a lap attributed to the rig's open assignment", async () => {
+  it("stores a lap attributed to the assignment the agent stamped on it", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
     const assignmentId = await openAssignment(rig.id, driver.id);
 
-    const response = await POST(post(rig, [{ ...LAP, eventId: "evt-lap-0001" }]));
+    const response = await POST(
+      post(rig, [{ ...LAP, eventId: "evt-lap-0001", rigAssignmentId: assignmentId }]),
+    );
 
     await expect(response.json()).resolves.toEqual({
       results: [{ type: "LAP_COMPLETED", eventId: "evt-lap-0001", status: "accepted" }],
@@ -70,8 +75,8 @@ describeDb("POST /api/agent/events against real Postgres", () => {
   it("stores the same event_id exactly once when the agent retries", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
-    await openAssignment(rig.id, driver.id);
-    const event = { ...LAP, eventId: "evt-retry-0001" };
+    const assignmentId = await openAssignment(rig.id, driver.id);
+    const event = { ...LAP, eventId: "evt-retry-0001", rigAssignmentId: assignmentId };
 
     const first = await POST(post(rig, [event]));
     const second = await POST(post(rig, [event]));
@@ -88,8 +93,12 @@ describeDb("POST /api/agent/events against real Postgres", () => {
   it("survives the same event arriving twice concurrently", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
-    await openAssignment(rig.id, driver.id);
-    const event = { ...LAP, eventId: "evt-concurrent-0001" };
+    const assignmentId = await openAssignment(rig.id, driver.id);
+    const event = {
+      ...LAP,
+      eventId: "evt-concurrent-0001",
+      rigAssignmentId: assignmentId,
+    };
 
     // Two in-flight retries of the same queued event, as a flaky venue
     // connection would produce.
@@ -107,8 +116,12 @@ describeDb("POST /api/agent/events against real Postgres", () => {
   it("deduplicates a repeated event inside a single batch", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
-    await openAssignment(rig.id, driver.id);
-    const event = { ...LAP, eventId: "evt-batch-dupe-0001" };
+    const assignmentId = await openAssignment(rig.id, driver.id);
+    const event = {
+      ...LAP,
+      eventId: "evt-batch-dupe-0001",
+      rigAssignmentId: assignmentId,
+    };
 
     const response = await POST(post(rig, [event, event]));
 
@@ -120,19 +133,58 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     expect(await lapRows()).toHaveLength(1);
   });
 
-  it("rejects a lap when no assignment is open rather than guessing an owner", async () => {
+  it("credits a lap flushed after checkout to the driver who drove it", async () => {
     const rig = await seedRig(1);
-    const driver = await seedDriver("Cody J");
-    // Assignment opened then closed: the driver has left.
-    const assignmentId = await openAssignment(rig.id, driver.id);
+    const audit = await seedDriver("AuditDriver");
+    const second = await seedDriver("SecondDriver");
+
+    // AuditDriver drives a lap, then checks out. The lap is still sitting in
+    // the agent's outbox - a venue network blip is all it takes.
+    const auditAssignment = await openAssignment(rig.id, audit.id);
+    const drivenAt = new Date().toISOString();
     await testDb().query(
       "update rig_assignments set ended_at = now(), end_reason = 'driver_ended' where id = $1",
-      [assignmentId],
+      [auditAssignment],
     );
 
-    const response = await POST(post(rig, [{ ...LAP, eventId: "evt-orphan-0001" }]));
+    // SecondDriver sits down and checks in before the outbox drains.
+    const secondAssignment = await openAssignment(rig.id, second.id);
 
-    await expect(response.json()).resolves.toEqual({
+    const response = await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-backlog-0001",
+          rigAssignmentId: auditAssignment,
+          completedAt: drivenAt,
+        },
+      ]),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      results: [{ status: "accepted" }],
+    });
+
+    const laps = await lapRows();
+    expect(laps).toHaveLength(1);
+    // The lap belongs to whoever was in the seat, even though their assignment
+    // is closed and someone else's is open right now.
+    expect(laps[0]).toMatchObject({
+      driver_id: audit.id,
+      rig_assignment_id: auditAssignment,
+    });
+    expect(laps[0]!.driver_id).not.toBe(second.id);
+    expect(laps[0]!.rig_assignment_id).not.toBe(secondAssignment);
+  });
+
+  it("does not hand a lap captured with nobody checked in to the next driver", async () => {
+    const rig = await seedRig(1);
+    const second = await seedDriver("SecondDriver");
+    // The agent knew the rig was unassigned when it captured this lap.
+    const orphan = { ...LAP, eventId: "evt-orphan-0001", rigAssignmentId: null };
+
+    // It stays queued while nobody is checked in...
+    await expect((await POST(post(rig, [orphan]))).json()).resolves.toEqual({
       results: [
         {
           type: "LAP_COMPLETED",
@@ -140,6 +192,57 @@ describeDb("POST /api/agent/events against real Postgres", () => {
           status: "no_active_assignment",
         },
       ],
+    });
+
+    // ...and is still refused once SecondDriver checks in and it retries.
+    await openAssignment(rig.id, second.id);
+    await expect((await POST(post(rig, [orphan]))).json()).resolves.toMatchObject({
+      results: [{ status: "no_active_assignment" }],
+    });
+
+    expect(await lapRows()).toHaveLength(0);
+  });
+
+  it("refuses to attribute a lap from an agent that sends no assignment id", async () => {
+    const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+    await openAssignment(rig.id, driver.id);
+
+    // An older agent: the key is absent entirely, which is not the same as the
+    // explicit null a current agent sends for an unassigned rig.
+    const response = await POST(post(rig, [{ ...LAP, eventId: "evt-legacy-0001" }]));
+
+    await expect(response.json()).resolves.toEqual({
+      results: [
+        {
+          type: "LAP_COMPLETED",
+          eventId: "evt-legacy-0001",
+          status: "attribution_unsupported",
+        },
+      ],
+    });
+    expect(await lapRows()).toHaveLength(0);
+  });
+
+  it("refuses an assignment id this rig has never had", async () => {
+    const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+    // A live assignment exists, so a fallback to "whatever is open" would hide
+    // the bad id instead of reporting it.
+    await openAssignment(rig.id, driver.id);
+
+    const response = await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-unknown-0001",
+          rigAssignmentId: "00000000-0000-4000-8000-000000000000",
+        },
+      ]),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      results: [{ status: "unknown_assignment" }],
     });
     expect(await lapRows()).toHaveLength(0);
   });
@@ -150,7 +253,11 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     const bob = await seedDriver("Bob");
 
     const aliceAssignment = await openAssignment(rig.id, alice.id);
-    await POST(post(rig, [{ ...LAP, eventId: "evt-alice-0001" }]));
+    await POST(
+      post(rig, [
+        { ...LAP, eventId: "evt-alice-0001", rigAssignmentId: aliceAssignment },
+      ]),
+    );
 
     // Bob takes the rig over.
     await testDb().query(
@@ -158,7 +265,9 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       [aliceAssignment],
     );
     const bobAssignment = await openAssignment(rig.id, bob.id);
-    await POST(post(rig, [{ ...LAP, eventId: "evt-bob-0001" }]));
+    await POST(
+      post(rig, [{ ...LAP, eventId: "evt-bob-0001", rigAssignmentId: bobAssignment }]),
+    );
 
     const laps = await lapRows();
     expect(laps).toHaveLength(2);
@@ -182,11 +291,19 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     const rigTwo = await seedRig(2);
     const alice = await seedDriver("Alice");
     const bob = await seedDriver("Bob");
-    await openAssignment(rigOne.id, alice.id);
-    await openAssignment(rigTwo.id, bob.id);
+    const aliceAssignment = await openAssignment(rigOne.id, alice.id);
+    const bobAssignment = await openAssignment(rigTwo.id, bob.id);
 
-    await POST(post(rigOne, [{ ...LAP, eventId: "evt-rig1-0001" }]));
-    await POST(post(rigTwo, [{ ...LAP, eventId: "evt-rig2-0001" }]));
+    await POST(
+      post(rigOne, [
+        { ...LAP, eventId: "evt-rig1-0001", rigAssignmentId: aliceAssignment },
+      ]),
+    );
+    await POST(
+      post(rigTwo, [
+        { ...LAP, eventId: "evt-rig2-0001", rigAssignmentId: bobAssignment },
+      ]),
+    );
 
     const laps = await lapRows();
     expect(laps.find((l) => l.event_id === "evt-rig1-0001")?.driver_id).toBe(alice.id);
@@ -196,7 +313,7 @@ describeDb("POST /api/agent/events against real Postgres", () => {
   it("stores a lap that misses tonight's combo as invalid with a reason", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
-    await openAssignment(rig.id, driver.id);
+    const assignmentId = await openAssignment(rig.id, driver.id);
     await setFeaturedCombo({
       trackName: "Spa-Francorchamps",
       trackConfig: "Grand Prix Pits",
@@ -204,7 +321,10 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     });
 
     const response = await POST(
-      post(rig, [{ ...LAP, eventId: "evt-wrongcar-0001" }]), // Porsche, not Ferrari
+      // Porsche, not Ferrari
+      post(rig, [
+        { ...LAP, eventId: "evt-wrongcar-0001", rigAssignmentId: assignmentId },
+      ]),
     );
 
     await expect(response.json()).resolves.toMatchObject({
@@ -217,14 +337,23 @@ describeDb("POST /api/agent/events against real Postgres", () => {
   it("stores an incident lap as invalid under the 0x rule", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
-    await openAssignment(rig.id, driver.id);
+    const assignmentId = await openAssignment(rig.id, driver.id);
     await setFeaturedCombo({
       trackName: LAP.trackName,
       trackConfig: LAP.trackConfig,
       carName: LAP.carName,
     });
 
-    await POST(post(rig, [{ ...LAP, eventId: "evt-incident-0001", incidentDelta: 1 }]));
+    await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-incident-0001",
+          rigAssignmentId: assignmentId,
+          incidentDelta: 1,
+        },
+      ]),
+    );
 
     const laps = await lapRows();
     expect(laps[0]).toMatchObject({
@@ -252,17 +381,21 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     expect(rows[1]!.last_seen_at).toBeNull();
   });
 
-  it("does not let one rig's token write a lap for another rig", async () => {
+  it("does not let one rig's token write a lap onto another rig's assignment", async () => {
     const rigOne = await seedRig(1);
     const rigTwo = await seedRig(2);
     const bob = await seedDriver("Bob");
-    // Only rig 2 has a driver; rig 1's agent submits a lap.
-    await openAssignment(rigTwo.id, bob.id);
+    // Only rig 2 has a driver; rig 1's agent quotes rig 2's assignment id.
+    const bobAssignment = await openAssignment(rigTwo.id, bob.id);
 
-    const response = await POST(post(rigOne, [{ ...LAP, eventId: "evt-crossrig-0001" }]));
+    const response = await POST(
+      post(rigOne, [
+        { ...LAP, eventId: "evt-crossrig-0001", rigAssignmentId: bobAssignment },
+      ]),
+    );
 
     await expect(response.json()).resolves.toMatchObject({
-      results: [{ status: "no_active_assignment" }],
+      results: [{ status: "unknown_assignment" }],
     });
     expect(await lapRows()).toHaveLength(0);
     // Bob's assignment is untouched.

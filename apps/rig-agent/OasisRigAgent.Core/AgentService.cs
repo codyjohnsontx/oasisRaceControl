@@ -21,7 +21,11 @@ public sealed class AgentService : IAsyncDisposable
     private readonly List<Task> _loops = new();
 
     private ConnectionState _connection = ConnectionState.Connecting;
-    private Assignment? _assignment;
+
+    // Written by the assignment poll and by SwitchDriverAsync, read by the
+    // telemetry thread when it stamps a lap. volatile so a captured lap is
+    // stamped against a current view of the assignment, not a cached one.
+    private volatile Assignment? _assignment;
 
     public event Action<AgentStatus>? StatusChanged;
 
@@ -41,9 +45,14 @@ public sealed class AgentService : IAsyncDisposable
         // process, not just drop the lap.
         _telemetry.LapCompleted += lap =>
         {
+            // Who was in the seat NOW. The lap may sit in the outbox through a
+            // network outage and arrive long after this driver has left, so the
+            // owner has to be decided here; the backend deliberately will not
+            // re-derive it from whoever is checked in when the batch lands.
+            var capturedAssignmentId = _assignment?.Id;
             try
             {
-                _queue.Enqueue(lap);
+                _queue.Enqueue(lap, capturedAssignmentId);
                 PublishStatus();
             }
             catch (Exception ex)

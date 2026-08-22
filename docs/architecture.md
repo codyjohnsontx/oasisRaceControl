@@ -94,6 +94,12 @@ flowchart TB
 - **The agent is the only durable buffer.** Laps land in its SQLite outbox the
   instant they're detected and are removed only once the backend accepts them,
   so a wifi drop or agent restart never loses a lap (idempotent on `event_id`).
+- **The agent decides who owns a lap, at the moment it captures it.** Each
+  queued lap carries the `rigAssignmentId` the rig had right then, and the
+  backend attributes from that stamp alone. It is the buffer above that makes
+  this necessary: a lap can arrive long after its driver has left, so "whoever
+  is checked in when the batch lands" is a different person. See the event model
+  in `docs/plan.md` for the three states of the stamp.
 - **The database enforces the core invariant.** A partial unique index
   (`one_open_assignment_per_rig`) guarantees at most one open assignment per rig
   even under concurrent check-ins — the app doesn't have to. League night gets

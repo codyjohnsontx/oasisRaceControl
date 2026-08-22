@@ -32,6 +32,7 @@ public sealed class BackendClientTests
     {
         ["type"] = "LAP_COMPLETED",
         ["eventId"] = id,
+        ["rigAssignmentId"] = "a-1",
         ["trackName"] = "Spa-Francorchamps",
         ["carName"] = "Porsche 911 GT3 R",
         ["lapTimeMs"] = 138_000,
@@ -104,6 +105,70 @@ public sealed class BackendClientTests
         var settled = await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
 
         Assert.Equal(new[] { "evt-1" }, settled);
+    }
+
+    [Fact]
+    public async Task SendLaps_does_not_settle_a_lap_the_backend_could_not_attribute()
+    {
+        // Both refusals are permanent for this payload, but the durable copy is
+        // the one on the rig's disk - dropping it would destroy the lap.
+        var handler = new StubHandler(_ => (HttpStatusCode.OK, """
+            {"results":[
+              {"type":"LAP_COMPLETED","eventId":"evt-1","status":"no_active_assignment"},
+              {"type":"LAP_COMPLETED","eventId":"evt-2","status":"unknown_assignment"},
+              {"type":"LAP_COMPLETED","eventId":"evt-3","status":"attribution_unsupported"}
+            ]}
+            """));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        var settled = await client.SendLapsAsync(
+            new[] { Queued("evt-1"), Queued("evt-2"), Queued("evt-3") }, CancellationToken.None);
+
+        Assert.Empty(settled);
+    }
+
+    /// <summary>Settling is keyed on the idempotency key the backend echoes, not
+    /// on position, so a reordered or partial response cannot delete the wrong
+    /// lap from the outbox.</summary>
+    [Fact]
+    public async Task SendLaps_settles_by_event_id_not_by_position()
+    {
+        var handler = new StubHandler(_ => (HttpStatusCode.OK, """
+            {"results":[
+              {"type":"LAP_COMPLETED","eventId":"evt-2","status":"accepted"},
+              {"type":"LAP_COMPLETED","eventId":"evt-1","status":"no_active_assignment"}
+            ]}
+            """));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        var settled = await client.SendLapsAsync(
+            new[] { Queued("evt-1"), Queued("evt-2") }, CancellationToken.None);
+
+        Assert.Equal(new[] { "evt-2" }, settled);
+    }
+
+    [Fact]
+    public async Task SendLaps_ignores_a_result_for_an_event_it_did_not_send()
+    {
+        var handler = new StubHandler(_ => (HttpStatusCode.OK, """
+            {"results":[{"type":"LAP_COMPLETED","eventId":"evt-someone-else","status":"accepted"}]}
+            """));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        var settled = await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
+
+        Assert.Empty(settled);
+    }
+
+    [Fact]
+    public async Task SendLaps_sends_the_queued_payload_including_its_assignment_stamp()
+    {
+        var handler = new StubHandler(_ => (HttpStatusCode.OK, """{"results":[]}"""));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
+
+        Assert.Contains("\"rigAssignmentId\":\"a-1\"", handler.LastBody!);
     }
 
     [Fact]

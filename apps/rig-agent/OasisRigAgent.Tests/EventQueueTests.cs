@@ -7,6 +7,8 @@ public sealed class EventQueueTests : IDisposable
 {
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"oasis-test-{Guid.NewGuid():N}.db");
 
+    private const string Assignment = "3f1b0c8e-3a1c-4f6d-9c2f-1a2b3c4d5e6f";
+
     private static LapCompleted Lap(string eventId, int lapTimeMs = 138_000) => new()
     {
         EventId = eventId,
@@ -23,8 +25,8 @@ public sealed class EventQueueTests : IDisposable
     public void Enqueue_is_idempotent_on_event_id()
     {
         using var queue = new EventQueue(_dbPath);
-        Assert.True(queue.Enqueue(Lap("evt-1")));
-        Assert.False(queue.Enqueue(Lap("evt-1"))); // same id → no-op
+        Assert.True(queue.Enqueue(Lap("evt-1"), Assignment));
+        Assert.False(queue.Enqueue(Lap("evt-1"), Assignment)); // same id → no-op
         Assert.Equal(1, queue.PendingCount());
     }
 
@@ -34,7 +36,7 @@ public sealed class EventQueueTests : IDisposable
     public void Enqueue_rejects_blank_event_ids(string eventId)
     {
         using var queue = new EventQueue(_dbPath);
-        Assert.Throws<ArgumentException>(() => queue.Enqueue(Lap(eventId)));
+        Assert.Throws<ArgumentException>(() => queue.Enqueue(Lap(eventId), Assignment));
         Assert.Equal(0, queue.PendingCount());
     }
 
@@ -42,11 +44,11 @@ public sealed class EventQueueTests : IDisposable
     public void PendingBatch_returns_oldest_first_and_respects_limit()
     {
         using var queue = new EventQueue(_dbPath);
-        queue.Enqueue(Lap("evt-1"));
+        queue.Enqueue(Lap("evt-1"), Assignment);
         Thread.Sleep(5);
-        queue.Enqueue(Lap("evt-2"));
+        queue.Enqueue(Lap("evt-2"), Assignment);
         Thread.Sleep(5);
-        queue.Enqueue(Lap("evt-3"));
+        queue.Enqueue(Lap("evt-3"), Assignment);
 
         var batch = queue.PendingBatch(2);
         Assert.Equal(2, batch.Count);
@@ -58,8 +60,8 @@ public sealed class EventQueueTests : IDisposable
     public void Remove_deletes_only_the_named_events()
     {
         using var queue = new EventQueue(_dbPath);
-        queue.Enqueue(Lap("evt-1"));
-        queue.Enqueue(Lap("evt-2"));
+        queue.Enqueue(Lap("evt-1"), Assignment);
+        queue.Enqueue(Lap("evt-2"), Assignment);
 
         queue.Remove(new[] { "evt-1" });
 
@@ -72,8 +74,8 @@ public sealed class EventQueueTests : IDisposable
     {
         using (var queue = new EventQueue(_dbPath))
         {
-            queue.Enqueue(Lap("evt-1"));
-            queue.Enqueue(Lap("evt-2"));
+            queue.Enqueue(Lap("evt-1"), Assignment);
+            queue.Enqueue(Lap("evt-2"), Assignment);
         }
         // New instance on the same file = process restart.
         using var reopened = new EventQueue(_dbPath);
@@ -84,12 +86,45 @@ public sealed class EventQueueTests : IDisposable
     public void Payload_round_trips_lap_fields()
     {
         using var queue = new EventQueue(_dbPath);
-        queue.Enqueue(Lap("evt-1", lapTimeMs: 137_842));
+        queue.Enqueue(Lap("evt-1", lapTimeMs: 137_842), Assignment);
 
         var payload = queue.PendingBatch(1).Single().Payload;
         Assert.Equal("LAP_COMPLETED", payload["type"]!.GetValue<string>());
         Assert.Equal("evt-1", payload["eventId"]!.GetValue<string>());
         Assert.Equal(137_842, payload["lapTimeMs"]!.GetValue<int>());
+        Assert.Equal(Assignment, payload["rigAssignmentId"]!.GetValue<string>());
+    }
+
+    /// <summary>The backend tells "nobody was checked in" from "this agent is
+    /// too old to say" by whether the key is there at all, so an unassigned lap
+    /// must serialize the property as an explicit null - never omit it.</summary>
+    [Fact]
+    public void Payload_carries_an_explicit_null_when_nobody_was_checked_in()
+    {
+        using var queue = new EventQueue(_dbPath);
+        queue.Enqueue(Lap("evt-1"), rigAssignmentId: null);
+
+        var payload = queue.PendingBatch(1).Single().Payload;
+        Assert.True(payload.AsObject().ContainsKey("rigAssignmentId"));
+        Assert.Null(payload["rigAssignmentId"]);
+        Assert.Contains("\"rigAssignmentId\":null", payload.ToJsonString());
+    }
+
+    /// <summary>A lap stamped before a restart keeps its owner: the stamp lives
+    /// in the durable payload, not in agent memory.</summary>
+    [Fact]
+    public void Stamp_survives_a_restart()
+    {
+        using (var queue = new EventQueue(_dbPath))
+        {
+            queue.Enqueue(Lap("evt-1"), Assignment);
+            queue.Enqueue(Lap("evt-2"), rigAssignmentId: null);
+        }
+
+        using var reopened = new EventQueue(_dbPath);
+        var batch = reopened.PendingBatch(10);
+        Assert.Equal(Assignment, batch.Single(e => e.EventId == "evt-1").Payload["rigAssignmentId"]!.GetValue<string>());
+        Assert.Null(batch.Single(e => e.EventId == "evt-2").Payload["rigAssignmentId"]);
     }
 
     public void Dispose()

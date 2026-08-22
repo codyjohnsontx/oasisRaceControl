@@ -34,8 +34,14 @@ public sealed class EventQueue : IDisposable
     }
 
     /// <summary>Queue a lap. Returns false if this event_id is already queued or
-    /// was already queued (idempotent — safe to call on every detection).</summary>
-    public bool Enqueue(LapCompleted lap)
+    /// was already queued (idempotent — safe to call on every detection).
+    ///
+    /// <paramref name="rigAssignmentId"/> is the assignment this rig had at the
+    /// moment the lap was captured, or null if nobody was checked in. It is
+    /// required, not optional, because the queued payload is what the backend
+    /// attributes from - a caller that could omit it would be handing the
+    /// backend a lap with no owner and no way to say so.</summary>
+    public bool Enqueue(LapCompleted lap, string? rigAssignmentId)
     {
         // A blank id would defeat idempotency here and at the backend.
         if (string.IsNullOrWhiteSpace(lap.EventId))
@@ -45,6 +51,12 @@ public sealed class EventQueue : IDisposable
         {
             ["type"] = "LAP_COMPLETED",
             ["eventId"] = lap.EventId,
+            // Always written, null included. The backend reads an ABSENT key as
+            // "this agent is too old to say who was driving" and refuses the lap;
+            // an explicit null is the different, answerable "nobody was checked
+            // in". Same distinction as trackConfig below: a null string lands as
+            // a JSON null, not a missing property.
+            ["rigAssignmentId"] = rigAssignmentId,
             ["trackName"] = lap.TrackName,
             ["trackConfig"] = lap.TrackConfig,
             ["carName"] = lap.CarName,

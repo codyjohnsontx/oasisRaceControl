@@ -17,7 +17,10 @@ public sealed record AgentConfig
     /// the (not-yet-built) real iRacing source, so the agent submits laps.</summary>
     public bool SimulateTelemetry { get; init; }
 
-    public string AgentVersion { get; init; } = "rig-agent/0.1-skeleton";
+    /// <summary>Reported on every heartbeat, so the staff dashboard can tell
+    /// which rigs stamp laps with their capture-time assignment (0.2 and later)
+    /// and which are still on an agent whose laps the backend must refuse.</summary>
+    public string AgentVersion { get; init; } = "rig-agent/0.2-skeleton";
 
     public static AgentConfig Load(string path)
     {

@@ -13,6 +13,10 @@ live backend:
 - ✅ Heartbeat (rig shows online on the staff dashboard)
 - ✅ Current-driver display (polls the assignment)
 - ✅ Durable, idempotent lap outbox (SQLite) — survives outages and restarts
+- ✅ Capture-time attribution: every queued lap carries the `rigAssignmentId`
+  the rig had when the lap was detected, so a lap that waits out an outage is
+  still credited to the driver who drove it (agent `0.2` and later; the backend
+  refuses a lap from an older agent rather than guessing)
 - ✅ "Switch driver / sign out" (ends the assignment)
 - ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
   source is built after the Phase 0 safety gate, Phase 1A supervised canary,
@@ -69,5 +73,12 @@ dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 Run end-to-end against the live Vercel + Neon backend: the agent connected,
 polled and displayed the checked-in driver, queued simulated laps, flushed them
 (pending count returned to zero), and the laps appeared on the production
-leaderboard. Queue reliability (idempotency, oldest-first, restart survival) and
-the backend client's result mapping are covered by 11 unit tests.
+leaderboard. Queue reliability (idempotency, oldest-first, restart survival),
+capture-time stamping across a checkout, and the backend client's result mapping
+are covered by 21 unit tests.
+
+A lap the backend cannot attribute — nobody was checked in when it was captured,
+or it names an assignment this rig has never had — is **not** settled, so it
+stays in the outbox instead of being deleted. That is deliberate: the outbox is
+the only durable copy. It also means an unattended rig driven by nobody checked
+in accumulates queued laps indefinitely; see the event model in `docs/plan.md`.

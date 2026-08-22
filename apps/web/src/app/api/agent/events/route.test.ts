@@ -30,6 +30,9 @@ function post(body: unknown, authorization: string | null = `Bearer ${TOKEN}`) {
   });
 }
 
+const ASSIGNMENT_ID = "11111111-1111-4111-8111-111111111111";
+const OTHER_ASSIGNMENT_ID = "22222222-2222-4222-8222-222222222222";
+
 const LAP = {
   type: "LAP_COMPLETED" as const,
   eventId: "event-00000001",
@@ -39,6 +42,20 @@ const LAP = {
   incidentDelta: 0,
   completedAt: "2026-07-29T02:00:00.000Z",
 };
+
+/** Did the handler try to write a lap, through either db helper? */
+function insertedLaps(): boolean {
+  return [...query.mock.calls, ...queryOne.mock.calls].some(([sql]) =>
+    String(sql).includes("insert into laps"),
+  );
+}
+
+/** Did the handler try to resolve a stamped assignment? */
+function lookedUpAssignments(): boolean {
+  return [...query.mock.calls, ...queryOne.mock.calls].some(([sql]) =>
+    String(sql).includes("from rig_assignments"),
+  );
+}
 
 /** Makes the rig lookup succeed and everything else return nothing. */
 function authenticateRig() {
@@ -156,20 +173,74 @@ describe("POST /api/agent/events behaviour", () => {
     expect(versionUpdate?.[1]).toEqual([RIG.id, "1.2.3"]);
   });
 
-  it("refuses to guess an owner when no assignment is open", async () => {
-    // queryOne returns the rig for auth and null for the assignment lookup.
+  it("refuses a lap from an agent that sends no assignment id", async () => {
+    // LAP has no rigAssignmentId: the shape an agent built before the field
+    // existed still sends. It must never fall back to a live lookup.
     const response = await POST(post({ events: [LAP] }));
+
+    await expect(response.json()).resolves.toEqual({
+      results: [
+        {
+          type: "LAP_COMPLETED",
+          eventId: LAP.eventId,
+          status: "attribution_unsupported",
+        },
+      ],
+    });
+    expect(insertedLaps()).toBe(false);
+    // Not even asked - there is no assignment this lap could belong to.
+    expect(lookedUpAssignments()).toBe(false);
+  });
+
+  it("refuses a lap the agent captured with nobody checked in", async () => {
+    const response = await POST(
+      post({ events: [{ ...LAP, rigAssignmentId: null }] }),
+    );
 
     await expect(response.json()).resolves.toEqual({
       results: [
         { type: "LAP_COMPLETED", eventId: LAP.eventId, status: "no_active_assignment" },
       ],
     });
-    // Nothing was inserted, through either db helper.
-    const allSql = [...query.mock.calls, ...queryOne.mock.calls].map(([sql]) =>
-      String(sql),
+    expect(insertedLaps()).toBe(false);
+    expect(lookedUpAssignments()).toBe(false);
+  });
+
+  it("looks up stamped assignments once per batch, scoped to the rig", async () => {
+    const events = [
+      { ...LAP, eventId: "event-00000001", rigAssignmentId: ASSIGNMENT_ID },
+      { ...LAP, eventId: "event-00000002", rigAssignmentId: ASSIGNMENT_ID },
+      { ...LAP, eventId: "event-00000003", rigAssignmentId: OTHER_ASSIGNMENT_ID },
+    ];
+
+    await POST(post({ events }));
+
+    const lookups = query.mock.calls.filter(([sql]) =>
+      String(sql).includes("from rig_assignments"),
     );
-    expect(allSql.some((sql) => sql.includes("insert into laps"))).toBe(false);
+    expect(lookups).toHaveLength(1);
+    // The rig comes from the bearer token, and each distinct id is asked for once.
+    expect(lookups[0]![1]).toEqual([RIG.id, [ASSIGNMENT_ID, OTHER_ASSIGNMENT_ID]]);
+  });
+
+  it("refuses a stamped assignment that does not belong to this rig", async () => {
+    // The scoped lookup comes back empty, so there is nothing to attribute to.
+    const response = await POST(
+      post({ events: [{ ...LAP, rigAssignmentId: ASSIGNMENT_ID }] }),
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      results: [
+        { type: "LAP_COMPLETED", eventId: LAP.eventId, status: "unknown_assignment" },
+      ],
+    });
+    expect(insertedLaps()).toBe(false);
+  });
+
+  it("rejects a malformed assignment id rather than ignoring it", async () => {
+    expect(
+      (await POST(post({ events: [{ ...LAP, rigAssignmentId: "not-a-uuid" }] }))).status,
+    ).toBe(400);
   });
 
   it("returns 500 so the agent retries when the batch throws", async () => {

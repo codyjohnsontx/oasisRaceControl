@@ -34,10 +34,18 @@ public sealed class BackendClient
         res.EnsureSuccessStatusCode();
     }
 
+    /// <summary>Statuses that mean the backend is done with a lap and the agent
+    /// may delete it from the outbox. Anything else - a lap the backend could
+    /// not attribute, or a status this agent version does not recognise - keeps
+    /// the lap queued, because the only durable copy is the one on this disk.</summary>
+    private static readonly HashSet<string> SettledStatuses =
+        new(StringComparer.Ordinal) { "accepted", "accepted_invalid", "duplicate" };
+
     /// <summary>Submit a batch of queued lap payloads. Returns the event_ids the
-    /// backend accepted or deduplicated (safe to remove from the queue). Laps
-    /// rejected because no driver is checked in are NOT returned, so they stay
-    /// queued until someone checks in.</summary>
+    /// backend accepted or deduplicated (safe to remove from the queue). Laps the
+    /// backend refuses - because nobody was checked in when they were captured,
+    /// or because it does not recognise the assignment - are NOT returned, so
+    /// they stay queued rather than being silently dropped.</summary>
     public async Task<IReadOnlyList<string>> SendLapsAsync(IReadOnlyList<QueuedEvent> events, CancellationToken ct)
     {
         var array = new JsonArray();
@@ -51,13 +59,19 @@ public sealed class BackendClient
         var results = json?["results"]?.AsArray();
         if (results is null) return Array.Empty<string>();
 
-        // Map each result back to its event by order (the API preserves order).
+        // Match each result to its event by the idempotency key it echoes back,
+        // never by position. Deleting the wrong row here would drop a lap that
+        // was never stored, and position is the kind of assumption that holds
+        // until the day the backend batches, reorders, or filters a response.
+        var sent = new HashSet<string>(events.Select(e => e.EventId), StringComparer.Ordinal);
         var settled = new List<string>();
-        for (var i = 0; i < results.Count && i < events.Count; i++)
+        foreach (var result in results)
         {
-            var status = results[i]?["status"]?.GetValue<string>();
-            if (status is "accepted" or "accepted_invalid" or "duplicate")
-                settled.Add(events[i].EventId);
+            var eventId = result?["eventId"]?.GetValue<string>();
+            var status = result?["status"]?.GetValue<string>();
+            if (eventId is null || status is null) continue;
+            if (SettledStatuses.Contains(status) && sent.Remove(eventId))
+                settled.Add(eventId);
         }
         return settled;
     }

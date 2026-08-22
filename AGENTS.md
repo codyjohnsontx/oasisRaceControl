@@ -69,6 +69,26 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   it, and when it skips versus hard-fails, is in the root README's
   [Integration tests](README.md#integration-tests) section.
 
+## Lap attribution
+
+A lap belongs to whoever was in the seat when it was captured, not to whoever is
+checked in when it arrives - the agent's outbox can hold a lap through a long
+outage. So each queued lap carries the `rigAssignmentId` the agent had at
+capture, and `/api/agent/events` attributes from that stamp alone. Whether that
+assignment has since closed is deliberately irrelevant.
+
+The stamp has three states and the difference between them is load-bearing: a
+uuid, an explicit `null` (nobody was checked in), and an **absent key** (an agent
+too old to say). Never collapse the field to `.nullish()` or default it - absent
+and null are different answers, and telling them apart is the whole
+backward-compatibility story. The contract is documented on `lapCompletedEvent` in
+`apps/web/src/lib/events.ts`; both ends of the wire change together, and the only
+producers are `EventQueue.Enqueue` in the .NET agent and `scripts/fake-rig.ts`.
+
+Laps the backend cannot attribute are refused and stay in the agent's outbox -
+never credited to the next driver, never dropped. What should finally happen to
+them is an open product decision (`docs/plan.md`, failure & edge cases).
+
 ## Local dev
 
 - `apps/web/.env.local` is gitignored and its comments have gone stale before.
