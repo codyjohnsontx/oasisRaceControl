@@ -45,7 +45,7 @@ export async function POST(request: Request) {
         [venueToday()],
       );
     }
-    const assignments = await loadStampedAssignments(rig.id, parsed.data.events);
+    const matches = await loadStampedAssignments(rig.id, parsed.data.events);
 
     const results: Array<{ type: string; status: string; eventId?: string }> = [];
     const causes: UnattributedCause[] = [];
@@ -60,7 +60,7 @@ export async function POST(request: Request) {
         );
         results.push({ type: event.type, status: "ok" });
       } else {
-        const attribution = attributeLap(event, assignments);
+        const attribution = attributeLap(event, matches);
         if (attribution.kind === "unattributed") causes.push(attribution.cause);
         results.push(await ingestLap(rig.id, event, combo, attribution));
       }
@@ -81,45 +81,80 @@ export async function POST(request: Request) {
 
 type StampedAssignment = { id: string; driver_id: string };
 
+/** What the batch's stamped assignment ids resolved to, per lap. */
+type AssignmentMatch = { assignment: StampedAssignment; inWindow: boolean };
+
 /**
- * Resolves every assignment id the batch stamped onto a lap, in one query,
- * scoped to the calling rig - the same "look it up once, not per lap" shape as
- * tonight's combo. An id belonging to another rig simply does not come back, so
- * the rig-scoping rule lives here and nowhere else.
+ * Allowance for genuine drift between a rig PC's clock and the server's when
+ * checking a lap against the window of the assignment it names.
+ *
+ * This is NOT a business rule and NOT slack for laps that arrive late: a lap
+ * that waited out an outage still carries the completedAt it was driven at,
+ * which already falls inside its own assignment's window however long the
+ * flush took. It exists only so a rig whose clock is a few minutes off does not
+ * lose its driver. Widening it widens what a stolen rig token can claim, so it
+ * is a tolerance, not a tunable policy knob.
+ */
+const ASSIGNMENT_WINDOW_CLOCK_SKEW = "15 minutes";
+
+/**
+ * Resolves the assignment each stamped lap names, in one query, scoped to the
+ * calling rig - the same "look it up once, not per lap" shape as tonight's
+ * combo. An id belonging to another rig simply does not come back, so the
+ * rig-scoping rule lives here and nowhere else.
  *
  * Open or closed is deliberately not part of the lookup. A lap that sat in the
  * outbox through a network outage still belongs to the driver who drove it, and
  * their assignment has usually closed by the time it lands; refusing it there
  * would throw away the backlog the durable outbox exists to protect.
+ *
+ * The assignment's time WINDOW is part of it, though. completedAt is supplied
+ * by the agent, so without this a rig's bearer token could name any assignment
+ * that rig has ever held and credit a months-old driver with a lap they never
+ * drove. A lap only attaches to an assignment that was actually running when it
+ * was driven, give or take ASSIGNMENT_WINDOW_CLOCK_SKEW.
  */
 async function loadStampedAssignments(
   rigId: string,
   events: AgentEventsBody["events"],
-): Promise<Map<string, StampedAssignment>> {
-  const ids = [
-    ...new Set(
-      events.flatMap((event) =>
-        event.type === "LAP_COMPLETED" && event.rigAssignmentId
-          ? [event.rigAssignmentId]
-          : [],
-      ),
-    ),
-  ];
-  if (ids.length === 0) return new Map();
-
-  const rows = await query<StampedAssignment>(
-    `select id, driver_id from rig_assignments
-     where rig_id = $1 and id = any ($2::uuid[])`,
-    [rigId, ids],
+): Promise<Map<string, AssignmentMatch>> {
+  const stamped = events.flatMap((event) =>
+    event.type === "LAP_COMPLETED" && event.rigAssignmentId
+      ? [{ eventId: event.eventId, id: event.rigAssignmentId, at: event.completedAt }]
+      : [],
   );
-  return new Map(rows.map((row) => [row.id, row]));
+  if (stamped.length === 0) return new Map();
+
+  const rows = await query<StampedAssignment & { event_id: string; in_window: boolean }>(
+    `select lap.event_id, a.id, a.driver_id,
+            lap.completed_at >= a.started_at - $5::interval
+              and lap.completed_at < coalesce(a.ended_at, 'infinity'::timestamptz) + $5::interval
+              as in_window
+     from unnest($2::text[], $3::uuid[], $4::timestamptz[])
+       as lap (event_id, assignment_id, completed_at)
+     join rig_assignments a on a.id = lap.assignment_id and a.rig_id = $1`,
+    [
+      rigId,
+      stamped.map((lap) => lap.eventId),
+      stamped.map((lap) => lap.id),
+      stamped.map((lap) => lap.at),
+      ASSIGNMENT_WINDOW_CLOCK_SKEW,
+    ],
+  );
+  return new Map(
+    rows.map((row) => [
+      row.event_id,
+      { assignment: { id: row.id, driver_id: row.driver_id }, inWindow: row.in_window },
+    ]),
+  );
 }
 
-/** Why a lap ended up with no owner. Two of the three are operator problems. */
+/** Why a lap ended up with no owner. Three of the four are operator problems. */
 type UnattributedCause =
   | "nobody_checked_in"
   | "agent_sends_no_assignment_id"
-  | "unknown_assignment";
+  | "unknown_assignment"
+  | "outside_assignment_window";
 
 type Attribution =
   | { kind: "attributed"; assignment: StampedAssignment }
@@ -133,7 +168,7 @@ type Attribution =
  */
 function attributeLap(
   lap: LapCompletedEvent,
-  assignments: Map<string, StampedAssignment>,
+  matches: Map<string, AssignmentMatch>,
 ): Attribution {
   // An agent too old to stamp its laps. It cannot say who was driving, and we
   // will not guess - even though an assignment may well have been open.
@@ -147,13 +182,19 @@ function attributeLap(
   }
   // Unknown to this rig: a stale outbox from a rebuilt database, or one rig's
   // token quoting another rig's assignment. Never falls back to a live lookup.
-  const assignment = assignments.get(lap.rigAssignmentId);
-  if (!assignment) return { kind: "unattributed", cause: "unknown_assignment" };
+  const match = matches.get(lap.eventId);
+  if (!match) return { kind: "unattributed", cause: "unknown_assignment" };
+  // Real assignment, wrong moment: the driver it names was not in that seat
+  // when this lap was driven, so crediting them would be the same invented
+  // attribution this whole path exists to prevent.
+  if (!match.inWindow) {
+    return { kind: "unattributed", cause: "outside_assignment_window" };
+  }
 
-  return { kind: "attributed", assignment };
+  return { kind: "attributed", assignment: match.assignment };
 }
 
-/** Two of the three causes mean somebody has to go fix something. The third -
+/** Three of the four causes mean somebody has to go fix something. The fourth -
  *  a rig driven by nobody checked in - is ordinary venue life, not an error. */
 function warnAboutAbnormalCauses(rigNumber: number, causes: UnattributedCause[]): void {
   const stale = causes.filter((c) => c === "agent_sends_no_assignment_id").length;
@@ -169,6 +210,14 @@ function warnAboutAbnormalCauses(rigNumber: number, causes: UnattributedCause[])
     console.warn(
       `[agent/events] rig ${rigNumber}: stored ${unknown} lap(s) unattributed - the ` +
         `assignment id they carry does not belong to this rig.`,
+    );
+  }
+  const outOfWindow = causes.filter((c) => c === "outside_assignment_window").length;
+  if (outOfWindow > 0) {
+    console.warn(
+      `[agent/events] rig ${rigNumber}: stored ${outOfWindow} lap(s) unattributed - ` +
+        `their completedAt falls outside the assignment they name. Check the rig ` +
+        `PC's clock.`,
     );
   }
 }

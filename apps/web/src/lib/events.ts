@@ -27,7 +27,8 @@ export const lapCompletedEvent = z.object({
    *   uuid    - a driver was checked in; attribute the lap to that assignment.
    *   null    - the agent knew nobody was checked in; the lap has no owner.
    *   absent  - the agent predates this field and cannot say. Not the same as
-   *             null: an older agent's laps are refused rather than guessed at.
+   *             null: an older agent's laps are stored unattributed rather than
+   *             guessed at, so they are kept but can never rank.
    * Absence is only distinguishable from null because zod leaves an unsupplied
    * optional key off the parsed object entirely (`"rigAssignmentId" in lap`),
    * so current agents always send the key, null included.

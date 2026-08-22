@@ -14,8 +14,9 @@
  *
  * Like the real agent, it polls GET /api/agent/assignment and stamps each lap
  * with the assignment that was open when the lap was "driven" - the backend
- * attributes from that stamp and refuses a lap that carries none, so a fake rig
- * that skipped the poll would produce nothing but rejections.
+ * attributes from that stamp, and stores a lap that carries none unattributed
+ * and unrankable, so a fake rig that skipped the poll would fill /staff's
+ * Unclaimed laps list instead of a leaderboard. Check in before starting it.
  */
 
 import { z } from "zod";

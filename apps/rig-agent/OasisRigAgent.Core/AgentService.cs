@@ -27,6 +27,18 @@ public sealed class AgentService : IAsyncDisposable
     // stamped against a current view of the assignment, not a cached one.
     private volatile Assignment? _assignment;
 
+    // False until a poll has actually come back. A null _assignment only means
+    // "nobody is checked in" once this is true; before that it means the agent
+    // has never managed to ask, which is a different answer and must not be
+    // stamped onto a lap as if it were the same one.
+    private volatile bool _hasPolled;
+
+    // Orders "decide this lap's stamp" against "resolve the laps captured
+    // before the first poll", so a lap enqueued unresolved can never land just
+    // after the resolution pass that would have stamped it and sit unsendable
+    // for the rest of the night.
+    private readonly object _stampLock = new();
+
     public event Action<AgentStatus>? StatusChanged;
 
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
@@ -45,14 +57,25 @@ public sealed class AgentService : IAsyncDisposable
         // process, not just drop the lap.
         _telemetry.LapCompleted += lap =>
         {
-            // Who was in the seat NOW. The lap may sit in the outbox through a
-            // network outage and arrive long after this driver has left, so the
-            // owner has to be decided here; the backend deliberately will not
-            // re-derive it from whoever is checked in when the batch lands.
-            var capturedAssignmentId = _assignment?.Id;
             try
             {
-                _queue.Enqueue(lap, capturedAssignmentId);
+                // Who was in the seat NOW. The lap may sit in the outbox through
+                // a network outage and arrive long after this driver has left, so
+                // the owner has to be decided here; the backend deliberately will
+                // not re-derive it from whoever is checked in when the batch
+                // lands.
+                //
+                // Unless the agent has never reached the backend - a rig PC that
+                // rebooted during an outage while a driver was checked in from
+                // their phone. It has no answer to stamp, and stamping null
+                // would assert the rig was empty, permanently unattributing laps
+                // that have a driver. Those laps wait unresolved for the first
+                // poll that gets through.
+                lock (_stampLock)
+                {
+                    if (_hasPolled) _queue.Enqueue(lap, _assignment?.Id);
+                    else _queue.EnqueueUnresolved(lap);
+                }
                 PublishStatus();
             }
             catch (Exception ex)
@@ -93,11 +116,22 @@ public sealed class AgentService : IAsyncDisposable
         // with the heartbeat/flush loops, so it can flip between our call and
         // this check (e.g. clearing the assignment because a heartbeat failed).
         var poll = await RunBackend(async token => (Ok: true, Assignment: await _client.GetAssignmentAsync(token)));
-        if (poll.Ok)
+        if (!poll.Ok) return;
+
+        lock (_stampLock)
         {
+            // The first answer the agent has ever had also settles every lap it
+            // captured before it had one. Resolving before publishing the new
+            // assignment means anything that observes _assignment is already
+            // looking at an outbox whose backlog has been stamped.
+            if (!_hasPolled)
+            {
+                _queue.ResolveUnresolved(poll.Assignment?.Id);
+                _hasPolled = true;
+            }
             _assignment = poll.Assignment;
-            PublishStatus();
         }
+        PublishStatus();
     }
 
     private async Task FlushQueueTick(CancellationToken ct)
@@ -185,6 +219,7 @@ public sealed class AgentService : IAsyncDisposable
             RigNumber = _config.RigNumber,
             Connection = _connection,
             Assignment = _assignment,
+            AssignmentKnown = _hasPolled,
             SimRunning = _telemetry.SimRunning,
             PendingLaps = _queue.PendingCount(),
         });

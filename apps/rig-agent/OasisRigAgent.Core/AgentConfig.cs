@@ -19,7 +19,8 @@ public sealed record AgentConfig
 
     /// <summary>Reported on every heartbeat, so the staff dashboard can tell
     /// which rigs stamp laps with their capture-time assignment (0.2 and later)
-    /// and which are still on an agent whose laps the backend must refuse.</summary>
+    /// and which are still on an agent whose laps the backend can only store
+    /// unattributed, where they are kept but can never rank.</summary>
     public string AgentVersion { get; init; } = "rig-agent/0.2-skeleton";
 
     public static AgentConfig Load(string path)

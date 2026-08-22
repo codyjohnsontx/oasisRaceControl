@@ -16,7 +16,12 @@ live backend:
 - ✅ Capture-time attribution: every queued lap carries the `rigAssignmentId`
   the rig had when the lap was detected, so a lap that waits out an outage is
   still credited to the driver who drove it (agent `0.2` and later; the backend
-  refuses a lap from an older agent rather than guessing)
+  stores a lap from an older agent unattributed rather than guessing)
+- ✅ Deferred stamp for laps captured before the agent has ever reached the
+  backend - a rig PC that reboots during an outage cannot say who is in the
+  seat, so those laps are held **unresolved**: durable, but unsendable until the
+  first successful assignment poll stamps them. Sending an explicit null there
+  would tell the backend the rig was empty and lose a checked-in driver's laps
 - ✅ "Switch driver / sign out" (ends the assignment)
 - ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
   source is built after the Phase 0 safety gate, Phase 1A supervised canary,
@@ -74,11 +79,13 @@ Run end-to-end against the live Vercel + Neon backend: the agent connected,
 polled and displayed the checked-in driver, queued simulated laps, flushed them
 (pending count returned to zero), and the laps appeared on the production
 leaderboard. Queue reliability (idempotency, oldest-first, restart survival),
-capture-time stamping across a checkout, and the backend client's result mapping
-are covered by 21 unit tests.
+capture-time stamping across a checkout, the deferred stamp across an outage and
+restart, and the backend client's result mapping are covered by the xUnit suite
+(`dotnet test`).
 
 A lap the backend cannot attribute — nobody was checked in when it was captured,
-or it names an assignment this rig has never had — comes back as
+it was driven outside the window of the assignment it names, or it names an
+assignment this rig has never had — comes back as
 `accepted_unattributed`: the backend stored it with no driver, so the agent
 settles it and the outbox drains. Only laps the backend did **not** store (an
 error, or a status this agent is too old to recognise) stay queued, because the

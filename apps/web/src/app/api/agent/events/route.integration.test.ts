@@ -6,6 +6,7 @@ import {
   describeDb,
   lapRows,
   openAssignment,
+  openLeagueRound,
   resetDb,
   seedDriver,
   seedRig,
@@ -261,11 +262,34 @@ describeDb("POST /api/agent/events against real Postgres", () => {
 
   it("keeps an unattributed lap off every leaderboard and out of every round", async () => {
     const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+    const assignmentId = await openAssignment(rig.id, driver.id);
     await setFeaturedCombo({
       trackName: LAP.trackName,
       trackConfig: LAP.trackConfig,
       carName: LAP.carName,
     });
+    // An open round on the same combo whose window covers both laps below.
+    // Without it v_league_round_laps is empty no matter what the laps look
+    // like, and the assertion at the bottom would pass vacuously.
+    const roundId = await openLeagueRound({
+      trackName: LAP.trackName,
+      trackConfig: LAP.trackConfig,
+      carName: LAP.carName,
+    });
+
+    // A control lap that IS attributed, so each surface below has something to
+    // return - an empty result would otherwise prove nothing about the orphan.
+    await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-ranked-0001",
+          rigAssignmentId: assignmentId,
+          lapTimeMs: 138_103,
+        },
+      ]),
+    );
     // A blistering lap that would top the board if it were rankable at all.
     await POST(
       post(rig, [
@@ -277,22 +301,111 @@ describeDb("POST /api/agent/events against real Postgres", () => {
         },
       ]),
     );
-    expect(await lapRows()).toHaveLength(1);
+    expect(await lapRows()).toHaveLength(2);
 
-    // Fastest Tonight, the board queries, and the league round view all skip it.
-    const fastest = await testDb().query("select * from v_fastest_tonight");
-    expect(fastest.rows).toHaveLength(0);
+    // Fastest Tonight, the board queries, and the league round view all return
+    // the control lap and never the faster ownerless one.
+    const fastest = await testDb().query(
+      "select driver_id, lap_time_ms from v_fastest_tonight",
+    );
+    expect(fastest.rows).toEqual([{ driver_id: driver.id, lap_time_ms: 138_103 }]);
 
     const boards = await testDb().query(
-      `select l.track_name, count(*) as n from laps l
+      `select l.lap_time_ms from laps l
        join drivers d on d.id = l.driver_id
-       where l.is_valid and d.status = 'active'
-       group by l.track_name`,
+       where l.is_valid and d.status = 'active'`,
     );
-    expect(boards.rows).toHaveLength(0);
+    expect(boards.rows).toEqual([{ lap_time_ms: 138_103 }]);
 
-    const roundLaps = await testDb().query("select * from v_league_round_laps");
-    expect(roundLaps.rows).toHaveLength(0);
+    const roundLaps = await testDb().query(
+      "select round_id, driver_id, lap_time_ms from v_league_round_laps",
+    );
+    expect(roundLaps.rows).toEqual([
+      { round_id: roundId, driver_id: driver.id, lap_time_ms: 138_103 },
+    ]);
+  });
+
+  it("credits a lap flushed hours after its assignment closed to the driver who drove it", async () => {
+    const rig = await seedRig(1);
+    const audit = await seedDriver("AuditDriver");
+    const later = await seedDriver("LaterDriver");
+
+    // A stint that ran from three hours ago to two, with the lap driven in the
+    // middle of it. The rig was offline for the rest of the night, so the lap
+    // only reaches the backend now - the case the durable outbox exists for.
+    const auditAssignment = await openAssignment(rig.id, audit.id);
+    await testDb().query(
+      `update rig_assignments
+         set started_at = now() - interval '3 hours',
+             ended_at = now() - interval '2 hours',
+             end_reason = 'driver_ended'
+       where id = $1`,
+      [auditAssignment],
+    );
+    await openAssignment(rig.id, later.id);
+
+    const response = await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-longbacklog-0001",
+          rigAssignmentId: auditAssignment,
+          completedAt: new Date(Date.now() - 150 * 60 * 1000).toISOString(),
+        },
+      ]),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      results: [{ status: "accepted" }],
+    });
+    const laps = await lapRows();
+    expect(laps).toHaveLength(1);
+    expect(laps[0]).toMatchObject({
+      driver_id: audit.id,
+      rig_assignment_id: auditAssignment,
+    });
+  });
+
+  it("stores a lap driven outside the window of the assignment it names unattributed", async () => {
+    const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+
+    // The driver's stint ended an hour ago, well past the clock-skew grace.
+    const assignmentId = await openAssignment(rig.id, driver.id);
+    await testDb().query(
+      `update rig_assignments
+         set started_at = now() - interval '2 hours',
+             ended_at = now() - interval '1 hour',
+             end_reason = 'driver_ended'
+       where id = $1`,
+      [assignmentId],
+    );
+
+    const response = await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-outofwindow-0001",
+          rigAssignmentId: assignmentId,
+          completedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+
+    // Stored, not dropped and not a 500 - the same treatment as every other
+    // lap nobody can be credited with.
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      results: [{ status: "accepted_unattributed" }],
+    });
+    const laps = await lapRows();
+    expect(laps).toHaveLength(1);
+    expect(laps[0]).toMatchObject({
+      driver_id: null,
+      rig_assignment_id: null,
+      is_valid: false,
+      invalid_reason: "UNATTRIBUTED",
+    });
   });
 
   it("will not let an unattributed lap be marked valid", async () => {

@@ -87,6 +87,10 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
     try {
       await schema.query(migration("0001_core_schema.sql"));
       await schema.query(migration("0002_league_night.sql"));
+      // 0003 redefines v_league_round_laps, which is the rule this file tests.
+      // A scratch database built from a prefix of db/migrations tests a schema
+      // the venue does not run.
+      await schema.query(migration("0003_unattributed_laps.sql"));
     } finally {
       await schema.end();
     }

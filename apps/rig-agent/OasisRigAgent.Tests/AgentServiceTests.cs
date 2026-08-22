@@ -43,12 +43,19 @@ public sealed class AgentServiceTests : IDisposable
     private sealed class StubBackend : HttpMessageHandler
     {
         private volatile string? _assignmentId;
+        private volatile bool _offline;
 
         public void Assign(string? assignmentId) => _assignmentId = assignmentId;
+
+        /// <summary>The venue's network as a switch. While it is off every call
+        /// throws, which is all the agent ever sees during an outage.</summary>
+        public void SetOffline(bool offline) => _offline = offline;
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (_offline) throw new HttpRequestException("venue network is down");
+
             var path = request.RequestUri!.AbsolutePath;
             var body = path.EndsWith("/assignment")
                 ? AssignmentBody(_assignmentId)
@@ -80,14 +87,15 @@ public sealed class AgentServiceTests : IDisposable
     /// <summary>Waits until a published status satisfies <paramref name="predicate"/>.
     /// The assignment poll is asynchronous, so a test that fires a lap without
     /// waiting would be racing it.</summary>
-    private static async Task WaitForStatus(AgentService agent, Func<AgentStatus, bool> predicate)
+    private static async Task WaitForStatus(
+        AgentService agent, Func<AgentStatus, bool> predicate, TimeSpan? timeout = null)
     {
         var reached = new TaskCompletionSource();
         agent.StatusChanged += status =>
         {
             if (predicate(status)) reached.TrySetResult();
         };
-        await reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await reached.Task.WaitAsync(timeout ?? TimeSpan.FromSeconds(10));
     }
 
     /// <summary>The audit's sequence, at the agent: a driver's laps carry their
@@ -140,7 +148,10 @@ public sealed class AgentServiceTests : IDisposable
         await using var agent = new AgentService(Config(), client, queue, telemetry);
 
         // Wait for a completed poll, so null means "asked and nobody is there".
-        var polled = WaitForStatus(agent, s => s.Connection == ConnectionState.Online);
+        // Connection alone would not do: the heartbeat can turn the agent online
+        // before the poll comes back, and a lap captured in that gap has no
+        // answer to stamp yet.
+        var polled = WaitForStatus(agent, s => s.AssignmentKnown);
         agent.Start();
         await polled;
 
@@ -149,6 +160,46 @@ public sealed class AgentServiceTests : IDisposable
         var payload = queue.PendingBatch(1).Single().Payload;
         Assert.True(payload.AsObject().ContainsKey("rigAssignmentId"));
         Assert.Null(payload["rigAssignmentId"]);
+    }
+
+    /// <summary>The outage this deferred stamp exists for. A driver checks in
+    /// from their phone, the venue backend goes unreachable, and the rig PC
+    /// reboots - so the agent starts having never polled and cannot say who is
+    /// in the seat. Stamping null there would tell the backend the rig was
+    /// empty and lose the driver's laps for good, so they wait and take the
+    /// answer from the first poll that gets through.</summary>
+    [Fact]
+    public async Task Laps_captured_before_the_first_poll_take_that_polls_assignment()
+    {
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        backend.SetOffline(true);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var offline = WaitForStatus(agent, s => s.Connection == ConnectionState.Offline);
+        agent.Start();
+        await offline;
+
+        telemetry.Emit("evt-during-outage");
+
+        // Durably queued, and deliberately unsendable: the agent has no answer
+        // to give, and an explicit null would be the wrong one.
+        Assert.Equal(1, queue.PendingCount());
+        Assert.Empty(queue.PendingBatch(10));
+
+        // The network comes back. The next poll is up to one interval away.
+        var assigned = WaitForStatus(
+            agent, s => s.Assignment?.Id == AssignmentId, TimeSpan.FromSeconds(30));
+        backend.SetOffline(false);
+        await assigned;
+
+        Assert.Equal(
+            AssignmentId,
+            queue.PendingBatch(10).Single().Payload["rigAssignmentId"]!.GetValue<string>());
     }
 
     public void Dispose()

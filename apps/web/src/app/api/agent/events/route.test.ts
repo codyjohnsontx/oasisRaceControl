@@ -53,7 +53,7 @@ function insertedLaps(): boolean {
 /** Did the handler try to resolve a stamped assignment? */
 function lookedUpAssignments(): boolean {
   return [...query.mock.calls, ...queryOne.mock.calls].some(([sql]) =>
-    String(sql).includes("from rig_assignments"),
+    String(sql).includes("rig_assignments"),
   );
 }
 
@@ -242,11 +242,66 @@ describe("POST /api/agent/events behaviour", () => {
     await POST(post({ events }));
 
     const lookups = query.mock.calls.filter(([sql]) =>
-      String(sql).includes("from rig_assignments"),
+      String(sql).includes("rig_assignments"),
     );
     expect(lookups).toHaveLength(1);
-    // The rig comes from the bearer token, and each distinct id is asked for once.
-    expect(lookups[0]![1]).toEqual([RIG.id, [ASSIGNMENT_ID, OTHER_ASSIGNMENT_ID]]);
+    // The rig comes from the bearer token, and each lap carries the id it
+    // stamped alongside the moment it was driven, so the window check below
+    // can be made per lap rather than per assignment.
+    expect(lookups[0]![1]).toEqual([
+      RIG.id,
+      ["event-00000001", "event-00000002", "event-00000003"],
+      [ASSIGNMENT_ID, ASSIGNMENT_ID, OTHER_ASSIGNMENT_ID],
+      [LAP.completedAt, LAP.completedAt, LAP.completedAt],
+      "15 minutes",
+    ]);
+  });
+
+  it("bounds the lookup by the assignment's own window, with a skew grace", async () => {
+    await POST(post({ events: [{ ...LAP, rigAssignmentId: ASSIGNMENT_ID }] }));
+
+    const [sql, params] = query.mock.calls.find(([text]) =>
+      String(text).includes("rig_assignments"),
+    )!;
+    // The window predicate is the guard: without it a rig token could name any
+    // assignment that rig has ever held and pick its driver.
+    expect(String(sql)).toContain("a.started_at");
+    expect(String(sql)).toContain("a.ended_at");
+    // The grace is a named constant, passed in rather than written into the SQL.
+    expect(String(sql)).not.toContain("15 minutes");
+    expect(params).toContain("15 minutes");
+  });
+
+  it("stores a lap driven outside the window of the assignment it names with no owner", async () => {
+    query.mockImplementation(async (sql: string) =>
+      String(sql).includes("rig_assignments")
+        ? [
+            {
+              event_id: LAP.eventId,
+              id: ASSIGNMENT_ID,
+              driver_id: "driver-uuid",
+              in_window: false,
+            },
+          ]
+        : [],
+    );
+
+    const response = await POST(
+      post({ events: [{ ...LAP, rigAssignmentId: ASSIGNMENT_ID }] }),
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      results: [
+        {
+          type: "LAP_COMPLETED",
+          eventId: LAP.eventId,
+          status: "accepted_unattributed",
+        },
+      ],
+    });
+    // Stored, not dropped - but the driver it named is never credited.
+    expect(insertedLaps()).toBe(true);
+    expect(insertedAttribution()).toEqual([null, null]);
   });
 
   it("stores a lap naming an assignment that is not this rig's with no owner", async () => {
@@ -270,8 +325,15 @@ describe("POST /api/agent/events behaviour", () => {
 
   it("attributes a lap to the assignment the agent stamped on it", async () => {
     query.mockImplementation(async (sql: string) =>
-      String(sql).includes("from rig_assignments")
-        ? [{ id: ASSIGNMENT_ID, driver_id: "driver-uuid" }]
+      String(sql).includes("rig_assignments")
+        ? [
+            {
+              event_id: LAP.eventId,
+              id: ASSIGNMENT_ID,
+              driver_id: "driver-uuid",
+              in_window: true,
+            },
+          ]
         : [],
     );
 

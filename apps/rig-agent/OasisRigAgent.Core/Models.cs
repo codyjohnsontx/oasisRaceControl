@@ -37,6 +37,12 @@ public sealed record AgentStatus
     public required int RigNumber { get; init; }
     public required ConnectionState Connection { get; init; }
     public Assignment? Assignment { get; init; }
+
+    /// <summary>Whether an assignment poll has ever come back. Until it has, a
+    /// null <see cref="Assignment"/> means "the agent has not managed to ask",
+    /// not "nobody is checked in" - the same distinction a lap's stamp turns
+    /// on, so the display must not claim the rig is free either.</summary>
+    public required bool AssignmentKnown { get; init; }
     public required bool SimRunning { get; init; }
     public required int PendingLaps { get; init; }
 }

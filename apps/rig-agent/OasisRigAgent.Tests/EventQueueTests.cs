@@ -127,6 +127,73 @@ public sealed class EventQueueTests : IDisposable
         Assert.Null(batch.Single(e => e.EventId == "evt-2").Payload["rigAssignmentId"]);
     }
 
+    /// <summary>The safety property behind the unresolved state: a lap captured
+    /// before the agent ever reached the backend must be impossible to
+    /// transmit. On the wire it would be an explicit null, which the backend
+    /// reads as the authoritative "nobody was checked in".</summary>
+    [Fact]
+    public void PendingBatch_never_returns_an_unresolved_lap()
+    {
+        using var queue = new EventQueue(_dbPath);
+        Assert.True(queue.EnqueueUnresolved(Lap("evt-1")));
+        queue.Enqueue(Lap("evt-2"), Assignment);
+
+        // Held, not lost - it is still in the outbox, just not sendable.
+        Assert.Equal(2, queue.PendingCount());
+        Assert.Equal("evt-2", queue.PendingBatch(10).Single().EventId);
+    }
+
+    /// <summary>Unresolved is a persisted state, so a SIGKILL mid-outage leaves
+    /// the lap resolvable on the next run rather than stamped with a guess.</summary>
+    [Fact]
+    public void Unresolved_laps_survive_a_restart_and_are_still_resolvable()
+    {
+        using (var queue = new EventQueue(_dbPath))
+        {
+            queue.EnqueueUnresolved(Lap("evt-1"));
+        }
+
+        using var reopened = new EventQueue(_dbPath);
+        Assert.Equal(1, reopened.PendingCount());
+        Assert.Empty(reopened.PendingBatch(10));
+
+        Assert.Equal(1, reopened.ResolveUnresolved(Assignment));
+        Assert.Equal(
+            Assignment,
+            reopened.PendingBatch(10).Single().Payload["rigAssignmentId"]!.GetValue<string>());
+    }
+
+    /// <summary>A first poll that finds nobody checked in is a real answer, and
+    /// it is stamped the same way an ordinary unassigned lap is.</summary>
+    [Fact]
+    public void Resolving_to_nobody_checked_in_stamps_an_explicit_null()
+    {
+        using var queue = new EventQueue(_dbPath);
+        queue.EnqueueUnresolved(Lap("evt-1"));
+
+        queue.ResolveUnresolved(null);
+
+        var payload = queue.PendingBatch(10).Single().Payload;
+        Assert.True(payload.AsObject().ContainsKey("rigAssignmentId"));
+        Assert.Null(payload["rigAssignmentId"]);
+    }
+
+    [Fact]
+    public void ResolveUnresolved_leaves_laps_stamped_at_capture_alone()
+    {
+        using var queue = new EventQueue(_dbPath);
+        queue.Enqueue(Lap("evt-1"), Assignment);
+        queue.EnqueueUnresolved(Lap("evt-2"));
+
+        Assert.Equal(1, queue.ResolveUnresolved(null));
+
+        var batch = queue.PendingBatch(10);
+        Assert.Equal(
+            Assignment,
+            batch.Single(e => e.EventId == "evt-1").Payload["rigAssignmentId"]!.GetValue<string>());
+        Assert.Null(batch.Single(e => e.EventId == "evt-2").Payload["rigAssignmentId"]);
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath)) File.Delete(_dbPath);
