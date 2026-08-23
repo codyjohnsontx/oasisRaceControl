@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { safeTestDatabaseUrl, UnsafeTestDatabaseError } from "./db-guard";
+import {
+  databaseTestsAreRequired,
+  MissingTestDatabaseError,
+  requireTestDatabase,
+  safeTestDatabaseUrl,
+  UnsafeTestDatabaseError,
+} from "./db-guard";
 
 /**
  * The guard is the only thing standing between the destructive integration
@@ -169,5 +175,90 @@ describe("safeTestDatabaseUrl", () => {
     expect(() => safeTestDatabaseUrl("://user:sup3rsecret@host/db_test")).toThrow(
       /\*\*\*@/,
     );
+  });
+});
+
+/**
+ * The other half of the guard: not "is this database safe to destroy" but "was
+ * a database supposed to be here at all". A skipped suite and a passing suite
+ * are the same exit code, so the only thing separating a CI run that proved the
+ * leaderboard's SQL rules from one that proved nothing is this flag.
+ */
+describe("requireTestDatabase", () => {
+  const LOCAL_URL = "postgres://postgres@localhost:5433/oasis_test";
+
+  // Passed explicitly rather than set on process.env: these cases run under the
+  // very flag they are about, so reading the ambient one makes them pass on a
+  // developer's machine and fail in CI.
+  const REQUIRED = true;
+  const OPTIONAL = false;
+
+  it("lets a developer with no Postgres skip", () => {
+    expect(() => requireTestDatabase(null, "the SQL rules", OPTIONAL)).not.toThrow();
+  });
+
+  it("fails instead of skipping when CI required a database", () => {
+    expect(() => requireTestDatabase(null, "the SQL rules", REQUIRED)).toThrow(
+      MissingTestDatabaseError,
+    );
+  });
+
+  it("names what went unproven, so a failed CI log is actionable", () => {
+    expect(() =>
+      requireTestDatabase(null, "league night's SQL rules", REQUIRED),
+    ).toThrow(/league night's SQL rules were never exercised/);
+  });
+
+  it("says nothing when the database is there, required or not", () => {
+    expect(() => requireTestDatabase(LOCAL_URL, "the SQL rules", REQUIRED)).not.toThrow();
+    expect(() => requireTestDatabase(LOCAL_URL, "the SQL rules", OPTIONAL)).not.toThrow();
+  });
+
+  /**
+   * The production callers take the default, so the wiring to the environment is
+   * worth covering - and it is the only way to cover "unset", because passing
+   * `undefined` explicitly takes the default parameter and reads the ambient
+   * variable rather than overriding it.
+   *
+   * The previous value is restored rather than deleted: vitest can run several
+   * files in one worker and CI sets this flag for the whole run, so clearing it
+   * would quietly disarm the rule the next file is asserting.
+   */
+  function withFlag(value: string | undefined, assertion: () => void): void {
+    const before = process.env.OASIS_REQUIRE_DB_TESTS;
+    if (value === undefined) delete process.env.OASIS_REQUIRE_DB_TESTS;
+    else process.env.OASIS_REQUIRE_DB_TESTS = value;
+    try {
+      assertion();
+    } finally {
+      if (before === undefined) delete process.env.OASIS_REQUIRE_DB_TESTS;
+      else process.env.OASIS_REQUIRE_DB_TESTS = before;
+    }
+  }
+
+  it("reads the environment when the caller does not say", () => {
+    withFlag("1", () => {
+      expect(() => requireTestDatabase(null, "the SQL rules")).toThrow(
+        MissingTestDatabaseError,
+      );
+    });
+  });
+
+  it("skips when the environment says nothing, which is every developer machine", () => {
+    withFlag(undefined, () => {
+      expect(databaseTestsAreRequired()).toBe(false);
+      expect(() => requireTestDatabase(null, "the SQL rules")).not.toThrow();
+    });
+  });
+
+  it("treats anything but the exact opt-in as not required", () => {
+    // "true", "yes" and an empty string are the values a workflow edit produces
+    // by accident. Any of them silently meaning "required" would be fine; any
+    // of them silently meaning "not required" would not, so the flag is exact
+    // and the workflow sets the one value this accepts.
+    expect(databaseTestsAreRequired("1")).toBe(true);
+    for (const value of ["", "0", "true", "yes"]) {
+      expect(databaseTestsAreRequired(value)).toBe(false);
+    }
   });
 });

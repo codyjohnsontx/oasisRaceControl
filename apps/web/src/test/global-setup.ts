@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
-import { safeTestDatabaseUrl } from "./db-guard";
+import { requireTestDatabase, safeTestDatabaseUrl } from "./db-guard";
 
 /**
  * Applies db/migrations/*.sql to the throwaway test database once per run.
@@ -16,6 +16,10 @@ import { safeTestDatabaseUrl } from "./db-guard";
 export async function setup() {
   const url = safeTestDatabaseUrl();
   if (!url) {
+    // Throws under OASIS_REQUIRE_DB_TESTS=1 (CI). Without it, a skip here is
+    // vitest's own green "43 skipped" exit 0, which is indistinguishable from a
+    // run that proved something.
+    requireTestDatabase(url, "the lap-ingest and attribution rules in Postgres");
     console.log(
       "[integration] TEST_DATABASE_URL not set - integration tests will skip.",
     );

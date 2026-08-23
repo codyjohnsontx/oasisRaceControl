@@ -1,0 +1,131 @@
+name: Web
+
+# The other half of what the fleet depends on. Twenty-plus rig agents post laps
+# into this app, and it decides who a lap belongs to, whether it counts, and what
+# the leaderboard, the TV wall and a customer's phone show. The agent has had a job
+# of its own for a while; the backend it talks to was checked only on a developer's
+# machine, which meant the contract the whole venue runs on had one enforced end and
+# one unenforced one.
+#
+# The database-backed suites are the point of this job. The rules that decide a
+# night - lap attribution by completion time, the one-open-assignment indexes, the
+# event_id idempotency key, v_fastest_tonight's venue day, v_league_round_laps -
+# live in SQL, so a mocked pool asserts nothing about them. That is why a real
+# Postgres is stood up here rather than skipped over.
+
+on:
+  pull_request:
+    paths:
+      - "apps/web/**"
+      # The integration suite builds its database from these, and the app's
+      # queries are written against them.
+      - "db/migrations/**"
+      - ".github/workflows/web.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      # Postgres 16 is the version README.md tells a developer to run locally, so
+      # CI and a developer's box agree. Keep this in step with that instruction
+      # and with whatever the venue's Neon project is on - a rule that passes on
+      # one major and not another is worth finding here.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          # The integration suite's guard refuses any database whose name does
+          # not contain "test", as proof it is disposable. It drops and rebuilds
+          # the schema every run.
+          POSTGRES_DB: oasis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    defaults:
+      run:
+        working-directory: apps/web
+
+    env:
+      # localhost, and a name containing "test" - both required by
+      # apps/web/src/test/db-guard.ts before anything destructive connects.
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/oasis_test
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Next 16 requires >= 20.9; 22 is the line this app is developed on.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install exactly the locked dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        # `next build` type-checks too, but it runs last and takes far longer.
+        # This puts a type error in front of a developer in under a minute.
+        run: npx tsc --noEmit
+
+      - name: Test with no database, the way a developer without Postgres runs
+        # README.md promises `npm test` is green and honest on a machine with no
+        # Postgres and on one pointed at Neon - the SQL-backed suites skip rather
+        # than firing at a real database. That promise is what keeps the guard
+        # trustworthy, so it is enforced rather than assumed. TEST_DATABASE_URL
+        # and DATABASE_URL are both cleared: an inherited one would make this the
+        # same run as the next step.
+        run: npm test
+        env:
+          TEST_DATABASE_URL: ""
+          DATABASE_URL: ""
+
+      - name: Test against real Postgres, with skipping forbidden
+        # OASIS_REQUIRE_DB_TESTS=1 is what makes this step mean anything. Without
+        # it, a service container that never became healthy or a typo in
+        # TEST_DATABASE_URL leaves the SQL-backed suites skipped - and vitest
+        # exits 0 on "43 skipped" exactly as it does on "43 passed". The flag
+        # turns every such skip into a failure naming what went unproven.
+        run: npm test
+        env:
+          OASIS_REQUIRE_DB_TESTS: "1"
+
+      - name: Test the lap-ingest and attribution rules against real Postgres
+        # Applies db/migrations from scratch and runs the destructive suite: the
+        # idempotency key, the partial unique indexes, checkin_driver(), and the
+        # attribution rule that decides which customer an outage-queued lap
+        # belongs to.
+        run: npm run test:integration
+        env:
+          OASIS_REQUIRE_DB_TESTS: "1"
+
+      - name: Build the app the venue actually serves
+        # Deliberately without DATABASE_URL or SESSION_SECRET: every page that
+        # reads data is server-rendered on demand, so a build that needs a
+        # database to succeed is a page that has become static by accident and
+        # would serve one night's board forever.
+        run: npm run build

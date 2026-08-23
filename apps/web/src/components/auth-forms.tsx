@@ -10,9 +10,13 @@ type Props = {
   /** Guest tab is the default posture at the rig; /me leads with login. */
   defaultMode?: Mode;
   showGuest?: boolean;
+  /** The rig code this page was opened with, when there is one. Sent with a new
+   * driver so the venue's sign-up throttle can be keyed on the seat rather than
+   * on the address every phone in the building shares - see lib/rate-limit.ts. */
+  qrToken?: string;
 };
 
-export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true }: Props) {
+export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true, qrToken }: Props) {
   const [mode, setMode] = useState<Mode>(showGuest ? defaultMode : "login");
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
@@ -24,7 +28,12 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
     setMessage(null);
     const endpoint =
       mode === "guest" ? "/api/auth/guest" : mode === "login" ? "/api/auth/login" : "/api/auth/register";
-    const body = mode === "guest" ? { displayName: name } : { displayName: name, pin };
+    const body =
+      mode === "guest"
+        ? { displayName: name, qrToken }
+        : mode === "register"
+          ? { displayName: name, pin, qrToken }
+          : { displayName: name, pin };
 
     try {
       const res = await fetch(endpoint, {
@@ -47,6 +56,11 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
         setMessage("Too many wrong PINs — ask staff to reset it, or try later");
       } else if (data.error === "invalid_credentials") {
         setMessage("Name or PIN didn't match");
+      } else if (data.error === "rate_limited") {
+        // True and actionable: the window is a minute, and the next tap works.
+        // "Something went wrong" sends the customer to find staff for a fault
+        // that clears itself.
+        setMessage("This rig has had a lot of sign-ups just now — wait a moment and tap again");
       } else {
         setMessage("Something went wrong — try again");
       }

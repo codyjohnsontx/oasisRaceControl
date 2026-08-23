@@ -49,6 +49,13 @@ public sealed class Recorder : IDisposable
     private int _sessionInfoCount;
     private int? _lastLapCompleted;
     private int? _lapStartIncidentCount;
+    /// <summary>The lap time standing before the counter last moved, and how many
+    /// frames ago that was. Together they answer the one question a recording has to
+    /// answer about this channel: does the sim publish the time WITH the counter, or
+    /// after it (docs/spike-findings.md, "Completed lap time")?</summary>
+    private float? _lapTimeBeforeTheLine;
+    private int? _lapAwaitingItsTime;
+    private int _framesSinceTheLine;
     private bool _offTrackSeen;
     private bool _pitRoadSeen;
     private bool _resetSeen;
@@ -162,7 +169,11 @@ public sealed class Recorder : IDisposable
         }
 
         DetectChanges(snapshot.Values);
+        WatchLapTimePublication(snapshot.Values);
         DetectLapBoundary(snapshot.Values);
+        // Shadowed AFTER the boundary check, so the boundary sees what was standing
+        // on the previous frame rather than what this one carries.
+        _lapTimeBeforeTheLine = GetFloat(snapshot.Values, "LapLastLapTime");
 
         var tick = Environment.TickCount64;
         if (tick - _lastSnapshotTick >= 1000)
@@ -215,6 +226,35 @@ public sealed class Recorder : IDisposable
         }
     }
 
+    /// <summary>
+    /// Reports how long after the line the sim published a lap's time, for the laps
+    /// where it had not published it yet.
+    ///
+    /// This is the measurement the whole recording exists for on this row: an agent
+    /// that reads the time at the line gets the PREVIOUS lap's on a sim that publishes
+    /// late, and both orderings look identical from a single frame. The frame count
+    /// here is what an agent's settle window has to be longer than.
+    /// </summary>
+    private void WatchLapTimePublication(IReadOnlyDictionary<string, object?> now)
+    {
+        if (_lapAwaitingItsTime is not int lapCompleted) return;
+
+        _framesSinceTheLine++;
+        var published = GetFloat(now, "LapLastLapTime");
+        if (published is not float value) return;
+        if (_lapTimeBeforeTheLine is float standing && value.Equals(standing)) return;
+
+        Emit("LAP_TIME_SETTLED", new
+        {
+            lapCompleted,
+            framesAfterTheLine = _framesSinceTheLine,
+            lapLastLapTimeSec = value,
+            wasStandingBeforeTheLine = _lapTimeBeforeTheLine,
+            sessionTime = GetValue(now, "SessionTime")
+        });
+        _lapAwaitingItsTime = null;
+    }
+
     private void DetectLapBoundary(IReadOnlyDictionary<string, object?> now)
     {
         if (GetInt(now, "LapCompleted") is not int lapCompleted) return;
@@ -234,10 +274,18 @@ public sealed class Recorder : IDisposable
         {
             var incidentNow = GetInt(now, "PlayerCarMyIncidentCount");
             var lastLapSeconds = GetFloat(now, "LapLastLapTime");
+            // Recorded so a reading of this file can tell the lap's OWN time from the
+            // previous lap's still standing in the channel. Without both numbers a
+            // LAP_BOUNDARY line looks identical either way, and the recording cannot
+            // settle the question it was made to settle.
+            var timeMovedWithTheCounter = lastLapSeconds is float published
+                && (_lapTimeBeforeTheLine is not float standing || !published.Equals(standing));
             Emit("LAP_BOUNDARY", new
             {
                 lapCompleted,
                 lapLastLapTimeSec = lastLapSeconds,
+                lapLastLapTimeSecBeforeTheLine = _lapTimeBeforeTheLine,
+                timeMovedWithTheCounter,
                 lapTimeMs = lastLapSeconds is > 0 ? (int)Math.Round(lastLapSeconds.Value * 1000) : (int?)null,
                 incidentDelta = incidentNow is not null && _lapStartIncidentCount is not null ? incidentNow - _lapStartIncidentCount : null,
                 offTrackSeen = _offTrackSeen,
@@ -247,6 +295,9 @@ public sealed class Recorder : IDisposable
                 sessionUniqueId = GetValue(now, "SessionUniqueID"),
                 sessionTime = GetValue(now, "SessionTime")
             });
+
+            _lapAwaitingItsTime = timeMovedWithTheCounter ? null : lapCompleted;
+            _framesSinceTheLine = 0;
         }
 
         _lastLapCompleted = lapCompleted;
@@ -269,6 +320,9 @@ public sealed class Recorder : IDisposable
     {
         _lastLapCompleted = null;
         _lapStartIncidentCount = null;
+        _lapTimeBeforeTheLine = null;
+        _lapAwaitingItsTime = null;
+        _framesSinceTheLine = 0;
         _offTrackSeen = false;
         _pitRoadSeen = false;
         _resetSeen = false;

@@ -13,7 +13,9 @@ The Wednesday in-house league. Staff open a round from `/staff` against one trac
 - `/tv` — the front-of-store TV carries a league standings board in its rotation, and while a round is open that board takes the screen over: league night owns the wall, the arcade boards have it the rest of the week. Nobody has to take the kiosk off rotation.
 - `/staff` — open a round against a combo, close it when the night is over, and at the turn of the month end the season and start the next one (named for the month, in one step, refused while a round is still open).
 
-**Opening a round also sets that day's featured combo to the round's combo**, because lap validity is judged against the featured combo when a lap is ingested; closing the round puts the previous combo back. Laps already logged keep the validity they were given.
+**Opening a round also sets that day's featured combo to the round's combo**, so the day and the round agree about what is featured; closing the round puts the previous combo back.
+
+The combo a round runs on is typed by hand and compared, character for character, against the names iRacing publishes — so `Dallara IR18` for `Dallara IR-18` means the round has no field and no board in the building has a name on it, with every rig green and every lap stored. `/staff` says so directly (*"Nobody is scoring — N laps tonight are not counting"*, naming both) and **Use what the rigs are running** repoints the round in one tap. Nothing has to be redriven: a lap's stored validity says only whether it was clean, and whether it counts tonight is asked at read time.
 
 ## Repository layout
 
@@ -72,9 +74,15 @@ npm run test:integration
 ```
 
 The suite **skips** (it does not fail) when `TEST_DATABASE_URL` is unset, so
-`npm test` and CI stay green without Postgres. It reads only
-`TEST_DATABASE_URL` - never `DATABASE_URL` - because these tests truncate every
-table and `.env.local` normally points at live Neon. The URL must be a local
+`npm test` stays green on a machine with no Postgres. **CI is the opposite
+case** - it stands up a Postgres service precisely to run these, and a suite
+that skips there exits 0 exactly as a suite that passed does. So
+`.github/workflows/web.yml` sets `OASIS_REQUIRE_DB_TESTS=1`, which turns every
+such skip into a failure naming what went unproven (`requireTestDatabase` in
+`src/test/db-guard.ts` is the only thing that decides this). Set it locally if
+you want the same strictness. The suite reads only `TEST_DATABASE_URL` - never
+`DATABASE_URL` - because these tests truncate every table and `.env.local`
+normally points at live Neon. The URL must be a local
 host with `test` in the database name; managed hosts are refused outright before
 any connection is opened (`src/test/db-guard.ts`). Migrations are reapplied from
 scratch on each run, so a schema change can never leave the test database stale.
@@ -96,7 +104,19 @@ pointed at Neon. Nothing loads `.env.local` for tests, so give it a URL:
 TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5433/oasis_test" npm test
 ```
 
+### What CI checks
+
+`.github/workflows/web.yml` runs lint, `tsc --noEmit`, both test suites against a
+real Postgres 16 with skipping forbidden, and `next build` - plus one run of
+`npm test` with **no** database at all, which is what keeps the promise above
+(green and honest without Postgres) from quietly rotting. The build runs without
+`DATABASE_URL`: every page that reads data is server-rendered on demand, so a
+build that needs a database is a page that has gone static by accident and would
+serve one night's board forever.
+
 Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Staff dashboard is at `/staff`. To try league night, open a round from `/staff` against the combo the fake rig drives, then watch `/league` and the round's page fill up.
+
+Adding a real rig is done from `/staff` → **Enrolment**: *Add a rig* mints that machine's bearer token and QR slug and prints the whole install command to paste at the rig. The token is shown once — only its hash is stored — and *Re-issue a token* is how a leaked or lost one is revoked. The seeded `dev-rig-N-secret` tokens are for local demos and must be rotated from that panel before a venue goes live (`docs/deploy.md`).
 
 ## Building an unsigned spike test candidate
 

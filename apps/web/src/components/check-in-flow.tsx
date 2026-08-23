@@ -88,6 +88,7 @@ export function CheckInFlow({ qrToken, rigNumber, signedInAs }: Props) {
 
       {stage.kind === "auth" && (
         <AuthForms
+          qrToken={qrToken}
           onSignedIn={(name) => {
             // Session cookie is set; go straight to check-in.
             setDisplayName(name);

@@ -101,6 +101,55 @@ public sealed class RecorderTests : IDisposable
             line => line.Contains("LAP_COUNTER_RESET", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void RecordsHowLongAfterTheLineTheSimPublishedTheLapTime()
+    {
+        // The row this recording exists to settle: whether the sim publishes a lap's
+        // time WITH the counter or after it (docs/spike-findings.md, "Completed lap
+        // time"). A boundary line alone reads the same either way - both carry a
+        // plausible number - so the recorder has to say whether that number moved.
+        var source = new FakeSource();
+        using var logs = new LogBudget(_directory, 1024 * 1024);
+        using var recorder = new Recorder(source, logs, RecorderMode.Full, new SafetyLimits(TimeSpan.FromSeconds(5), 1024 * 1024), "test", "commit");
+        recorder.Start();
+
+        source.EmitTelemetry(Values(4, 3, 0, 141.6f));      // lap 3 took 141.6
+        source.EmitTelemetry(Values(5, 4, 0, 141.6f));      // the line: counter moved, time did not
+        source.EmitTelemetry(Values(5, 4, 0, 141.6f));
+        source.EmitTelemetry(Values(5, 4, 0, 138.4f));      // ...and now the sim says what lap 4 took
+        recorder.Stop("test-complete");
+
+        var events = File.ReadAllLines(Path.Combine(_directory, "events.jsonl"));
+
+        var boundary = Assert.Single(events, line => line.Contains("LAP_BOUNDARY", StringComparison.Ordinal));
+        Assert.Contains("\"timeMovedWithTheCounter\":false", boundary, StringComparison.Ordinal);
+        Assert.Contains("\"lapLastLapTimeSecBeforeTheLine\":141.6", boundary, StringComparison.Ordinal);
+
+        var settled = Assert.Single(events, line => line.Contains("LAP_TIME_SETTLED", StringComparison.Ordinal));
+        Assert.Contains("\"framesAfterTheLine\":2", settled, StringComparison.Ordinal);
+        Assert.Contains("\"lapLastLapTimeSec\":138.4", settled, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SaysSoWhenTheSimPublishedTheLapTimeWithTheCounter()
+    {
+        var source = new FakeSource();
+        using var logs = new LogBudget(_directory, 1024 * 1024);
+        using var recorder = new Recorder(source, logs, RecorderMode.Full, new SafetyLimits(TimeSpan.FromSeconds(5), 1024 * 1024), "test", "commit");
+        recorder.Start();
+
+        source.EmitTelemetry(Values(4, 3, 0, 141.6f));
+        source.EmitTelemetry(Values(5, 4, 0, 138.4f));      // both channels move together
+        source.EmitTelemetry(Values(5, 4, 0, 138.4f));
+        recorder.Stop("test-complete");
+
+        var events = File.ReadAllLines(Path.Combine(_directory, "events.jsonl"));
+        Assert.Contains("\"timeMovedWithTheCounter\":true",
+            Assert.Single(events, line => line.Contains("LAP_BOUNDARY", StringComparison.Ordinal)),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(events, line => line.Contains("LAP_TIME_SETTLED", StringComparison.Ordinal));
+    }
+
     private static TelemetrySnapshot Values(int lap, int completed, int incidents, float time)
     {
         var values = Recorder.WatchedVariableNames.ToDictionary(name => name, _ => (object?)null);

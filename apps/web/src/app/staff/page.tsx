@@ -2,13 +2,15 @@ import { unstable_cache } from "next/cache";
 import { redirect } from "next/navigation";
 import { query, queryOne } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
-import { venueMonthName, venueToday } from "@/lib/venue";
+import { VENUE_TIMEZONE, venueMonthName, venueToday } from "@/lib/venue";
+import type { FeaturedCombo } from "@/lib/validity";
 import {
   countRoundDrivers,
   getActiveSeason,
   getOpenRound,
   listSeasonRounds,
 } from "@/lib/league-queries";
+import { describeComboMismatch, type TonightCombo } from "@/lib/combo-mismatch";
 import type { ComboOption } from "@/components/staff-league-panel";
 import {
   StaffDashboard,
@@ -48,7 +50,7 @@ export default async function StaffPage() {
 
   // Failures throw to the error boundary — an empty dashboard that's actually
   // a failed query would mislead staff into thinking every rig is free.
-  const [rigs, laps, openRound, season, todaysCombo] = await Promise.all([
+  const [rigs, laps, openRound, season, todaysCombo, tonightCombos] = await Promise.all([
     query<RigStatusRow>("select * from v_rig_status"),
     query<StaffLapRow>(
       `select l.id, l.lap_time_ms, l.is_valid, l.invalid_reason, l.track_name,
@@ -62,10 +64,23 @@ export default async function StaffPage() {
     ),
     getOpenRound(),
     getActiveSeason(),
-    queryOne<ComboOption>(
-      `select track_name, track_config, car_name
+    queryOne<FeaturedCombo>(
+      `select track_name, track_config, car_name, incident_limit
        from featured_combos where combo_date = $1`,
       [venueToday()],
+    ),
+    // What the room is actually driving tonight, by rig rather than by lap: a
+    // mistyped combo is several rigs agreeing with each other and disagreeing
+    // with the round, and one busy machine must not outweigh them
+    // (describeComboMismatch owns that rule).
+    query<TonightCombo>(
+      `select track_name, track_config, car_name,
+              count(*)::int as lap_count,
+              count(distinct rig_id)::int as rig_count
+       from laps
+       where (completed_at at time zone $1)::date = venue_today()
+       group by track_name, track_config, car_name`,
+      [VENUE_TIMEZONE],
     ),
   ]);
 
@@ -88,6 +103,7 @@ export default async function StaffPage() {
         recentRounds: recentRounds.slice(0, 6),
         comboOptions,
         todaysCombo,
+        comboMismatch: describeComboMismatch(tonightCombos, todaysCombo),
       }}
     />
   );

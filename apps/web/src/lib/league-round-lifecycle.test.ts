@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DRIVER_LAP_CAP, lapsByDriver, ROUND_LAP_CAP } from "./league";
-import { safeTestDatabaseUrl } from "../test/db-guard";
+import { requireTestDatabase, safeTestDatabaseUrl } from "../test/db-guard";
 import { computeValidity, type FeaturedCombo } from "./validity";
 import { venueMonthName, venueToday } from "./venue";
 
@@ -65,6 +65,21 @@ const SERVER_URL = serverUrl();
 function migration(file: string): string {
   return readFileSync(new URL(`../../../../db/migrations/${file}`, import.meta.url), "utf8");
 }
+
+/**
+ * Always collected, so the skip above cannot be silent where it matters.
+ *
+ * `describe.skipIf` is invisible in an exit code: a CI job whose Postgres
+ * service never came up would report the same green as one that exercised every
+ * rule below. This asserts the skip was allowed rather than accidental.
+ */
+describe("league round lifecycle coverage", () => {
+  it("is exercised rather than skipped wherever a database is required", () => {
+    expect(() =>
+      requireTestDatabase(SERVER_URL, "league night's SQL rules"),
+    ).not.toThrow();
+  });
+});
 
 describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
   let dbModule: typeof import("./db");
@@ -237,13 +252,17 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
       car_name: "Porsche 911 GT3 R",
     });
 
-    // While the round is open, off-combo laps are invalid on purpose.
+    // While the round is open, an off-combo lap is kept off tonight's board by
+    // the view, not by a verdict burned into the lap. It was a clean lap and it
+    // is stored as one, so it still reaches Monza's own permanent board and
+    // survives staff repointing the round.
     const during = await ingestLap(customer, {
       trackName: "Monza",
       carName: "Mazda MX-5",
       lapTimeMs: 95_000,
     });
-    expect(during).toMatchObject({ is_valid: false, invalid_reason: "WRONG_TRACK_CONFIGURATION" });
+    expect(during).toMatchObject({ is_valid: true, invalid_reason: null });
+    expect(await fastestTonight(customer)).toEqual([]);
 
     await league.closeLeagueRound(round.id);
 
@@ -305,13 +324,154 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
       { track_name: "Nurburgring", lap_time_ms: 100_000 },
     ]);
 
-    // ...and the venue's own rule is back in force for everything else.
+    // ...and the venue's own combo is back in force for everything else: the
+    // Monza lap is clean, so it is stored valid, and Fastest Tonight still
+    // shows only the Nurburgring time because that is what the venue featured.
     const offFeatured = await ingestLap(customer, {
       trackName: "Monza",
       carName: "Mazda MX-5",
       lapTimeMs: 90_000,
     });
-    expect(offFeatured).toMatchObject({ is_valid: false });
+    expect(offFeatured).toMatchObject({ is_valid: true, invalid_reason: null });
+    expect(await fastestTonight(customer)).toEqual([
+      { track_name: "Nurburgring", lap_time_ms: 100_000 },
+    ]);
+  });
+
+  it("recovers a whole league night set on a combo the rigs do not recognise", async () => {
+    // The venue failure: staff type the round's car, the sim reports its own
+    // name, and they are one character apart. Nothing errors - the round opens,
+    // the rigs deliver, every lap is stored - and no name reaches any board.
+    const SIM_CAR = "Dallara IR-18";
+    const TYPO_CAR = "Dallara IR18";
+
+    const field = [];
+    for (let i = 1; i <= 6; i++) field.push(await driver(`League Racer ${i}`));
+
+    const round = await league.openLeagueRound({
+      ...WEEK_ONE,
+      name: "Week 3",
+      carName: TYPO_CAR,
+    });
+
+    // Everyone drives the round, on the car iRacing calls what it calls it.
+    for (const [index, racer] of field.entries()) {
+      for (let lap = 0; lap < 3; lap++) {
+        const stored = await ingestLap(racer, {
+          trackName: WEEK_ONE.trackName,
+          trackConfig: WEEK_ONE.trackConfig,
+          carName: SIM_CAR,
+          lapTimeMs: 130_000 + index * 500 + lap * 90,
+        });
+        // Clean laps are stored clean. Which content counts is not the lap's
+        // business, and that is what makes the next half possible at all.
+        expect(stored).toMatchObject({ is_valid: true, invalid_reason: null });
+      }
+    }
+
+    // Every board in the building is empty, and nothing anywhere says why.
+    expect(await league.getRoundField(round.id)).toEqual([]);
+    expect(await league.countRoundDrivers(round.id)).toBe(0);
+    for (const racer of field) expect(await fastestTonight(racer)).toEqual([]);
+
+    // Staff repoint the round at what the rigs report.
+    const repointed = await league.repointOpenRound({
+      trackName: WEEK_ONE.trackName,
+      trackConfig: WEEK_ONE.trackConfig,
+      carName: SIM_CAR,
+    });
+    expect(repointed).toMatchObject({ id: round.id, roundNumber: round.roundNumber });
+
+    // The night that was already driven is on the board, in order, with nobody
+    // asked to redrive anything.
+    const recovered = await league.getRoundField(round.id);
+    expect(recovered).toHaveLength(6);
+    expect(recovered.map((row) => row.position)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(recovered[0]).toMatchObject({ driver_id: field[0], valid_lap_count: 3 });
+    expect(await league.countRoundDrivers(round.id)).toBe(6);
+    for (const racer of field) expect(await fastestTonight(racer)).toHaveLength(1);
+  });
+
+  it("repoints the day's featured combo with the round, so the two never disagree", async () => {
+    const round = await league.openLeagueRound({ ...WEEK_ONE, carName: "Dallara IR18" });
+    await league.repointOpenRound({
+      trackName: "Watkins Glen International",
+      trackConfig: "Boot",
+      carName: "Dallara IR-18",
+    });
+
+    expect(await featuredCombo()).toEqual({
+      track_name: "Watkins Glen International",
+      track_config: "Boot",
+      car_name: "Dallara IR-18",
+      incident_limit: WEEK_ONE.incidentLimit,
+    });
+
+    // ...and closing still gives the venue back the combo it had before league
+    // night, not the one the repair typed in.
+    await league.closeLeagueRound(round.id);
+    expect(await featuredCombo()).toBeNull();
+  });
+
+  it("keeps the round's number, so a repair does not spend one or leave an empty round", async () => {
+    // The only route through before this was close-and-reopen, which files an
+    // empty round in the season standings for ever.
+    await league.closeLeagueRound((await league.openLeagueRound(WEEK_ONE)).id);
+    const second = await league.openLeagueRound({ ...WEEK_ONE, carName: "Dallara IR18" });
+    expect(second.roundNumber).toBe(2);
+
+    await league.repointOpenRound({
+      trackName: WEEK_ONE.trackName,
+      trackConfig: WEEK_ONE.trackConfig,
+      carName: "Dallara IR-18",
+    });
+
+    const season = await league.getActiveSeason();
+    const rounds = await league.listSeasonRounds(season!.id);
+    expect(rounds.map((r) => r.round_number)).toEqual([2, 1]);
+    expect(rounds.find((r) => r.round_number === 2)).toMatchObject({
+      car_name: "Dallara IR-18",
+    });
+  });
+
+  it("leaves a closed round alone, because its result is already published", async () => {
+    const round = await league.openLeagueRound(WEEK_ONE);
+    await league.closeLeagueRound(round.id);
+
+    expect(
+      await league.repointOpenRound({
+        trackName: "Monza",
+        trackConfig: null,
+        carName: "Mazda MX-5",
+      }),
+    ).toBeNull();
+
+    const rounds = await league.listSeasonRounds((await league.getActiveSeason())!.id);
+    expect(rounds[0]).toMatchObject({ car_name: WEEK_ONE.carName });
+  });
+
+  it("keeps a walk-in's clean lap on the venue's permanent board during league night", async () => {
+    // A customer at Monza while the league runs at Spa has not done anything
+    // wrong. Storing that lap invalid deleted it from Monza's own arcade board
+    // as well - a scheduling choice erasing a customer's time.
+    const customer = await driver("Walk-in At Monza");
+    await league.openLeagueRound(WEEK_ONE);
+
+    await ingestLap(customer, {
+      trackName: "Monza",
+      carName: "Mazda MX-5",
+      lapTimeMs: 105_000,
+    });
+
+    const board = await dbModule.query<{ display_name: string; lap_time_ms: number }>(
+      `select d.display_name, l.lap_time_ms
+       from laps l join drivers d on d.id = l.driver_id
+       where l.is_valid and d.status = 'active' and l.track_name = 'Monza'`,
+    );
+    expect(board).toEqual([{ display_name: "Walk-in At Monza", lap_time_ms: 105_000 }]);
+
+    // ...while tonight's board still shows only the featured content.
+    expect(await fastestTonight(customer)).toEqual([]);
   });
 
   it("keeps a driver in the round's field when every lap of theirs is invalid", async () => {

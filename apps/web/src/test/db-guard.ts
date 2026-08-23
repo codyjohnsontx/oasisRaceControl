@@ -113,3 +113,53 @@ export function safeTestDatabaseUrl(
 function redact(raw: string): string {
   return raw.replace(/\/\/[^@/]*@/, "//***@");
 }
+
+export class MissingTestDatabaseError extends Error {}
+
+/**
+ * Whether a database-backed suite is allowed to skip on this machine.
+ *
+ * A developer with no Postgres running should get a green, honest `npm test`,
+ * so the SQL-backed suites skip. CI is the opposite case: the whole reason it
+ * stands up a Postgres service is to exercise those suites, and a suite that
+ * skips there reports the same green as one that ran. That is not theoretical -
+ * `npm run test:integration` with no TEST_DATABASE_URL exits 0 with "43
+ * skipped", so a typo in a workflow variable, or a service container that never
+ * became healthy, would leave the leaderboard's SQL rules unproven while the
+ * pull request went green.
+ *
+ * CI therefore sets OASIS_REQUIRE_DB_TESTS=1, which turns every such skip into
+ * a failure that names what was not run.
+ */
+export function databaseTestsAreRequired(
+  raw: string | undefined = process.env.OASIS_REQUIRE_DB_TESTS,
+): boolean {
+  return raw === "1";
+}
+
+/**
+ * The single place a database-backed suite decides whether "no database" is
+ * acceptable, so the integration suite and the SQL-backed unit suite cannot
+ * drift into answering it differently.
+ *
+ * @param url the database this suite would use, or null if it found none.
+ * @param suite what will go unproven, named the way a person reading a failed
+ *   CI log needs it - not the file name.
+ * @param required defaults to the environment, and is passed explicitly only by
+ *   this rule's own tests - which otherwise read whatever the machine running
+ *   them happens to have set, and so pass locally and fail in CI.
+ * @throws MissingTestDatabaseError when a database is required and absent.
+ */
+export function requireTestDatabase(
+  url: string | null,
+  suite: string,
+  required: boolean = databaseTestsAreRequired(),
+): void {
+  if (url || !required) return;
+  throw new MissingTestDatabaseError(
+    `OASIS_REQUIRE_DB_TESTS=1, but no local Postgres was reachable, so ${suite} ` +
+      `were never exercised. Skipping them here would report a green build for ` +
+      `rules nothing checked. Set TEST_DATABASE_URL to a local throwaway ` +
+      `database whose name contains "test".`,
+  );
+}

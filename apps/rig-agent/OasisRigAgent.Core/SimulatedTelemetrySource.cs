@@ -43,6 +43,11 @@ public sealed class SimulatedTelemetrySource : ITelemetrySource
         // and therefore event ids — unique even when the ms timestamp collides.
         var lapNumber = Interlocked.Increment(ref _lapNumber);
         var dirty = Random.Shared.NextDouble() < 0.15;
+        // A lap put off the road WITHOUT the sim charging for it - the case that
+        // reaches the leaderboard as a clean fastest time if nothing is watching
+        // the surface. It is faster, not slower, because the way an uncharged off
+        // happens is running wide and carrying the speed.
+        var uncharged = !dirty && Random.Shared.NextDouble() < 0.10;
         var jitter = (int)((Random.Shared.NextDouble() - 0.35) * 2500);
 
         LapCompleted?.Invoke(new LapCompleted
@@ -52,8 +57,9 @@ public sealed class SimulatedTelemetrySource : ITelemetrySource
             TrackConfig = Config,
             CarName = Car,
             LapNumber = lapNumber,
-            LapTimeMs = Math.Max(60_000, PaceMs + jitter + (dirty ? 4000 : 0)),
+            LapTimeMs = Math.Max(60_000, PaceMs + jitter + (dirty ? 4000 : 0) - (uncharged ? 1500 : 0)),
             IncidentDelta = dirty ? 1 : 0,
+            OffTrackSeen = dirty || uncharged,
             CompletedAt = DateTimeOffset.UtcNow,
         });
     }

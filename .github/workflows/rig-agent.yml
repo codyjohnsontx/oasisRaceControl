@@ -1,0 +1,657 @@
+name: Rig agent
+
+# The agent is installed on every simulator in the venue, and its lap rules decide
+# what customers see on the leaderboard. Both are enforced here rather than only on
+# a developer machine: the tests are deliberately platform-neutral so they run
+# without iRacing, and the win-x64 publish proves the artifact staff actually
+# install still builds.
+
+on:
+  pull_request:
+    paths:
+      - "apps/rig-agent/**"
+      - ".github/workflows/rig-agent.yml"
+      - "global.json"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: rig-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore
+        run: dotnet restore apps/rig-agent/OasisRigAgent.sln
+      - name: Test telemetry decoding, lap rules, outbox, backend contract, and the attachment to iRacing
+        # OASIS_REQUIRE_WINDOWS_SIM_TESTS is what stops this step lying, for the same
+        # reason as OASIS_REQUIRE_DB_TESTS in the web job. WindowsSimAttachmentTests
+        # covers the only code in the agent that asks Windows for anything - opening
+        # iRacing's session-local mapping with read rights, taking a view of it, and
+        # waiting on a frame signal opened with SYNCHRONIZE alone - and it is guarded
+        # by a platform check, so on any other machine it returns rather than fails and
+        # reports five green ticks that asserted nothing. This job is the one that runs
+        # them on a PC, so it says so and is failed if it turns out not to have.
+        env:
+          OASIS_REQUIRE_WINDOWS_SIM_TESTS: '1'
+        run: dotnet test apps/rig-agent/OasisRigAgent.sln --configuration Release --no-restore
+      - name: Publish the executable the rigs run
+        run: dotnet publish apps/rig-agent/OasisRigAgent/OasisRigAgent.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true --output artifacts/agent
+      - name: Prove the published executable names the build it is
+        shell: pwsh
+        # An agent update is a walk round twenty-plus machines with a USB stick, and
+        # the version each rig reports is the only record of which ones are done. So
+        # the number has to come from the binary that was copied there - it used to be
+        # a field in the per-rig config, which is the one file an update deliberately
+        # does NOT overwrite, so it could never say a rig had been updated.
+        #
+        # Two things are Windows facts a unit test cannot establish: that a
+        # single-file publish still carries its version, and that the number in the
+        # exe's file properties (what an operator reads standing at the rig) is the
+        # one the dashboard shows.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'artifacts/agent/OasisRigAgent.exe'
+          $reported = (& $exe --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "--version exited $LASTEXITCODE. Output: $reported" }
+          if ($reported -notmatch '^oasis-rig-agent/\d+\.\d+\.\d+$') {
+            throw "The agent must report a build number an update round can compare, not '$reported'."
+          }
+          if ($reported.Length -gt 40) {
+            throw "'$reported' overruns the heartbeat contract's 40 characters, which fails every heartbeat and reads as an offline rig."
+          }
+          $onDisk = (Get-Item $exe).VersionInfo.ProductVersion
+          if ($onDisk.Split('+')[0] -ne $reported.Split('/')[1]) {
+            throw "The exe's file properties say $onDisk and it reports $reported; an operator reading one and the dashboard showing the other cannot verify an update."
+          }
+          Write-Host "The published agent reports $reported, matching its file properties."
+
+      - name: Check the rig installer's rules
+        shell: pwsh
+        # The installer is run once per machine on twenty-plus machines, so what it
+        # REFUSES is most of its value: a rig's identity travelling to the next
+        # computer, an update taking the token with the build, an agent started where
+        # it can never see the simulator.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pester = Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $pester -or $pester.Version.Major -lt 5) {
+            throw "The installer's rules are written for Pester 5 or later; this runner has $($pester.Version)."
+          }
+          Import-Module $pester.Path -Force
+          $result = Invoke-Pester -Path apps/rig-agent/deploy -Output Detailed -PassThru
+          if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) of the installer's rules failed." }
+          # A suite that silently loaded nothing is the same exit code as one that
+          # proved every rule.
+          if ($result.PassedCount -lt 45) { throw "Only $($result.PassedCount) installer rules ran, so the suite did not load." }
+
+      - name: Keep the simulator read-only
+        shell: pwsh
+        # The agent attaches to a running simulator on ~25 machines the venue depends
+        # on. docs/venue-safety.md commits to observing it and never driving it, and
+        # that promise is only worth what enforces it: an accidental writable mapping
+        # or a broadcast message would put the agent in a position to disturb a
+        # customer's session, and would invalidate the safety evidence already gathered.
+        #
+        # Scoped to the two projects that are published to a rig. The test project is
+        # deliberately outside it, because proving the attachment is read-only requires
+        # something that writes: WindowsSimAttachmentTests stands where iRacing stands
+        # and publishes a mapping for the agent to read. Nothing it contains reaches a
+        # venue computer - the step below fails the build if its assembly is ever in the
+        # published artifact - and the roots and the file floor here are what stop this
+        # exemption widening by a mistyped path that quietly scans nothing.
+        run: |
+          $forbidden = @(
+            'MemoryMappedFileAccess.ReadWrite', 'MemoryMappedFileAccess.Write',
+            'MemoryMappedFileAccess.CopyOnWrite', 'MemoryMappedFileRights.Write',
+            'MemoryMappedFileRights.ReadWrite', 'MemoryMappedFileRights.FullControl',
+            'MemoryMappedFile.CreateNew', 'MemoryMappedFile.CreateOrOpen',
+            'PostMessage', 'SendMessage', 'RegisterWindowMessage', 'irsdk_broadcastmsg'
+          )
+          $roots = @('apps/rig-agent/OasisRigAgent', 'apps/rig-agent/OasisRigAgent.Core')
+          foreach ($root in $roots) {
+            if (-not (Test-Path $root)) { throw "The venue build's source root $root does not exist; this scan proved nothing." }
+          }
+          $sources = Get-ChildItem $roots -Recurse -Include *.cs |
+            Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' }
+          if ($sources.Count -lt 25) { throw "Only $($sources.Count) shipped source files were scanned; the roots are wrong." }
+          $bad = @()
+          foreach ($file in $sources) {
+            $text = Get-Content $file.FullName -Raw
+            foreach ($name in $forbidden) {
+              if ($text -like "*$name*") { $bad += "$($file.FullName): $name" }
+            }
+          }
+          if ($bad) { throw "The agent may only observe the simulator:`n$($bad -join "`n")" }
+          Write-Host "Simulator access is read-only across $($sources.Count) shipped source files."
+
+      - name: Keep third-party telemetry and YAML dependencies out of the venue build
+        shell: pwsh
+        # docs/venue-safety.md bounds what may run on venue computers. The agent reads
+        # the sim through repository-owned code for the same reason the recorder does.
+        run: |
+          $published = (Get-ChildItem artifacts/agent -File).Name
+          foreach ($forbidden in @('IRSDKSharper.dll', 'irsdkSharp.dll', 'YamlDotNet.dll')) {
+            if ($published -contains $forbidden) { throw "Forbidden dependency was published: $forbidden" }
+          }
+          # The test assembly is the one place in this repository allowed to write into
+          # a shared-memory mapping, so it is the one assembly that must never land on a
+          # venue computer. This is what keeps the scan above scoped rather than weakened.
+          if ($published -contains 'OasisRigAgent.Tests.dll') {
+            throw 'The test assembly, which publishes a writable mapping, was published to the rigs.'
+          }
+
+      - name: Prove the installed layout on real Windows
+        shell: pwsh
+        # The agent is installed on twenty-plus machines where the folder it runs
+        # from is read-only to the account the rig signs in as, and it is started
+        # unattended with no console. Both are Windows facts a cross-platform unit
+        # test cannot establish, so the published executable is made to demonstrate
+        # them here: it writes nothing beside itself, and a second copy refuses to
+        # start rather than sharing one rig's lap queue.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app  = Join-Path $PWD 'artifacts/agent'
+          $data = Join-Path $env:RUNNER_TEMP 'oasis-rig-data'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          # example.invalid never resolves: the agent has to come up, write its
+          # files, and stay up with the backend unreachable, which is the state a
+          # rig is in whenever the venue's connection is down.
+          '{ "backendBaseUrl": "https://example.invalid", "rigToken": "ci-token", "rigNumber": 1, "simulateTelemetry": true }' |
+            Set-Content -Path (Join-Path $data 'agent.config.json') -Encoding utf8
+          $env:OASIS_DATA_DIR = $data
+
+          $before = (Get-ChildItem $app -Recurse -File | ForEach-Object { $_.FullName }) | Sort-Object
+          $first = Start-Process -FilePath (Join-Path $app 'OasisRigAgent.exe') -PassThru `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'first.out') `
+            -RedirectStandardError  (Join-Path $env:RUNNER_TEMP 'first.err')
+          # Poll rather than guess how long a cold runner takes to start it.
+          $deadline = [DateTime]::UtcNow.AddSeconds(45)
+          $expected = 'outbox.db', 'agent.lock', 'logs/agent.log'
+          while ([DateTime]::UtcNow -lt $deadline -and -not $first.HasExited) {
+            if (($expected | Where-Object { -not (Test-Path (Join-Path $data $_)) }).Count -eq 0) { break }
+            Start-Sleep -Milliseconds 500
+          }
+
+          try {
+            if ($first.HasExited) {
+              $stderr = Get-Content (Join-Path $env:RUNNER_TEMP 'first.err') -Raw
+              throw "The agent exited with $($first.ExitCode) instead of running unattended. $stderr"
+            }
+
+            foreach ($name in $expected) {
+              $path = Join-Path $data $name
+              if (-not (Test-Path $path)) { throw "The agent did not create $path in its data folder." }
+            }
+            if ((Get-Item (Join-Path $data 'logs/agent.log')).Length -le 0) {
+              throw "The log file is empty - an unattended rig has to leave a record of what it said."
+            }
+
+            $after = (Get-ChildItem $app -Recurse -File | ForEach-Object { $_.FullName }) | Sort-Object
+            $written = Compare-Object $before $after | Where-Object { $_.SideIndicator -eq '=>' }
+            if ($written) {
+              $list = ($written | ForEach-Object { $_.InputObject }) -join [Environment]::NewLine
+              throw "The agent wrote beside its executable, which fails under Program Files:$([Environment]::NewLine)$list"
+            }
+
+            # A second copy - the desktop shortcut double-clicked while the
+            # scheduled task is already running.
+            $second = Start-Process -FilePath (Join-Path $app 'OasisRigAgent.exe') -PassThru -Wait `
+              -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'second.out') `
+              -RedirectStandardError  (Join-Path $env:RUNNER_TEMP 'second.err')
+            if ($second.ExitCode -ne 2) { throw "A second agent on the same rig exited $($second.ExitCode); it must refuse with 2." }
+          }
+          finally {
+            if (-not $first.HasExited) { Stop-Process -Id $first.Id -Force }
+          }
+          Write-Host "Installed layout verified: writable state in $data, nothing written beside the executable, one agent per rig."
+
+      - name: Prove a rig with a damaged lap queue comes back on real Windows
+        shell: pwsh
+        # A venue computer loses power mid-write and SQLite refuses its lap queue
+        # afterwards. Before this the agent could not start, so that machine read
+        # on the staff dashboard exactly like one nobody had installed it on -
+        # every restart, which is what people try. The recovery is proved here
+        # rather than only in unit tests because its Windows half cannot be:
+        # Microsoft.Data.Sqlite pools connections, so a handle left open by the
+        # failed open is what blocks the rename, and on macOS or Linux the rename
+        # succeeds regardless and the bug is invisible.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app  = Join-Path $PWD 'artifacts/agent'
+          $data = Join-Path $env:RUNNER_TEMP 'oasis-damaged-queue'
+          Remove-Item $data -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          '{ "backendBaseUrl": "https://example.invalid", "rigToken": "ci-token", "rigNumber": 1, "simulateTelemetry": true }' |
+            Set-Content -Path (Join-Path $data 'agent.config.json') -Encoding utf8
+          $env:OASIS_DATA_DIR = $data
+
+          $outbox = Join-Path $data 'outbox.db'
+          # A header that survived the power cut and pages that did not, which is
+          # the file that opens happily and fails at a flush hours later.
+          $bytes = New-Object byte[] 16384
+          (New-Object Random 1).NextBytes($bytes)
+          [System.Text.Encoding]::ASCII.GetBytes("SQLite format 3`0").CopyTo($bytes, 0)
+          [System.IO.File]::WriteAllBytes($outbox, $bytes)
+
+          $run = Start-Process -FilePath (Join-Path $app 'OasisRigAgent.exe') -PassThru `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'damaged.out') `
+            -RedirectStandardError  (Join-Path $env:RUNNER_TEMP 'damaged.err')
+          $deadline = [DateTime]::UtcNow.AddSeconds(45)
+          while ([DateTime]::UtcNow -lt $deadline -and -not $run.HasExited) {
+            if (Get-ChildItem $data -Filter 'outbox.damaged-*.db' -ErrorAction SilentlyContinue) { break }
+            Start-Sleep -Milliseconds 500
+          }
+
+          try {
+            if ($run.HasExited) {
+              $stderr = Get-Content (Join-Path $env:RUNNER_TEMP 'damaged.err') -Raw
+              throw "The agent exited with $($run.ExitCode) instead of replacing the damaged queue. $stderr"
+            }
+
+            $kept = @(Get-ChildItem $data -Filter 'outbox.damaged-*.db')
+            if ($kept.Count -ne 1) {
+              throw "Expected the unreadable queue to be kept once; found $($kept.Count). The rename is what Windows file handles break."
+            }
+            if ($kept[0].Length -ne 16384) { throw "The kept queue is not the damaged file byte for byte." }
+            if (-not (Test-Path $outbox)) { throw "The agent did not open a fresh lap queue." }
+
+            # It has to say so: the laps that were in that file were never delivered.
+            $said = Get-Content (Join-Path $env:RUNNER_TEMP 'damaged.out') -Raw
+            if ($said -notmatch '\[outbox\]') { throw "The agent replaced the queue without saying so." }
+            if ($said -notmatch 'not[\s\S]{0,80}delivered') { throw "The agent did not say the queued laps were lost." }
+
+            # And the rig has to be scoring again, not merely running: simulated
+            # telemetry with an unreachable backend fills the fresh queue.
+            $deadline = [DateTime]::UtcNow.AddSeconds(60)
+            while ([DateTime]::UtcNow -lt $deadline) {
+              if ((Get-Content (Join-Path $env:RUNNER_TEMP 'damaged.out') -Raw) -match 'lap\(s\) queued') { break }
+              Start-Sleep -Milliseconds 500
+            }
+            if ((Get-Content (Join-Path $env:RUNNER_TEMP 'damaged.out') -Raw) -notmatch 'lap\(s\) queued') {
+              throw "The rig came up but never queued a lap into the replacement queue."
+            }
+          }
+          finally {
+            if (-not $run.HasExited) { Stop-Process -Id $run.Id -Force }
+          }
+
+          # A queue it cannot write is a different fault and must not be replaced:
+          # renaming it aside every night would turn one loud failure into a
+          # nightly silent one. Its own folder, so no handle or lock from the run
+          # above can decide the answer.
+          $data = Join-Path $env:RUNNER_TEMP 'oasis-readonly-queue'
+          Remove-Item $data -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          '{ "backendBaseUrl": "https://example.invalid", "rigToken": "ci-token", "rigNumber": 1, "simulateTelemetry": true }' |
+            Set-Content -Path (Join-Path $data 'agent.config.json') -Encoding utf8
+          $env:OASIS_DATA_DIR = $data
+          $outbox = Join-Path $data 'outbox.db'
+          New-Item -ItemType File -Path $outbox | Out-Null
+          Set-ItemProperty -Path $outbox -Name IsReadOnly -Value $true
+          $readonly = Start-Process -FilePath (Join-Path $app 'OasisRigAgent.exe') -PassThru -Wait `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'readonly.out') `
+            -RedirectStandardError  (Join-Path $env:RUNNER_TEMP 'readonly.err')
+          if ($readonly.ExitCode -ne 10) {
+            throw "A lap queue this machine cannot write exited $($readonly.ExitCode); it must stop with 10."
+          }
+          if (Get-ChildItem $data -Filter 'outbox.damaged-*.db' -ErrorAction SilentlyContinue) {
+            throw "A queue that could not be written was moved aside; only an unreadable one may be."
+          }
+          $told = (Get-Content (Join-Path $env:RUNNER_TEMP 'readonly.out') -Raw) + (Get-Content (Join-Path $env:RUNNER_TEMP 'readonly.err') -Raw)
+          if ($told -match 'agent\.config\.json') {
+            throw "A lap-queue failure sent the operator to the config file, which is the one thing that is fine."
+          }
+          Set-ItemProperty -Path $outbox -Name IsReadOnly -Value $false
+          Write-Host "Damaged lap queue verified: replaced, kept, said out loud, and scoring again - and an unwritable one refused instead."
+
+      - name: Prove the pre-flight sim check answers on a machine with no iRacing
+        shell: pwsh
+        # `--check-sim` is what somebody runs standing at a rig before opening, and
+        # the answer it gives most often is "iRacing is not running" - a runner with
+        # no sim installed is exactly that machine. What is being proved here is that
+        # it runs before the config and the instance lock (so it works on a rig with
+        # the agent already running, which is the normal state), gives up on its own
+        # rather than hanging at a command prompt, and separates "no sim", "this rig
+        # will not score" and "this agent cannot see the sim from here" by exit code.
+        #
+        # Which of the last two applies depends on the Windows session the runner
+        # gives this step, and that is the point rather than an inconvenience:
+        # iRacing's telemetry is named per session, so an agent in session 0 cannot
+        # open it whatever else is true. The assertion follows the session the agent
+        # reports, so whichever kind of machine this runs on, the answer it must give
+        # on that kind of machine is the one enforced.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'artifacts/agent/OasisRigAgent.exe'
+          $data = Join-Path $env:RUNNER_TEMP 'oasis-check-sim-data'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          $env:OASIS_DATA_DIR = $data   # deliberately empty: no config, and no lock taken
+
+          $started = [DateTime]::UtcNow
+          $out = Join-Path $env:RUNNER_TEMP 'check-sim.out'
+          $run = Start-Process -FilePath $exe -ArgumentList '--check-sim' -PassThru -Wait `
+            -RedirectStandardOutput $out -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'check-sim.err')
+          $elapsed = ([DateTime]::UtcNow - $started).TotalSeconds
+          $text = Get-Content $out -Raw
+
+          if ($text -notmatch 'Windows session:\s*(\d+)') {
+            throw "It must say which Windows session it read the sim from. Output: $text"
+          }
+          $session = [int]$Matches[1]
+
+          if ($session -eq 0) {
+            # A service, or a task set to run whether the user is logged on or not.
+            # iRacing's mapping has no name here, so "start iRacing" would be wrong
+            # advice on this machine no matter how many times somebody followed it.
+            if ($run.ExitCode -ne 5) { throw "In session 0 it must exit 5 (out of reach), not $($run.ExitCode). Output: $text" }
+            if ($text -notmatch 'signed-in') { throw "It must name the fix, not just the fault. Output: $text" }
+          }
+          else {
+            if ($run.ExitCode -ne 4) { throw "With no iRacing running it must exit 4 (no sim), not $($run.ExitCode). Output: $text" }
+            if ($text -notmatch 'Start iRacing') { throw "It must tell an operator what to do, not just fail. Output: $text" }
+          }
+
+          if ($elapsed -gt 60) { throw "It took $elapsed seconds; it is run at a command prompt and must give up on its own." }
+          if (Test-Path (Join-Path $data 'agent.lock')) { throw "The check took the rig's instance lock; it must be safe to run beside a running agent." }
+          if (Test-Path (Join-Path $data 'outbox.db')) { throw "The check touched the rig's lap queue; it must only read the simulator." }
+          Write-Host "Pre-flight sim check verified in Windows session ${session}: exit $($run.ExitCode) after $([int]$elapsed)s, no lock and no queue touched."
+
+      - name: Prove the pre-flight backend check separates a wrong token from a dead network
+        shell: pwsh
+        # The enrolment mistake this exists to catch, performed for real against a
+        # backend on this machine. A rig's token is the one thing about an install
+        # that is typed by hand and cannot be read back, and getting it wrong used
+        # to produce a machine that said "offline" all night - the same word it uses
+        # when the venue's wifi drops. The two answers have to be told apart here or
+        # the check is worth nothing.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe  = Join-Path $PWD 'artifacts/agent/OasisRigAgent.exe'
+          $data = Join-Path $env:RUNNER_TEMP 'oasis-check-backend-data'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          $env:OASIS_DATA_DIR = $data
+
+          # A backend that authenticates one token and refuses every other, which is
+          # the whole of what this check reads. It runs in its own process because a
+          # listener pumped from this one cannot answer while Start-Process is
+          # blocking on the agent.
+          $server = Join-Path $env:RUNNER_TEMP 'fake-backend.ps1'
+          # Written as lines rather than a here-string: PowerShell requires a
+          # closing '@ at column zero, which cannot live inside a YAML block scalar.
+          Set-Content -LiteralPath $server -Value @(
+            '$listener = New-Object System.Net.HttpListener'
+            '$listener.Prefixes.Add("http://localhost:8731/")'
+            '$listener.Start()'
+            'while ($listener.IsListening) {'
+            '  try { $ctx = $listener.GetContext() } catch { break }'
+            '  $auth = $ctx.Request.Headers["Authorization"]'
+            '  $ok = $auth -eq "Bearer rig-9-real" -or $auth -eq "Bearer rig-4-real"'
+            # The rig each token belongs to, which is the whole of what the machine
+            # compares against its own number. rig-4-real authenticates perfectly and
+            # is another rig's, which is the install command run at the wrong computer.
+            '  $rig = if ($auth -eq "Bearer rig-4-real") { 4 } else { 9 }'
+            '  $body = if ($ok) { ''{"rig":{"number":'' + $rig + '',"displayName":"Rig 0'' + $rig + ''"},"assignment":null}'' } else { ''{"error":"unauthorized"}'' }'
+            '  $ctx.Response.StatusCode = if ($ok) { 200 } else { 401 }'
+            '  $ctx.Response.ContentType = "application/json"'
+            '  $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)'
+            '  $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)'
+            '  $ctx.Response.Close()'
+            '}'
+          )
+          $backend = Start-Process -FilePath 'powershell' -PassThru `
+            -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $server
+          $up = $false
+          foreach ($attempt in 1..30) {
+            try { Invoke-WebRequest -Uri 'http://localhost:8731/api/agent/assignment' -UseBasicParsing -TimeoutSec 2 | Out-Null; $up = $true; break }
+            catch {
+              # A 401 is the server answering, which is all this is waiting for.
+              if ($_.Exception.Response) { $up = $true; break }
+              Start-Sleep -Milliseconds 500
+            }
+          }
+          if (-not $up) { throw 'The stand-in backend never started, so nothing here would have been proved.' }
+
+          function Invoke-Check {
+            param([string] $Token, [string] $Url, [string] $Label)
+            @{ rigNumber = 9; rigToken = $Token; backendBaseUrl = $Url } |
+              ConvertTo-Json | Set-Content -LiteralPath (Join-Path $data 'agent.config.json')
+            $out = Join-Path $env:RUNNER_TEMP "check-backend-$Label.out"
+            $run = Start-Process -FilePath $exe -ArgumentList '--check-backend' -PassThru -Wait `
+              -RedirectStandardOutput $out -RedirectStandardError (Join-Path $env:RUNNER_TEMP "check-backend-$Label.err")
+            return [pscustomobject]@{ ExitCode = $run.ExitCode; Text = (Get-Content $out -Raw) }
+          }
+
+          try {
+            $good = Invoke-Check -Token 'rig-9-real' -Url 'http://localhost:8731' -Label 'good'
+            if ($good.ExitCode -ne 0) { throw "A rig the backend recognises must exit 0, not $($good.ExitCode). Output: $($good.Text)" }
+
+            $typo = Invoke-Check -Token 'rig-9-reel' -Url 'http://localhost:8731' -Label 'typo'
+            if ($typo.ExitCode -ne 8) { throw "A refused token must exit 8, not $($typo.ExitCode). Output: $($typo.Text)" }
+            if ($typo.Text -notmatch 'Install-RigAgent') { throw "It must name the fix, not just the fault. Output: $($typo.Text)" }
+
+            # Nothing listening: the venue's network, not this rig's token. Exiting 8
+            # here would send somebody round twenty machines retyping good secrets.
+            $down = Invoke-Check -Token 'rig-9-real' -Url 'http://localhost:8732' -Label 'down'
+            if ($down.ExitCode -ne 7) { throw "An unreachable backend must exit 7, not $($down.ExitCode). Output: $($down.Text)" }
+
+            # The install command for another machine, run here. The token is accepted,
+            # so every other check on this machine passes - and every lap driven at it
+            # would be credited to rig 4's customer.
+            $mixup = Invoke-Check -Token 'rig-4-real' -Url 'http://localhost:8731' -Label 'mixup'
+            if ($mixup.ExitCode -ne 9) { throw "Another rig's token must exit 9, not $($mixup.ExitCode). Output: $($mixup.Text)" }
+            if ($mixup.Text -notmatch 'Install-RigAgent') { throw "It must name the fix, not just the fault. Output: $($mixup.Text)" }
+
+            if ($typo.Text -match 'rig-9-reel' -or $good.Text -match 'rig-9-real' -or $mixup.Text -match 'rig-4-real') {
+              throw 'The check printed a rig token to the screen.'
+            }
+            if (Test-Path (Join-Path $data 'agent.lock')) { throw 'The check took the rig''s instance lock; it must be safe to run beside a running agent.' }
+            if (Test-Path (Join-Path $data 'outbox.db')) { throw 'The check touched the rig''s lap queue; it must only read.' }
+            Write-Host "Pre-flight backend check verified: accepted 0, refused 8, unreachable 7, wrong rig 9."
+          }
+          finally {
+            if (-not $backend.HasExited) { Stop-Process -Id $backend.Id -Force }
+          }
+
+      - name: Prove an agent started outside the signed-in session says so
+        shell: pwsh
+        # The install mistake this exists to catch, performed for real.
+        #
+        # iRacing publishes telemetry into `Local\IRSDKMemMapFileName`, and `Local\`
+        # scopes that name to one Windows terminal-services session. A Windows Service,
+        # and a scheduled task set to run whether the user is logged on or not, both run
+        # in session 0, where the name does not resolve at all - so the agent gets the
+        # same "not found" it gets between customers and reports an idle rig, forever,
+        # on every machine installed that way.
+        #
+        # Running as SYSTEM through the task scheduler is exactly that configuration, so
+        # this is the venue's failure rather than a model of it. What must come back is
+        # the out-of-reach verdict naming the fix, not "start iRacing" - which is advice
+        # nobody could ever successfully follow on that machine.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe  = Join-Path $PWD 'artifacts/agent/OasisRigAgent.exe'
+          $work = Join-Path $env:RUNNER_TEMP 'oasis-session-zero'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          $out  = Join-Path $work 'out.txt'
+          $code = Join-Path $work 'code.txt'
+          $cmd  = Join-Path $work 'run.cmd'
+          # A wrapper keeps the exit code and the operator-facing message, which a
+          # scheduled task otherwise throws away.
+          Set-Content -Path $cmd -Encoding ascii -Value @(
+            '@echo off',
+            "`"$exe`" --check-sim > `"$out`" 2>&1",
+            "echo %ERRORLEVEL% > `"$code`""
+          )
+
+          $task = 'OasisRigAgentSessionZeroProof'
+          try {
+            $action = New-ScheduledTaskAction -Execute $cmd
+            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
+          }
+          catch {
+            # Not a pass. This runner would not let the proof be set up, so the claim
+            # is unproven here and rests on the unit tests until it can run again.
+            Write-Warning "SKIPPED: could not register a SYSTEM task on this runner, so the session-0 verdict was not proved on Windows. $($_.Exception.Message)"
+            exit 0
+          }
+
+          try {
+            Start-ScheduledTask -TaskName $task
+            $deadline = [DateTime]::UtcNow.AddSeconds(120)
+            while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path $code)) { Start-Sleep -Milliseconds 500 }
+            if (-not (Test-Path $code)) { throw "The agent never finished in Windows session 0; it has to give an answer, not hang." }
+
+            $result = [int](Get-Content $code -Raw).Trim()
+            $text = Get-Content $out -Raw
+            Write-Host $text
+
+            if ($text -notmatch 'Windows session:\s*0') {
+              throw "A SYSTEM scheduled task must run in session 0; this one reported otherwise, so nothing was proved. Output: $text"
+            }
+            if ($result -ne 5) { throw "From session 0 it must exit 5 (out of reach), not $result. Output: $text" }
+            if ($text -match 'Start iRacing') { throw "It told an operator to start iRacing on a machine where that can never help. Output: $text" }
+            if ($text -notmatch 'signed-in session') { throw "It must name the fix - move the agent into the rig's signed-in session. Output: $text" }
+          }
+          finally {
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+          }
+          Write-Host "An agent in Windows session 0 reports that it cannot see the simulator, and names the fix."
+      - name: Install the agent on this machine the way a rig is installed
+        shell: pwsh
+        # The venue install, performed for real: the published build, the default
+        # paths, Windows PowerShell 5.1 (the shell a rig has out of the box) and the
+        # exact command line the runbook gives. Then the same command again with no
+        # arguments, which is the update round.
+        #
+        # What no unit test can establish is here: that the logon task is registered
+        # in the session the rig signs in to rather than session 0, that the agent the
+        # task starts is still running afterwards, that the build the rig reports is
+        # the one that was copied, and that this machine's token survives the copy.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer  = Join-Path $PWD 'apps/rig-agent/deploy/Install-RigAgent.ps1'
+          $source     = Join-Path $PWD 'artifacts/agent'
+          $install    = 'C:\Program Files\Oasis Race Control'
+          $data       = 'C:\ProgramData\OasisRaceControl'
+          $task       = 'Oasis Rig Agent'
+          $exe        = Join-Path $install 'OasisRigAgent.exe'
+          $configPath = Join-Path $data 'agent.config.json'
+
+          # Windows PowerShell rather than pwsh, through -File, with the execution
+          # policy the runbook names: the operator's actual command, not a friendlier
+          # one. Nothing here overrides a path, so the defaults are what is proved.
+          function Invoke-Installer {
+            param([string[]] $InstallerArgs)
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+              $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer @InstallerArgs 2>&1 |
+                ForEach-Object { "$_" }
+              $code = $LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $previous }
+            $text = ($output -join [Environment]::NewLine)
+            Write-Host $text
+            return [pscustomobject]@{ Code = $code; Text = $text }
+          }
+
+          if ((Get-Process -Id $PID).SessionId -eq 0) {
+            # Not a pass. This runner is in session 0, where the installer refuses by
+            # design - the agent it started could never read iRacing and its own
+            # verification would be meaningless - so the venue install cannot be
+            # performed here and the claim rests on the rules suite above.
+            $refused = Invoke-Installer @('-RigNumber', '3', '-RigToken', 'ci-r3-token', '-BackendBaseUrl', 'https://example.invalid')
+            if ($refused.Code -ne 4) { throw "In session 0 the installer must refuse with 4, not $($refused.Code)." }
+            if ($refused.Text -notmatch 'session 0') { throw "It must say why it refused. Output: $($refused.Text)" }
+            Write-Warning "SKIPPED: this runner is in Windows session 0, so the install itself was not performed here."
+            exit 0
+          }
+
+          try {
+            # --- enrolment: the first run on a machine -----------------------------
+            $enrol = Invoke-Installer @('-RigNumber', '3', '-RigToken', 'ci-r3-token', '-BackendBaseUrl', 'https://example.invalid')
+            if ($enrol.Code -ne 0) { throw "Enrolling this machine as a rig exited $($enrol.Code)." }
+
+            if (-not (Test-Path $configPath)) {
+              throw "The rig's identity was not written to $configPath, which is where the agent looks for it."
+            }
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if ($config.rigNumber -ne 3 -or $config.rigToken -ne 'ci-r3-token') {
+              throw "The identity written is not the one given: rig $($config.rigNumber)."
+            }
+            if ($enrol.Text -match 'ci-r3-token') {
+              throw "The installer printed this rig's token onto a screen in a shop. Output: $($enrol.Text)"
+            }
+
+            $registered = Get-ScheduledTask -TaskName $task
+            if ($registered.Principal.LogonType -ne 'Interactive') {
+              throw "The task runs as $($registered.Principal.LogonType). Anything but Interactive is Windows session 0, where iRacing's telemetry has no name and this rig would show online all night while scoring nothing."
+            }
+            if ($registered.Triggers[0].CimClass.CimClassName -ne 'MSFT_TaskLogonTrigger') {
+              throw "The agent has to start when the rig signs in, not on $($registered.Triggers[0].CimClass.CimClassName)."
+            }
+
+            $expected = (Get-Item (Join-Path $source 'OasisRigAgent.exe')).VersionInfo.ProductVersion.Split('+')[0]
+            $reported = (& $exe --version | Out-String).Trim()
+            if ($reported -ne "oasis-rig-agent/$expected") {
+              throw "The installed rig reports '$reported', not the build that was copied ($expected)."
+            }
+
+            $running = @(Get-Process -Name OasisRigAgent -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+            if ($running.Count -ne 1) {
+              throw "The logon task left $($running.Count) agents running. The install said it was done, so exactly one has to be up."
+            }
+
+            # --- the update round: the same command, no arguments -------------------
+            $identityBefore = (Get-FileHash $configPath -Algorithm SHA256).Hash
+            Set-Content -Path (Join-Path $install 'RetiredHelper.dll') -Value 'left by an older build' -NoNewline
+
+            $update = Invoke-Installer @()
+            if ($update.Code -ne 0) { throw "Updating this rig exited $($update.Code)." }
+            if ((Get-FileHash $configPath -Algorithm SHA256).Hash -ne $identityBefore) {
+              throw "The update rewrote $configPath. That file is this machine's token and number, and replacing it is how two simulators end up as one rig."
+            }
+            if (Test-Path (Join-Path $install 'RetiredHelper.dll')) {
+              throw "A file from the previous build survived the update, so the folder is not the build the rig reports."
+            }
+
+            # --- the three refusals, on the machine they protect --------------------
+            $again = Invoke-Installer @('-RigNumber', '4', '-RigToken', 'someone-elses-token')
+            if ($again.Code -ne 2) { throw "Re-typing an identity onto an enrolled rig must be refused with 2, not $($again.Code)." }
+            if ((Get-Content $configPath -Raw | ConvertFrom-Json).rigNumber -ne 3) {
+              throw "The refused command changed this rig's number anyway."
+            }
+
+            $copiedRig = Join-Path $env:RUNNER_TEMP 'copied-rig-folder'
+            Copy-Item $source $copiedRig -Recurse -Force
+            Copy-Item $configPath (Join-Path $copiedRig 'agent.config.json') -Force
+            $fromCopy = Invoke-Installer @('-Source', $copiedRig)
+            if ($fromCopy.Code -ne 3) { throw "Installing from a copy of a working rig's folder must be refused with 3, not $($fromCopy.Code)." }
+
+            $asSystem = Invoke-Installer @('-RigUser', 'SYSTEM')
+            if ($asSystem.Code -ne 2) { throw "Starting the agent as SYSTEM must be refused with 2, not $($asSystem.Code)." }
+
+            Write-Host "The venue install ran on this machine: rig 3 enrolled, updated, and started by an Interactive logon task."
+          }
+          finally {
+            Get-Process -Name OasisRigAgent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-Item $install, $data -Recurse -Force -ErrorAction SilentlyContinue
+          }

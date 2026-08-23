@@ -1,0 +1,18 @@
+<Project>
+
+  <!--
+    The build every project under apps/rig-agent stamps into its assembly.
+
+    This number is what a rig reports to the venue (AgentVersionInfo) and the
+    only way /staff can answer "which of the twenty-plus machines took the
+    update". Bump it in this one place for every build that is copied to a rig,
+    or a half-finished update round is indistinguishable from a finished one.
+
+    Keep it short: the heartbeat contract caps agentVersion at 40 characters
+    including the "oasis-rig-agent/" prefix.
+  -->
+  <PropertyGroup>
+    <Version>0.6.0</Version>
+  </PropertyGroup>
+
+</Project>

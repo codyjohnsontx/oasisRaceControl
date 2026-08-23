@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { comboLabel, roundLabel, type LeagueRound } from "@/lib/league";
+import { comboText, type ComboMismatch } from "@/lib/combo-mismatch";
 import { VENUE_TIMEZONE } from "@/lib/venue";
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -19,6 +20,10 @@ const ERROR_MESSAGES = new Map<string, string>([
   // Someone else already closed it - this page is simply stale.
   ["not_open", "That round is already closed or no longer available."],
   ["round_already_open", "A round is already open. Close it first."],
+  // Reached when the round was closed from another tablet between the page
+  // rendering and the tap, and on the rare day the venue is featuring a combo
+  // with no league round behind it - there is nothing to repoint either way.
+  ["no_open_round", "There is no open round to repoint. Refresh to see where the night stands."],
   ["round_open", "Close tonight's round before you end the season."],
   ["no_season", "There is no open season to end - it has already been rolled over."],
 ]);
@@ -46,6 +51,10 @@ export type StaffLeagueProps = {
   comboOptions: ComboOption[];
   /** Tonight's featured combo, prefilled into the form. */
   todaysCombo: ComboOption | null;
+  /** Set when the round's combo does not match what the room is driving, which
+   *  is how a one-character typo empties every board. See
+   *  `describeComboMismatch`. */
+  comboMismatch: ComboMismatch | null;
 };
 
 /**
@@ -61,6 +70,7 @@ export function StaffLeaguePanel({
   recentRounds,
   comboOptions,
   todaysCombo,
+  comboMismatch,
 }: StaffLeagueProps) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -120,6 +130,18 @@ export function StaffLeaguePanel({
       trackConfig: form.trackConfig.trim() || null,
       carName: form.carName.trim(),
       incidentLimit: 0,
+    });
+  }
+
+  /** Point the open round at the names the rigs are reporting. Nothing else
+   *  changes - the round keeps its number and every lap already driven appears
+   *  on the boards as soon as this lands. */
+  function useWhatRigsAreRunning() {
+    if (!comboMismatch) return;
+    void post("/api/staff/league/fix-combo", {
+      trackName: comboMismatch.running.track_name,
+      trackConfig: comboMismatch.running.track_config,
+      carName: comboMismatch.running.car_name,
     });
   }
 
@@ -198,6 +220,40 @@ export function StaffLeaguePanel({
         <p role="alert" className="text-invalid text-sm mb-3">
           {error}
         </p>
+      )}
+
+      {comboMismatch && (
+        // The failure this answers looks like nothing at all: every rig green,
+        // every lap stored, and not one name on any board. So it says the
+        // consequence first, then both combos, and offers the repair.
+        <div
+          role="alert"
+          className="bg-surface border border-invalid rounded-xl p-4 mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="min-w-0">
+            <p className="font-bold text-invalid">
+              {`Nobody is scoring - ${comboMismatch.offComboLaps} ${
+                comboMismatch.offComboLaps === 1 ? "lap" : "laps"
+              } tonight are not counting`}
+            </p>
+            <p className="text-sm">
+              {`${comboMismatch.rigs} rigs are running `}
+              <span className="font-bold">{comboText(comboMismatch.running)}</span>
+              {todaysCombo ? `, but tonight is set to ${comboText(todaysCombo)}.` : "."}
+            </p>
+            <p className="text-muted text-xs">
+              Every lap already driven appears as soon as this is fixed.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={useWhatRigsAreRunning}
+            className="shrink-0 text-xs font-bold uppercase tracking-wider bg-accent text-bg rounded-md px-3 py-2 disabled:opacity-40"
+          >
+            Use what the rigs are running
+          </button>
+        </div>
       )}
 
       {openRound ? (

@@ -3,22 +3,28 @@ import { queryOne, isUniqueViolation } from "@/lib/db";
 import { setDriverSession } from "@/lib/driver-session";
 import { parseJsonBody } from "@/lib/http";
 import { displayNameSchema } from "@/lib/driver-auth";
-import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { allowNewDriver } from "@/lib/rate-limit";
 
-const body = z.object({ displayName: displayNameSchema });
+const body = z.object({
+  displayName: displayNameSchema,
+  /** The rig code the check-in page was opened with, so the throttle can key on
+   * the seat rather than on the address the whole venue shares. */
+  qrToken: z.string().min(1).max(120).optional(),
+});
 
 /** Guest-first check-in: a display name is all it takes to start driving.
  * The row can be claimed into a full profile later — same driver id, so the
  * night's laps come along. */
 export async function POST(request: Request) {
-  // Unauthenticated row creation needs throttling. Generous limit because the
-  // whole venue shares one public IP behind NAT on a busy night.
-  if (!rateLimit(`guest:${clientIp(request)}`, 10, 60_000)) {
-    return Response.json({ error: "rate_limited" }, { status: 429 });
-  }
-
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
+
+  // Unauthenticated row creation needs throttling, but the venue shares one
+  // public address, so it is keyed on the rig the customer is standing at
+  // whenever the check-in page supplied one - see allowNewDriver.
+  if (!(await allowNewDriver(request, input.qrToken))) {
+    return Response.json({ error: "rate_limited" }, { status: 429 });
+  }
 
   try {
     const driver = await queryOne<{ id: string; display_name: string }>(

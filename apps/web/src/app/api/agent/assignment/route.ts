@@ -20,9 +20,22 @@ export async function GET(request: Request) {
     [rig.id],
   );
 
-  if (!row) return Response.json({ assignment: null });
+  // Which rig this token actually is, on every poll, whether or not anybody is
+  // checked in. A rig's token is the whole of its identity here - the backend
+  // credits laps to the rig the token names and has no other way of knowing
+  // which computer sent them - so a machine installed with another rig's token
+  // is scoring for somewhere else in the room while its own screen shows the
+  // number that was typed into it. Nothing on this side can see that: the token
+  // is valid, the laps are well formed, and rig 07 is where they belong as far
+  // as the database is concerned. Only the machine knows which station it is
+  // standing at, so the backend says who it thinks is asking and the agent
+  // compares (apps/rig-agent/OasisRigAgent.Core/RigIdentity.cs).
+  const identity = { number: rig.rig_number, displayName: rig.display_name };
+
+  if (!row) return Response.json({ rig: identity, assignment: null });
 
   return Response.json({
+    rig: identity,
     assignment: {
       id: row.id,
       startedAt: row.started_at,

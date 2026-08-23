@@ -4,7 +4,16 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
+import {
+  describeFleetBuild,
+  describeRigBuild,
+  describeRigSim,
+  describeRigToken,
+  shortBuild,
+  type SimHealth,
+} from "@/lib/rig-health";
 import { StaffLeaguePanel, type StaffLeagueProps } from "@/components/staff-league-panel";
+import { StaffRigEnrolment } from "@/components/staff-rig-enrolment";
 
 export type RigStatusRow = {
   rig_id: string;
@@ -12,6 +21,11 @@ export type RigStatusRow = {
   display_name: string;
   agent_version: string | null;
   last_seen_at: string | null;
+  sim_health: SimHealth | null;
+  sim_health_detail: string | null;
+  agent_machine_name: string | null;
+  installation_conflict: boolean;
+  installation_conflict_detail: string | null;
   assignment_id: string | null;
   assignment_started_at: string | null;
   driver_id: string | null;
@@ -53,6 +67,9 @@ export function StaffDashboard({
 }) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Which build the room is on. Updating the agent is a walk round twenty-plus
+  // machines, and this is the only thing that says which ones are done.
+  const fleet = describeFleetBuild(rigs.map((rig) => rig.agent_version));
 
   // Rig freshness matters at a glance; refresh the server data every 15s.
   useEffect(() => {
@@ -119,15 +136,41 @@ export function StaffDashboard({
       </header>
 
       <section>
-        <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">Rigs</h2>
+        <div className="flex items-baseline justify-between gap-4 mb-3">
+          <h2 className="text-muted font-bold uppercase tracking-wider text-sm">Rigs</h2>
+          {fleet.newest && (
+            <p
+              className={`text-[11px] ${
+                fleet.onNewest < fleet.reporting ? "text-sunset" : "text-muted"
+              }`}
+            >
+              Agent build {shortBuild(fleet.newest)} —{" "}
+              {fleet.onNewest < fleet.reporting
+                ? `${fleet.reporting - fleet.onNewest} of ${fleet.reporting} rigs still to update`
+                : `all ${fleet.reporting} rigs`}
+            </p>
+          )}
+        </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           {rigs.map((rig) => {
             const online = agentStatus(rig.last_seen_at) === "online";
+            const sim = describeRigSim(rig.sim_health, rig.sim_health_detail, online);
+            const token = describeRigToken(
+              rig.installation_conflict,
+              rig.installation_conflict_detail,
+            );
+            const build = describeRigBuild(rig.agent_version, fleet.newest);
+            // A rig that is up and cannot score is a problem, so it must not
+            // look like the healthy ones - it gets the same border an offline
+            // rig gets, because it needs the same trip across the room. A rig
+            // two computers are claiming is holding laps from both of them, so
+            // it gets the same treatment.
+            const wrong = !online || sim.tone === "bad" || token.label !== null;
             return (
               <div
                 key={rig.rig_id}
                 className={`bg-surface border rounded-xl p-3 flex flex-col gap-1 ${
-                  online ? "border-edge" : "border-invalid"
+                  wrong ? "border-invalid" : "border-edge"
                 }`}
               >
                 <div className="flex items-center justify-between">
@@ -144,8 +187,46 @@ export function StaffDashboard({
                   {rig.driver_name ?? <span className="text-muted">Available</span>}
                 </p>
                 <p className="text-muted text-[10px]">
-                  {rig.agent_version ?? "no agent"}
+                  {rig.agent_version ? shortBuild(rig.agent_version) : "no agent"}
+                  {build.label && (
+                    // Amber, not the red an offline or non-scoring rig gets: this
+                    // machine is still scoring tonight's laps, it is just one the
+                    // update round has not reached.
+                    <span className="text-sunset"> · {build.label}</span>
+                  )}
                 </p>
+                {token.label && (
+                  <>
+                    <p
+                      className="text-invalid text-[10px] font-bold uppercase"
+                      title={token.detail ?? undefined}
+                    >
+                      {"\u26a0 "}
+                      {token.label}
+                    </p>
+                    <p className="text-invalid text-[10px] leading-tight break-words">
+                      {token.detail
+                        ? `${token.detail} are both using this rig's token - laps are being held.`
+                        : "Two computers are using this rig's token - laps are being held."}
+                    </p>
+                  </>
+                )}
+                <p
+                  className={`text-[10px] font-bold uppercase ${
+                    sim.tone === "bad" ? "text-invalid" : "text-muted"
+                  }`}
+                  // The channel names are what turn "why is R07 not scoring"
+                  // into a one-minute answer, but they are far too long for a
+                  // card this size.
+                  title={sim.detail ?? undefined}
+                >
+                  {sim.tone === "bad" ? `\u26a0 ${sim.label}` : sim.label}
+                </p>
+                {sim.detail && (
+                  <p className="text-invalid text-[10px] leading-tight break-words">
+                    {sim.detail}
+                  </p>
+                )}
                 {rig.assignment_id && (
                   <button
                     type="button"
@@ -161,6 +242,8 @@ export function StaffDashboard({
           })}
         </div>
       </section>
+
+      <StaffRigEnrolment rigs={rigs} />
 
       <StaffLeaguePanel {...league} />
 

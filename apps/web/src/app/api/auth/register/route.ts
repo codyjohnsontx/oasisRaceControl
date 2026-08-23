@@ -3,18 +3,24 @@ import { queryOne, isUniqueViolation } from "@/lib/db";
 import { setDriverSession } from "@/lib/driver-session";
 import { parseJsonBody } from "@/lib/http";
 import { displayNameSchema, pinSchema, hashPin } from "@/lib/driver-auth";
-import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { allowNewDriver } from "@/lib/rate-limit";
 
-const body = z.object({ displayName: displayNameSchema, pin: pinSchema });
+const body = z.object({
+  displayName: displayNameSchema,
+  pin: pinSchema,
+  /** See the guest route: the seat, not the address the venue shares. */
+  qrToken: z.string().min(1).max(120).optional(),
+});
 
 export async function POST(request: Request) {
-  // Same unauthenticated row-creation exposure as the guest route.
-  if (!rateLimit(`register:${clientIp(request)}`, 10, 60_000)) {
-    return Response.json({ error: "rate_limited" }, { status: 429 });
-  }
-
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
+
+  // Same unauthenticated row-creation exposure as the guest route, and the same
+  // reason it is not keyed on the address.
+  if (!(await allowNewDriver(request, input.qrToken))) {
+    return Response.json({ error: "rate_limited" }, { status: 429 });
+  }
 
   try {
     const driver = await queryOne<{ id: string; display_name: string }>(

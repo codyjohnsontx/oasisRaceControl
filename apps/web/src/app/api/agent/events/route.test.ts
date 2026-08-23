@@ -18,7 +18,13 @@ vi.mock("@/lib/db", () => ({
 
 const { POST } = await import("./route");
 
-const RIG = { id: "rig-uuid", rig_number: 1, display_name: "Rig 01" };
+const RIG = {
+  id: "rig-uuid",
+  rig_number: 1,
+  display_name: "Rig 01",
+  installation_conflict: false,
+  installation_conflict_detail: null,
+};
 const TOKEN = "agent-token";
 const TOKEN_HASH = createHash("sha256").update(TOKEN).digest("hex");
 
@@ -140,6 +146,28 @@ describe("POST /api/agent/events validation", () => {
 describe("POST /api/agent/events behaviour", () => {
   beforeEach(authenticateRig);
 
+  it("refuses to attribute a lap while two computers share the rig's token", async () => {
+    queryOne.mockImplementation(async (sql: string) => {
+      if (sql.includes("from rigs where agent_token_hash"))
+        return { ...RIG, installation_conflict: true, installation_conflict_detail: "RIG-03 and RIG-07" };
+      return null;
+    });
+
+    const response = await POST(post({ events: [LAP] }));
+
+    // No assignment is looked up and nothing is inserted: there is no honest
+    // answer to whose lap this is, so the agent keeps it queued instead.
+    await expect(response.json()).resolves.toEqual({
+      results: [{ type: "LAP_COMPLETED", status: "rig_conflict", eventId: LAP.eventId }],
+    });
+    expect(
+      queryOne.mock.calls.some(([sql]) => String(sql).includes("rig_assignments")),
+    ).toBe(false);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into laps"))).toBe(
+      false,
+    );
+  });
+
   it("records a heartbeat and reports the agent version", async () => {
     const response = await POST(
       post({ events: [{ type: "RIG_HEARTBEAT", agentVersion: "1.2.3" }] }),
@@ -150,10 +178,32 @@ describe("POST /api/agent/events behaviour", () => {
       results: [{ type: "RIG_HEARTBEAT", status: "ok" }],
     });
 
+    // An agent too old to report its simulator writes nulls, not nothing: the
+    // dashboard must read it as unknown rather than keeping the last verdict.
     const versionUpdate = query.mock.calls.find(([sql]) =>
       String(sql).includes("agent_version"),
     );
-    expect(versionUpdate?.[1]).toEqual([RIG.id, "1.2.3"]);
+    expect(versionUpdate?.[1]).toEqual([RIG.id, "1.2.3", null, null, null, null]);
+  });
+
+  it("drops an explanation that does not belong to the verdict it came with", async () => {
+    // A stale detail beside a healthy rig sends staff after a fault that is
+    // fixed; the agent already suppresses it, and the backend does not take the
+    // agent's word for it.
+    await POST(
+      post({
+        events: [
+          {
+            type: "RIG_HEARTBEAT",
+            simHealth: "scoring",
+            simHealthDetail: "the simulator does not publish OnPitRoad",
+          },
+        ],
+      }),
+    );
+
+    const update = query.mock.calls.find(([sql]) => String(sql).includes("sim_health"));
+    expect(update?.[1]).toEqual([RIG.id, null, "scoring", null, null, null]);
   });
 
   it("refuses to guess an owner when no assignment is open", async () => {

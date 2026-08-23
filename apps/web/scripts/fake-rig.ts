@@ -10,7 +10,9 @@
  *
  * Sends a heartbeat every 30s and a LAP_COMPLETED every interval, with
  * jittered lap times around the pace, ~15% dirty laps (incidentDelta > 0),
- * and an occasional deliberate duplicate eventId to prove idempotency.
+ * ~8% laps that went off the road with no incident charged (offTrackSeen, and
+ * FASTER than a clean lap — the case a leaderboard gets wrong rather than
+ * misses), and an occasional deliberate duplicate eventId to prove idempotency.
  */
 
 import { z } from "zod";
@@ -73,6 +75,10 @@ function nextLap(): LapCompletedEvent {
   }
 
   const dirty = Math.random() < 0.15;
+  // Off the road with no incident charged — the lap that reaches the board as the
+  // fastest CLEAN time if nothing is watching the surface. Faster, not slower,
+  // because the way an uncharged off happens is running wide and keeping the speed.
+  const unchargedOff = !dirty && Math.random() < 0.1;
   const jitter = Math.round((Math.random() - 0.35) * 2500); // improves over time-ish
   lastEventId = `fake-${TOKEN.slice(-8)}-${Date.now()}-${lapNumber}`;
 
@@ -81,8 +87,12 @@ function nextLap(): LapCompletedEvent {
     eventId: lastEventId,
     ...COMBO,
     lapNumber,
-    lapTimeMs: Math.max(60_000, PACE_MS + jitter + (dirty ? 4000 : 0)),
+    lapTimeMs: Math.max(
+      60_000,
+      PACE_MS + jitter + (dirty ? 4000 : 0) - (unchargedOff ? 1500 : 0),
+    ),
     incidentDelta: dirty ? 1 : 0,
+    offTrackSeen: dirty || unchargedOff,
     completedAt: new Date().toISOString(),
   };
 }

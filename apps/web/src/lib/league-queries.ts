@@ -454,6 +454,79 @@ export async function openLeagueRound(input: {
 }
 
 /**
+ * Point the round that is open, and today's featured combo with it, at what the
+ * rigs are actually running.
+ *
+ * The repair for a mistyped combo. Staff type the round's track and car; the
+ * rigs report iRacing's own display names, and the two are compared character
+ * for character by `v_fastest_tonight`, `v_league_round_laps` and the wall. One
+ * character apart and the round has no field, the leaderboard has nobody on it,
+ * and every rig is green - see `describeComboMismatch`.
+ *
+ * Reopening is not the repair. `openLeagueRound` refuses while a round is open,
+ * so the only way through was close-and-reopen, which spends a round number,
+ * leaves an empty round in the season standings, and - because closing restores
+ * the venue's own combo - changes what the day is featuring on the way past.
+ * This changes the three names and nothing else: the round keeps its number, its
+ * opening time, its incident limit and the `prior_featured_combo` snapshot it
+ * has to give back when it closes.
+ *
+ * Both halves are one transaction for the same reason opening is: a round
+ * pointed at the new combo while `featured_combos` still holds the typo would
+ * put the round's field and the day's leaderboard on different content.
+ *
+ * Nothing here rewrites a lap. Laps are stored valid-or-not on cleanliness
+ * alone (`computeValidity`), and which content counts is asked at read time, so
+ * every lap the room has already driven appears the moment this commits.
+ * Returns null when no round is open.
+ */
+export async function repointOpenRound(input: {
+  trackName: string;
+  trackConfig: string | null;
+  carName: string;
+}): Promise<{
+  id: string;
+  roundNumber: number;
+  trackName: string;
+  trackConfig: string | null;
+  carName: string;
+} | null> {
+  return withTransaction(async (client) => {
+    const updated = await client.query<{
+      id: string;
+      round_number: number;
+      round_date: string;
+      incident_limit: number;
+    }>(
+      `update league_rounds
+       set track_name = $1, track_config = $2, car_name = $3
+       where closed_at is null
+       returning id, round_number, to_char(round_date, 'YYYY-MM-DD') as round_date,
+                 incident_limit`,
+      [input.trackName, input.trackConfig, input.carName],
+    );
+    const round = updated.rows[0];
+    if (!round) return null;
+
+    await client.query(FEATURED_COMBO_UPSERT, [
+      round.round_date,
+      input.trackName,
+      input.trackConfig,
+      input.carName,
+      round.incident_limit,
+    ]);
+
+    return {
+      id: round.id,
+      roundNumber: round.round_number,
+      trackName: input.trackName,
+      trackConfig: input.trackConfig,
+      carName: input.carName,
+    };
+  });
+}
+
+/**
  * Close a round and put the featured combo back the way opening it found it -
  * restoring the venue's own combo if it had one, deleting the row if it had
  * none. Without this the round's combo stays pinned for the rest of the venue

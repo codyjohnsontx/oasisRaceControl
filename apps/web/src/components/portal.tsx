@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
+import { invalidReasonLabel } from "@/lib/league";
 import type { PortalLap } from "@/lib/laps";
 
 export type { PortalLap };
@@ -225,11 +226,13 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
                 {lap.is_valid ? (
                   <span className="text-valid text-xs font-bold">✓</span>
                 ) : (
-                  <span
-                    className="text-invalid text-xs font-bold uppercase"
-                    title={lap.invalid_reason ?? ""}
-                  >
-                    invalid
+                  // The reason, not just "invalid". This is a phone: there is no
+                  // hover, so a tooltip is nothing. And a lap can now be put out by
+                  // an off the sim charged no point for, so the driver is looking at
+                  // 0x on their own screen and a lap that did not count - which is
+                  // the argument staff would otherwise have at the desk.
+                  <span className="text-invalid text-xs font-bold uppercase whitespace-nowrap">
+                    {invalidReasonLabel(lap.invalid_reason)}
                   </span>
                 )}
               </div>

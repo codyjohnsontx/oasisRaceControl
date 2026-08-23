@@ -17,7 +17,29 @@ public sealed record AgentConfig
     /// the (not-yet-built) real iRacing source, so the agent submits laps.</summary>
     public bool SimulateTelemetry { get; init; }
 
-    public string AgentVersion { get; init; } = "rig-agent/0.1-skeleton";
+    /// <summary>
+    /// Set when the config file still carries the old <c>agentVersion</c> field.
+    /// It is ignored - <see cref="AgentVersionInfo"/> reads the build that is
+    /// actually running - and this exists only so the agent can say so once at
+    /// startup, rather than leaving an operator to wonder why the dashboard
+    /// disagrees with the file. Deliberately not named <c>AgentVersion</c>, so
+    /// the old key cannot bind to it.
+    /// </summary>
+    public string? IgnoredConfigVersion { get; init; }
+
+    /// <summary>
+    /// How long iRacing may stay closed with a customer still checked in before the
+    /// agent ends their session (see <see cref="IdleWatch"/>). Ten minutes is long
+    /// enough to survive a sim restart or a walk to the counter and short enough that
+    /// the next walk-in does not inherit the last one's name. Set to 0 on a rig that
+    /// should only ever be cleared by hand.
+    /// </summary>
+    public int IdleTimeoutSeconds { get; init; } = 600;
+
+    /// <summary>How much of the end of that period the rig spends saying so on its own
+    /// screen, so a customer who is still there can restart the sim instead of losing
+    /// their check-in.</summary>
+    public int IdleWarningSeconds { get; init; } = 60;
 
     public static AgentConfig Load(string path)
     {
@@ -27,6 +49,7 @@ public sealed record AgentConfig
             var json = File.ReadAllText(path);
             config = JsonSerializer.Deserialize<AgentConfig>(json, JsonOptions)
                 ?? throw new InvalidOperationException($"Could not parse {path}");
+            config = config with { IgnoredConfigVersion = LegacyVersionField(json) };
         }
         else
         {
@@ -41,7 +64,40 @@ public sealed record AgentConfig
             RigToken = Env("OASIS_RIG_TOKEN") ?? config.RigToken,
             RigNumber = int.TryParse(Env("OASIS_RIG_NUMBER"), out var n) ? n : config.RigNumber,
             SimulateTelemetry = ParseSimulateOverride() ?? config.SimulateTelemetry,
+            IdleTimeoutSeconds = ParseSeconds("OASIS_IDLE_TIMEOUT_SECONDS") ?? config.IdleTimeoutSeconds,
+            IdleWarningSeconds = ParseSeconds("OASIS_IDLE_WARNING_SECONDS") ?? config.IdleWarningSeconds,
         };
+    }
+
+    /// <summary>
+    /// Reads the retired <c>agentVersion</c> field, if an install from before the
+    /// running build became authoritative still writes one. An unknown JSON member is
+    /// otherwise dropped silently, and a config that looks like it is setting the
+    /// version while the dashboard shows another number is exactly the confusion this
+    /// change exists to end.
+    /// </summary>
+    private static string? LegacyVersionField(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            foreach (var property in doc.RootElement.EnumerateObject())
+            {
+                if (!property.NameEquals("agentVersion")
+                    && !string.Equals(property.Name, "agentVersion", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                return property.Value.ValueKind == JsonValueKind.String
+                    ? property.Value.GetString()
+                    : property.Value.ToString();
+            }
+        }
+        catch (JsonException)
+        {
+            // The deserializer above already read this text; a parse failure here is
+            // not worth failing a start over.
+        }
+        return null;
     }
 
     /// <summary>OASIS_SIMULATE is a true override: absent → keep the file value,
@@ -59,6 +115,18 @@ public sealed record AgentConfig
         };
     }
 
+    /// <summary>Absent → keep the file value; a whole number of seconds → use it;
+    /// anything else → say so, rather than quietly running with a default that signs
+    /// customers out at a different time than whoever set it intended.</summary>
+    private static int? ParseSeconds(string name)
+    {
+        var v = Env(name);
+        if (v is null) return null;
+        if (!int.TryParse(v, out var seconds) || seconds < 0)
+            throw new InvalidOperationException($"{name} must be a whole number of seconds, 0 or more (got \"{v}\")");
+        return seconds;
+    }
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(BackendBaseUrl))
@@ -73,6 +141,9 @@ public sealed record AgentConfig
             throw new InvalidOperationException("RigToken is not set (agent.config.json or OASIS_RIG_TOKEN)");
         if (RigNumber <= 0)
             throw new InvalidOperationException("RigNumber is not set (agent.config.json or OASIS_RIG_NUMBER)");
+        if (IdleTimeoutSeconds < 0 || IdleWarningSeconds < 0)
+            throw new InvalidOperationException(
+                "IdleTimeoutSeconds and IdleWarningSeconds cannot be negative (0 disables the automatic sign-out)");
     }
 
     private static string? Env(string name)
