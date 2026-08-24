@@ -18,8 +18,9 @@ import { formatGap, formatLapTime } from "@/lib/time";
  *
  *  - Columns whose content varies - driver and detail - are `fr` tracks, so
  *    they divide whatever the fixed ones leave rather than being handed a
- *    number tuned on a laptop. Only the two monospace score columns are fixed,
- *    because a lap time genuinely is a fixed number of characters wide.
+ *    number tuned on a laptop. Only rank and the two monospace score columns
+ *    are fixed, because a rank and a lap time genuinely are a fixed number of
+ *    characters wide.
  *  - Rows carry a minimum height set by the text in them (`ROW_MIN_H`), so ten
  *    of them can never be compressed into less height than they need to print.
  *    They still stretch to fill a taller screen; they just cannot collapse.
@@ -41,9 +42,13 @@ export const SLOT_COUNT = 10;
  *
  * Both are fitted sizes, not invariants: nothing bounds `lap_time_ms` above
  * (`events.ts` validates only a positive int), so garbage rig data could emit
- * `123:45.678` and spill a character out of either, which `main`'s
- * `overflow-hidden` clips at the screen edge. Bounding the lap time at
- * ingestion is the real fix for that, and is not a layout concern.
+ * a longer string than either track holds. Measured at 1272x601, the spill
+ * runs right into the 13.3px gutter before the next column and is absorbed
+ * there through ten characters (`123:45.678` spills 4.4px); an eleventh
+ * (`1234:56.789`, 17.8px) crosses the gutter and paints over the gap column's
+ * text. It never reaches the screen edge, so `main`'s `overflow-hidden` is not
+ * what contains this. Bounding the lap time at ingestion is the real fix, and
+ * is not a layout concern.
  *
  * Everything left over goes to driver and detail in a 5:4 split,
  * which is roughly the ratio of their longest real content - a 24-character
