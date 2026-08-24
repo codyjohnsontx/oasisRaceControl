@@ -94,6 +94,17 @@ flowchart TB
 - **The agent is the only durable buffer.** Laps land in its SQLite outbox the
   instant they're detected and are removed only once the backend accepts them,
   so a wifi drop or agent restart never loses a lap (idempotent on `event_id`).
+- **The agent decides who owns a lap, at the moment it captures it.** Each
+  queued lap carries the `rigAssignmentId` the rig had right then, and that
+  stamp is the only thing the backend will attribute from. It is a capture-time
+  attribution *candidate* rather than a verdict: the backend still checks that
+  the assignment belongs to the calling rig and that the lap's `completedAt`
+  falls inside that assignment's window (plus a clock-skew grace), and stores
+  the lap `accepted_unattributed` when either check fails. What it will not do
+  is substitute a different owner. It is the buffer above that makes
+  this necessary: a lap can arrive long after its driver has left, so "whoever
+  is checked in when the batch lands" is a different person. See the event model
+  in `docs/plan.md` for the three states of the stamp.
 - **The database enforces the core invariant.** A partial unique index
   (`one_open_assignment_per_rig`) guarantees at most one open assignment per rig
   even under concurrent check-ins — the app doesn't have to. League night gets
@@ -102,7 +113,19 @@ flowchart TB
   tonight's round" unambiguous.
 - **League rounds own laps by window and combo, not by a foreign key.** Laps
   carry no round id, so ingestion is unchanged; the rule and its rationale live
-  once in the `v_league_round_laps` view (`db/migrations/0002_league_night.sql`).
+  once in the `v_league_round_laps` view (introduced in
+  `db/migrations/0002_league_night.sql`; current definition in
+  `db/migrations/0003_unattributed_laps.sql`, which also excludes unattributed
+  laps from every round).
+- **Unattributed laps are unrankable by constraint, not by convention.** The
+  `laps_unattributed_is_invalid` check in `db/migrations/0003_unattributed_laps.sql`
+  makes a valid ownerless lap unrepresentable, so no leaderboard query, staff
+  "restore", or future consumer can surface one. That is a different guarantee
+  from the view predicate above and neither replaces the other: the constraint
+  governs whether an ownerless lap can ever be *valid*, while the view governs
+  whether it is a member of a round at all - and `v_league_round_laps` exposes
+  `is_valid` rather than filtering on it, so without its own predicate an
+  ownerless row would still appear there.
 - **Auth is split by actor.** Rig agents use static bearer tokens; drivers and
   staff use separate signed-cookie sessions. No actor can act outside its scope.
 

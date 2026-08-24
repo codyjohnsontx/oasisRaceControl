@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DRIVER_LAP_CAP, lapsByDriver, ROUND_LAP_CAP } from "./league";
@@ -62,8 +62,23 @@ function serverUrl(): string | null {
 
 const SERVER_URL = serverUrl();
 
+const MIGRATIONS_DIR = new URL("../../../../db/migrations/", import.meta.url);
+
 function migration(file: string): string {
-  return readFileSync(new URL(`../../../../db/migrations/${file}`, import.meta.url), "utf8");
+  return readFileSync(new URL(file, MIGRATIONS_DIR), "utf8");
+}
+
+/**
+ * Every migration, in filename order. Naming the files individually is the
+ * defect this replaces: a scratch database built from a prefix of
+ * db/migrations tests a schema the venue does not run, and the next migration
+ * to touch anything this file covers would silently reintroduce that - the
+ * suite would keep passing against a schema that no longer exists.
+ */
+function allMigrations(): string[] {
+  return readdirSync(MIGRATIONS_DIR)
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
 }
 
 describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
@@ -85,8 +100,9 @@ describe.skipIf(!SERVER_URL)("league round lifecycle (real Postgres)", () => {
     const schema = new Client({ connectionString: testUrl });
     await schema.connect();
     try {
-      await schema.query(migration("0001_core_schema.sql"));
-      await schema.query(migration("0002_league_night.sql"));
+      for (const file of allMigrations()) {
+        await schema.query(migration(file));
+      }
     } finally {
       await schema.end();
     }

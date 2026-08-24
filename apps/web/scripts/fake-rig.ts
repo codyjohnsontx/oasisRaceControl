@@ -11,6 +11,12 @@
  * Sends a heartbeat every 30s and a LAP_COMPLETED every interval, with
  * jittered lap times around the pace, ~15% dirty laps (incidentDelta > 0),
  * and an occasional deliberate duplicate eventId to prove idempotency.
+ *
+ * Like the real agent, it polls GET /api/agent/assignment and stamps each lap
+ * with the assignment that was open when the lap was "driven" - the backend
+ * attributes from that stamp, and stores a lap that carries none unattributed
+ * and unrankable, so a fake rig that skipped the poll would fill /staff's
+ * Unclaimed laps list instead of a leaderboard. Check in before starting it.
  */
 
 import { z } from "zod";
@@ -35,8 +41,36 @@ const COMBO = {
   carName: "Porsche 911 GT3 R",
 };
 
+const POLL_MS = 10_000;
+
 let lapNumber = 0;
 let lastEventId: string | null = null;
+/**
+ * The rig's open assignment as last polled: a string id, or null when the poll
+ * came back saying nobody is checked in. It stays `undefined` until a poll has
+ * actually SUCCEEDED, which is the same distinction the real agent draws - and
+ * the whole point of this contract. Sending `rigAssignmentId: null` before ever
+ * getting an answer would assert "nobody was checked in" on a rig that may well
+ * have a driver, and store their laps as unclaimed.
+ */
+let assignmentId: string | null | undefined;
+
+async function pollAssignment(): Promise<void> {
+  try {
+    const res = await fetch(`${BASE}/api/agent/assignment`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as { assignment: { id: string } | null };
+    const next = body.assignment?.id ?? null;
+    if (next !== assignmentId) {
+      console.log(`[fake-rig] assignment: ${next ?? "nobody checked in"}`);
+    }
+    assignmentId = next;
+  } catch (error) {
+    console.error(`[fake-rig] assignment poll failed:`, (error as Error).message);
+  }
+}
 
 async function post(events: AgentEvent[]): Promise<void> {
   try {
@@ -55,7 +89,8 @@ async function post(events: AgentEvent[]): Promise<void> {
   }
 }
 
-function nextLap(): LapCompletedEvent {
+/** Only called once a poll has succeeded, so assignmentId is a real answer. */
+function nextLap(assignment: string | null): LapCompletedEvent {
   lapNumber += 1;
 
   // ~7%: resend the previous event verbatim to prove duplicates are dropped.
@@ -64,6 +99,7 @@ function nextLap(): LapCompletedEvent {
     return {
       type: "LAP_COMPLETED",
       eventId: lastEventId,
+      rigAssignmentId: assignment,
       ...COMBO,
       lapNumber: lapNumber - 1,
       lapTimeMs: PACE_MS,
@@ -79,6 +115,7 @@ function nextLap(): LapCompletedEvent {
   return {
     type: "LAP_COMPLETED",
     eventId: lastEventId,
+    rigAssignmentId: assignment,
     ...COMBO,
     lapNumber,
     lapTimeMs: Math.max(60_000, PACE_MS + jitter + (dirty ? 4000 : 0)),
@@ -90,6 +127,17 @@ function nextLap(): LapCompletedEvent {
 console.log(`[fake-rig] driving ${COMBO.trackName} / ${COMBO.carName}`);
 console.log(`[fake-rig] api=${BASE} lap every ${INTERVAL_MS / 1000}s — Ctrl+C to stop`);
 
-void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.1" }]);
-setInterval(() => void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.1" }]), 30_000);
-setInterval(() => void post([nextLap()]), INTERVAL_MS);
+void pollAssignment();
+setInterval(() => void pollAssignment(), POLL_MS);
+void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]);
+setInterval(() => void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]), 30_000);
+setInterval(() => {
+  // The real agent queues these laps unresolved and stamps them once a poll
+  // gets through; a simulator with no outbox just waits for the answer rather
+  // than inventing one.
+  if (assignmentId === undefined) {
+    console.log("[fake-rig] no assignment poll has succeeded yet - skipping this lap");
+    return;
+  }
+  void post([nextLap(assignmentId)]);
+}, INTERVAL_MS);

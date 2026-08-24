@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
+import { VENUE_TIMEZONE } from "@/lib/venue";
 import { StaffLeaguePanel, type StaffLeagueProps } from "@/components/staff-league-panel";
+import type { UnattributedLapRow } from "@/lib/unattributed-laps";
 
 export type RigStatusRow = {
   rig_id: string;
@@ -31,6 +33,21 @@ export type StaffLapRow = {
   rig_number: number | null;
 };
 
+/**
+ * Staff read these times against the venue clock and against a customer saying
+ * "about nine". Pinned to the venue zone and an explicit locale rather than the
+ * runtime default, which is UTC on the server and the browser's zone on the
+ * tablet - so an unpinned format renders one time on first paint and a different
+ * one after hydration.
+ */
+const unclaimedAt = new Intl.DateTimeFormat("en-US", {
+  timeZone: VENUE_TIMEZONE,
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 const AGENT_ONLINE_WINDOW_MS = 90_000;
 
 function agentStatus(lastSeenAt: string | null): "online" | "offline" {
@@ -44,11 +61,15 @@ export function StaffDashboard({
   staffName,
   rigs,
   laps,
+  unattributedLaps,
+  unattributedLapTotal,
   league,
 }: {
   staffName: string;
   rigs: RigStatusRow[];
   laps: StaffLapRow[];
+  unattributedLaps: UnattributedLapRow[];
+  unattributedLapTotal: number;
   league: StaffLeagueProps;
 }) {
   const router = useRouter();
@@ -213,6 +234,65 @@ export function StaffDashboard({
           Tip: tap a driver&apos;s name to reset their PIN.
         </p>
       </section>
+
+      {unattributedLaps.length > 0 && (
+        <section>
+          <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">
+            Unclaimed laps · last 7 days
+          </h2>
+          <p className="text-muted text-xs mb-3">
+            Laps nobody can be credited with. They are kept but can never reach a
+            leaderboard. Usually the customer drove before scanning the QR code -
+            but a lap also lands here when the rig is on an agent build too old to
+            say who was driving, when it names an assignment this rig has never
+            owned, or when its finish time falls outside the assignment it does
+            name (a drifted rig clock, or a rig offline while the seat changed
+            hands). The lap itself does not carry which of the four it was. The
+            three abnormal causes each leave a server log line naming which one;
+            the ordinary drove-before-scanning case leaves none, because it is
+            not an error.
+          </p>
+          <p className="text-muted text-xs mb-3">
+            If a customer says their laps are missing, find them here by rig and
+            time. If that customer was checked in, this was not their mistake and
+            the rig needs looking at.
+          </p>
+          <div className="flex flex-col">
+            {unattributedLaps.map((lap) => (
+              <div
+                key={lap.id}
+                className="flex items-center gap-3 border-b border-edge py-2 text-sm opacity-60"
+              >
+                <span className="laptime font-bold w-20">
+                  {formatLapTime(lap.lap_time_ms)}
+                </span>
+                <span className="text-muted w-32 truncate">
+                  {unclaimedAt.format(new Date(lap.completed_at))}
+                </span>
+                <span className="text-muted w-12">
+                  {lap.rig_number
+                    ? `R${lap.rig_number.toString().padStart(2, "0")}`
+                    : "—"}
+                </span>
+                <span className="text-muted flex-1 truncate">
+                  {lap.track_name}
+                  {lap.track_config ? ` (${lap.track_config})` : ""} · {lap.car_name}
+                </span>
+                <span className="text-invalid text-[10px] uppercase font-bold">
+                  Unclaimed
+                </span>
+              </div>
+            ))}
+          </div>
+          {unattributedLapTotal > unattributedLaps.length && (
+            <p className="text-muted text-xs mt-3">
+              Showing the {unattributedLaps.length} most recent of{" "}
+              {unattributedLapTotal} unclaimed laps in the last 7 days. The rest
+              are stored but not listed here.
+            </p>
+          )}
+        </section>
+      )}
     </main>
   );
 }

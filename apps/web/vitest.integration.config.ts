@@ -4,8 +4,9 @@ import { safeTestDatabaseUrl } from "./src/test/db-guard";
 
 /**
  * Integration suite: real Postgres, so it covers what mocks cannot - the
- * on-conflict idempotency key, the one-open-assignment-per-rig/driver partial
- * unique indexes, and the checkin_driver() plpgsql function.
+ * guarantees that live in SQL rather than in application code. The root
+ * README's "Integration tests" section lists them; keeping a second inventory
+ * here only gives it something to drift from.
  *
  * DATABASE_URL is set from the validated TEST_DATABASE_URL so the app's own pool
  * (@/lib/db) connects to the throwaway database and never to whatever

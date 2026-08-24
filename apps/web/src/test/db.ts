@@ -36,7 +36,7 @@ export async function closeTestDb(): Promise<void> {
 export async function resetDb(): Promise<void> {
   await testDb().query(`
     truncate laps, rig_assignments, sim_sessions, rig_qr_tokens,
-             pin_attempts, audit_log, featured_combos,
+             pin_attempts, audit_log, featured_combos, leagues,
              rigs, drivers, staff_users
     restart identity cascade
   `);
@@ -119,11 +119,41 @@ export async function setFeaturedCombo(combo: {
   );
 }
 
+/**
+ * Opens a league round on a combo, back-dated an hour so laps already driven
+ * fall inside its window. `v_league_round_laps` owns which laps belong to a
+ * round, so a test asserting what the view excludes needs a round that would
+ * otherwise have included them - with no round row at all the view is empty
+ * whatever the laps look like, and the assertion proves nothing.
+ */
+export async function openLeagueRound(round: {
+  trackName: string;
+  trackConfig?: string | null;
+  carName: string;
+}): Promise<string> {
+  const league = await testDb().query<{ id: string }>(
+    "insert into leagues (name) values ('Wednesday League') returning id",
+  );
+  const season = await testDb().query<{ id: string }>(
+    "insert into league_seasons (league_id, name) values ($1, 'Test Season') returning id",
+    [league.rows[0]!.id],
+  );
+  const { rows } = await testDb().query<{ id: string }>(
+    `insert into league_rounds
+       (season_id, round_number, track_name, track_config, car_name, opened_at)
+     values ($1, 1, $2, $3, $4, now() - interval '1 hour')
+     returning id`,
+    [season.rows[0]!.id, round.trackName, round.trackConfig ?? null, round.carName],
+  );
+  return rows[0]!.id;
+}
+
 export async function lapRows(): Promise<
   Array<{
     event_id: string;
-    driver_id: string;
-    rig_assignment_id: string;
+    // Null on a lap nobody can be credited with - see db/migrations/0003.
+    driver_id: string | null;
+    rig_assignment_id: string | null;
     is_valid: boolean;
     invalid_reason: string | null;
     lap_time_ms: number;

@@ -85,7 +85,11 @@ static void Render(AgentStatus s)
         ConnectionState.Offline => "○ offline",
         _ => "◌ connecting",
     };
-    var driver = s.Assignment is { } a ? a.DriverDisplayName : "— available —";
+    // A null assignment the agent has never been able to ask about is not an
+    // available rig, and saying so would be a guess in the display too.
+    var driver = s.Assignment is { } a
+        ? a.DriverDisplayName
+        : s.AssignmentKnown ? "— available —" : "(checking)";
     var sim = s.SimRunning ? "sim running" : "sim idle";
     var pending = s.PendingLaps > 0 ? $"  |  {s.PendingLaps} lap(s) queued" : "";
     Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}");

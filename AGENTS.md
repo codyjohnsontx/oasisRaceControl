@@ -45,8 +45,11 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   and a new season defaults to its venue-local month name (`venueMonthName`).
   Nothing rolls a season on a date boundary by itself - the trigger stays human.
 - A round owns laps by time window + combo; laps carry no round id. The rule lives
-  in one place, `v_league_round_laps` (`db/migrations/0002_league_night.sql`), and
-  every league query joins through it. Change the rule there, nowhere else.
+  in one place, `v_league_round_laps` - introduced in
+  `db/migrations/0002_league_night.sql`, and last redefined by
+  `db/migrations/0003_unattributed_laps.sql`, which is where the current
+  definition is - and every league query joins through it. Change the rule in
+  that latest definition, nowhere else.
 - Two league surfaces, and they read different endpoints. `/league` is the
   full-detail season page customers open on a phone and the wall's league board
   is a `/tv` board type like any other (see the section above); both take season
@@ -68,6 +71,46 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   database it builds from `db/migrations`, so it never touches Neon. How to point
   it, and when it skips versus hard-fails, is in the root README's
   [Integration tests](README.md#integration-tests) section.
+
+## Lap attribution
+
+A lap belongs to whoever was in the seat when it was captured, not to whoever is
+checked in when it arrives - the agent's outbox can hold a lap through a long
+outage. So each queued lap carries the `rigAssignmentId` the agent had at
+capture, and `/api/agent/events` attributes from that stamp and never from
+whatever assignment is open when the batch arrives. The stamp is a candidate
+the server still verifies, not a verdict - see the guards below - but it will
+never substitute a different owner. Whether that assignment has since closed
+is deliberately irrelevant.
+
+The stamp has three states and the difference between them is load-bearing: a
+uuid, an explicit `null` (nobody was checked in), and an **absent key** (an agent
+too old to say). Never collapse the field to `.nullish()` or default it - absent
+and null are different answers, and telling them apart is the whole
+backward-compatibility story. The contract is documented on `lapCompletedEvent` in
+`apps/web/src/lib/events.ts`; both ends of the wire change together, and the only
+producers are `EventQueue.Enqueue` in the .NET agent and `scripts/fake-rig.ts`.
+
+Three guards keep that stamp honest, and all are easy to delete by accident. On
+the agent, a lap captured before any poll has ever succeeded is queued
+*unresolved* - `PendingBatch` must never return one, because on the wire it
+would be indistinguishable from "nobody was checked in". Also on the agent, an
+assignment-poll answer that a local sign-out superseded while it was in flight
+is dropped whole (the generation check in `AgentService`) - applying it would
+resurrect the stint the driver just ended and stamp every later lap with it. On
+the server, a lap only attaches to an assignment whose window contains its
+`completedAt`, which the rig supplies; the clock-skew grace on that window is a
+tolerance, not a policy knob.
+
+Laps the backend cannot attribute are STORED with a null `driver_id` and a null
+`rig_assignment_id`, invalid with reason `UNATTRIBUTED` - never credited to the
+next driver, never dropped, and settled by the agent so an unattended rig cannot
+fill its outbox. Unrankability is a database constraint, not a query convention:
+`laps_unattributed_is_invalid` makes a valid ownerless lap unrepresentable, so do
+not add a `driver_id is not null` filter to prove it - add a test that the
+constraint bites. `/staff` lists them under *Unclaimed laps*; attributing one to
+a driver is deliberately not built (see the SAFETY NOTE in
+`db/migrations/0003_unattributed_laps.sql` before building it).
 
 ## Local dev
 

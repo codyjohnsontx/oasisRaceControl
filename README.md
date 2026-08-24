@@ -60,8 +60,9 @@ npm run db:migrate # apply any new migrations in db/migrations/
 
 `npm test` covers pure logic and the API routes' auth/validation branches. The
 guarantees that live in Postgres - the `event_id` idempotency key, the
-one-open-assignment-per-rig/driver partial unique indexes, and the
-`checkin_driver()` function - are covered by a separate suite that needs a real
+one-open-assignment-per-rig/driver partial unique indexes, the
+`checkin_driver()` function, and the check constraints that keep an
+unattributed lap unrankable - are covered by a separate suite that needs a real
 database:
 
 ```bash
@@ -97,7 +98,7 @@ pointed at Neon. Nothing loads `.env.local` for tests, so give it a URL:
 TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5433/oasis_test" npm test
 ```
 
-Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Staff dashboard is at `/staff`. To try league night, open a round from `/staff` against the combo the fake rig drives, then watch `/league` and the round's page fill up.
+Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Check in **first**: like the real agent, the fake rig polls `GET /api/agent/assignment` and stamps each lap with the assignment that was open when it was driven, and the ingestion API attributes from that stamp rather than crediting the lap to whoever is checked in when it arrives (`docs/plan.md`, event model). Laps driven before you check in are stored *unattributed* - kept, unrankable, and listed on `/staff` under **Unclaimed laps**. They are never backfilled onto you once you do check in. Staff dashboard is at `/staff`. To try league night, open a round from `/staff` against the combo the fake rig drives, then watch `/league` and the round's page fill up.
 
 ## Building an unsigned spike test candidate
 
