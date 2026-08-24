@@ -32,13 +32,16 @@ export const SLOT_COUNT = 10;
  * The table's columns, shared by the heading row and every slot so the two stay
  * in step. Rank and the two score columns are fixed because their content is:
  * two tabular digits (sized for Orbitron's widest pair, not for "01"), a lap
- * time, a gap - all fixed-width by nature. Everything left over goes to driver
+ * time, a gap - all fixed-width by nature. Both are sized for the widest string
+ * their formatter can produce, not the common one: `formatGap` switches to
+ * `+1:23.874` past a minute and `+10:01.204` past ten, which an all-time board
+ * of a long track reaches. Everything left over goes to driver
  * and detail in a 5:4 split, which is roughly the ratio of their longest real
  * content - a 24-character display name (the cap in `driver-auth.ts`) at
  * `2.5em` against a car name at `1.5em`.
  */
 const COLUMNS =
-  "grid grid-cols-[5em_minmax(0,5fr)_minmax(0,4fr)_13em_8em] items-center gap-[1.5em]";
+  "grid grid-cols-[5em_minmax(0,5fr)_minmax(0,4fr)_13em_9.5em] items-center gap-[1.5em]";
 
 /**
  * Floor on a slot's height, from the tallest thing printed in one: the rank at
