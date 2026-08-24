@@ -377,6 +377,59 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     });
   });
 
+  /**
+   * Pins the accepted bounded limitation rather than a behaviour anyone wants.
+   *
+   * An assignment can close without the agent hearing about it - a driver ends
+   * their session from their phone, staff clear the rig, or the next customer
+   * takes it over - and the agent keeps stamping from its last poll until the
+   * next one lands. The window guard bounds that rather than preventing it: a
+   * lap driven within ASSIGNMENT_WINDOW_CLOCK_SKEW of ended_at is still
+   * credited to the driver who left.
+   *
+   * This is documented as a known residual and deliberately not fixed on this
+   * branch: the agent cannot know a seat changed hands while it was unreachable,
+   * and the grace is a symmetric clock-skew tolerance, so tightening it
+   * server-side would punish a genuinely skewed rig instead. The test exists so
+   * the bound is executable - if this ever changes, it should be because someone
+   * chose to change it, not because it drifted unnoticed.
+   */
+  it("still credits the departed driver inside the grace, the known bounded gap", async () => {
+    const rig = await seedRig(1);
+    const departed = await seedDriver("DepartedDriver");
+    const assignmentId = await openAssignment(rig.id, departed.id);
+    // Their stint ended five minutes ago - well inside the 15-minute grace.
+    await testDb().query(
+      `update rig_assignments
+       set started_at = now() - interval '1 hour',
+           ended_at = now() - interval '5 minutes',
+           end_reason = 'staff_cleared'
+       where id = $1`,
+      [assignmentId],
+    );
+
+    // A lap driven two minutes ago: after they left, before the grace expires.
+    const response = await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-in-grace-0001",
+          rigAssignmentId: assignmentId,
+          completedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+        },
+      ]),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      results: [{ status: "accepted" }],
+    });
+    const laps = await lapRows();
+    expect(laps[0]).toMatchObject({
+      driver_id: departed.id,
+      rig_assignment_id: assignmentId,
+    });
+  });
+
   it("stores a lap driven outside the window of the assignment it names unattributed", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");
