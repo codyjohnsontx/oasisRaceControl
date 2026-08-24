@@ -77,8 +77,11 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
 A lap belongs to whoever was in the seat when it was captured, not to whoever is
 checked in when it arrives - the agent's outbox can hold a lap through a long
 outage. So each queued lap carries the `rigAssignmentId` the agent had at
-capture, and `/api/agent/events` attributes from that stamp alone. Whether that
-assignment has since closed is deliberately irrelevant.
+capture, and `/api/agent/events` attributes from that stamp and never from
+whatever assignment is open when the batch arrives. The stamp is a candidate
+the server still verifies, not a verdict - see the guards below - but it will
+never substitute a different owner. Whether that assignment has since closed
+is deliberately irrelevant.
 
 The stamp has three states and the difference between them is load-bearing: a
 uuid, an explicit `null` (nobody was checked in), and an **absent key** (an agent
