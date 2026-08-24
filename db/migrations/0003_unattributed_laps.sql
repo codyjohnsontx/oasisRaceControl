@@ -1,4 +1,4 @@
--- Oasis Race Control — laps nobody can be credited with.
+-- Oasis Race Control - laps nobody can be credited with.
 --
 -- A lap captured while the rig had no open assignment has no owner and never
 -- will: the agent stamps each lap with the assignment it held at capture time

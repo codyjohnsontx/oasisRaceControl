@@ -85,9 +85,9 @@ capture-time stamping across a checkout, the deferred stamp across an outage and
 restart, and the backend client's result mapping are covered by the xUnit suite
 (`dotnet test`).
 
-A lap the backend cannot attribute — nobody was checked in when it was captured,
+A lap the backend cannot attribute - nobody was checked in when it was captured,
 it was driven outside the window of the assignment it names, or it names an
-assignment this rig has never had — comes back as
+assignment this rig has never had - comes back as
 `accepted_unattributed`: the backend stored it with no driver, so the agent
 settles it and the outbox drains. Only laps the backend did **not** store (an
 error, or a status this agent is too old to recognise) stay queued, because the

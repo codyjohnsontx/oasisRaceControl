@@ -88,13 +88,16 @@ backward-compatibility story. The contract is documented on `lapCompletedEvent` 
 `apps/web/src/lib/events.ts`; both ends of the wire change together, and the only
 producers are `EventQueue.Enqueue` in the .NET agent and `scripts/fake-rig.ts`.
 
-Two guards keep that stamp honest, and both are easy to delete by accident. On
+Three guards keep that stamp honest, and all are easy to delete by accident. On
 the agent, a lap captured before any poll has ever succeeded is queued
 *unresolved* - `PendingBatch` must never return one, because on the wire it
-would be indistinguishable from "nobody was checked in". On the server, a lap
-only attaches to an assignment whose window contains its `completedAt`, which
-the rig supplies; the clock-skew grace on that window is a tolerance, not a
-policy knob.
+would be indistinguishable from "nobody was checked in". Also on the agent, an
+assignment-poll answer that a local sign-out superseded while it was in flight
+is dropped whole (the generation check in `AgentService`) - applying it would
+resurrect the stint the driver just ended and stamp every later lap with it. On
+the server, a lap only attaches to an assignment whose window contains its
+`completedAt`, which the rig supplies; the clock-skew grace on that window is a
+tolerance, not a policy knob.
 
 Laps the backend cannot attribute are STORED with a null `driver_id` and a null
 `rig_assignment_id`, invalid with reason `UNATTRIBUTED` - never credited to the

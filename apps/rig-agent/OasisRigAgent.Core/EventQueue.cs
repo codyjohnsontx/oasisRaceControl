@@ -67,7 +67,7 @@ public sealed class EventQueue : IDisposable
     }
 
     /// <summary>Queue a lap whose owner is already known. Returns false if this
-    /// event_id is already queued or was already queued (idempotent — safe to
+    /// event_id is already queued or was already queued (idempotent - safe to
     /// call on every detection).
     ///
     /// <paramref name="rigAssignmentId"/> is the assignment this rig had at the
