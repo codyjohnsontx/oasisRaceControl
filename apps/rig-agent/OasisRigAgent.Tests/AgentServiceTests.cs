@@ -47,6 +47,25 @@ public sealed class AgentServiceTests : IDisposable
         private volatile bool _offline;
         private long _startedAtTicks = DefaultStartedAt.UtcTicks;
 
+        /// <summary>Held closed to keep an assignment response in flight while
+        /// the test does something else - the only way to make the race between
+        /// a poll and a sign-out deterministic rather than timing-dependent.</summary>
+        private volatile TaskCompletionSource? _holdAssignment;
+
+        /// <summary>Blocks the next assignment responses until Release is
+        /// called, and returns a task that completes once one is waiting.</summary>
+        public Task HoldAssignmentResponses()
+        {
+            var arrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _assignmentArrived = arrived;
+            _holdAssignment = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            return arrived.Task;
+        }
+
+        public void ReleaseAssignmentResponses() => _holdAssignment?.TrySetResult();
+
+        private volatile TaskCompletionSource? _assignmentArrived;
+
         /// <summary>Old enough to sit before any lap a test emits, for the cases
         /// that do not care when the driver checked in.</summary>
         private static readonly DateTimeOffset DefaultStartedAt =
@@ -63,12 +82,22 @@ public sealed class AgentServiceTests : IDisposable
         /// throws, which is all the agent ever sees during an outage.</summary>
         public void SetOffline(bool offline) => _offline = offline;
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (_offline) throw new HttpRequestException("venue network is down");
 
             var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/assignment") && _holdAssignment is { } gate)
+            {
+                _assignmentArrived?.TrySetResult();
+                // Honour the token: a test that fails before releasing this gate
+                // would otherwise leave AgentService.DisposeAsync awaiting a poll
+                // loop that can never finish, hanging the entire test run rather
+                // than failing one case.
+                await gate.Task.WaitAsync(cancellationToken);
+            }
+
             var body = path.EndsWith("/assignment")
                 ? AssignmentBody(
                     _assignmentId,
@@ -77,10 +106,10 @@ public sealed class AgentServiceTests : IDisposable
                     ? """{"ended":true}"""
                     : """{"results":[]}""";
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
-            });
+            };
         }
 
         private static string AssignmentBody(string? assignmentId, DateTimeOffset startedAt) =>
@@ -146,6 +175,53 @@ public sealed class AgentServiceTests : IDisposable
                 .Payload["rigAssignmentId"]!.GetValue<string>());
         Assert.Null(
             queued.Single(e => e.EventId == "evt-after-checkout")
+                .Payload["rigAssignmentId"]);
+    }
+
+    /// <summary>A sign-out that happens while an assignment poll is in flight
+    /// must win. The poll was answered from the rig's state BEFORE the sign-out,
+    /// so applying it would reinstate a stint the driver has ended and stamp
+    /// every later lap with it - a lap the server would still accept, because
+    /// the assignment's window has 15 minutes of clock-skew grace past its own
+    /// ended_at. The response is dropped instead.</summary>
+    [Fact]
+    public async Task A_poll_answered_before_a_sign_out_does_not_reinstate_the_assignment()
+    {
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+        agent.Start();
+        await assigned;
+
+        // Hold the NEXT assignment response open, and wait until one is actually
+        // waiting, so the sign-out below is racing a real in-flight poll.
+        var pollInFlight = backend.HoldAssignmentResponses();
+        try
+        {
+            await pollInFlight.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.True(await agent.SwitchDriverAsync());
+        }
+        finally
+        {
+            // The held poll now answers with the pre-sign-out assignment. This
+            // runs even if the wait or the checkout failed, so a failing case
+            // still lets the agent shut down.
+            backend.ReleaseAssignmentResponses();
+        }
+        await Task.Delay(300);
+
+        telemetry.Emit("evt-after-signout");
+
+        // Stamped with nobody, not with the stint the late response described.
+        Assert.Null(
+            queue.PendingBatch(10).Single(e => e.EventId == "evt-after-signout")
                 .Payload["rigAssignmentId"]);
     }
 

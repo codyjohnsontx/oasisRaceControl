@@ -39,6 +39,14 @@ public sealed class AgentService : IAsyncDisposable
     // for the rest of the night.
     private readonly object _stampLock = new();
 
+    // Bumped whenever this agent changes the assignment locally. A poll reads it
+    // before sending and again when the answer comes back: if it moved, that
+    // answer describes a rig state this agent has already left behind and is
+    // dropped. Without it, a driver who signs out while a poll is in flight gets
+    // their assignment reinstated by the late response, and every lap captured
+    // afterwards is stamped with a stint that has ended.
+    private int _assignmentGeneration;
+
     public event Action<AgentStatus>? StatusChanged;
 
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
@@ -97,7 +105,11 @@ public sealed class AgentService : IAsyncDisposable
         var ended = await RunBackend(ct => _client.CheckoutAsync(ct));
         if (ended)
         {
-            _assignment = null;
+            lock (_stampLock)
+            {
+                Interlocked.Increment(ref _assignmentGeneration);
+                _assignment = null;
+            }
             PublishStatus();
         }
         return ended;
@@ -115,12 +127,23 @@ public sealed class AgentService : IAsyncDisposable
         // Success must come from this poll's own result — _connection is shared
         // with the heartbeat/flush loops, so it can flip between our call and
         // this check (e.g. clearing the assignment because a heartbeat failed).
+        // Read before the request goes out, compared after it comes back.
+        var generation = Volatile.Read(ref _assignmentGeneration);
+
         var poll = await RunBackend(async token => (Ok: true, Poll: await _client.GetAssignmentAsync(token)));
         if (!poll.Ok) return;
         var assignment = poll.Poll!.Assignment;
 
         lock (_stampLock)
         {
+            // Somebody signed out while this was in flight. The answer in hand
+            // describes the rig before that, so applying it would resurrect a
+            // stint the driver has already ended. Drop it whole - including the
+            // first-poll resolution, because a backlog stamped from a superseded
+            // answer is the same guess by another route. The next poll is at
+            // most one interval away and will resolve from the truth.
+            if (Volatile.Read(ref _assignmentGeneration) != generation) return;
+
             // The first answer the agent has ever had also settles every lap it
             // captured before it had one. The whole assignment goes in, not just
             // its id: a lap driven before this driver checked in belongs to

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
+import { VENUE_TIMEZONE } from "@/lib/venue";
 import { StaffLeaguePanel, type StaffLeagueProps } from "@/components/staff-league-panel";
 import type { UnattributedLapRow } from "@/lib/unattributed-laps";
 
@@ -31,6 +32,21 @@ export type StaffLapRow = {
   driver_name: string;
   rig_number: number | null;
 };
+
+/**
+ * Staff read these times against the venue clock and against a customer saying
+ * "about nine". Pinned to the venue zone and an explicit locale rather than the
+ * runtime default, which is UTC on the server and the browser's zone on the
+ * tablet - so an unpinned format renders one time on first paint and a different
+ * one after hydration.
+ */
+const unclaimedAt = new Intl.DateTimeFormat("en-US", {
+  timeZone: VENUE_TIMEZONE,
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 const AGENT_ONLINE_WINDOW_MS = 90_000;
 
@@ -251,12 +267,7 @@ export function StaffDashboard({
                   {formatLapTime(lap.lap_time_ms)}
                 </span>
                 <span className="text-muted w-32 truncate">
-                  {new Date(lap.completed_at).toLocaleString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                  {unclaimedAt.format(new Date(lap.completed_at))}
                 </span>
                 <span className="text-muted w-12">
                   {lap.rig_number

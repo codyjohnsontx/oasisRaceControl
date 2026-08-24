@@ -112,6 +112,15 @@ flowchart TB
   `db/migrations/0002_league_night.sql`; current definition in
   `db/migrations/0003_unattributed_laps.sql`, which also excludes unattributed
   laps from every round).
+- **Unattributed laps are unrankable by constraint, not by convention.** The
+  `laps_unattributed_is_invalid` check in `db/migrations/0003_unattributed_laps.sql`
+  makes a valid ownerless lap unrepresentable, so no leaderboard query, staff
+  "restore", or future consumer can surface one. That is a different guarantee
+  from the view predicate above and neither replaces the other: the constraint
+  governs whether an ownerless lap can ever be *valid*, while the view governs
+  whether it is a member of a round at all - and `v_league_round_laps` exposes
+  `is_valid` rather than filtering on it, so without its own predicate an
+  ownerless row would still appear there.
 - **Auth is split by actor.** Rig agents use static bearer tokens; drivers and
   staff use separate signed-cookie sessions. No actor can act outside its scope.
 

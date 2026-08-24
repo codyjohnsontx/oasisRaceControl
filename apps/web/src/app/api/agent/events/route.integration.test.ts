@@ -35,7 +35,18 @@ const LAP = {
   carName: "Porsche 911 GT3 R",
   lapTimeMs: 138_103,
   incidentDelta: 0,
-  completedAt: new Date().toISOString(),
+  /**
+   * Evaluated per spread, not once when this module loads. Attribution now
+   * checks completedAt against the assignment's window with a 15-minute skew
+   * grace, and these cases open their assignment at run time - so a fixed
+   * load-time timestamp would quietly couple every one of them to the suite
+   * finishing within 15 minutes of import. It would not fail today; it would
+   * fail one day as `accepted_unattributed`, pointing at the wrong rule. Cases
+   * that care about a specific moment still override this.
+   */
+  get completedAt() {
+    return new Date().toISOString();
+  },
 };
 
 function post(rig: SeededRig, events: unknown[]) {
