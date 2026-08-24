@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -65,6 +66,52 @@ public sealed class BackendClientTests
         Assert.NotNull(poll.Assignment);
         Assert.Equal("a1", poll.Assignment!.Id);
         Assert.Equal("Cody J.", poll.Assignment.DriverDisplayName);
+    }
+
+    /// <summary>Pins the invariant that reading startedAt does not depend on the
+    /// machine's culture - it is one side of the comparison that decides who owns
+    /// a deferred lap, and rigs are ordinary Windows boxes with whatever locale
+    /// someone set.
+    ///
+    /// Honest about its own strength: this currently passes with OR without the
+    /// InvariantCulture argument, including with a ThaiBuddhistCalendar forced,
+    /// because .NET parses ISO 8601 with a Z offset through a culture-invariant
+    /// path. It is a guard against a future move to a culture-sensitive format,
+    /// not a reproduction of a live defect - do not cite it as one.</summary>
+    [Theory]
+    [InlineData("th-TH", true)]
+    [InlineData("ar-SA", false)]
+    [InlineData("en-US", false)]
+    public async Task Parses_startedAt_the_same_under_any_machine_culture(
+        string culture, bool forceNonGregorianCalendar)
+    {
+        var original = CultureInfo.CurrentCulture;
+        var machine = (CultureInfo)new CultureInfo(culture).Clone();
+        // The calendar is forced rather than taken from the platform: ICU on
+        // macOS hands th-TH a Gregorian calendar, so relying on the default
+        // would make this test pass on the dev machine and prove nothing about
+        // the Windows rigs it is written for.
+        if (forceNonGregorianCalendar)
+            machine.DateTimeFormat.Calendar = new ThaiBuddhistCalendar();
+        CultureInfo.CurrentCulture = machine;
+        try
+        {
+            var handler = new StubHandler(_ => (HttpStatusCode.OK, """
+                {"assignment":{"id":"a1","startedAt":"2026-08-22T09:12:00.000Z",
+                 "driver":{"id":"d1","displayName":"Cody J."}}}
+                """));
+            var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+            var poll = await client.GetAssignmentAsync(CancellationToken.None);
+
+            Assert.Equal(
+                DateTimeOffset.Parse("2026-08-22T09:12:00.000Z", CultureInfo.InvariantCulture),
+                poll.Assignment!.StartedAt);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
     }
 
     [Fact]

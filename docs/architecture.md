@@ -95,8 +95,13 @@ flowchart TB
   instant they're detected and are removed only once the backend accepts them,
   so a wifi drop or agent restart never loses a lap (idempotent on `event_id`).
 - **The agent decides who owns a lap, at the moment it captures it.** Each
-  queued lap carries the `rigAssignmentId` the rig had right then, and the
-  backend attributes from that stamp alone. It is the buffer above that makes
+  queued lap carries the `rigAssignmentId` the rig had right then, and that
+  stamp is the only thing the backend will attribute from. It is a capture-time
+  attribution *candidate* rather than a verdict: the backend still checks that
+  the assignment belongs to the calling rig and that the lap's `completedAt`
+  falls inside that assignment's window (plus a clock-skew grace), and stores
+  the lap `accepted_unattributed` when either check fails. What it will not do
+  is substitute a different owner. It is the buffer above that makes
   this necessary: a lap can arrive long after its driver has left, so "whoever
   is checked in when the batch lands" is a different person. See the event model
   in `docs/plan.md` for the three states of the stamp.

@@ -358,6 +358,50 @@ describe("POST /api/agent/events behaviour", () => {
     expect(insertedAttribution()).toEqual([ASSIGNMENT_ID, "driver-uuid"]);
   });
 
+  it("attributes a stamped lap that follows a heartbeat in the same batch", async () => {
+    // Matches are keyed by position in the FULL event array, and attributeLap
+    // reads that same index. Every other case here sends laps only, so the two
+    // indexes coincide and an off-by-one from keying on the filtered lap
+    // position would pass the whole suite - while misattributing every real
+    // batch that opens with a heartbeat, which is the shape the agent actually
+    // sends. The heartbeat below is what makes the two indexes differ.
+    query.mockImplementation(async (sql: string) =>
+      String(sql).includes("rig_assignments")
+        ? [
+            {
+              lap_index: 1,
+              id: ASSIGNMENT_ID,
+              driver_id: "driver-uuid",
+              in_window: true,
+            },
+          ]
+        : [],
+    );
+
+    const response = await POST(
+      post({
+        events: [
+          { type: "RIG_HEARTBEAT", agentVersion: "rig-agent/0.2-skeleton" },
+          { ...LAP, rigAssignmentId: ASSIGNMENT_ID },
+        ],
+      }),
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      results: [
+        { type: "RIG_HEARTBEAT", status: "ok" },
+        { type: "LAP_COMPLETED", eventId: LAP.eventId, status: "accepted" },
+      ],
+    });
+    expect(insertedAttribution()).toEqual([ASSIGNMENT_ID, "driver-uuid"]);
+
+    // The id the lookup asked about is the lap's index in the whole batch.
+    const lookup = query.mock.calls.find(([sql]) =>
+      String(sql).includes("rig_assignments"),
+    )!;
+    expect((lookup[1] as unknown[])[1]).toEqual([1]);
+  });
+
   it("rejects a malformed assignment id rather than ignoring it", async () => {
     expect(
       (await POST(post({ events: [{ ...LAP, rigAssignmentId: "not-a-uuid" }] }))).status,

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -106,7 +107,20 @@ public sealed class BackendClient
             a["id"]!.GetValue<string>(),
             a["driver"]!["id"]!.GetValue<string>(),
             a["driver"]!["displayName"]!.GetValue<string>(),
-            DateTimeOffset.Parse(a["startedAt"]!.GetValue<string>())), offset);
+            // Parsed against InvariantCulture, not the machine's. This value is
+            // one side of the completedAt >= StartedAt comparison that decides
+            // who owns a deferred lap, and EventQueue.OwnerOf already parses its
+            // side invariantly; both sides should read a machine-generated
+            // timestamp the same way on any rig.
+            //
+            // Measured, not assumed: DateTimeOffset.Parse WITHOUT a provider also
+            // returns the correct instant for this input, including with a
+            // ThaiBuddhistCalendar forced onto CurrentCulture - .NET recognises
+            // ISO 8601 with a Z offset through a culture-invariant path. So this
+            // is defence in depth against a future format change, not a fix for
+            // a reproduced misparse.
+            DateTimeOffset.Parse(
+                a["startedAt"]!.GetValue<string>(), CultureInfo.InvariantCulture)), offset);
     }
 
     /// <summary>End the rig's current assignment (the "switch driver" button).</summary>
