@@ -31,6 +31,11 @@ Next's dev HMR client force-reloads the page when the dev server dies, so the ta
 lands on Chrome's own error page and you cannot tell whether the app recovered.
 Under `next start` the page stays put and self-heals, which is what the kiosk does.
 
+Build while the database is still reachable: with `DATABASE_URL` set, `npm run
+build` fails when it cannot verify that database ([the gate
+below](#migrations-ship-before-code-and-the-build-enforces-it)), so a rebuild
+during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
+
 ## League night
 
 - Shop owner's shape for the league: a season IS a calendar month, and a round runs
@@ -97,6 +102,32 @@ quota message confounds the trial as well.
 
 So do not treat an `@coderabbitai review` request, or the reply to it, as proof
 that the later commits were reviewed. It is not evidence either way.
+
+## Migrations ship before code, and the build enforces it
+
+`npm run build` (from `apps/web`) runs `scripts/check-migrations.ts` before
+`next build`. How hard it is about a database it cannot vouch for - behind
+`db/migrations`, unreachable, no `DATABASE_URL`, or `db/migrations` not visible
+to the build - depends on where the build runs, and that decision is one pure
+function, `gateMode` in `apps/web/scripts/migrations.ts`: a Vercel production
+build **fails**, so Vercel rejects the deploy and the previous, schema-matching
+deployment keeps serving the venue; a preview only **warns**, so a pull request
+carrying a migration still produces a preview someone can open; a local build
+fails when `DATABASE_URL` is set and skips when it is not. It never writes -
+applying stays `npm run db:migrate`, run by a human. Both scripts print the
+database they are pointed at as host/database before doing anything, which is
+the only reliable answer to "which database is this" - an exported
+`DATABASE_URL` beats `.env.local` and dotenv will not override it.
+
+`npm run db:check` runs the check alone. `SKIP_MIGRATION_CHECK=1` (or `true`)
+bypasses it and any other value is ignored with a warning; overriding Vercel's
+Build Command to a bare `next build` bypasses it too.
+
+It compares filenames against `schema_migrations`, not content, so it cannot
+see a migration file edited after a database recorded it. The runbook for a
+production database that is behind the code - including the object-existence
+checks that do catch that case - is in
+[docs/deploy.md](docs/deploy.md#recovering-a-database-that-is-behind-the-code).
 
 ## Maintaining this file
 

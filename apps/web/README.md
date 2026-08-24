@@ -15,7 +15,13 @@ Quick reference once set up:
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulate a rig agent sending laps
 npm test           # vitest suites (see Integration tests in the root README)
-npm run build      # production build
+npm run build      # production build - refuses to build against a database
+                   # that is behind db/migrations
 ```
+
+`npm run db:check` runs that migration check on its own, read-only, and names
+the database it read. What the check does in each environment - production,
+preview, local - is in
+[Migration order](../../docs/deploy.md#migration-order-and-the-gate-that-enforces-it).
 
 Environment variables are documented in `.env.example` (copy to `.env.local`).

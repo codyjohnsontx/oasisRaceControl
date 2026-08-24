@@ -4,11 +4,20 @@
  *
  * Usage: DATABASE_URL=postgres://... npx tsx scripts/migrate.ts [--seed]
  * (reads .env.local automatically in dev)
+ *
+ * To see what is outstanding without applying it, use scripts/check-migrations.ts
+ * (`npm run db:check`), which is read-only and shares this file's bookkeeping.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
 import { config } from "dotenv";
+import {
+  appliedMigrations,
+  describeError,
+  describeTarget,
+  migrationFiles,
+} from "./migrations";
 
 config({ path: [".env.local", ".env"], quiet: true });
 
@@ -20,6 +29,11 @@ async function main() {
     console.error("DATABASE_URL is not set");
     process.exit(1);
   }
+
+  // Name the database before changing it. .env.local has pointed at local
+  // Docker and at Neon at different times, and an already-exported
+  // DATABASE_URL beats the file without saying so.
+  console.log(`migrating ${describeTarget(url)}`);
 
   const client = new Client({ connectionString: url });
   await client.connect();
@@ -36,16 +50,13 @@ async function main() {
       "create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())",
     );
 
-    const files = readdirSync(join(DB_DIR, "migrations"))
-      .filter((f) => f.endsWith(".sql"))
-      .sort();
+    // Read once, under the lock, rather than re-asking per file: the set
+    // cannot change while this run holds it.
+    const files = migrationFiles(join(DB_DIR, "migrations"));
+    const applied = await appliedMigrations(client);
 
     for (const file of files) {
-      const { rowCount } = await client.query(
-        "select 1 from schema_migrations where version = $1",
-        [file],
-      );
-      if (rowCount) {
+      if (applied.has(file)) {
         console.log(`skip    ${file} (already applied)`);
         continue;
       }
@@ -76,6 +87,9 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error.message);
+  // An unreachable database rejects with an AggregateError whose own message
+  // is empty, so the reason has to be dug out of it - applying migrations must
+  // never fail with a blank line.
+  console.error(describeError(error));
   process.exit(1);
 });
