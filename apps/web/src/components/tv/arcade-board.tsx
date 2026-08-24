@@ -1,19 +1,56 @@
 import { formatGap, formatLapTime } from "@/lib/time";
 
 /**
- * Shared presentation for `/tv` boards: a fixed-height arcade high-score table,
- * sized to be read from across the shop. Board types feed it entries; it owns
- * nothing about loading or rotation.
+ * Shared presentation for `/tv` boards: an arcade high-score table, sized to be
+ * read from across the shop. Board types feed it entries; it owns nothing about
+ * loading or rotation.
  *
  * Every board renders the same `SLOT_COUNT` rank slots whether or not they're
  * filled. That's deliberate on two counts: an arcade table with unclaimed slots
  * reads as an invitation rather than as a bug, and a constant row height keeps
  * the layout from jumping as the rotation moves between a busy board and a
  * quiet one.
+ *
+ * Sizing: every length here is in `em` of `.tv-scale` (see `globals.css`), so
+ * the table is one 1920x1080 composition scaled to whatever panel it lands on
+ * rather than a set of pixel sizes that happen to suit one. The two rules that
+ * keep it whole on the venue's 1272x601 wall:
+ *
+ *  - Columns whose content varies - driver and detail - are `fr` tracks, so
+ *    they divide whatever the fixed ones leave rather than being handed a
+ *    number tuned on a laptop. Only the two monospace score columns are fixed,
+ *    because a lap time genuinely is a fixed number of characters wide.
+ *  - Rows carry a minimum height set by the text in them (`ROW_MIN_H`), so ten
+ *    of them can never be compressed into less height than they need to print.
+ *    They still stretch to fill a taller screen; they just cannot collapse.
  */
 
 /** Rank slots drawn on every board - filled ones show a driver, the rest sit open. */
 export const SLOT_COUNT = 10;
+
+/**
+ * The table's columns, shared by the heading row and every slot so the two stay
+ * in step. Rank and the two score columns are fixed because their content is:
+ * two tabular digits (sized for Orbitron's widest pair, not for "01"), a lap
+ * time, a gap - all fixed-width by nature. Everything left over goes to driver
+ * and detail in a 5:4 split, which is roughly the ratio of their longest real
+ * content - a 24-character display name (the cap in `driver-auth.ts`) at
+ * `2.5em` against a car name at `1.5em`.
+ */
+const COLUMNS =
+  "grid grid-cols-[5em_minmax(0,5fr)_minmax(0,4fr)_13em_8em] items-center gap-[1.5em]";
+
+/**
+ * Floor on a slot's height, from the tallest thing printed in one: the rank at
+ * `2.75em`. This is the fix for rows stacking on top of each other - without it
+ * `flex-1` slots divide the leftover height and print over each other once
+ * there isn't enough of it.
+ */
+const ROW_MIN_H = "min-h-[3.75em]";
+
+/** Column headings size themselves rather than the row that holds them, so that
+ *  row stays at the base em and its tracks and gap match the slots' exactly. */
+const HEADING = "text-[1.125em] font-bold uppercase tracking-[0.3em]";
 
 export type ArcadeEntry = {
   /** React key; a driver id in practice. */
@@ -106,38 +143,41 @@ export function ArcadeHighScores({
         stale ? "opacity-70" : "opacity-100"
       }`}
     >
-      <header className="shrink-0">
-        <p className="font-display text-accent text-glow-subtle text-xl font-bold uppercase tracking-[0.42em]">
+      <header className="flex shrink-0 flex-col gap-[0.5em]">
+        <p className="font-display text-accent text-glow-subtle text-[1.25em]/[1.4] font-bold uppercase tracking-[0.42em]">
           {eyebrow}
         </p>
-        <h1 className="font-display gradient-text mt-2 truncate text-[4.25rem] font-black uppercase leading-none tracking-tight">
+        <h1 className="font-display gradient-text truncate text-[4.25em]/[1] font-black uppercase tracking-tight">
           {title}
         </h1>
         {subtitle && (
-          <p className="text-muted mt-2 truncate text-3xl">{subtitle}</p>
+          <p className="text-muted truncate text-[1.875em]/[1.25]">{subtitle}</p>
         )}
       </header>
 
-      <div className="gradient-rule mt-5 h-1 shrink-0 rounded-full" />
+      {/* Margin lives on the rule, which sits at the base font size, so both
+          gaps mean what they say - a margin on the heading row would be read
+          against that row's own smaller text. */}
+      <div className="gradient-rule mt-[1.25em] mb-[1em] h-[0.25em] shrink-0 rounded-full" />
 
-      <div className="text-muted mt-4 flex shrink-0 items-center gap-8 text-lg font-bold uppercase tracking-[0.3em]">
-        <span className="w-24">Rank</span>
-        <span className="w-[30rem]">Driver</span>
-        <span className="flex-1">{detailHeading}</span>
-        <span className="w-64 text-right">{scoreHeading}</span>
-        <span className="w-44 text-right">{gapHeading}</span>
+      <div className={`text-muted shrink-0 ${COLUMNS}`}>
+        <span className={HEADING}>Rank</span>
+        <span className={HEADING}>Driver</span>
+        <span className={HEADING}>{detailHeading}</span>
+        <span className={`${HEADING} text-right`}>{scoreHeading}</span>
+        <span className={`${HEADING} text-right`}>{gapHeading}</span>
       </div>
 
-      <ol className="mt-1 flex min-h-0 flex-1 flex-col">
+      <ol className="mt-[0.25em] flex flex-1 flex-col">
         {slots.map((entry, index) => (
           <li
             key={entry?.id ?? `open-${index}`}
-            className={`flex min-h-0 flex-1 items-center gap-8 border-b border-edge last:border-b-0 ${
+            className={`${COLUMNS} ${ROW_MIN_H} flex-1 border-b border-edge last:border-b-0 ${
               entry ? "" : "opacity-30"
             }`}
           >
             <span
-              className={`font-display w-24 text-[2.75rem] font-black tabular-nums ${
+              className={`font-display text-[2.75em]/[1.1] font-black tabular-nums ${
                 entry ? RANK_STYLES[index] ?? "text-muted" : "text-muted"
               }`}
             >
@@ -146,29 +186,27 @@ export function ArcadeHighScores({
 
             {entry ? (
               <>
-                <span className="w-[30rem] truncate text-[2.5rem] font-bold">
-                  {entry.name}
-                </span>
-                <span className="text-muted flex-1 truncate text-2xl uppercase tracking-wide">
+                <span className="truncate text-[2.5em]/[1.1] font-bold">{entry.name}</span>
+                <span className="text-muted truncate text-[1.5em]/[1.2] uppercase tracking-wide">
                   {entry.detail}
                 </span>
-                <span className="laptime w-64 text-right text-[2.5rem] font-bold">
+                <span className="laptime text-right text-[2.5em]/[1.1] font-bold">
                   {scoreText(entry, emptyScore)}
                 </span>
-                <span className="laptime text-muted w-44 text-right text-2xl">
+                <span className="laptime text-muted text-right text-[1.5em]/[1.2]">
                   {gapText(entry, leader, index)}
                 </span>
               </>
             ) : (
               <>
-                <span className="text-muted w-[30rem] text-[2.5rem] font-bold tracking-[0.3em]">
+                <span className="text-muted text-[2.5em]/[1.1] font-bold tracking-[0.3em]">
                   · · · · ·
                 </span>
-                <span className="flex-1" />
-                <span className="laptime text-muted w-64 text-right text-[2.5rem] font-bold">
+                <span />
+                <span className="laptime text-muted text-right text-[2.5em]/[1.1] font-bold">
                   {emptyScore}
                 </span>
-                <span className="w-44" />
+                <span />
               </>
             )}
           </li>
