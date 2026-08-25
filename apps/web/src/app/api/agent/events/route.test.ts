@@ -146,6 +146,40 @@ describe("POST /api/agent/events validation", () => {
     expect((await POST(post({ events: [{ ...LAP, lapTimeMs: 0 }] }))).status).toBe(400);
   });
 
+  it("rejects a lap time over the ingestion ceiling in the same shape as any other field", async () => {
+    const response = await POST(post({ events: [{ ...LAP, lapTimeMs: 7_425_678 }] }));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toMatchObject({ error: "invalid_input" });
+    // One zod issue, on the field, exactly as a bad completedAt or eventId
+    // would report - the agent sees nothing new here.
+    expect(body.detail).toEqual([
+      expect.objectContaining({ path: ["events", 0, "lapTimeMs"] }),
+    ]);
+    expect(insertedLaps()).toBe(false);
+  });
+
+  it("rejects the whole batch when one lap in it is over the ceiling", async () => {
+    // Validation is per body, not per event, so one garbage lap takes its
+    // batch-mates down with it - the same as any other malformed field, and
+    // the shape the agent's outbox has to cope with. Nothing is written.
+    const events = [
+      { ...LAP, eventId: "event-00000001" },
+      { ...LAP, eventId: "event-00000002", lapTimeMs: 7_425_678 },
+      { ...LAP, eventId: "event-00000003" },
+    ];
+
+    const response = await POST(post({ events }));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.detail).toEqual([
+      expect.objectContaining({ path: ["events", 1, "lapTimeMs"] }),
+    ]);
+    expect(insertedLaps()).toBe(false);
+  });
+
   it("rejects a negative incident delta", async () => {
     expect((await POST(post({ events: [{ ...LAP, incidentDelta: -1 }] }))).status).toBe(
       400,

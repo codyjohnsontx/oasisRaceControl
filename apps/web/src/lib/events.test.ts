@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentEventsBody } from "./events";
+import { MAX_LAP_TIME_MS, agentEventsBody } from "./events";
 
 const lap = {
   type: "LAP_COMPLETED",
@@ -30,6 +30,28 @@ describe("agent events contract", () => {
   it("rejects non-positive lap times", () => {
     expect(
       agentEventsBody.safeParse({ events: [{ ...lap, lapTimeMs: 0 }] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a lap time longer than any lap the venue can produce", () => {
+    // 7,425,678 ms - two hours and change - is the value that rendered as
+    // `123:45.678` on the wall and spilled out of its column.
+    expect(
+      agentEventsBody.safeParse({ events: [{ ...lap, lapTimeMs: 7_425_678 }] })
+        .success,
+    ).toBe(false);
+  });
+
+  it("accepts a lap time at the ceiling and rejects one millisecond over it", () => {
+    expect(
+      agentEventsBody.safeParse({
+        events: [{ ...lap, lapTimeMs: MAX_LAP_TIME_MS }],
+      }).success,
+    ).toBe(true);
+    expect(
+      agentEventsBody.safeParse({
+        events: [{ ...lap, lapTimeMs: MAX_LAP_TIME_MS + 1 }],
+      }).success,
     ).toBe(false);
   });
 

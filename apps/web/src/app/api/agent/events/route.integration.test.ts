@@ -660,6 +660,30 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     });
   });
 
+  it("refuses a lap time no lap could take before it reaches the database", async () => {
+    const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+    const assignmentId = await openAssignment(rig.id, driver.id);
+
+    // 7,425,678 ms rendered as `123:45.678` on the wall and spilled out of its
+    // column. It is not a slow lap - nothing the venue runs takes two hours -
+    // so it is refused outright rather than stored and formatted.
+    const response = await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-toolong-0001",
+          rigAssignmentId: assignmentId,
+          lapTimeMs: 7_425_678,
+        },
+      ]),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: "invalid_input" });
+    expect(await lapRows()).toHaveLength(0);
+  });
+
   it("records a heartbeat against the authenticated rig only", async () => {
     const rigOne = await seedRig(1);
     await seedRig(2);

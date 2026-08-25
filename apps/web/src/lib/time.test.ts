@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_LAP_TIME_MS } from "./events";
 import { formatLapTime, formatGap } from "./time";
 
 describe("formatLapTime", () => {
@@ -14,6 +15,15 @@ describe("formatLapTime", () => {
   it("drops the minute part for sub-minute laps", () => {
     expect(formatLapTime(58_204)).toBe("58.204");
     expect(formatLapTime(9_500)).toBe("9.500");
+  });
+
+  it("prints the longest storable lap inside the width the /tv time columns are fitted for", () => {
+    // arcade-board.tsx sizes both time columns through `59:59.999`. The
+    // ingestion ceiling is chosen from what a lap can be, not from this - but
+    // if it ever grows past what the column holds, this is where to find out.
+    expect(formatLapTime(MAX_LAP_TIME_MS).length).toBeLessThanOrEqual(
+      "59:59.999".length,
+    );
   });
 
   it("handles nonsense defensively", () => {
