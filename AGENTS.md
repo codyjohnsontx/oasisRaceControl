@@ -123,8 +123,22 @@ constraint bites. `/staff` lists them under *Unclaimed laps*; attributing one to
 a driver is deliberately not built (see the SAFETY NOTE in
 `db/migrations/0003_unattributed_laps.sql` before building it).
 
+`lapTimeMs` is bounded at ingestion by `MAX_LAP_TIME_MS` in
+`apps/web/src/lib/events.ts`, chosen from what a lap can be, with the reasoning
+on the constant; do not re-derive it from a `/tv` column width. A batch the
+server rejects with a 400 is a known agent-side wedge: the agent cannot tell it
+from the network being down and re-sends the same batch every flush, so one
+rejected lap holds every lap behind it. The mechanism and the follow-up
+(`oasis-agent-quarantine-rejected-events`) are in `docs/plan.md`'s failure
+list; do not fix it by loosening the server bound.
+
 ## Local dev
 
+- The .NET SDK for `apps/rig-agent` lives at `~/.dotnet` and is not on the
+  default PATH: `export PATH="$HOME/.dotnet:$PATH"`, then
+  `dotnet test apps/rig-agent/OasisRigAgent.sln`. No CI workflow builds the
+  agent (`spike-safety.yml` covers `spike/` only), so that local run is the
+  only check it gets.
 - `apps/web/.env.local` is gitignored and its comments have gone stale before.
   Read `DATABASE_URL` itself before assuming which database (local Docker
   `oasis-pg` on 5433, or Neon) a dev server or migration is pointed at.
