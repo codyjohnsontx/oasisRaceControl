@@ -50,7 +50,9 @@ export function UnclaimedLaps({
         needs looking at - an agent build too old to say who was driving, a
         check-in this rig has never had, or a finish time outside the check-in
         it names, which means the rig PC&apos;s clock has drifted or the rig
-        was offline while the seat changed hands.
+        was offline while the seat changed hands. The exception is{" "}
+        <em>Cause not recorded</em>: those laps were stored before this screen
+        could say why, and there is nothing to act on.
       </p>
       <p className="text-muted text-xs mb-3">
         If a customer says their laps are missing, find them here by rig and
