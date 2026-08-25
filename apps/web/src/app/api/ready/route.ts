@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import { db } from "@/lib/db";
 
 /**
@@ -35,33 +36,86 @@ class DatabaseTimeout extends Error {
  * the migration gate owns (docs/deploy.md), not a traffic-routing one.
  */
 export async function GET() {
-  if (!process.env.DATABASE_URL) return unavailable("DATABASE_URL is not set");
+  if (!process.env.DATABASE_URL) {
+    console.error("[ready] database probe failed", "DATABASE_URL is not set");
+    return unavailable("DATABASE_URL is not set");
+  }
 
   const deadline = Date.now() + DATABASE_TIMEOUT_MS;
   try {
-    await withDeadline(db().query("select 1"), deadline);
+    const appliedMigrations = await probe(deadline);
+    return Response.json(
+      appliedMigrations === null ? { status: "ok" } : { status: "ok", appliedMigrations },
+    );
   } catch (error) {
     console.error("[ready] database probe failed", detail(error));
     return unavailable(reasonFor(error));
   }
-
-  const appliedMigrations = await countAppliedMigrations(deadline);
-  return Response.json(
-    appliedMigrations === null ? { status: "ok" } : { status: "ok", appliedMigrations },
-  );
 }
 
-/** Null when the count cannot be read; never a reason to report not ready. */
-async function countAppliedMigrations(deadline: number): Promise<number | null> {
+/**
+ * One probe on one pool client: `select 1`, then the migration count. The
+ * client goes back to the pool only if everything asked of it answered.
+ * Promise.race cannot cancel pg work, so a query still in flight when the
+ * deadline passed would otherwise ride back into the pool with its client and
+ * hold one of the five shared slots until the database got round to it.
+ * Destroying the client instead closes the socket, which frees the slot now
+ * and makes Postgres drop the backend.
+ */
+async function probe(deadline: number): Promise<number | null> {
+  const client = await acquire(deadline);
+  let completed = false;
+  try {
+    await withDeadline(client.query("select 1"), deadline);
+    const applied = await countAppliedMigrations(client, deadline);
+    completed = true;
+    return applied;
+  } finally {
+    client.release(!completed);
+  }
+}
+
+/**
+ * A pool client, or DatabaseTimeout once the deadline passes. The pool sets no
+ * connectionTimeoutMillis, so a connect that hangs - a black-holed host, or
+ * every client busy - would otherwise wait forever. A connect that loses the
+ * race still finishes eventually; its client is returned the moment it does,
+ * so a slot is never leaked.
+ */
+async function acquire(deadline: number): Promise<PoolClient> {
+  const connecting = db().connect();
+  try {
+    return await withDeadline(connecting, deadline);
+  } catch (error) {
+    if (error instanceof DatabaseTimeout) {
+      connecting.then(
+        (client) => client.release(),
+        () => {},
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Null when the count cannot be read - never a reason to report not ready. A
+ * timeout is different: the client is still waiting on the database, so it
+ * propagates and the probe destroys the client rather than reuse it.
+ */
+async function countAppliedMigrations(
+  client: PoolClient,
+  deadline: number,
+): Promise<number | null> {
   try {
     const { rows } = await withDeadline(
-      db().query<{ applied: number }>(
+      client.query<{ applied: number }>(
         "select count(*)::int as applied from schema_migrations",
       ),
       deadline,
     );
     return rows[0]?.applied ?? null;
   } catch (error) {
+    if (error instanceof DatabaseTimeout) throw error;
     console.error("[ready] could not count applied migrations", detail(error));
     return null;
   }
