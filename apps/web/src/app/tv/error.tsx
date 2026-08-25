@@ -24,19 +24,19 @@ export default function TvError({
   }, [error, reset]);
 
   return (
-    <main className="flex h-dvh flex-col items-center justify-center gap-8 p-10 text-center select-none">
+    <main className="tv-scale flex h-dvh flex-col items-center justify-center gap-[2em] p-[2.5em] text-center select-none">
       <Image
         src="/oasishelmet.png"
         alt=""
         width={49}
         height={60}
         priority
-        className="h-32 w-auto animate-pulse"
+        className="h-[8em] w-auto animate-pulse"
       />
-      <h1 className="font-display gradient-text text-8xl font-black uppercase tracking-tight">
+      <h1 className="font-display gradient-text text-[6em]/[1.1] font-black uppercase tracking-tight">
         Oasis Sim Racing
       </h1>
-      <p className="text-muted text-4xl">Reconnecting to timing…</p>
+      <p className="text-muted text-[2.25em]">Reconnecting to timing…</p>
     </main>
   );
 }

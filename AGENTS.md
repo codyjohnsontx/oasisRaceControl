@@ -17,6 +17,17 @@ contract and the rules the engine guarantees are documented in
 Board data comes from the same public APIs `/leaderboards` and `/league` use, so
 the wall and the phone agree by construction.
 
+Sizing is one composition, not per-element pixels. The wall renders at
+**1272x601** - not 1080p - so `/tv` is written entirely in `em` of the
+`.tv-scale` root in `globals.css`, where `1em` is one rem of a 1920x1080 design
+and the root scales to whichever axis the real screen runs out of first. A new
+board must be written in `em` too: a `rem` or a plain Tailwind size class
+(`text-3xl`, `p-10`, `w-64`) is a fixed pixel count that will not shrink with
+the rest, which is how rows came to overlap and the car column to render
+"Ferr...". Two matching rules in `arcade-board.tsx`: columns whose content
+varies are `fr` tracks, and rows carry a `min-h` tied to their own text so they
+can stretch but never collapse.
+
 A board can also take the wall over rather than take a turn on it, without any
 engine change: renew the contract's `hold()` on every refresh while the takeover
 condition holds. The league board does exactly that while tonight's round is

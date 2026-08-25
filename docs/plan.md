@@ -146,7 +146,7 @@ oasisRaceControl/
 - **Spike checklist** doubles as the integration truth table for the agent.
 - **Agent:** unit tests around the telemetry-parsing/lap-boundary state machine using recorded telemetry fixtures from the spike (so iRacing isn't needed in CI); queue tests (kill process mid-flush, assert no loss/dupes).
 - **API:** integration tests against a local Postgres — idempotency (same event twice), assignment races (two check-ins), validity rules, takeover semantics, staff audit writes.
-- **Web:** Playwright smoke for check-in flow (guest + returning) and staff invalidate/restore; visual check of `/tv` at 1080p/4K.
+- **Web:** Playwright smoke for check-in flow (guest + returning) and staff invalidate/restore; visual check of `/tv` at the venue wall's measured 1272x601 first, then 1080p/4K (the sizing contract is in AGENTS.md, "The `/tv` board rotation").
 - **Pilot metrics as tests:** the Phase 3 measurements above are the acceptance criteria for rollout.
 
 ## Deployment strategy

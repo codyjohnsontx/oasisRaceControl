@@ -147,17 +147,17 @@ function TonightBoard({ data, stale, hold }: TvBoardProps<null, TonightData>) {
         stale={stale}
       />
       {celebration && (
-        <div className="bg-bg/97 fixed inset-0 z-50 flex flex-col items-center justify-center gap-8 text-center backdrop-blur-md">
-          <p className="font-display text-accent text-glow text-5xl font-black uppercase tracking-[0.3em]">
+        <div className="bg-bg/97 fixed inset-0 z-50 flex flex-col items-center justify-center gap-[2em] text-center backdrop-blur-md">
+          <p className="font-display text-accent text-glow text-[3em]/[1.2] font-black uppercase tracking-[0.3em]">
             New personal best
           </p>
-          <p className="font-display gradient-text text-9xl font-black">
+          <p className="font-display gradient-text max-w-full truncate text-[8em]/[1.1] font-black">
             {celebration.displayName}
           </p>
-          <p className="laptime text-valid text-glow-subtle text-[9rem] font-black leading-none">
+          <p className="laptime text-valid text-glow-subtle text-[9em]/[1] font-black">
             {formatLapTime(celebration.lapTimeMs)}
           </p>
-          <p className="text-muted text-5xl">
+          <p className="text-muted text-[3em]/[1.2]">
             −{(celebration.improvementMs / 1000).toFixed(3)} · now P{celebration.rank}
           </p>
         </div>

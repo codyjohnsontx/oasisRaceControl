@@ -262,11 +262,11 @@ export function TvScreen({ initialBoards }: Props) {
   const position = view ? view.index : -1;
 
   return (
-    <main className="relative flex h-dvh flex-col overflow-hidden p-10 select-none">
+    <main className="tv-scale relative flex h-dvh flex-col overflow-hidden p-[2.5em] select-none">
       {/* Fills over one slide's hold, so the room can see the rotation coming.
           Keyed on the advance counter rather than the slide, so a rotation with
           one playable board still restarts the fill every pass. */}
-      <div className="absolute inset-x-0 top-0 h-1.5 overflow-hidden">
+      <div className="absolute inset-x-0 top-0 h-[0.375em] overflow-hidden">
         {view && (
           <div
             key={view.advanceId}
@@ -282,21 +282,21 @@ export function TvScreen({ initialBoards }: Props) {
         <Standby offline={offline} />
       )}
 
-      <footer className="mt-6 flex shrink-0 items-center justify-between gap-8">
-        <div className="flex min-w-0 items-center gap-6">
+      <footer className="mt-[1.5em] flex shrink-0 items-center justify-between gap-[2em]">
+        <div className="flex min-w-0 items-center gap-[1.5em]">
           {slides.length > 1 && slides.length <= 16 && (
-            <div className="flex items-center gap-2" aria-hidden="true">
+            <div className="flex items-center gap-[0.5em]" aria-hidden="true">
               {slides.map((slide, i) => (
                 <span
                   key={slide.key}
-                  className={`h-2 rounded-full transition-all duration-500 ${
-                    i === position ? "bg-accent w-8" : "bg-edge w-2"
+                  className={`h-[0.5em] rounded-full transition-all duration-500 ${
+                    i === position ? "bg-accent w-[2em]" : "bg-edge w-[0.5em]"
                   }`}
                 />
               ))}
             </div>
           )}
-          <p className="text-ink/80 min-w-0 truncate text-xl font-bold uppercase tracking-[0.2em]">
+          <p className="text-ink/80 min-w-0 truncate text-[1.25em] font-bold uppercase tracking-[0.2em]">
             {position >= 0 ? (
               `Board ${position + 1} of ${slides.length}`
             ) : view ? (
@@ -307,7 +307,7 @@ export function TvScreen({ initialBoards }: Props) {
           </p>
         </div>
 
-        <div className="flex shrink-0 items-center gap-5">
+        <div className="flex shrink-0 items-center gap-[1.25em]">
           {/* `stale` covers a board held through a failure; `offline` covers a
               failure with no board to hold. Either way the feed is down. */}
           <StatusChip stale={stale || offline} />
@@ -317,9 +317,9 @@ export function TvScreen({ initialBoards }: Props) {
             width={49}
             height={60}
             priority
-            className="h-11 w-auto"
+            className="h-[2.75em] w-auto"
           />
-          <p className="font-display text-accent text-glow-subtle text-lg font-bold uppercase tracking-[0.3em]">
+          <p className="font-display text-accent text-glow-subtle text-[1.125em] font-bold uppercase tracking-[0.3em]">
             Oasis Live Timing
           </p>
         </div>
@@ -332,12 +332,12 @@ export function TvScreen({ initialBoards }: Props) {
 function StatusChip({ stale }: { stale: boolean }) {
   return (
     <span
-      className={`flex items-center gap-2.5 rounded-full border px-4 py-1.5 text-base font-bold uppercase tracking-[0.2em] ${
+      className={`flex items-center gap-[0.625em] rounded-full border px-[1em] py-[0.375em] text-[1em] font-bold uppercase tracking-[0.2em] ${
         stale ? "border-sunset/50 text-sunset" : "border-valid/40 text-valid"
       }`}
     >
       <span
-        className={`h-2.5 w-2.5 rounded-full ${stale ? "bg-sunset animate-pulse" : "bg-valid"}`}
+        className={`h-[0.625em] w-[0.625em] rounded-full ${stale ? "bg-sunset animate-pulse" : "bg-valid"}`}
       />
       {stale ? "Reconnecting" : "Live"}
     </span>
@@ -351,19 +351,19 @@ function StatusChip({ stale }: { stale: boolean }) {
  */
 function Standby({ offline }: { offline: boolean }) {
   return (
-    <section className="flex flex-1 flex-col items-center justify-center gap-8 text-center">
+    <section className="flex flex-1 flex-col items-center justify-center gap-[2em] text-center">
       <Image
         src="/oasishelmet.png"
         alt=""
         width={49}
         height={60}
         priority
-        className="h-32 w-auto animate-pulse"
+        className="h-[8em] w-auto animate-pulse"
       />
-      <h1 className="font-display gradient-text text-8xl font-black uppercase tracking-tight">
+      <h1 className="font-display gradient-text text-[6em]/[1.1] font-black uppercase tracking-tight">
         Oasis Sim Racing
       </h1>
-      <p className="text-muted text-4xl">
+      <p className="text-muted text-[2.25em]">
         {offline
           ? "Reconnecting to timing…"
           : "High scores go up as soon as the first lap lands."}

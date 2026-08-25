@@ -108,6 +108,29 @@ body {
   text-shadow: 0 0 10px color-mix(in srgb, currentcolor 55%, transparent);
 }
 
+/* ---------------------------------------------------------------------------
+   /tv sizing.
+
+   The wall is one composition on one screen, so it is sized as one: `1em`
+   inside `.tv-scale` is one rem of a 1920x1080 design, and every length under
+   `/tv` is written in `em` of that. `text-[2.5em]` is therefore the 40px it
+   always was on a 1920x1080 panel and 22px on the venue's 1272x601 one - the
+   same board, at 0.56 scale, rather than a 1920 board spilling off a 1272 one.
+
+   min() of the two axes, not one of them: the venue's panel is wider than 16:9,
+   so height is what runs out there, while a narrow window runs out of width.
+   Taking whichever axis is scarcer means the board always has at least the
+   design's own 1080 units of height to lay ten rows out in, on any screen. It
+   scales down rather than truncating, and up on a 4K wall, with nothing tuned
+   to one screen size.
+
+   Deliberately unclamped. A floor would buy legibility on a phone-sized window
+   by reintroducing exactly the overflow this replaces, and `/tv` is a wall
+   display - it should shrink to fit a developer's window, not overrun it. */
+.tv-scale {
+  font-size: min(1.4815dvh, 0.8333vw);
+}
+
 /* /tv slide timer: fills across the top edge over one board's hold. The
    component passes only the duration, as --tv-slide-duration, so the timing
    stays single-sourced from SLIDE_MS while the animation itself lives here. */
