@@ -67,14 +67,24 @@ function authenticateRig() {
   });
 }
 
-/** The (rig_assignment_id, driver_id) pair a lap insert was given. */
-function insertedAttribution(): [unknown, unknown] | null {
+/** The parameters the first lap insert was given, or null if none happened. */
+function insertParams(): unknown[] | null {
   const call = [...query.mock.calls, ...queryOne.mock.calls].find(([sql]) =>
     String(sql).includes("insert into laps"),
   );
-  if (!call) return null;
-  const params = call[1] as unknown[];
-  return [params[2], params[3]];
+  return call ? (call[1] as unknown[]) : null;
+}
+
+/** The (rig_assignment_id, driver_id) pair a lap insert was given. */
+function insertedAttribution(): [unknown, unknown] | null {
+  const params = insertParams();
+  return params ? [params[2], params[3]] : null;
+}
+
+/** The unattributed_cause a lap insert was given - the decision under test,
+ *  now that the row keeps it rather than only the log line. */
+function insertedCause(): unknown {
+  return insertParams()?.[13];
 }
 
 beforeEach(() => {
@@ -235,6 +245,7 @@ describe("POST /api/agent/events behaviour", () => {
     });
     expect(insertedLaps()).toBe(true);
     expect(insertedAttribution()).toEqual([null, null]);
+    expect(insertedCause()).toBe("agent_sends_no_assignment_id");
     // Not even asked - there is no assignment this lap could belong to.
     expect(lookedUpAssignments()).toBe(false);
   });
@@ -252,6 +263,7 @@ describe("POST /api/agent/events behaviour", () => {
       ],
     });
     expect(insertedAttribution()).toEqual([null, null]);
+    expect(insertedCause()).toBe("nobody_checked_in");
     expect(lookedUpAssignments()).toBe(false);
   });
 
@@ -311,8 +323,8 @@ describe("POST /api/agent/events behaviour", () => {
   it("stores a lap driven outside the window of the assignment it names with no owner", async () => {
     // lap_index, not event_id: matches are keyed by batch position. Getting this
     // wrong would make the lookup miss and the case pass as unknown_assignment
-    // instead, which produces the same status - hence the warn assertion below,
-    // which is the only thing that tells the two causes apart.
+    // instead, which produces the same status - hence the cause and warn
+    // assertions below, which are what tell the two causes apart.
     query.mockImplementation(async (sql: string) =>
       String(sql).includes("rig_assignments")
         ? [
@@ -347,6 +359,7 @@ describe("POST /api/agent/events behaviour", () => {
     // Stored, not dropped - but the driver it named is never credited.
     expect(insertedLaps()).toBe(true);
     expect(insertedAttribution()).toEqual([null, null]);
+    expect(insertedCause()).toBe("outside_assignment_window");
   });
 
   it("stores a lap naming an assignment that is not this rig's with no owner", async () => {
@@ -366,6 +379,7 @@ describe("POST /api/agent/events behaviour", () => {
       ],
     });
     expect(insertedAttribution()).toEqual([null, null]);
+    expect(insertedCause()).toBe("unknown_assignment");
   });
 
   it("attributes a lap to the assignment the agent stamped on it", async () => {
@@ -390,6 +404,8 @@ describe("POST /api/agent/events behaviour", () => {
       results: [{ type: "LAP_COMPLETED", eventId: LAP.eventId, status: "accepted" }],
     });
     expect(insertedAttribution()).toEqual([ASSIGNMENT_ID, "driver-uuid"]);
+    // An owned lap has no cause - the database rejects one that does.
+    expect(insertedCause()).toBeNull();
   });
 
   it("attributes a stamped lap that follows a heartbeat in the same batch", async () => {

@@ -6,6 +6,7 @@ import {
   type AgentEventsBody,
   type LapCompletedEvent,
 } from "@/lib/events";
+import type { UnattributedCause } from "@/lib/unattributed-cause";
 import { computeValidity, type FeaturedCombo } from "@/lib/validity";
 import { venueToday } from "@/lib/venue";
 
@@ -21,7 +22,9 @@ import { venueToday } from "@/lib/venue";
  * it captured it, never from the rig's currently-open assignment - a queued lap
  * can arrive long after its driver has left. A lap that cannot be attributed is
  * stored with no driver and no assignment, invalid and unrankable, rather than
- * being credited to the next driver or dropped (db/migrations/0003).
+ * being credited to the next driver or dropped (db/migrations/0003) - and it
+ * records why (db/migrations/0004), because at the counter "they drove before
+ * scanning" and "that rig's clock has drifted" are answered by different people.
  */
 export async function POST(request: Request) {
   const rig = await rigFromBearer(request.headers.get("authorization"));
@@ -48,7 +51,7 @@ export async function POST(request: Request) {
     const matches = await loadStampedAssignments(rig.id, parsed.data.events);
 
     const results: Array<{ type: string; status: string; eventId?: string }> = [];
-    const causes: UnattributedCause[] = [];
+    const causes: IngestionCause[] = [];
 
     for (const [index, event] of parsed.data.events.entries()) {
       if (event.type === "RIG_HEARTBEAT") {
@@ -156,16 +159,19 @@ async function loadStampedAssignments(
   );
 }
 
-/** Why a lap ended up with no owner. Three of the four are operator problems. */
-type UnattributedCause =
-  | "nobody_checked_in"
-  | "agent_sends_no_assignment_id"
-  | "unknown_assignment"
-  | "outside_assignment_window";
+/**
+ * Why a lap ended up with no owner. Three of the four are operator problems.
+ *
+ * Stored on the lap verbatim as `unattributed_cause`, so `/staff` can say which
+ * it was without anyone reading a server log. The stored enum has one more
+ * label, `not_recorded`, for laps that predate the column; this route decides
+ * a cause for every lap it stores, so it never writes that one.
+ */
+type IngestionCause = Exclude<UnattributedCause, "not_recorded">;
 
 type Attribution =
   | { kind: "attributed"; assignment: StampedAssignment }
-  | { kind: "unattributed"; cause: UnattributedCause };
+  | { kind: "unattributed"; cause: IngestionCause };
 
 /**
  * Who owns this lap, decided only from what the agent stamped on it at capture
@@ -204,7 +210,7 @@ function attributeLap(
 
 /** Three of the four causes mean somebody has to go fix something. The fourth -
  *  a rig driven by nobody checked in - is ordinary venue life, not an error. */
-function warnAboutAbnormalCauses(rigNumber: number, causes: UnattributedCause[]): void {
+function warnAboutAbnormalCauses(rigNumber: number, causes: IngestionCause[]): void {
   const stale = causes.filter((c) => c === "agent_sends_no_assignment_id").length;
   if (stale > 0) {
     console.warn(
@@ -240,21 +246,24 @@ async function ingestLap(
   const assignment =
     attribution.kind === "attributed" ? attribution.assignment : null;
 
-  // An unattributed lap is stored invalid with the UNATTRIBUTED reason, and the
-  // database will not accept any other combination (laps_unattributed_is_invalid
-  // in db/migrations/0003). Combo and incident checks are moot: no owner means
-  // it cannot rank whatever it did on track.
+  // An unattributed lap is stored invalid with the UNATTRIBUTED reason and the
+  // cause attributeLap decided; the database will not accept any other
+  // combination (laps_unattributed_is_invalid in db/migrations/0003,
+  // laps_unattributed_has_cause in 0004). Combo and incident checks are moot:
+  // no owner means it cannot rank whatever it did on track.
   const validity = assignment
     ? computeValidity(lap, combo)
     : { isValid: false, invalidReason: "UNATTRIBUTED" as const };
+  const cause = attribution.kind === "unattributed" ? attribution.cause : null;
 
   try {
     const inserted = await queryOne<{ id: string }>(
       `insert into laps (
          event_id, rig_id, rig_assignment_id, driver_id,
          track_name, track_config, car_name, lap_number, lap_time_ms,
-         incident_delta, is_valid, invalid_reason, completed_at
-       ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         incident_delta, is_valid, invalid_reason, completed_at,
+         unattributed_cause
+       ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        on conflict (event_id) do nothing
        returning id`,
       [
@@ -271,6 +280,7 @@ async function ingestLap(
         validity.isValid,
         validity.invalidReason,
         lap.completedAt,
+        cause,
       ],
     );
 

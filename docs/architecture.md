@@ -135,7 +135,11 @@ flowchart TB
   governs whether an ownerless lap can ever be *valid*, while the view governs
   whether it is a member of a round at all - and `v_league_round_laps` exposes
   `is_valid` rather than filtering on it, so without its own predicate an
-  ownerless row would still appear there.
+  ownerless row would still appear there. The same discipline covers *why*:
+  `laps_unattributed_has_cause` (`db/migrations/0004_unattributed_cause.sql`)
+  requires every ownerless lap to carry an `unattributed_cause` and forbids one
+  on an owned lap, which is what lets `/staff` say per row whether the customer
+  drove before scanning or a rig needs attention.
 - **Auth is split by actor.** Rig agents use static bearer tokens; drivers and
   staff use separate signed-cookie sessions. No actor can act outside its scope.
 

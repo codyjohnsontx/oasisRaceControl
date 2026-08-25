@@ -1,13 +1,14 @@
 import { query } from "@/lib/db";
+import type { UnattributedCause } from "@/lib/unattributed-cause";
 
 /** A lap the system could not credit to anyone. `attributeLap`
  *  (`app/api/agent/events/route.ts`) puts a lap here for four different
  *  reasons - nobody was checked in, the rig's agent is too old to say who was,
  *  the assignment it names does not belong to that rig, or its `completedAt`
- *  falls outside that assignment's window. The row carries no cause: it
- *  survives only in the server log line for the batch. Stored, invalid and
- *  unrankable - it has no driver, so there is nothing to reset a PIN on and no
- *  validity to argue about. */
+ *  falls outside that assignment's window - and the row says which
+ *  (`unattributed_cause`, db/migrations/0004; `not_recorded` on laps stored
+ *  before it). Stored, invalid and unrankable - it has no driver, so there is
+ *  nothing to reset a PIN on and no validity to argue about. */
 export type UnattributedLapRow = {
   id: string;
   lap_time_ms: number;
@@ -16,6 +17,7 @@ export type UnattributedLapRow = {
   car_name: string;
   completed_at: string;
   rig_number: number | null;
+  unattributed_cause: UnattributedCause;
 };
 
 export type UnattributedLaps = {
@@ -48,7 +50,7 @@ const UNATTRIBUTED_LAP_WINDOW = "7 days";
 export async function listUnattributedLaps(): Promise<UnattributedLaps> {
   const rows = await query<UnattributedLapRow & { total_count: number }>(
     `select l.id, l.lap_time_ms, l.track_name, l.track_config, l.car_name,
-            l.completed_at, r.rig_number,
+            l.completed_at, r.rig_number, l.unattributed_cause,
             (count(*) over ())::int as total_count
      from laps l
      join rigs r on r.id = l.rig_id

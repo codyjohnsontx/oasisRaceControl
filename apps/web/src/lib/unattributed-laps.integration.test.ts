@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, expect, it } from "vitest";
 import { listUnattributedLaps } from "./unattributed-laps";
+import { UNATTRIBUTED_CAUSES, type UnattributedCause } from "./unattributed-cause";
 import {
   closeTestDb,
   describeDb,
@@ -22,18 +23,20 @@ import {
 async function seedUnattributedLaps(
   rigId: string,
   count: number,
-  options: { minutesAgo?: number } = {},
+  options: { minutesAgo?: number; cause?: UnattributedCause } = {},
 ): Promise<void> {
   const minutesAgo = options.minutesAgo ?? 1;
+  const cause = options.cause ?? "nobody_checked_in";
   await testDb().query(
     `insert into laps (event_id, rig_id, rig_assignment_id, driver_id,
                        track_name, car_name, lap_time_ms, is_valid,
-                       invalid_reason, completed_at)
+                       invalid_reason, unattributed_cause, completed_at)
      select 'evt-unclaimed-' || $3 || '-' || i, $1, null, null,
             'Spa-Francorchamps', 'Porsche 911 GT3 R', 90000 + i, false,
-            'UNATTRIBUTED', now() - ($3 || ' minutes')::interval - (i || ' seconds')::interval
+            'UNATTRIBUTED', $4::unattributed_cause,
+            now() - ($3 || ' minutes')::interval - (i || ' seconds')::interval
      from generate_series(1, $2) as i`,
-    [rigId, count, minutesAgo],
+    [rigId, count, minutesAgo, cause],
   );
 }
 
@@ -66,6 +69,21 @@ describeDb("listUnattributedLaps", () => {
 
     expect(laps).toHaveLength(3);
     expect(total).toBe(3);
+  });
+
+  it("carries each lap's cause through to the list", async () => {
+    const rig = await seedRig(1);
+    // One lap per cause, oldest first, so the newest-first list reverses them.
+    for (const [index, cause] of UNATTRIBUTED_CAUSES.entries()) {
+      await seedUnattributedLaps(rig.id, 1, { cause, minutesAgo: 10 - index });
+    }
+
+    const { laps } = await listUnattributedLaps();
+
+    // The row says why, in the enum's own label; wording it is the screen's job.
+    expect(laps.map((lap) => lap.unattributed_cause)).toEqual(
+      [...UNATTRIBUTED_CAUSES].reverse(),
+    );
   });
 
   it("counts over the same window and predicate the list is drawn from", async () => {
