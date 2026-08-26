@@ -24,8 +24,10 @@ patches:
   - path: web-await-migrations-patch.yaml
   - path: web-nodeport-patch.yaml
 
+# Only the migrator, which is added by this overlay and so is not in the base.
+# The web tag is inherited: repeating it here would silently override the base
+# and make retagging there do nothing on the one path `oasis-kind.sh apply`
+# takes.
 images:
-  - name: oasis-race-control/web
-    newTag: dev
   - name: oasis-race-control/migrate
     newTag: dev

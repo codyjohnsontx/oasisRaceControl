@@ -24,8 +24,9 @@ resources:
   - deployment.yaml
   - service.yaml
 
-# One place to retag. `oasis-race-control/web` is a local name: nothing pushes
-# it to a registry yet, and the local overlay loads it straight into kind.
+# One place to retag the web image, overlays included - they inherit this rather
+# than repeating it. `oasis-race-control/web` is a local name: nothing pushes it
+# to a registry yet, and the local overlay loads it straight into kind.
 images:
   - name: oasis-race-control/web
     newTag: dev

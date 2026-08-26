@@ -63,6 +63,25 @@ require_cluster() {
 
 image_exists() { docker image inspect "$1" >/dev/null 2>&1; }
 
+# Probes the host URL once and prints one coloured line per path. Sets
+# ACCESS_REACHABLE to 1 only when every path answered 200, so a caller that
+# needs an assertion can read the verdict instead of probing a second time and
+# printing the table twice.
+ACCESS_REACHABLE=0
+probe_access() {
+  local code path
+  ACCESS_REACHABLE=1
+  for path in /api/health /api/ready; do
+    code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 10 "${HOST_URL}${path}" 2>/dev/null || true)"
+    if [ "$code" = "200" ]; then
+      printf '    %s200%s  %s\n' "$GREEN" "$RESET" "$path"
+    else
+      printf '    %s%s%s  %s\n' "$RED" "${code:-no answer}" "$RESET" "$path"
+      ACCESS_REACHABLE=0
+    fi
+  done
+}
+
 # ------------------------------------------------------------------ check ---
 
 cmd_check() {
@@ -315,15 +334,10 @@ cmd_access() {
   printf '\n'
 
   step "Probing it"
-  local code
-  for path in /api/health /api/ready; do
-    code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 10 "${HOST_URL}${path}" 2>/dev/null || true)"
-    if [ "$code" = "200" ]; then
-      printf '    %s200%s  %s\n' "$GREEN" "$RESET" "$path"
-    else
-      printf '    %s%s%s  %s\n' "$RED" "${code:-no answer}" "$RESET" "$path"
-    fi
-  done
+  # Informational on purpose: this command's job is to print a URL, and a miss a
+  # second after a rollout is not a reason to fail. `up` is what asserts on the
+  # verdict probe_access leaves behind.
+  probe_access
   printf '\n'
 }
 
@@ -418,7 +432,13 @@ cmd_demo_rollout() {
     if [ "$sample" -lt "$min" ]; then min="$sample"; fi
     sleep 1
   done
-  wait "$status_pid"
+  # Captured rather than left to propagate: under `set -e` a bare `wait` on a
+  # failed or timed-out rollout would kill this function right here and throw
+  # away the availability sample it just spent up to 240s collecting - and a
+  # roll that went badly is precisely when that measurement is worth reading.
+  # The failure is reported below, after the outputs have been printed.
+  local rollout_status=0
+  wait "$status_pid" || rollout_status=$?
 
   info "After:"
   kc get pods -l app.kubernetes.io/component=web -o wide | sed 's/^/      /'
@@ -435,6 +455,14 @@ cmd_demo_rollout() {
   step "Revision history"
   kc rollout history deployment/web
   note "roll back with: kubectl --context ${CONTEXT} -n ${NAMESPACE} rollout undo deployment/web"
+
+  if [ "$rollout_status" -ne 0 ]; then
+    printf '\n'
+    note "Everything above is what was actually observed - the roll simply did not finish."
+    note "kubectl --context ${CONTEXT} -n ${NAMESPACE} describe pods -l app.kubernetes.io/component=web"
+    note "and: $0 status"
+    die "the rollout did not complete (rollout status exited ${rollout_status})."
+  fi
 }
 
 # ----------------------------------------------------------- cluster-down ---
@@ -469,6 +497,25 @@ cmd_up() {
   cmd_apply
   cmd_wait
   cmd_access
+
+  # `up` is the composed workflow a person or a CI wrapper actually invokes, so
+  # it is the one that must not report success for an environment nobody can
+  # reach. Everything above can pass while the host cannot get in: kind fixes
+  # host port mappings when the cluster is CREATED, so a cluster made before
+  # deploy/local/kind-cluster.yaml gained host 8080 -> node 30080 has nowhere to
+  # add it now. That is exactly the path where cluster-up says "Already exists -
+  # nothing to do" and wait succeeds, because in-cluster the rollout genuinely
+  # is healthy. A silent success there is what this script's strict error
+  # handling exists to prevent.
+  if [ "$ACCESS_REACHABLE" -ne 1 ]; then
+    note "The rollout is healthy inside the cluster, but the host got no answer."
+    note "kind fixes host port mappings at cluster creation time, so a cluster created"
+    note "before deploy/local/kind-cluster.yaml gained host 8080 -> node 30080 looks"
+    note "completely healthy from the inside while nothing answers on ${HOST_URL}."
+    note "Recreate it:  $0 cluster-down  &&  $0 up"
+    note "Or reach it without the mapping, with the port-forward printed above."
+    die "${HOST_URL} did not answer. See the probe above."
+  fi
 }
 
 # ------------------------------------------------------------------- help ---

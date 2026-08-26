@@ -336,6 +336,12 @@ subcommand you can run on its own, and every one is safe to re-run.
 | 7 | `oasis-kind.sh wait` | Postgres, then the migration Job, then the web rollout |
 | 8 | `oasis-kind.sh access` | prints the URL and probes both health endpoints |
 
+`access` is informational and always exits 0 - it prints a URL, and a probe that
+misses a second after a rollout is not a reason to fail. `up` is the one that
+asserts: if either endpoint did not answer 200 it exits non-zero and names the
+likeliest cause, because `up` is what a person or a CI wrapper invokes and it
+must not report success for an environment nobody can reach.
+
 From nothing to a probed URL, `up` takes about **3m40s** on an M-series laptop,
 most of it the first image build and `kind load`. Re-running it after that is
 much faster: every step is idempotent, and the image layers are cached.
