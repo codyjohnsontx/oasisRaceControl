@@ -186,7 +186,7 @@ checks that do catch that case - is in
 ## Local Kubernetes
 
 `deploy/` holds a `kind` cluster, a two-target Dockerfile and Kustomize
-manifests for the web app — development and demonstration only; production is
+manifests for the web app - development and demonstration only; production is
 still Vercel plus Neon and the base manifests deliberately contain no database.
 Everything, including why the rig agent is not containerized and why the image
 build skips the migration gate, is in

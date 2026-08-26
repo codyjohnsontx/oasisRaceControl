@@ -70,7 +70,7 @@ manifests.
 | Tool | Why | Install |
 |---|---|---|
 | Docker | builds the images and hosts kind's nodes | Docker Desktop |
-| `kubectl` ≥ 1.29 | talks to the cluster, and **already contains kustomize** | `brew install kubectl` |
+| `kubectl` ≥ 1.30 | talks to the cluster, and **already contains kustomize**. 1.30 is the floor because the nodes are pinned to v1.31 and kubectl is supported within one minor of the API server (`deploy/local/kind-cluster.yaml`). | `brew install kubectl` |
 | `kind` ≥ 0.20 | the cluster itself | `brew install kind` |
 | `openssl` | generates the local secrets | ships with macOS |
 
