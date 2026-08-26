@@ -138,8 +138,9 @@ flowchart TB
   ownerless row would still appear there. The same discipline covers *why*:
   `laps_unattributed_has_cause` (`db/migrations/0004_unattributed_cause.sql`)
   requires every ownerless lap to carry an `unattributed_cause` and forbids one
-  on an owned lap, which is what lets `/staff` say per row whether the customer
-  drove before scanning or a rig needs attention.
+  on an owned lap, which is what lets `/staff` say per row whether the rig
+  simply saw no check-in or a rig needs attention (wording in
+  `apps/web/src/lib/unattributed-cause.ts`).
 - **Auth is split by actor.** Rig agents use static bearer tokens; drivers and
   staff use separate signed-cookie sessions. No actor can act outside its scope.
 
