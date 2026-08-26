@@ -279,17 +279,28 @@ once, at container start:
 kubectl -n oasis-race-control rollout restart deployment/web
 ```
 
-Locally that works for `SESSION_SECRET` and only for `SESSION_SECRET`. Delete
-`deploy/local/cluster.env`, re-run `oasis-kind.sh secrets`, restart the
-Deployment, and every cookie signed by the old secret stops verifying - which is
-the whole point of rotating it.
+Locally that works for `SESSION_SECRET` and only for `SESSION_SECRET`. Rotate it
+by overwriting the `SESSION_SECRET=` line in `deploy/local/cluster.env` with a
+fresh `openssl rand -base64 48`, leaving `POSTGRES_PASSWORD` alone, then:
 
-The dev database password cannot be rotated that way. The `postgres` image reads
-`POSTGRES_PASSWORD` only while `initdb` builds the data directory, and the
-PersistentVolumeClaim outlives pod restarts and even deleting the StatefulSet.
-So regenerating it rewrites both Secrets while the database keeps the password it
-was created with, and every web pod then fails with `password authentication
-failed for user "oasis"`. Changing it means `oasis-kind.sh cluster-down` first -
+```bash
+./deploy/local/oasis-kind.sh secrets
+kubectl -n oasis-race-control rollout restart deployment/web
+```
+
+`secrets` reuses an existing `cluster.env` instead of regenerating it, so both
+Secrets are re-applied with the database password unchanged, and every cookie
+signed by the old secret stops verifying - which is the whole point of rotating
+it.
+
+Editing that line rather than deleting the file is the load-bearing part.
+`secrets` generates only when `cluster.env` is absent, so deleting it produces a
+new `POSTGRES_PASSWORD` as well, and the dev database password cannot change
+under a running cluster. The `postgres` image reads it only while `initdb` builds
+the data directory, and the PersistentVolumeClaim outlives pod restarts and even
+deleting the StatefulSet. The database keeps the password it was created with,
+so every web pod fails with `password authentication failed for user "oasis"`.
+Changing the database password means `oasis-kind.sh cluster-down` first -
 deleting the cluster is what discards the claim, and the next `up` runs `initdb`
 against the new password.
 
