@@ -44,13 +44,15 @@ export function UnclaimedLaps({
       </h2>
       <p className="text-muted text-xs mb-3">
         Laps nobody can be credited with. They are kept but can never reach a
-        leaderboard. Each row says why. <em>Drove before scanning</em>{" "}
-        is the customer&apos;s: they drove before checking in at the rig, and
-        nothing needs fixing. Any other reason is the rig&apos;s, and that rig
-        needs looking at - an agent build too old to say who was driving, a
-        check-in this rig has never had, or a finish time outside the check-in
-        it names, which means the rig PC&apos;s clock has drifted or the rig
-        was offline while the seat changed hands. The exception is{" "}
+        leaderboard. Each row says why. <em>Rig saw no check-in</em>{" "}
+        usually means the customer drove before scanning; it can also be a
+        check-in the rig had not heard about yet - it asks every 10 seconds,
+        and cannot while offline. Nothing needs fixing either way. Any other
+        reason is the rig&apos;s, and that rig needs looking at - an agent
+        build too old to say who was driving, a check-in this rig has never
+        had, or a finish time outside the check-in it names, which means the
+        rig PC&apos;s clock has drifted or the rig was offline while the seat
+        changed hands. The exception is{" "}
         <em>Cause not recorded</em>: those laps were stored before this screen
         could say why, and there is nothing to act on.
       </p>

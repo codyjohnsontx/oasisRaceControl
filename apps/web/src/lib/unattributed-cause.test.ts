@@ -11,9 +11,11 @@ describe("describeUnattributedCause", () => {
     }
   });
 
-  it("tells the customer's case apart from a rig problem", () => {
+  it("says what the rig knew for the ordinary case, without blaming the customer", () => {
+    // The agent stamps from its last successful poll, so this label also covers
+    // a check-in the rig had not heard about yet. The wording claims only that.
     expect(describeUnattributedCause("nobody_checked_in")).toEqual({
-      label: "Drove before scanning",
+      label: "Rig saw no check-in",
       rigNeedsAttention: false,
     });
   });

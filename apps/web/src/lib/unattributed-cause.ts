@@ -39,8 +39,12 @@ export type UnattributedCauseWording = {
 };
 
 const WORDING: Record<UnattributedCause, UnattributedCauseWording> = {
+  // What the agent knew, not what happened: it stamps from its last successful
+  // assignment poll, so a customer who scanned within the last ten seconds, or
+  // during an outage, lands here too. Usually they drove before scanning; the
+  // screen's paragraph says both, and neither sends anyone to the rig.
   nobody_checked_in: {
-    label: "Drove before scanning",
+    label: "Rig saw no check-in",
     rigNeedsAttention: false,
   },
   agent_sends_no_assignment_id: {

@@ -48,7 +48,7 @@ describe("UnclaimedLaps", () => {
       />,
     );
 
-    expect(html).toContain("Drove before scanning");
+    expect(html).toContain("Rig saw no check-in");
     expect(html).toContain("Rig agent out of date");
     expect(html).toContain("Unknown assignment");
     expect(html).toContain("Rig clock out of sync, or offline at handover");
@@ -57,7 +57,7 @@ describe("UnclaimedLaps", () => {
     expect(html).not.toMatch(/nobody_checked_in|outside_assignment_window/);
   });
 
-  it("colours a rig problem as a problem and the customer's case as ordinary", () => {
+  it("colours a rig problem as a problem and the ordinary case as ordinary", () => {
     const html = renderToStaticMarkup(
       <UnclaimedLaps
         laps={[lap("nobody_checked_in"), lap("outside_assignment_window")]}
@@ -65,8 +65,8 @@ describe("UnclaimedLaps", () => {
       />,
     );
 
-    expect(causeSpanClass(html, "Drove before scanning")).toContain("text-muted");
-    expect(causeSpanClass(html, "Drove before scanning")).not.toContain("text-invalid");
+    expect(causeSpanClass(html, "Rig saw no check-in")).toContain("text-muted");
+    expect(causeSpanClass(html, "Rig saw no check-in")).not.toContain("text-invalid");
     expect(
       causeSpanClass(html, "Rig clock out of sync, or offline at handover"),
     ).toContain("text-invalid");
