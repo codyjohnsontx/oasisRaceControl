@@ -115,4 +115,36 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
     );
     expect(constraint.rows).toEqual([{ convalidated: true }]);
   });
+
+  it("keeps the previous deployment's ingestion working until the new code deploys", async () => {
+    // docs/deploy.md: migrate first, then deploy, and a database ahead of the
+    // code is harmless. Between those two steps the running ingestion still
+    // inserts in the 0003 shape - no cause column at all. Both kinds of lap it
+    // writes must still land: the ownerless one with the honest label, the
+    // owned one with none.
+    const { rows: [rig] } = await db.query<{ id: string }>(
+      "select id from rigs where rig_number = 1",
+    );
+    const { rows: [assignment] } = await db.query<{ id: string; driver_id: string }>(
+      "select id, driver_id from rig_assignments limit 1",
+    );
+    await db.query(
+      `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name,
+                         car_name, lap_time_ms, is_valid, invalid_reason, completed_at)
+       values ('evt-old-writer-unclaimed', $1, null, null, 'Spa-Francorchamps',
+               'Porsche 911 GT3 R', 90002, false, 'UNATTRIBUTED', now()),
+              ('evt-old-writer-owned', $1, $2, $3, 'Spa-Francorchamps',
+               'Porsche 911 GT3 R', 90003, true, null, now())`,
+      [rig!.id, assignment!.id, assignment!.driver_id],
+    );
+
+    const { rows } = await db.query(
+      `select event_id, unattributed_cause from laps
+       where event_id like 'evt-old-writer-%' order by event_id`,
+    );
+    expect(rows).toEqual([
+      { event_id: "evt-old-writer-owned", unattributed_cause: null },
+      { event_id: "evt-old-writer-unclaimed", unattributed_cause: "not_recorded" },
+    ]);
+  });
 });

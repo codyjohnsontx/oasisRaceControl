@@ -584,6 +584,29 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     ).rejects.toThrow(/laps_unattributed_has_cause/);
   });
 
+  it("labels an ownerless lap inserted without a cause as not_recorded", async () => {
+    const rig = await seedRig(1);
+
+    // The shape the previous deployment's ingestion writes, which keeps landing
+    // between migrate and deploy (docs/deploy.md orders them that way). The
+    // trigger fills the one label that is true of it, rather than the constraint
+    // bouncing the lap back to the rig's outbox until the new code is live.
+    await testDb().query(
+      `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name,
+                         car_name, lap_time_ms, is_valid, invalid_reason, completed_at)
+       values ('evt-old-writer-0001', $1, null, null, 'Spa-Francorchamps',
+               'Porsche 911 GT3 R', 90000, false, 'UNATTRIBUTED', now())`,
+      [rig.id],
+    );
+
+    const laps = await lapRows();
+    expect(laps[0]).toMatchObject({
+      driver_id: null,
+      invalid_reason: "UNATTRIBUTED",
+      unattributed_cause: "not_recorded",
+    });
+  });
+
   it("will not let an owned lap carry a cause", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");

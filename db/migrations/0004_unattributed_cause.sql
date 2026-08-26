@@ -13,7 +13,9 @@
 -- across all four.
 --
 -- The cause now lives on the lap. Additive: one enum, one nullable column, one
--- check constraint, and a backfill for the rows that predate it.
+-- check constraint, a backfill for the rows that predate it, and a before-insert
+-- trigger that keeps the previous deployment's ingestion working between
+-- migrate and deploy.
 
 -- Lowercase labels, matching assignment_end_reason and the names ingestion
 -- already uses in code, so the route writes the value it decided verbatim. A
@@ -32,8 +34,10 @@ create type unattributed_cause as enum (
   -- A real assignment of this rig, but the lap's completedAt falls outside its
   -- window: a drifted rig clock, or a rig offline while the seat changed hands.
   'outside_assignment_window',
-  -- Stored before this column existed. Ingestion never writes this label;
-  -- only the backfill below does.
+  -- The writer recorded no cause: laps from before this column existed (the
+  -- backfill below), and laps a deployment older than this column writes
+  -- between migrate and deploy (the trigger below). The current ingestion
+  -- never writes this label.
   'not_recorded'
 );
 
@@ -52,3 +56,26 @@ update laps set unattributed_cause = 'not_recorded' where driver_id is null;
 -- is unrepresentable.
 alter table laps add constraint laps_unattributed_has_cause
   check ((driver_id is null) = (unattributed_cause is not null));
+
+-- The deploy order is migrate first, then deploy (docs/deploy.md), and a
+-- database ahead of the code must stay harmless. The previous deployment's
+-- ingestion inserts an ownerless lap with no cause, which the constraint above
+-- would reject: every unclaimed lap would bounce back to the rig's outbox until
+-- the new code landed, and a rollback would reopen that hole indefinitely. So a
+-- missing cause on an ownerless INSERT is filled with not_recorded, which is
+-- exactly what it is - the writer recorded none. Insert only, deliberately: an
+-- update that nulls a cause is a mistake the constraint still catches, and an
+-- owned lap given a cause is a contradiction that is never papered over.
+create function laps_default_unattributed_cause() returns trigger
+language plpgsql as $$
+begin
+  if new.driver_id is null and new.unattributed_cause is null then
+    new.unattributed_cause := 'not_recorded';
+  end if;
+  return new;
+end
+$$;
+
+create trigger laps_default_unattributed_cause
+  before insert on laps
+  for each row execute function laps_default_unattributed_cause();

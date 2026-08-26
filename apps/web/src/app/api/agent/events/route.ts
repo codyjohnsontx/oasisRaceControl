@@ -164,8 +164,9 @@ async function loadStampedAssignments(
  *
  * Stored on the lap verbatim as `unattributed_cause`, so `/staff` can say which
  * it was without anyone reading a server log. The stored enum has one more
- * label, `not_recorded`, for laps that predate the column; this route decides
- * a cause for every lap it stores, so it never writes that one.
+ * label, `not_recorded`, for laps whose writer recorded none - before the column
+ * existed, or a deployment older than it; this route decides a cause for every
+ * lap it stores, so it never writes that one.
  */
 type IngestionCause = Exclude<UnattributedCause, "not_recorded">;
 

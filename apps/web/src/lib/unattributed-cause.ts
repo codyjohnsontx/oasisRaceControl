@@ -6,7 +6,9 @@
  * Ingestion decides the first four (`attributeLap` in
  * app/api/agent/events/route.ts) and stores exactly the label it decided.
  * `not_recorded` is the one label ingestion never writes: the migration
- * backfills it onto laps stored before the column existed.
+ * backfills it onto laps stored before the column existed, and a before-insert
+ * trigger fills it when a deployment older than the column writes an ownerless
+ * lap between migrate and deploy.
  *
  * Pure, so a client component can import it. The wording is venue-facing: a
  * person at the counter reads it next to a lap time, and what they need from it
