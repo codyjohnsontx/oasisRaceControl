@@ -263,13 +263,27 @@ prints a value**, and no generated value is ever written anywhere else.
 For a cluster that is not this one, `deploy/k8s/base/secret.template.yaml` shows
 the shape. It is deliberately **not listed in any kustomization**, so
 `kubectl apply -k` cannot create a Secret and no real value can ride into git
-behind one. Prefer the imperative form, which never touches disk:
+behind one. Prefer the imperative form, which keeps the value out of any file
+you might commit:
 
 ```bash
 kubectl create secret generic web-secrets \
   --namespace oasis-race-control \
   --from-literal=DATABASE_URL='postgres://user:pass@host:5432/oasis?sslmode=require' \
   --from-literal=SESSION_SECRET="$(openssl rand -base64 48)"
+```
+
+That is not the same as leaving no trace. A value typed inline goes into your
+shell history and, while `kubectl` runs, into its process arguments, where
+anything on the machine can read it with `ps`. For the generated local secrets
+that is a fair trade - they are random, throwaway, and never valid anywhere
+else. For a **real** credential, such as a production Neon URL, keep it out of
+both by putting it in a file and reading from that instead:
+
+```bash
+kubectl create secret generic web-secrets \
+  --namespace oasis-race-control \
+  --from-env-file=/path/to/secrets.env    # DATABASE_URL=... on its own line
 ```
 
 Rotating means replacing the Secret and restarting the pods - `envFrom` is read
@@ -519,7 +533,7 @@ running the .NET rig agent anywhere but a Windows sim PC.**
 
 | Symptom | Cause and fix |
 |---|---|
-| Pods stuck in `Init:0/1` | The `db-migrate` Job has not finished. `oasis-kind.sh logs migrate`. The initContainer gives it 3 minutes, then fails loudly on purpose. |
+| Pods stuck in `Init:0/1` | The `db-migrate` Job has not finished. `oasis-kind.sh logs migrate`. The initContainer gives it 5 minutes of wall clock, then fails loudly on purpose. |
 | Pods stuck in `CreateContainerConfigError` | Secret `web-secrets` is missing. `oasis-kind.sh secrets`. The Deployment references it non-optionally so a pod without it fails to start rather than serving 500s while passing liveness. |
 | `ErrImageNeverPull` / `ImagePullBackOff` | The image was built but not loaded into the nodes. `oasis-kind.sh load`. kind nodes have their own image store. |
 | `0/1 Ready`, `/api/ready` returns 503 | Read the `reason` in the body. `DATABASE_URL is not set` means the Secret is wrong; anything else means the database is unreachable. Check `postgres-0`. |

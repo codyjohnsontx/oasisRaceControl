@@ -237,7 +237,32 @@ cmd_apply() {
     kc delete job db-migrate --wait=true >/dev/null
   fi
 
+  # `:dev` is a mutable tag, and that is the trap in this whole workflow.
+  # `build` + `load` can change everything inside the image without changing
+  # one byte of the pod template, so `apply` reports "unchanged", `wait`
+  # reports a successful rollout, and the pods keep serving the code you just
+  # replaced. Restarting the workloads that run our own images is what makes a
+  # second `up` actually deploy the rebuild.
+  #
+  # Only ones that already exist: on a first apply the pods are new anyway.
+  # db-migrate is not in this list because it is deleted and recreated above,
+  # so it always starts from the freshly loaded image.
+  local running=()
+  local deployment
+  for deployment in web fake-rig; do
+    if kc get deployment "$deployment" >/dev/null 2>&1; then
+      running+=("$deployment")
+    fi
+  done
+
   kc_cluster apply -k "$OVERLAY"
+
+  if [ "${#running[@]}" -gt 0 ]; then
+    for deployment in "${running[@]}"; do
+      note "restarting ${deployment} so it picks up the freshly loaded image"
+      kc rollout restart "deployment/${deployment}" >/dev/null
+    done
+  fi
 }
 
 # ------------------------------------------------------------------- wait ---

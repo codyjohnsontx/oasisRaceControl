@@ -27,17 +27,25 @@ spec:
             - -c
             # Bounded, so a database that never becomes reachable ends in a
             # visible CrashLoopBackOff rather than a pod that sits in Init
-            # forever with nobody watching. 60 x 3s = 3 minutes.
+            # forever with nobody watching.
+            #
+            # Bounded on the CLOCK, not on a number of attempts: an attempt is
+            # not a fixed cost. check-migrations.ts gives a connect 15s of its
+            # own (CONNECT_TIMEOUT_MS), so against a host that accepts the
+            # packet and never answers, "60 attempts x 3s" would have been
+            # eighteen minutes rather than the three it claimed - and the
+            # hanging database is the exact case this guard exists for.
             - |
               set -eu
-              i=0
+              deadline=$(($(date +%s) + 300))
+              attempt=0
               until node_modules/.bin/tsx scripts/check-migrations.ts; do
-                i=$((i + 1))
-                if [ "$i" -ge 60 ]; then
-                  echo "await-migrations: db/migrations still not applied after 3m; giving up so this is visible" >&2
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "await-migrations: db/migrations still not applied after 5m; giving up so this is visible" >&2
                   exit 1
                 fi
-                echo "await-migrations: waiting for the db-migrate Job (attempt $i)"
+                attempt=$((attempt + 1))
+                echo "await-migrations: waiting for the db-migrate Job (attempt $attempt)"
                 sleep 3
               done
           envFrom:
