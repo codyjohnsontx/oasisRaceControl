@@ -134,11 +134,11 @@ list; do not fix it by loosening the server bound.
 
 ## Local dev
 
-- The .NET SDK for `apps/rig-agent` lives at `~/.dotnet` and is not on the
-  default PATH: `export PATH="$HOME/.dotnet:$PATH"`, then
-  `dotnet test apps/rig-agent/OasisRigAgent.sln`. No CI workflow builds the
-  agent (`spike-safety.yml` covers `spike/` only), so that local run is the
-  only check it gets.
+- Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which
+  is not on the default PATH; the exact commands are in
+  `apps/rig-agent/README.md` (Run from source). No CI workflow builds the agent
+  (`spike-safety.yml` covers `spike/` only), so that local run is the only
+  check it gets.
 - `apps/web/.env.local` is gitignored and its comments have gone stale before.
   Read `DATABASE_URL` itself before assuming which database (local Docker
   `oasis-pg` on 5433, or Neon) a dev server or migration is pointed at.
