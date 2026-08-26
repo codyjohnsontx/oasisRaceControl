@@ -72,7 +72,14 @@ The repo is a monorepo; the app lives in `apps/web`.
    Both are read lazily on the request paths that use them — a missing
    `DATABASE_URL` throws the first time a route touches the database, and a
    missing `SESSION_SECRET` throws the first time a session is signed or read.
-   Hit the site after deploying (or add a health check) to surface a bad config.
+   Hit `/api/ready` after deploying to surface a bad `DATABASE_URL`: it runs
+   one `select 1` through the pool and answers 503 with a plain-English
+   `reason` when the variable is missing or the database does not answer
+   within 2s, or 200 - carrying the applied-migration count whenever
+   `schema_migrations` can be read. `/api/health` only says the process is up
+   and never touches the database, so it stays 200 through a bad
+   `DATABASE_URL` by design. A missing `SESSION_SECRET` still surfaces only on
+   the first sign-in.
 4. **Deploy, then read the top of the build log.** The migration gate runs
    before `next build` and names the database it checked:
 
