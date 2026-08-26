@@ -279,6 +279,20 @@ once, at container start:
 kubectl -n oasis-race-control rollout restart deployment/web
 ```
 
+Locally that works for `SESSION_SECRET` and only for `SESSION_SECRET`. Delete
+`deploy/local/cluster.env`, re-run `oasis-kind.sh secrets`, restart the
+Deployment, and every cookie signed by the old secret stops verifying - which is
+the whole point of rotating it.
+
+The dev database password cannot be rotated that way. The `postgres` image reads
+`POSTGRES_PASSWORD` only while `initdb` builds the data directory, and the
+PersistentVolumeClaim outlives pod restarts and even deleting the StatefulSet.
+So regenerating it rewrites both Secrets while the database keeps the password it
+was created with, and every web pod then fails with `password authentication
+failed for user "oasis"`. Changing it means `oasis-kind.sh cluster-down` first -
+deleting the cluster is what discards the claim, and the next `up` runs `initdb`
+against the new password.
+
 ---
 
 ## The exact commands
@@ -442,7 +456,10 @@ docker rmi oasis-race-control/web:dev oasis-race-control/migrate:dev
 ```
 
 `deploy/local/cluster.env` is kept, so the next cluster comes up with the same
-local secrets. Delete it to rotate them.
+local secrets. Delete it to rotate them - and with the cluster and its
+PersistentVolumeClaim already gone, this is the one moment the dev database
+password can change too. See
+[Environment variables and secrets](#environment-variables-and-secrets) for why.
 
 ---
 
@@ -495,6 +512,7 @@ running the .NET rig agent anywhere but a Windows sim PC.**
 | Pods stuck in `CreateContainerConfigError` | Secret `web-secrets` is missing. `oasis-kind.sh secrets`. The Deployment references it non-optionally so a pod without it fails to start rather than serving 500s while passing liveness. |
 | `ErrImageNeverPull` / `ImagePullBackOff` | The image was built but not loaded into the nodes. `oasis-kind.sh load`. kind nodes have their own image store. |
 | `0/1 Ready`, `/api/ready` returns 503 | Read the `reason` in the body. `DATABASE_URL is not set` means the Secret is wrong; anything else means the database is unreachable. Check `postgres-0`. |
+| `0/1 Ready` and `password authentication failed for user "oasis"` in the web logs, after re-running `secrets` | `cluster.env` was regenerated against an existing cluster. The database still has the password `initdb` gave it, because the PersistentVolumeClaim survived. `cluster-down`, then `up`. See [Environment variables and secrets](#environment-variables-and-secrets). |
 | `http://localhost:8080` refuses the connection | Something else has port 8080, or the cluster predates `kind-cluster.yaml`'s port mapping. Port mappings are fixed at cluster creation - `cluster-down` then `up`, or use `port-forward`. |
 | `The connection to the server ... was refused` | The cluster is gone or Docker restarted. `kind get clusters`, then `cluster-up`. |
 | `db-migrate` fails with `42703 undefined_column` | A database that applied an older copy of a migration. Locally: delete the cluster and start again. Never on a real database - see [deploy.md](../deploy.md#recovering-a-database-that-is-behind-the-code). |

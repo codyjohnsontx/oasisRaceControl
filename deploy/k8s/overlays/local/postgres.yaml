@@ -52,6 +52,7 @@ spec:
         oasis.dev/tier: development-only
     spec:
       terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         # uid/gid 70 is `postgres` in the Alpine image - not the 999 the

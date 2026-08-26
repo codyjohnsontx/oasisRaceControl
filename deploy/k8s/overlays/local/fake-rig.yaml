@@ -43,6 +43,7 @@ spec:
         oasis.dev/tier: development-only
     spec:
       terminationGracePeriodSeconds: 10
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

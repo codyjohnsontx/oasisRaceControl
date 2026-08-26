@@ -51,6 +51,8 @@ spec:
       # Error for the moment before it is garbage-collected. That is Next's
       # deliberate exit code, not a failed shutdown.
       terminationGracePeriodSeconds: 30
+      # Nothing here calls the Kubernetes API, so it gets no token for it.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         # uid/gid 1000 is the `node` user the image already runs as

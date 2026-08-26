@@ -37,6 +37,7 @@ spec:
       # Postgres may still be starting. The script fails fast and the Job
       # retries with backoff until it is up.
       restartPolicy: OnFailure
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
