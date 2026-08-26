@@ -332,9 +332,17 @@ subcommand you can run on its own, and every one is safe to re-run.
 | 3 | `oasis-kind.sh build` | builds both images |
 | 4 | `oasis-kind.sh load` | loads them into the nodes - kind has its own image store, a local `docker build` is not enough |
 | 5 | `oasis-kind.sh secrets` | generates and creates the Secrets |
-| 6 | `oasis-kind.sh apply` | `kubectl apply -k deploy/k8s/overlays/local` |
+| 6 | `oasis-kind.sh apply` | `kubectl apply -k deploy/k8s/overlays/local`, then restarts the workloads running our own images |
 | 7 | `oasis-kind.sh wait` | Postgres, then the migration Job, then the web rollout |
 | 8 | `oasis-kind.sh access` | prints the URL and probes both health endpoints |
+
+That restart is what makes an edit-and-redeploy loop work. `:dev` is a mutable
+tag, so `build` and `load` can replace everything inside the image without
+changing one byte of the pod template - `apply` would report `unchanged`, `wait`
+would report a successful rollout, and the pods would keep serving the code you
+just replaced. `apply` therefore restarts `web` and `fake-rig` when they are
+already running; `db-migrate` is not in that list because it is deleted and
+recreated, so it always starts from the freshly loaded image.
 
 `access` is informational and always exits 0 - it prints a URL, and a probe that
 misses a second after a rollout is not a reason to fail. `up` is the one that
