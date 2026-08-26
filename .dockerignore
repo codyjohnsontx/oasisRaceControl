@@ -1,0 +1,44 @@
+# Build context is the repository root (see apps/web/Dockerfile). Everything
+# the image does not need is excluded here - not only to keep the context
+# small, but because .env* and kubeconfigs must never reach a layer.
+
+# Secrets and local configuration. The leading ** matters: .env.local lives in
+# apps/web, not at the root.
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+**/kubeconfig
+**/.kube/
+
+# Dependencies and build output - reinstalled and rebuilt inside the image.
+**/node_modules/
+**/.next/
+**/out/
+**/build/
+**/coverage/
+**/*.tsbuildinfo
+
+# .NET (the rig agent and the spike recorder are win-x64 and are never
+# containerized - see docs/platform/local-kubernetes.md).
+**/bin/
+**/obj/
+apps/rig-agent/
+spike/
+spike-logs/
+
+# Repository furniture with no place in an image.
+.git/
+.github/
+.claude/
+.coderabbit.yaml
+deploy/
+docs/
+**/*.md
+
+# OS / editor
+**/.DS_Store
+**/.vscode/
+**/.idea/
+**/.vercel

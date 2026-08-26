@@ -7,6 +7,12 @@ database on Neon, and a rig agent on each simulator. See
 Only the web app is "deployed" in the cloud sense. The agent is installed on
 each sim PC, and the TV is just a browser pointed at `/tv`.
 
+There is also a local Kubernetes environment - `kind`, container images, and
+Kustomize manifests - for development and for demonstrating the web tier's
+runtime behaviour on a laptop. It does not deploy anything and it is not part
+of this runbook: see
+[platform/local-kubernetes.md](./platform/local-kubernetes.md).
+
 > **Site returning 500s right after a deploy?** The database is probably behind
 > the code. Go straight to
 > [Recovering a database that is behind the code](#recovering-a-database-that-is-behind-the-code).
@@ -188,6 +194,15 @@ It is deliberately a *check*, not an auto-migrate. Running `db:migrate` from a
 build container would apply DDL to the live venue database unattended, and a
 preview build would do it to production. The gate blocks the bad ordering
 without ever writing.
+
+The local Kubernetes overlay is the one place that does apply migrations
+automatically, and only because a throwaway `kind` cluster has no human in that
+loop and no data to lose: a one-shot `db-migrate` Job runs the same
+`scripts/migrate.ts`, and the web pods carry an initContainer that runs *this*
+gate in a retry loop and refuses to start until the Job's work is recorded in
+`schema_migrations`. That is a development stand-in for the rule above, not a
+model of it - nothing in production applies DDL without a person
+([platform/local-kubernetes.md](./platform/local-kubernetes.md#migrations-run-before-the-web-pods-do)).
 
 `db/migrations` sits outside `apps/web`, which is Vercel's Root Directory, so
 the gate depends on **Settings -> General -> Root Directory -> "Include files
@@ -385,3 +400,4 @@ nothing left to retire and the line numbers it names stop meaning anything.
 | Migration gate | `npm run build` | fails a **production** build when the database is behind `db/migrations` (a preview only warns); `npm run db:check` runs it alone and names the database it read |
 | Rig agent | each sim PC | `backendBaseUrl` = Vercel domain; per-rig `rigToken` |
 | TV board | venue display | browser at `/tv`, kiosk mode |
+| Local Kubernetes | your laptop | `./deploy/local/oasis-kind.sh up` - development and demonstration only, deploys nothing ([platform/local-kubernetes.md](./platform/local-kubernetes.md)) |

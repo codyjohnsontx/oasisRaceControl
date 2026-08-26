@@ -1,0 +1,59 @@
+# Makes "migrate first, then deploy" a property of the rollout instead of an
+# instruction in a runbook.
+#
+# The initContainer runs the repository's own scripts/check-migrations.ts - the
+# same gate that fails a Vercel production build when the database is behind
+# db/migrations - in a retry loop. It exits 0 only once every migration file is
+# recorded in schema_migrations, so a web pod cannot start serving against a
+# schema it would return HTTP 500 on. Until db-migrate has finished, pods sit
+# in Init and say so.
+#
+# This lives in the local overlay only. On Vercel the same check runs at build
+# time and rejects the deploy outright, which is the stronger guarantee and
+# needs no sidecar.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: await-migrations
+          image: oasis-race-control/migrate:dev
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            # Bounded, so a database that never becomes reachable ends in a
+            # visible CrashLoopBackOff rather than a pod that sits in Init
+            # forever with nobody watching. 60 x 3s = 3 minutes.
+            - |
+              set -eu
+              i=0
+              until node_modules/.bin/tsx scripts/check-migrations.ts; do
+                i=$((i + 1))
+                if [ "$i" -ge 60 ]; then
+                  echo "await-migrations: db/migrations still not applied after 3m; giving up so this is visible" >&2
+                  exit 1
+                fi
+                echo "await-migrations: waiting for the db-migrate Job (attempt $i)"
+                sleep 3
+              done
+          envFrom:
+            - secretRef:
+                name: web-secrets
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp

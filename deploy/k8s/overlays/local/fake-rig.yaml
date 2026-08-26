@@ -1,0 +1,82 @@
+# DEVELOPMENT ONLY - the simulator, not a simulator rig.
+#
+# apps/rig-agent is .NET win-x64 and reads iRacing shared memory; it runs on
+# the Windows sim PC and is never containerized. scripts/fake-rig.ts is the
+# repository's own stand-in for it, and it speaks the real wire contract:
+# heartbeats, an assignment poll, LAP_COMPLETED events stamped with the
+# rigAssignmentId that was open when the lap was captured, and an occasional
+# duplicate eventId to prove idempotency. Pointing it at the in-cluster Service
+# is what makes `kind` show laps arriving on /tv rather than an empty board.
+#
+# It carries no token here: the script defaults to `dev-rig-1-secret`, the
+# seed's Rig 01 token, which is already published in db/seed.sql. Nothing
+# secret is being committed - and nothing real would work anyway, since a
+# production rig token is random and enrolled per rig.
+#
+# Until somebody checks in on /r/demo-rig-1, its laps arrive with nobody in the
+# seat and are stored unattributed - kept, unrankable, and listed on /staff
+# under "Unclaimed laps". That is the designed behaviour, not a
+# misconfiguration (AGENTS.md, "Lap attribution").
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-rig
+  labels:
+    app.kubernetes.io/name: oasis-race-control
+    app.kubernetes.io/component: fake-rig
+    app.kubernetes.io/part-of: oasis-race-control
+    app.kubernetes.io/managed-by: kustomize
+    oasis.dev/tier: development-only
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oasis-race-control
+      app.kubernetes.io/component: fake-rig
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oasis-race-control
+        app.kubernetes.io/component: fake-rig
+        app.kubernetes.io/part-of: oasis-race-control
+        app.kubernetes.io/managed-by: kustomize
+        oasis.dev/tier: development-only
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fake-rig
+          image: oasis-race-control/migrate:dev
+          imagePullPolicy: IfNotPresent
+          command:
+            - node_modules/.bin/tsx
+            - scripts/fake-rig.ts
+            # The base Service, resolved by cluster DNS. Port 80 -> 3000.
+            - --base
+            - http://web
+            # A lap every 15s instead of the 20s default, so a demo fills a
+            # board while someone is still looking at it. Real laps take 90s+.
+            - --interval
+            - "15"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
