@@ -8,6 +8,27 @@ import { z } from "zod";
  * C# Rig Agent must be built against the final version of this contract.
  */
 
+/**
+ * Upper bound on `lapTimeMs`: thirty minutes.
+ *
+ * Chosen from what a lap can be, not from what the wall can print. The longest
+ * layout iRacing offers is the Nürburgring combined 24h circuit at roughly
+ * 25 km, and the slowest cars in the catalogue take around twelve minutes to
+ * get round it flat out; a car limping home on three wheels after a crash still
+ * makes it inside thirty. No track or configuration the venue runs produces a
+ * genuine lap longer than that, so a value past this is not a slow lap, it is a
+ * lap that did not happen - a session timer or the wrong unit read as a lap
+ * time - and the batch is rejected as invalid input like any other malformed
+ * field. Nothing else bounds it: `laps.lap_time_ms` is an `int` with only a
+ * `> 0` check, so without this a two-hour "lap" is stored valid and ranks.
+ *
+ * It happens to keep `formatLapTime` inside the nine characters the /tv time
+ * columns are fitted for (`59:59.999`, see arcade-board.tsx), but that is a
+ * consequence of the ceiling, not its reason - a ceiling picked to fit a column
+ * would move the next time the column did.
+ */
+export const MAX_LAP_TIME_MS = 30 * 60_000;
+
 export const heartbeatEvent = z.object({
   type: z.literal("RIG_HEARTBEAT"),
   agentVersion: z.string().max(40).optional(),
@@ -38,7 +59,7 @@ export const lapCompletedEvent = z.object({
   trackConfig: z.string().max(120).nullish(),
   carName: z.string().min(1).max(120),
   lapNumber: z.number().int().min(0).nullish(),
-  lapTimeMs: z.number().int().positive(),
+  lapTimeMs: z.number().int().positive().max(MAX_LAP_TIME_MS),
   incidentDelta: z.number().int().min(0).nullish(),
   completedAt: z.iso.datetime({ offset: true }),
 });

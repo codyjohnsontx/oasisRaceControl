@@ -40,15 +40,18 @@ export const SLOT_COUNT = 10;
  * lap-time shape past a minute and widens the same way (`+10:01.204`). 14.5em
  * and 9.5em hold those through `59:59.999`.
  *
- * Both are fitted sizes, not invariants: nothing bounds `lap_time_ms` above
- * (`events.ts` validates only a positive int), so garbage rig data could emit
- * a longer string than either track holds. Measured at 1272x601, the spill
- * runs right into the 13.3px gutter before the next column and is absorbed
- * there through ten characters (`123:45.678` spills 4.4px); an eleventh
+ * Both are fitted sizes, not invariants. What keeps a lap inside them is the
+ * ingestion ceiling, `MAX_LAP_TIME_MS` in `lib/events.ts`, chosen from what a
+ * lap can be rather than from these tracks; the guard in `lib/time.test.ts`
+ * checks that `formatLapTime(MAX_LAP_TIME_MS)` still fits the `59:59.999`
+ * shape, so a raised ceiling fails there before it reaches the wall. Before
+ * that bound existed, `lap_time_ms` was only checked as a positive int, and
+ * this is what an over-long value did, measured at 1272x601: the spill runs
+ * right into the 13.3px gutter before the next column and is absorbed there
+ * through ten characters (`123:45.678` spills 4.4px); an eleventh
  * (`1234:56.789`, 17.8px) crosses the gutter and paints over the gap column's
  * text. It never reaches the screen edge, so `main`'s `overflow-hidden` is not
- * what contains this. Bounding the lap time at ingestion is the real fix, and
- * is not a layout concern.
+ * what contains this - the bound is.
  *
  * Everything left over goes to driver and detail in a 5:4 split,
  * which is roughly the ratio of their longest real content - a 24-character
