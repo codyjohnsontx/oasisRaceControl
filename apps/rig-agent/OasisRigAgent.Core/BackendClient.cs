@@ -123,10 +123,27 @@ public sealed class BackendClient
                 a["startedAt"]!.GetValue<string>(), CultureInfo.InvariantCulture)), offset);
     }
 
-    /// <summary>End the rig's current assignment (the "switch driver" button).</summary>
-    public async Task<bool> CheckoutAsync(CancellationToken ct)
+    /// <summary>End one of the rig's assignments - the "switch driver" button.
+    /// Returns whether this call was the one that closed it.
+    ///
+    /// <paramref name="assignmentId"/> names the stint to end. Naming it is what
+    /// makes the call safe to repeat: a checkout the agent could not deliver
+    /// when the driver pressed the button is re-sent later, by which time the
+    /// seat may legitimately belong to somebody else, and an unqualified "close
+    /// whatever is open on this rig" would end THEIR stint instead. A backend
+    /// that has already closed the named assignment - staff cleared the rig, or
+    /// the next driver's check-in took it over - answers false and changes
+    /// nothing, so the retry is a no-op rather than a second effect.
+    ///
+    /// Null means the unqualified form, which is still what the button sends
+    /// when the agent has never managed to poll and so cannot name the
+    /// stint.</summary>
+    public async Task<bool> CheckoutAsync(string? assignmentId, CancellationToken ct)
     {
-        using var res = await _http.PostAsync("api/agent/checkout", null, ct);
+        var body = new JsonObject();
+        if (assignmentId is not null) body["assignmentId"] = assignmentId;
+
+        using var res = await PostJsonAsync("api/agent/checkout", body, ct);
         res.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await res.Content.ReadAsStringAsync(ct));
         return json?["ended"]?.GetValue<bool>() ?? false;

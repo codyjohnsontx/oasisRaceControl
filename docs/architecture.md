@@ -106,6 +106,15 @@ flowchart TB
   this necessary: a lap can arrive long after its driver has left, so "whoever
   is checked in when the batch lands" is a different person. See the event model
   in `docs/plan.md` for the three states of the stamp.
+- **Switching driver empties the seat whether or not the backend hears it.** The
+  agent clears its own assignment the moment the button is pressed and queues
+  the checkout durably, so a press the venue link swallowed still stops the next
+  person's laps being stamped with the departed driver. Until the queued
+  checkout lands, laps on that rig carry no owner and arrive `accepted_unattributed`
+  - unclaimed on `/staff`, where staff already work them, rather than credited
+  to somebody who has gone home. The queued checkout names the assignment it is
+  ending (`POST /api/agent/checkout`), which is what makes it safe to re-send
+  once the seat may belong to somebody else.
 - **The database enforces the core invariant.** A partial unique index
   (`one_open_assignment_per_rig`) guarantees at most one open assignment per rig
   even under concurrent check-ins — the app doesn't have to. League night gets

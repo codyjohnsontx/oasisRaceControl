@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json.Nodes;
 using OasisRigAgent.Core;
 using Xunit;
 
@@ -39,13 +40,32 @@ public sealed class AgentServiceTests : IDisposable
     }
 
     /// <summary>Backend stub: the assignment it reports can change mid-test, and
-    /// posts always answer with an empty result list so the flush loop never
-    /// settles (and therefore never deletes) what the test is inspecting.</summary>
+    /// lap posts always answer with an empty result list so the flush loop never
+    /// settles (and therefore never deletes) what the test is inspecting.
+    ///
+    /// Checkout is modelled rather than stubbed, because the retry's whole
+    /// correctness is in what the backend does with a late one. It behaves like
+    /// api/agent/checkout: a checkout naming an assignment closes that
+    /// assignment or nothing, and an unqualified one closes whatever is
+    /// open.</summary>
     private sealed class StubBackend : HttpMessageHandler
     {
         private volatile string? _assignmentId;
         private volatile bool _offline;
         private long _startedAtTicks = DefaultStartedAt.UtcTicks;
+
+        private readonly object _checkoutLock = new();
+        private readonly List<string?> _checkouts = new();
+
+        /// <summary>Every checkout this backend has received, in order, by the
+        /// assignment id it named (null for the unqualified form).</summary>
+        public IReadOnlyList<string?> Checkouts
+        {
+            get { lock (_checkoutLock) return _checkouts.ToArray(); }
+        }
+
+        /// <summary>Whoever the backend currently has open on this rig.</summary>
+        public string? OpenAssignmentId => _assignmentId;
 
         /// <summary>Held closed to keep an assignment response in flight while
         /// the test does something else - the only way to make the race between
@@ -103,13 +123,36 @@ public sealed class AgentServiceTests : IDisposable
                     _assignmentId,
                     new DateTimeOffset(Interlocked.Read(ref _startedAtTicks), TimeSpan.Zero))
                 : path.EndsWith("/checkout")
-                    ? """{"ended":true}"""
+                    ? Checkout(await ReadAssignmentId(request, cancellationToken))
                     : """{"results":[]}""";
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             };
+        }
+
+        /// <summary>The route's rule: close the named assignment if it is the
+        /// one open here, or whatever is open when none is named.</summary>
+        private string Checkout(string? target)
+        {
+            lock (_checkoutLock)
+            {
+                _checkouts.Add(target);
+                var open = _assignmentId;
+                var ends = open is not null && (target is null || target == open);
+                if (ends) _assignmentId = null;
+                return ends ? """{"ended":true}""" : """{"ended":false}""";
+            }
+        }
+
+        private static async Task<string?> ReadAssignmentId(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            if (request.Content is null) return null;
+            var raw = await request.Content.ReadAsStringAsync(ct);
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            return JsonNode.Parse(raw)?["assignmentId"]?.GetValue<string>();
         }
 
         private static string AssignmentBody(string? assignmentId, DateTimeOffset startedAt) =>
@@ -163,8 +206,7 @@ public sealed class AgentServiceTests : IDisposable
 
         // The driver hits "switch driver": the agent knows immediately, without
         // waiting for the next 10s assignment poll.
-        Assert.True(await agent.SwitchDriverAsync());
-        backend.Assign(null);
+        Assert.Equal(SwitchDriverResult.Ended, await agent.SwitchDriverAsync());
 
         telemetry.Emit("evt-after-checkout");
 
@@ -206,7 +248,7 @@ public sealed class AgentServiceTests : IDisposable
         {
             await pollInFlight.WaitAsync(TimeSpan.FromSeconds(30));
 
-            Assert.True(await agent.SwitchDriverAsync());
+            Assert.Equal(SwitchDriverResult.Ended, await agent.SwitchDriverAsync());
         }
         finally
         {
@@ -331,6 +373,210 @@ public sealed class AgentServiceTests : IDisposable
         await assigned;
 
         var payload = queue.PendingBatch(10).Single().Payload;
+        Assert.True(payload.AsObject().ContainsKey("rigAssignmentId"));
+        Assert.Null(payload["rigAssignmentId"]);
+    }
+
+    /// <summary>The switch-driver button while the venue's link is down. The
+    /// driver has left the seat; the backend simply has not been told. Gating
+    /// the local clear on the backend's answer left the departed driver in the
+    /// seat as far as this agent was concerned, so the next person's laps were
+    /// stamped with their assignment and - because that assignment was never
+    /// closed either - credited to them as valid, ranking laps once the outbox
+    /// drained. The stint ends here whether or not the backend can be
+    /// reached.</summary>
+    [Fact]
+    public async Task Switch_driver_ends_the_stint_locally_when_the_backend_is_unreachable()
+    {
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+        agent.Start();
+        await assigned;
+
+        // The link drops, and the driver presses switch driver anyway.
+        backend.SetOffline(true);
+        await agent.SwitchDriverAsync();
+
+        // The next person sits down without scanning the QR - which they cannot
+        // do anyway, with the venue offline - and drives.
+        telemetry.Emit("evt-next-driver-lap");
+
+        var payload = queue.PendingBatch(10)
+            .Single(e => e.EventId == "evt-next-driver-lap").Payload;
+        Assert.True(payload.AsObject().ContainsKey("rigAssignmentId"));
+        Assert.Null(payload["rigAssignmentId"]);
+    }
+
+    /// <summary>The other half of that press: the backend is still owed a
+    /// checkout, and gets it as soon as the link is back. Losing it would leave
+    /// the departed driver's stint open all night, which is what let their
+    /// assignment go on accepting laps in the first place.</summary>
+    [Fact]
+    public async Task A_switch_driver_the_backend_missed_is_delivered_when_the_link_returns()
+    {
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+        agent.Start();
+        await assigned;
+
+        backend.SetOffline(true);
+        Assert.Equal(SwitchDriverResult.EndedPendingSync, await agent.SwitchDriverAsync());
+        Assert.Equal(AssignmentId, queue.ReadPendingCheckout());
+
+        var delivered = WaitForStatus(agent, s => !s.CheckoutPending, TimeSpan.FromSeconds(30));
+        backend.SetOffline(false);
+        await delivered;
+
+        Assert.Equal(new string?[] { AssignmentId }, backend.Checkouts);
+        Assert.Null(backend.OpenAssignmentId);
+        Assert.Null(queue.ReadPendingCheckout());
+    }
+
+    /// <summary>The retry's sharpest edge. The rig's own link is down, not the
+    /// venue's, so the next driver checks in from their phone - which closes the
+    /// departed driver's stint and opens theirs. When the rig reconnects, the
+    /// queued checkout must end the stint it was pressed for and leave the new
+    /// one alone. A checkout meaning "close whatever is open here" would sign
+    /// the new driver out of a seat they are sitting in.</summary>
+    [Fact]
+    public async Task A_queued_checkout_does_not_close_a_stint_the_next_driver_has_started()
+    {
+        const string nextAssignmentId = "8c7d6e5f-4a3b-4c2d-9e1f-0a9b8c7d6e5f";
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+        agent.Start();
+        await assigned;
+
+        backend.SetOffline(true);
+        await agent.SwitchDriverAsync();
+
+        // The next driver's check-in takes the seat over server-side.
+        backend.Assign(nextAssignmentId);
+
+        var reconnected = WaitForStatus(
+            agent,
+            s => s.Assignment?.Id == nextAssignmentId && !s.CheckoutPending,
+            TimeSpan.FromSeconds(30));
+        backend.SetOffline(false);
+        await reconnected;
+
+        Assert.Equal(new string?[] { AssignmentId }, backend.Checkouts);
+        Assert.Equal(nextAssignmentId, backend.OpenAssignmentId);
+
+        // And the new driver is picked up normally: the checkout tombstone
+        // suppresses the stint it names, not whoever comes next.
+        telemetry.Emit("evt-next-driver-checked-in");
+        Assert.Equal(
+            nextAssignmentId,
+            queue.PendingBatch(10).Single(e => e.EventId == "evt-next-driver-checked-in")
+                .Payload["rigAssignmentId"]!.GetValue<string>());
+    }
+
+    /// <summary>The retry may land after the stint has already been closed some
+    /// other way - here staff clear the rig from the dashboard while the agent
+    /// is offline. The backend has nothing to close, says so, and the agent
+    /// stops asking rather than re-sending a checkout every poll for the rest of
+    /// the night.</summary>
+    [Fact]
+    public async Task A_queued_checkout_is_settled_by_a_backend_that_has_nothing_left_to_close()
+    {
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+        agent.Start();
+        await assigned;
+
+        backend.SetOffline(true);
+        await agent.SwitchDriverAsync();
+
+        // Staff clear the rig while the agent cannot see it happen.
+        backend.Assign(null);
+
+        var settled = WaitForStatus(agent, s => !s.CheckoutPending, TimeSpan.FromSeconds(30));
+        backend.SetOffline(false);
+        await settled;
+
+        Assert.Equal(new string?[] { AssignmentId }, backend.Checkouts);
+        Assert.Null(queue.ReadPendingCheckout());
+    }
+
+    /// <summary>The outage that also takes the rig PC with it. The driver signs
+    /// out, the agent cannot deliver the checkout, and the machine reboots
+    /// before the link returns. On the way back up the backend still reports
+    /// that stint as open, because it was never told - and an agent that had
+    /// forgotten the sign-out would adopt the departed driver again and stamp
+    /// the next person's laps with them. The checkout is on disk, so it does
+    /// not.</summary>
+    [Fact]
+    public async Task A_checkout_the_backend_never_received_survives_a_rig_restart()
+    {
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+
+        using (var queue = new EventQueue(_dbPath))
+        {
+            var telemetry = new FakeTelemetrySource();
+            await using var agent = new AgentService(Config(), client, queue, telemetry);
+            var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+            agent.Start();
+            await assigned;
+
+            backend.SetOffline(true);
+            Assert.Equal(SwitchDriverResult.EndedPendingSync, await agent.SwitchDriverAsync());
+        }
+
+        // The link comes back before the rig PC does, so the agent starts fresh
+        // against a backend that still believes the departed driver is in place.
+        backend.SetOffline(false);
+        Assert.Equal(AssignmentId, backend.OpenAssignmentId);
+
+        using var restarted = new EventQueue(_dbPath);
+        Assert.Equal(AssignmentId, restarted.ReadPendingCheckout());
+
+        var rebooted = new FakeTelemetrySource();
+        await using var agent2 = new AgentService(Config(), client, restarted, rebooted);
+        var caughtUp = WaitForStatus(
+            agent2,
+            s => s.AssignmentKnown && !s.CheckoutPending,
+            TimeSpan.FromSeconds(30));
+        agent2.Start();
+        await caughtUp;
+
+        Assert.Null(backend.OpenAssignmentId);
+        Assert.Equal(new string?[] { AssignmentId }, backend.Checkouts);
+
+        rebooted.Emit("evt-after-reboot");
+        var payload = restarted.PendingBatch(10)
+            .Single(e => e.EventId == "evt-after-reboot").Payload;
         Assert.True(payload.AsObject().ContainsKey("rigAssignmentId"));
         Assert.Null(payload["rigAssignmentId"]);
     }

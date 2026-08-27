@@ -47,6 +47,13 @@ public sealed class AgentService : IAsyncDisposable
     // afterwards is stamped with a stint that has ended.
     private int _assignmentGeneration;
 
+    // The stint this agent has ended locally but has not yet been able to tell
+    // the backend about, mirroring the queue's durable copy so the poll and the
+    // stamping path can read it without touching SQLite. Two jobs: it is the
+    // retry's target, and it is a tombstone - an assignment named here is one
+    // this rig has finished with, whatever a poll still reports about it.
+    private volatile string? _pendingCheckout;
+
     public event Action<AgentStatus>? StatusChanged;
 
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
@@ -55,6 +62,10 @@ public sealed class AgentService : IAsyncDisposable
         _client = client;
         _queue = queue;
         _telemetry = telemetry;
+        // A checkout left undelivered by the previous run of this agent. Read
+        // before any loop starts, so the first poll already knows not to adopt
+        // the assignment it is about to close.
+        _pendingCheckout = _queue.ReadPendingCheckout();
     }
 
     public void Start()
@@ -99,20 +110,55 @@ public sealed class AgentService : IAsyncDisposable
         PublishStatus();
     }
 
-    /// <summary>The "switch driver" action: end the current assignment.</summary>
-    public async Task<bool> SwitchDriverAsync()
+    /// <summary>The "switch driver" action: end the current assignment.
+    ///
+    /// The seat empties HERE, before the backend is asked and whatever it
+    /// answers. Gating the local clear on the answer meant that a press the
+    /// backend could not receive did nothing at all: the departed driver stayed
+    /// in the seat as far as this agent was concerned, so the next person's laps
+    /// were stamped with their assignment - and, since nothing had closed that
+    /// assignment either, credited to them as valid ranking laps when the outbox
+    /// finally drained. Clearing first turns that into "no driver, visibly": the
+    /// next person's laps carry no owner, land as unclaimed, and are worked from
+    /// /staff by the people already standing there.
+    ///
+    /// What the backend is owed is queued rather than dropped, so the stint is
+    /// closed there too as soon as it can be reached.</summary>
+    public async Task<SwitchDriverResult> SwitchDriverAsync()
     {
-        var ended = await RunBackend(ct => _client.CheckoutAsync(ct));
-        if (ended)
+        string? ending;
+        lock (_stampLock)
         {
-            lock (_stampLock)
+            ending = _assignment?.Id;
+            // Bumped inside the same lock that clears the assignment, so a poll
+            // already in flight cannot answer with the stint that just ended.
+            Interlocked.Increment(ref _assignmentGeneration);
+            _assignment = null;
+            // Durable before the network is touched: the press must survive a
+            // rig PC that reboots before the backend comes back.
+            //
+            // Nothing is queued when this agent has never managed to poll: it
+            // cannot name the stint, and a retry meaning "close whatever is
+            // open here" would eventually close somebody else's. Such an agent
+            // adopts whatever the first poll reports, which is the same
+            // exposure a driver who never presses anything already has, and is
+            // not what this guard is for.
+            if (ending is not null)
             {
-                Interlocked.Increment(ref _assignmentGeneration);
-                _assignment = null;
+                _queue.SetPendingCheckout(ending);
+                _pendingCheckout = ending;
             }
-            PublishStatus();
         }
-        return ended;
+        PublishStatus();
+
+        // Ok distinguishes "the backend answered" from "the call failed", which
+        // a bare bool cannot: the backend legitimately answers false when it had
+        // nothing open to close, and that needs no retry.
+        var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(ending, ct)));
+        if (!result.Ok) return SwitchDriverResult.EndedPendingSync;
+
+        if (ending is not null) ClearPendingCheckout(ending);
+        return result.Ended ? SwitchDriverResult.Ended : SwitchDriverResult.NoActiveSession;
     }
 
     private async Task HeartbeatTick(CancellationToken ct)
@@ -133,6 +179,14 @@ public sealed class AgentService : IAsyncDisposable
         var poll = await RunBackend(async token => (Ok: true, Poll: await _client.GetAssignmentAsync(token)));
         if (!poll.Ok) return;
         var assignment = poll.Poll!.Assignment;
+
+        // A stint this agent has already ended is over, however open the backend
+        // still believes it to be - it believes that only because it has not
+        // been told yet. Adopting it back off the poll would undo the local
+        // clear and re-stamp the next person's laps with the departed driver,
+        // which is exactly the defect. The lie is not the poll's; the correction
+        // belongs here, on the way in.
+        if (assignment is not null && assignment.Id == _pendingCheckout) assignment = null;
 
         lock (_stampLock)
         {
@@ -159,6 +213,41 @@ public sealed class AgentService : IAsyncDisposable
                 _hasPolled = true;
             }
             _assignment = assignment;
+        }
+        PublishStatus();
+
+        // The backend is reachable, so this is the moment a checkout the driver
+        // pressed during an outage can finally be delivered.
+        await SettlePendingCheckout();
+    }
+
+    /// <summary>Deliver a checkout the backend could not be told about when the
+    /// driver pressed the button.
+    ///
+    /// It names the assignment it is closing, so it can only ever close that
+    /// one. By the time it lands the seat may legitimately belong to the next
+    /// driver, or staff may have cleared the rig, or that driver's own check-in
+    /// may have taken the stint over - in every one of those cases the backend
+    /// finds nothing to close, answers false, and this stops asking. Only a
+    /// backend that could not be reached at all leaves it queued.</summary>
+    private async Task SettlePendingCheckout()
+    {
+        var pending = _pendingCheckout;
+        if (pending is null) return;
+
+        var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(pending, ct)));
+        if (result.Ok) ClearPendingCheckout(pending);
+    }
+
+    /// <summary>Forget a checkout the backend has now accounted for. Scoped to
+    /// the assignment it settled: a second sign-out during the round trip
+    /// records a newer debt, and that one is still owed.</summary>
+    private void ClearPendingCheckout(string assignmentId)
+    {
+        lock (_stampLock)
+        {
+            _queue.ClearPendingCheckout(assignmentId);
+            if (_pendingCheckout == assignmentId) _pendingCheckout = null;
         }
         PublishStatus();
     }
@@ -251,6 +340,7 @@ public sealed class AgentService : IAsyncDisposable
             AssignmentKnown = _hasPolled,
             SimRunning = _telemetry.SimRunning,
             PendingLaps = _queue.PendingCount(),
+            CheckoutPending = _pendingCheckout is not null,
         });
     }
 

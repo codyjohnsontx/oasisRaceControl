@@ -223,6 +223,53 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     expect((await lapRows())[0]!.driver_id).toBeNull();
   });
 
+  it("credits nobody for a lap driven after a sign-out the backend never heard about", async () => {
+    const rig = await seedRig(1);
+    const first = await seedDriver("FirstDriver");
+
+    // The venue link is down. FirstDriver presses switch driver on the rig, so
+    // nothing closes their assignment - not their own checkout, not staff
+    // clear-rig, not the next driver's check-in. It is still open when the
+    // outbox finally drains.
+    const firstAssignment = await openAssignment(rig.id, first.id);
+
+    // The next person sits down and drives. The agent ends the stint locally
+    // whether or not the backend can be reached, so their lap carries no owner.
+    const response = await POST(
+      post(rig, [
+        { ...LAP, eventId: "evt-outage-next-driver", rigAssignmentId: null },
+      ]),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      results: [{ status: "accepted_unattributed" }],
+    });
+    const [lap] = await lapRows();
+    expect(lap).toMatchObject({
+      driver_id: null,
+      rig_assignment_id: null,
+      is_valid: false,
+      invalid_reason: "UNATTRIBUTED",
+    });
+
+    // What the same lap did before the agent cleared the seat locally: stamped
+    // with the stint nothing had closed, it passes the window guard and lands
+    // under FirstDriver's name as a valid, ranking lap. That is the outcome
+    // this change replaces, and the reason the stamp above has to be null.
+    await POST(
+      post(rig, [
+        {
+          ...LAP,
+          eventId: "evt-outage-next-driver-old-agent",
+          rigAssignmentId: firstAssignment,
+        },
+      ]),
+    );
+    const laps = await lapRows();
+    expect(laps.find((l) => l.event_id === "evt-outage-next-driver-old-agent"))
+      .toMatchObject({ driver_id: first.id, is_valid: true });
+  });
+
   it("stores a lap from an agent that sends no assignment id unattributed", async () => {
     const rig = await seedRig(1);
     const driver = await seedDriver("Cody J");

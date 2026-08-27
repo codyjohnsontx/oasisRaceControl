@@ -113,6 +113,19 @@ the server, a lap only attaches to an assignment whose window contains its
 `completedAt`, which the rig supplies; the clock-skew grace on that window is a
 tolerance, not a policy knob.
 
+A fourth guard sits in front of those three: pressing "switch driver" ends the
+stint **locally first** and queues the checkout durably (`pending_checkout` in
+the agent's SQLite outbox). Never gate that local clear on the backend's answer
+- a backend the agent cannot reach then makes the button do nothing at all, and
+the next person in the seat inherits the departed driver's stamp as valid,
+ranking laps. The queued checkout names the assignment it is ending and
+`POST /api/agent/checkout` closes only that one, because it is re-sent after an
+outage, by which time the seat may legitimately belong to somebody else. That
+stored id doubles as a tombstone: an assignment poll still reporting the stint
+open must not reinstate it, which is what carries the guard across a rig PC
+reboot. This does not close the case where the driver simply walks away without
+pressing anything.
+
 Laps the backend cannot attribute are STORED with a null `driver_id` and a null
 `rig_assignment_id`, invalid with reason `UNATTRIBUTED` - never credited to the
 next driver, never dropped, and settled by the agent so an unattended rig cannot

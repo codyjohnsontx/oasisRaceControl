@@ -59,4 +59,25 @@ public sealed record AgentStatus
     public required bool AssignmentKnown { get; init; }
     public required bool SimRunning { get; init; }
     public required int PendingLaps { get; init; }
+
+    /// <summary>Whether a switch-driver the backend could not be told about is
+    /// still waiting to be delivered. The seat is already empty here either way;
+    /// this only says the backend has yet to agree.</summary>
+    public bool CheckoutPending { get; init; }
+}
+
+/// <summary>What the "switch driver" action achieved. The stint is over locally
+/// in all three cases - they differ only in what the backend now knows.</summary>
+public enum SwitchDriverResult
+{
+    /// <summary>The backend closed the assignment.</summary>
+    Ended,
+
+    /// <summary>The backend had nothing open on this rig to close.</summary>
+    NoActiveSession,
+
+    /// <summary>The backend could not be reached. The stint ended here and the
+    /// checkout is queued; until it lands, laps on this rig carry no owner and
+    /// arrive as unclaimed rather than under the departed driver's name.</summary>
+    EndedPendingSync,
 }

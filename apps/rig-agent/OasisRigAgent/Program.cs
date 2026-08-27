@@ -64,8 +64,15 @@ _ = Task.Run(async () =>
                 break;
             case "s":
                 Console.WriteLine("→ switching driver…");
-                var ended = await agent.SwitchDriverAsync();
-                Console.WriteLine(ended ? "→ session ended." : "→ no active session.");
+                Console.WriteLine(await agent.SwitchDriverAsync() switch
+                {
+                    SwitchDriverResult.Ended => "→ session ended.",
+                    SwitchDriverResult.NoActiveSession => "→ no active session.",
+                    // The seat IS empty; only the backend has yet to hear it.
+                    // Say so, because until it does, laps on this rig arrive
+                    // unclaimed and staff will see them on the dashboard.
+                    _ => "→ session ended here. Backend offline - it will be told when the connection returns.",
+                });
                 break;
         }
     }
@@ -92,5 +99,6 @@ static void Render(AgentStatus s)
         : s.AssignmentKnown ? "— available —" : "(checking)";
     var sim = s.SimRunning ? "sim running" : "sim idle";
     var pending = s.PendingLaps > 0 ? $"  |  {s.PendingLaps} lap(s) queued" : "";
-    Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}");
+    var checkout = s.CheckoutPending ? "  |  sign-out queued" : "";
+    Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{checkout}");
 }

@@ -243,6 +243,35 @@ public sealed class BackendClientTests
         var handler = new StubHandler(_ => (HttpStatusCode.OK, """{"ended":true}"""));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        Assert.True(await client.CheckoutAsync(CancellationToken.None));
+        Assert.True(await client.CheckoutAsync("a-1", CancellationToken.None));
+    }
+
+    /// <summary>A checkout says which stint it is ending. Without that on the
+    /// wire, a checkout re-sent after an outage means "close whatever is open
+    /// on this rig", which by then may be the next driver's stint.</summary>
+    [Fact]
+    public async Task Checkout_names_the_assignment_it_is_ending()
+    {
+        var handler = new StubHandler(_ => (HttpStatusCode.OK, """{"ended":true}"""));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        await client.CheckoutAsync("a-1", CancellationToken.None);
+
+        Assert.Contains("\"assignmentId\":\"a-1\"", handler.LastBody!);
+    }
+
+    /// <summary>An agent that has never completed a poll cannot name the stint,
+    /// and its button still has to work. It sends the unqualified form - no
+    /// assignmentId key at all - which the backend reads as "end whatever is
+    /// open on this rig".</summary>
+    [Fact]
+    public async Task Checkout_without_a_known_assignment_names_none()
+    {
+        var handler = new StubHandler(_ => (HttpStatusCode.OK, """{"ended":true}"""));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        await client.CheckoutAsync(null, CancellationToken.None);
+
+        Assert.DoesNotContain("assignmentId", handler.LastBody!);
     }
 }
