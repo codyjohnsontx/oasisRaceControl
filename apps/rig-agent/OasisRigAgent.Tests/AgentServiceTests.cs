@@ -1,4 +1,5 @@
 using System.Net;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
@@ -438,7 +439,7 @@ public sealed class AgentServiceTests : IDisposable
         Assert.Equal(SwitchDriverResult.EndedPendingSync, await agent.SwitchDriverAsync());
         Assert.Equal(AssignmentId, queue.ReadPendingCheckout());
 
-        var delivered = WaitForStatus(agent, s => !s.CheckoutPending, TimeSpan.FromSeconds(30));
+        var delivered = WaitForStatus(agent, s => s.Checkout == CheckoutDelivery.None, TimeSpan.FromSeconds(30));
         backend.SetOffline(false);
         await delivered;
 
@@ -477,7 +478,7 @@ public sealed class AgentServiceTests : IDisposable
 
         var reconnected = WaitForStatus(
             agent,
-            s => s.Assignment?.Id == nextAssignmentId && !s.CheckoutPending,
+            s => s.Assignment?.Id == nextAssignmentId && s.Checkout == CheckoutDelivery.None,
             TimeSpan.FromSeconds(30));
         backend.SetOffline(false);
         await reconnected;
@@ -520,7 +521,7 @@ public sealed class AgentServiceTests : IDisposable
         // Staff clear the rig while the agent cannot see it happen.
         backend.Assign(null);
 
-        var settled = WaitForStatus(agent, s => !s.CheckoutPending, TimeSpan.FromSeconds(30));
+        var settled = WaitForStatus(agent, s => s.Checkout == CheckoutDelivery.None, TimeSpan.FromSeconds(30));
         backend.SetOffline(false);
         await settled;
 
@@ -567,7 +568,7 @@ public sealed class AgentServiceTests : IDisposable
         await using var agent2 = new AgentService(Config(), client, restarted, rebooted);
         var caughtUp = WaitForStatus(
             agent2,
-            s => s.AssignmentKnown && !s.CheckoutPending,
+            s => s.AssignmentKnown && s.Checkout == CheckoutDelivery.None,
             TimeSpan.FromSeconds(30));
         agent2.Start();
         await caughtUp;
@@ -611,9 +612,10 @@ public sealed class AgentServiceTests : IDisposable
         Assert.Equal(SwitchDriverResult.EndedNotQueued, await agent.SwitchDriverAsync());
 
         // The display must agree with what the driver was told: nothing is
-        // waiting to be delivered, on this run or after a reboot.
+        // waiting to be delivered, on this run or after a reboot. Not even the
+        // in-memory marker - this press left no retry running to name.
         Assert.NotNull(latest);
-        Assert.False(latest!.CheckoutPending);
+        Assert.Equal(CheckoutDelivery.None, latest!.Checkout);
         Assert.Null(queue.ReadPendingCheckout());
     }
 
@@ -627,31 +629,13 @@ public sealed class AgentServiceTests : IDisposable
     [Fact]
     public async Task A_sign_out_that_could_not_be_recorded_does_not_promise_delivery()
     {
-        // The unwritable-outbox setup below is Unix-only. The rig runs on
-        // Windows, but the behaviour under test is platform-independent and the
-        // whole suite runs on the developer machines that build the agent.
         if (OperatingSystem.IsWindows()) return;
 
-        // Build the outbox, then take write permission away, so the schema is
-        // there but the durable write fails the way a read-only or full disk
-        // makes it fail. Reads still work, which is what the status line and
-        // the assertions below need.
-        using (var setup = new EventQueue(_dbPath)) { }
-        // Disposing a SqliteConnection returns it to the pool with the file
-        // handle still open, so without this the EventQueue below would reuse a
-        // handle opened while the file was still writable and the write would
-        // succeed - the test would pass while proving nothing.
-        SqliteConnection.ClearAllPools();
-        // SetUnixFileMode rather than SetAttributes(ReadOnly): the latter does
-        // not clear the write bit here.
-        File.SetUnixFileMode(
-            _dbPath, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
-        try
+        await WithUnwritableOutbox(async queue =>
         {
             var backend = new StubBackend();
             backend.Assign(AssignmentId);
             var telemetry = new FakeTelemetrySource();
-            using var queue = new EventQueue(_dbPath);
             using var http = new HttpClient(backend);
             var client = new BackendClient(http, "https://x.test", "t");
             await using var agent = new AgentService(Config(), client, queue, telemetry);
@@ -675,6 +659,81 @@ public sealed class AgentServiceTests : IDisposable
             // depend on the outbox being writable.
             Assert.NotNull(last);
             Assert.Null(last!.Assignment);
+
+            // And the line staff read all night has to say what the press said.
+            // A sign-out held only in memory IS outstanding - that retry runs
+            // for as long as this agent lives - so the display names it rather
+            // than hiding it, but names it as one a restart would lose, not as
+            // a delivery the backend is going to get.
+            Assert.Equal(CheckoutDelivery.NotQueued, last.Checkout);
+        });
+    }
+
+    /// <summary>The same bad outbox with the link UP, which is the half no
+    /// outage is needed to reach. The backend accepts the sign-out, and the
+    /// agent then has to forget it - another write to the same file. Escaping
+    /// the press, that one lands in the console host's fire-and-forget input
+    /// loop, where nothing catches it: no result line is printed and neither
+    /// the button nor the quit key works again for the rest of the run. Losing
+    /// reboot survival is what a bad outbox may cost; losing the button is the
+    /// failure this whole path exists to remove.</summary>
+    [Fact]
+    public async Task A_delivered_sign_out_does_not_break_the_button_on_an_unwritable_outbox()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithUnwritableOutbox(async queue =>
+        {
+            var backend = new StubBackend();
+            backend.Assign(AssignmentId);
+            var telemetry = new FakeTelemetrySource();
+            using var http = new HttpClient(backend);
+            var client = new BackendClient(http, "https://x.test", "t");
+            await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+            var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+            agent.Start();
+            await assigned;
+
+            AgentStatus? last = null;
+            agent.StatusChanged += s => last = s;
+
+            Assert.Equal(SwitchDriverResult.Ended, await agent.SwitchDriverAsync());
+            Assert.Null(backend.OpenAssignmentId);
+
+            // The backend has it, so nothing is outstanding and the display
+            // says so - an in-memory retry left running against a stint that is
+            // already closed would ask every poll for the rest of the night.
+            Assert.NotNull(last);
+            Assert.Equal(CheckoutDelivery.None, last!.Checkout);
+        });
+    }
+
+    /// <summary>Runs <paramref name="body"/> against an outbox whose schema is
+    /// in place but whose file cannot be written, the way a read-only or a full
+    /// disk makes every write fail. Reads still work, which is what the status
+    /// line and these assertions need.
+    ///
+    /// Unix-only, so callers return early on Windows. The rig runs there, but
+    /// the behaviour under test is platform-independent and the whole suite runs
+    /// on the developer machines that build the agent.</summary>
+    [UnsupportedOSPlatform("windows")]
+    private async Task WithUnwritableOutbox(Func<EventQueue, Task> body)
+    {
+        using (var setup = new EventQueue(_dbPath)) { }
+        // Disposing a SqliteConnection returns it to the pool with the file
+        // handle still open, so without this the EventQueue below would reuse a
+        // handle opened while the file was still writable and the writes would
+        // succeed - the test would pass while proving nothing.
+        SqliteConnection.ClearAllPools();
+        // SetUnixFileMode rather than SetAttributes(ReadOnly): the latter does
+        // not clear the write bit here.
+        File.SetUnixFileMode(
+            _dbPath, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        try
+        {
+            using var queue = new EventQueue(_dbPath);
+            await body(queue);
         }
         finally
         {

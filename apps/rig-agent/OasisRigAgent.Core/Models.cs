@@ -60,10 +60,35 @@ public sealed record AgentStatus
     public required bool SimRunning { get; init; }
     public required int PendingLaps { get; init; }
 
-    /// <summary>Whether a switch-driver the backend could not be told about is
-    /// still waiting to be delivered. The seat is already empty here either way;
-    /// this only says the backend has yet to agree.</summary>
-    public bool CheckoutPending { get; init; }
+    /// <summary>What the rig still owes the backend for a switch-driver it
+    /// could not deliver. The seat is already empty here in every case; this
+    /// says only what the backend has yet to hear, and whether this rig will
+    /// still be able to tell it after a restart.</summary>
+    public CheckoutDelivery Checkout { get; init; }
+}
+
+/// <summary>Whether a sign-out the backend has not received yet is one this rig
+/// can still deliver.
+///
+/// Three answers rather than two, because "outstanding" and "outstanding and
+/// survivable" are different promises and the display makes one of them to
+/// staff all night. Collapsing them puts the persistent status line at odds
+/// with what the driver was told at the press.</summary>
+public enum CheckoutDelivery
+{
+    /// <summary>Nothing is owed: either the backend has it, or the press had no
+    /// stint to name in the first place.</summary>
+    None,
+
+    /// <summary>Recorded in the outbox, so it outlives this process and is
+    /// re-sent until the backend accounts for it.</summary>
+    Queued,
+
+    /// <summary>Outstanding, but only in this process - the outbox write
+    /// failed. The retry runs for as long as the agent does, so it is shown
+    /// rather than hidden; a restart before the link returns loses it, so the
+    /// rig has to be cleared from the staff screen instead.</summary>
+    NotQueued,
 }
 
 /// <summary>What the "switch driver" action achieved. The stint is over locally

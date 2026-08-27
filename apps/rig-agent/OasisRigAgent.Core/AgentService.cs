@@ -288,7 +288,22 @@ public sealed class AgentService : IAsyncDisposable
     {
         lock (_stampLock)
         {
-            _queue.ClearPendingCheckout(assignmentId);
+            // Contained for the same reason the durable write is, and it is the
+            // same outbox that fails: this runs on the press's own path, where
+            // an escaped exception would take the console's input loop with it
+            // and the button would stop working at all. A delete is a write, so
+            // no outage is needed to reach it - a backend that answers gets
+            // here too. The in-memory clear below happens regardless, so a bad
+            // outbox costs this sign-out its reboot survival and nothing more.
+            try
+            {
+                _queue.ClearPendingCheckout(assignmentId);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[agent] failed to forget delivered sign-out {assignmentId}: {ex.Message}");
+            }
             if (_pendingCheckout == assignmentId)
             {
                 _pendingCheckout = null;
@@ -386,7 +401,13 @@ public sealed class AgentService : IAsyncDisposable
             AssignmentKnown = _hasPolled,
             SimRunning = _telemetry.SimRunning,
             PendingLaps = _queue.PendingCount(),
-            CheckoutPending = _pendingCheckout is not null,
+            // Durability decides which of the two "outstanding" answers this
+            // is. Reporting a sign-out held only in memory as queued would make
+            // the line staff read all night contradict what the driver was told
+            // at the press, and promise a delivery a reboot would drop.
+            Checkout = _pendingCheckout is null
+                ? CheckoutDelivery.None
+                : _pendingCheckoutIsDurable ? CheckoutDelivery.Queued : CheckoutDelivery.NotQueued,
         });
     }
 

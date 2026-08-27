@@ -113,6 +113,15 @@ static void Render(AgentStatus s)
         : s.AssignmentKnown ? "— available —" : "(checking)";
     var sim = s.SimRunning ? "sim running" : "sim idle";
     var pending = s.PendingLaps > 0 ? $"  |  {s.PendingLaps} lap(s) queued" : "";
-    var checkout = s.CheckoutPending ? "  |  sign-out queued" : "";
+    // The press prints its one-shot line once and scrolls away; this is the
+    // line staff still have in front of them an hour later, so it has to say
+    // the same thing - including naming the one case they have to finish by
+    // hand rather than reporting it as handled.
+    var checkout = s.Checkout switch
+    {
+        CheckoutDelivery.Queued => "  |  sign-out queued",
+        CheckoutDelivery.NotQueued => "  |  sign-out NOT saved - clear this rig from the staff screen",
+        _ => "",
+    };
     Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{checkout}");
 }
