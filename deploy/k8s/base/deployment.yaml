@@ -1,0 +1,169 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: oasis-race-control
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: oasis-race-control
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # Two replicas is safe here, and that was checked rather than assumed:
+  # sessions are stateless HS256 cookies (src/lib/driver-session.ts,
+  # src/lib/staff.ts), nothing uses websockets or SSE - every surface polls -
+  # there are no scheduled jobs, the app never runs migrations, and check-in
+  # atomicity is enforced by Postgres (checkin_driver() plus the
+  # one_open_assignment_per_rig partial unique index) rather than by a single
+  # process. The one thing that does become per-pod is src/lib/rate-limit.ts;
+  # see docs/platform/local-kubernetes.md, "Known limitations".
+  replicas: 2
+  revisionHistoryLimit: 3
+  # Below the 600s default so a rollout that is never going to finish says so
+  # while someone is still watching it.
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never drop below the desired replica count: bring a new pod up, wait
+      # for it to pass /api/ready, and only then take an old one away. The
+      # venue keeps full capacity through a deploy, at the cost of needing room
+      # for one extra pod.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oasis-race-control
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oasis-race-control
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: oasis-race-control
+        app.kubernetes.io/managed-by: kustomize
+    spec:
+      # A pod gets 30s to finish in-flight requests after it is told to stop.
+      #
+      # Next installs its own SIGTERM handler, runs its cleanup, and then exits
+      # 143 on purpose - "a signal-based exit code so Node treats this as a
+      # signal termination" (next/dist/server/lib/start-server.js). Kubernetes
+      # calls any non-zero exit `Error`, so a terminating web pod shows STATUS
+      # Error for the moment before it is garbage-collected. That is Next's
+      # deliberate exit code, not a failed shutdown.
+      terminationGracePeriodSeconds: 30
+      # Nothing here calls the Kubernetes API, so it gets no token for it.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # uid/gid 1000 is the `node` user the image already runs as
+        # (apps/web/Dockerfile). Naming it here means the pod is rejected
+        # rather than silently running as root if the image ever changes.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          # Preferred, not required: on a single-node cluster a hard rule would
+          # leave the second replica Pending forever. On a real multi-node
+          # cluster this is what stops both replicas sharing one node's fate.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: oasis-race-control
+                    app.kubernetes.io/component: web
+      containers:
+        - name: web
+          image: oasis-race-control/web:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: web-env
+            # DATABASE_URL and SESSION_SECRET. Deliberately not optional: a pod
+            # that starts without them would serve 500s and, worse, pass
+            # liveness while doing it. Create it before applying - see
+            # secret.template.yaml.
+            - secretRef:
+                name: web-secrets
+          # Startup, liveness and readiness answer three different questions,
+          # and the split is the whole reason a database outage does not turn
+          # into a restart loop:
+          #
+          #   startup   - has the process finished booting? Holds the other two
+          #               off until it has.
+          #   liveness  - is the process alive? /api/health touches nothing
+          #               outside the process, so only a wedged Node process
+          #               gets restarted.
+          #   readiness - can this pod serve? /api/ready runs one `select 1`
+          #               through the app's own pool. A database outage takes
+          #               every pod out of the Service and leaves them running,
+          #               which is correct: restarting them would not bring the
+          #               database back.
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: http
+            periodSeconds: 10
+            # Above the route's own 2s database deadline on purpose. The route
+            # is built to answer 503 with a plain-English reason inside 2s; a
+            # shorter probe timeout would fail on its own clock instead and the
+            # reason would reach nobody (src/app/api/ready/route.ts).
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # Endpoint removal and the TERM signal race: kube-proxy may
+                # still be sending this pod connections for a moment after the
+                # kubelet has told it to stop. Sleeping first lets the Service
+                # forget it before the server starts refusing.
+                command: ["/bin/sleep", "5"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              # No CPU limit: the app is bursty request/response work with no
+              # latency budget to protect from itself, and a limit here buys
+              # throttled tail latency rather than isolation. Memory is limited
+              # because a leak has to be bounded by something.
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The only two paths the app writes to, so the rest of the
+            # filesystem can be read-only.
+            - name: next-cache
+              mountPath: /app/.next/cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: next-cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

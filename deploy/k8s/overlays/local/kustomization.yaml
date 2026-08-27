@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The whole venue on a laptop: the base web tier, plus the three things a
+# cluster with no Neon, no human running migrations and no simulators needs to
+# stand in for them. Everything added here is labelled
+# `oasis.dev/tier: development-only` and none of it belongs in any other
+# overlay.
+#
+# Rendered with the kustomize built into kubectl:
+#   kubectl kustomize deploy/k8s/overlays/local
+#
+# Driven by:
+#   deploy/local/oasis-kind.sh up
+namespace: oasis-race-control
+
+resources:
+  - ../../base
+  - postgres.yaml
+  - migrate-job.yaml
+  - fake-rig.yaml
+
+patches:
+  - path: web-await-migrations-patch.yaml
+  - path: web-nodeport-patch.yaml
+
+# Only the migrator, which is added by this overlay and so is not in the base.
+# The web tag is inherited: repeating it here would silently override the base
+# and make retagging there do nothing on the one path `oasis-kind.sh apply`
+# takes.
+images:
+  - name: oasis-race-control/migrate
+    newTag: dev

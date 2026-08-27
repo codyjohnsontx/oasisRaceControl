@@ -22,6 +22,7 @@ apps/web/            # Next.js — driver portal, staff dashboard, TV leaderboar
 apps/rig-agent/      # .NET 8 Windows agent that runs on every simulator (Phase 2)
 packages/shared/     # Event schemas and shared types (Phase 2)
 db/                  # SQL migrations + dev seed (Postgres — Neon in prod)
+deploy/              # Container image + Kustomize manifests + the local `kind` workflow
 spike/               # Phase 1 throwaway telemetry recorder — proves iRacing SDK ground truth
 docs/                # Plan, spike checklist, spike findings, ops runbook
 ```
@@ -55,6 +56,21 @@ npm test           # unit tests, plus the league lifecycle suite when a local da
 npm run db:check   # read-only: is DATABASE_URL's database behind db/migrations?
 npm run db:migrate # apply any new migrations in db/migrations/
 ```
+
+### Running it on local Kubernetes
+
+There is a `kind`-based local cluster that runs the web app the way a real
+cluster would — two replicas behind a Service, liveness/readiness probes, a
+rolling-update strategy, a development-only Postgres, and the fake rig feeding
+it laps:
+
+```bash
+./deploy/local/oasis-kind.sh up   # then open http://localhost:8080
+```
+
+It is for development and demonstration only and deploys nothing — production
+is still Vercel plus Neon. Full walkthrough:
+[docs/platform/local-kubernetes.md](docs/platform/local-kubernetes.md).
 
 ### Integration tests
 

@@ -1,0 +1,136 @@
+# DEVELOPMENT ONLY. Production Postgres is Neon, a managed service, and the
+# base manifests have no database in them for that reason (docs/deploy.md).
+# This exists so `kind` gives you a self-contained venue on a laptop - it is
+# not a model of how the venue runs, and nothing here is tuned, backed up, or
+# highly available.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: oasis-race-control
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: oasis-race-control
+    app.kubernetes.io/managed-by: kustomize
+    oasis.dev/tier: development-only
+spec:
+  # Headless: a StatefulSet's pod gets a stable DNS name
+  # (postgres-0.postgres) and there is nothing to load-balance across.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: oasis-race-control
+    app.kubernetes.io/component: database
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: oasis-race-control
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: oasis-race-control
+    app.kubernetes.io/managed-by: kustomize
+    oasis.dev/tier: development-only
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oasis-race-control
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oasis-race-control
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: oasis-race-control
+        app.kubernetes.io/managed-by: kustomize
+        oasis.dev/tier: development-only
+    spec:
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # uid/gid 70 is `postgres` in the Alpine image - not the 999 the
+        # Debian-based one uses.
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16.10-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: oasis
+            - name: POSTGRES_USER
+              value: oasis
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-dev
+                  key: POSTGRES_PASSWORD
+            # initdb refuses a mount point it does not own; give it a
+            # subdirectory of the volume instead of the volume root.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "oasis", "-d", "oasis"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "oasis", "-d", "oasis"]
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # With a read-only root, the three paths Postgres still writes to
+            # outside its data directory need to be volumes.
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: oasis-race-control
+          app.kubernetes.io/component: database
+          app.kubernetes.io/part-of: oasis-race-control
+          oasis.dev/tier: development-only
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

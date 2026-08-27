@@ -197,6 +197,16 @@ production database that is behind the code - including the object-existence
 checks that do catch that case - is in
 [docs/deploy.md](docs/deploy.md#recovering-a-database-that-is-behind-the-code).
 
+## Local Kubernetes
+
+`deploy/` holds a `kind` cluster, a two-target Dockerfile and Kustomize
+manifests for the web app - development and demonstration only; production is
+still Vercel plus Neon and the base manifests deliberately contain no database.
+Everything, including why the rig agent is not containerized and why the image
+build skips the migration gate, is in
+[docs/platform/local-kubernetes.md](docs/platform/local-kubernetes.md). Run it
+with `./deploy/local/oasis-kind.sh up`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

@@ -139,3 +139,13 @@ flowchart TB
 | `apps/rig-agent` | **each sim PC** | published single-file exe; auto-start via Task Scheduler |
 | TV board | **venue display** | any always-on browser pointed at `/tv` in kiosk mode; unattended - it cycles every track board and recovers from feed failures without a reload |
 
+`apps/web` also runs on a local Kubernetes cluster for development and for
+demonstrating its runtime behaviour - two replicas, probes, rolling updates,
+self-healing - with a development-only Postgres and the fake-rig simulator
+standing in for Neon and the sim PCs. It hosts nothing and changes none of the
+above: [platform/local-kubernetes.md](./platform/local-kubernetes.md).
+
+The rig agent is deliberately absent from it. It is .NET win-x64, reads
+iRacing's shared memory on the simulator's own machine, and is *installed*
+rather than deployed; there is no Linux container that could run it.
+

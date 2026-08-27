@@ -1,0 +1,29 @@
+# The local cluster. `kind` reads this; nothing else does.
+#
+# Three nodes rather than one, because two of this project's demonstrations are
+# only honest on more than one node: the web Deployment's podAntiAffinity has
+# somewhere to spread to, and killing a pod shows the replacement land on a
+# different machine rather than the same one.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: oasis-race-control-dev
+nodes:
+  - role: control-plane
+    # kind's nodes live on Docker's network, so a NodePort is not reachable
+    # from a browser by itself. This is the hole: host 8080 -> node 30080,
+    # which the local overlay's Service listens on. Any node would do -
+    # kube-proxy forwards a NodePort from whichever node receives it - and the
+    # control-plane node is the one guaranteed to exist.
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP
+    # Pinned. `kind create cluster` with no image follows whatever the
+    # installed kind release defaults to, which moves under you on a `brew
+    # upgrade`; v1.31 also keeps the API server within one minor of a kubectl
+    # 1.30 client.
+    image: kindest/node:v1.31.9@sha256:b94a3a6c06198d17f59cca8c6f486236fa05e2fb359cbd75dabbfc348a10b211
+  - role: worker
+    image: kindest/node:v1.31.9@sha256:b94a3a6c06198d17f59cca8c6f486236fa05e2fb359cbd75dabbfc348a10b211
+  - role: worker
+    image: kindest/node:v1.31.9@sha256:b94a3a6c06198d17f59cca8c6f486236fa05e2fb359cbd75dabbfc348a10b211

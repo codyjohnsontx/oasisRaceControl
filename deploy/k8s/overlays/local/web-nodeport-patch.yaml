@@ -1,0 +1,23 @@
+# How you reach the app from the host.
+#
+# kind's node containers are on Docker's network, not the host's, so a
+# ClusterIP alone is not reachable from a browser. The cluster config maps host
+# port 8080 to node port 30080 (deploy/local/kind-cluster.yaml), and this turns
+# the Service into the NodePort that listens there. Result:
+# http://localhost:8080.
+#
+# NodePort is the right tool for a laptop and the wrong one for a cluster: a
+# real deployment terminates TLS at an Ingress or a cloud load balancer, which
+# is why this is a patch in the local overlay and not in the base.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+      nodePort: 30080

@@ -1,0 +1,28 @@
+# Non-secret configuration for the web container.
+#
+# The application's own configuration surface is exactly two variables -
+# DATABASE_URL and SESSION_SECRET (apps/web/.env.example) - and both are
+# secrets, so neither belongs here. What is left is where the process listens
+# and what it thinks it is, which is placement rather than configuration.
+#
+# The image already sets all four (apps/web/Dockerfile). They are repeated here
+# so the values a cluster runs with are visible in `kubectl get configmap -o
+# yaml` instead of only inside a layer, and so an overlay can change one
+# without a rebuild.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-env
+  labels:
+    app.kubernetes.io/name: oasis-race-control
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: oasis-race-control
+    app.kubernetes.io/managed-by: kustomize
+data:
+  NODE_ENV: production
+  # Next's standalone server.js reads both of these. HOSTNAME must be 0.0.0.0:
+  # bound to localhost the container would answer from inside itself and fail
+  # every probe.
+  PORT: "3000"
+  HOSTNAME: 0.0.0.0
+  NEXT_TELEMETRY_DISABLED: "1"

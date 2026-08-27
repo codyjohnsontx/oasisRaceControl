@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: oasis-race-control
+  labels:
+    app.kubernetes.io/name: oasis-race-control
+    app.kubernetes.io/part-of: oasis-race-control
+    app.kubernetes.io/managed-by: kustomize

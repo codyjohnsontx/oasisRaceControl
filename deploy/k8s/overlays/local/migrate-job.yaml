@@ -1,0 +1,74 @@
+# DEVELOPMENT ONLY.
+#
+# In production the rule is "migrate the database first, then deploy the code",
+# and it is enforced by a build gate rather than by automation: nothing applies
+# DDL to the venue's database unattended, and `npm run db:migrate` is run by a
+# human against a database they named out loud (docs/deploy.md).
+#
+# A throwaway kind cluster has no human in that loop and no data to lose, so
+# this Job stands in for that step. It runs the same scripts/migrate.ts the
+# runbook does. The ordering is not left to whoever typed the commands: web
+# pods carry an initContainer that will not let them start until this Job's
+# work is visible in the database (web-await-migrations-patch.yaml).
+#
+# --seed is deliberate and is the other reason this is development-only. It
+# inserts db/seed.sql's demo rigs, demo staff login and demo driver PINs, all
+# of them published in the repository. Never run it anywhere real.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  labels:
+    app.kubernetes.io/name: oasis-race-control
+    app.kubernetes.io/component: migrate
+    app.kubernetes.io/part-of: oasis-race-control
+    app.kubernetes.io/managed-by: kustomize
+    oasis.dev/tier: development-only
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oasis-race-control
+        app.kubernetes.io/component: migrate
+        app.kubernetes.io/part-of: oasis-race-control
+        oasis.dev/tier: development-only
+    spec:
+      # Postgres may still be starting. The script fails fast and the Job
+      # retries with backoff until it is up.
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: oasis-race-control/migrate:dev
+          imagePullPolicy: IfNotPresent
+          command:
+            - node_modules/.bin/tsx
+            - scripts/migrate.ts
+            - --seed
+          envFrom:
+            - secretRef:
+                name: web-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
