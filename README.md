@@ -77,7 +77,8 @@ is still Vercel plus Neon. Full walkthrough:
 `npm test` covers pure logic and the API routes' auth/validation branches. The
 guarantees that live in Postgres - the `event_id` idempotency key, the
 one-open-assignment-per-rig/driver partial unique indexes, the
-`checkin_driver()` function, and the check constraints that keep an
+`checkin_driver()` function, the sign-out that closes only the stint it names
+and only on the calling rig, and the check constraints that keep an
 unattributed lap unrankable - are covered by a separate suite that needs a real
 database:
 

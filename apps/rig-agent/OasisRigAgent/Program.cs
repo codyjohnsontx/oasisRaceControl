@@ -77,7 +77,14 @@ _ = Task.Run(async () =>
                     // The seat IS empty; only the backend has yet to hear it.
                     // Say so, because until it does, laps on this rig arrive
                     // unclaimed and staff will see them on the dashboard.
-                    _ => "→ session ended here. Backend offline - it will be told when the connection returns.",
+                    SwitchDriverResult.EndedPendingSync =>
+                        "→ session ended here. Backend offline - it will be told when the connection returns.",
+                    // Every result is named above, so this is only reachable
+                    // once a new one is added. It says the one thing true of
+                    // all of them - the seat is empty here - rather than
+                    // inheriting another arm's promise about what the backend
+                    // has been told.
+                    _ => "→ session ended here.",
                 });
                 break;
         }
