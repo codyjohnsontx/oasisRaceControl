@@ -82,9 +82,10 @@ public enum SwitchDriverResult
     /// arrive as unclaimed rather than under the departed driver's name.</summary>
     EndedPendingSync,
 
-    /// <summary>The backend could not be reached and this agent has no stint to
-    /// name, so nothing was queued and nothing will be delivered later. The seat
-    /// is empty here and laps arrive unclaimed, but a stint the backend still
-    /// holds open on this rig can now only be closed from the staff screen.</summary>
+    /// <summary>The backend could not be reached and nothing durable was
+    /// recorded to tell it later - either this agent has no stint to name, or
+    /// the outbox write failed. The seat is empty here and laps arrive
+    /// unclaimed, but nothing guarantees the stint the backend still holds open
+    /// will ever be closed, so it has to be cleared from the staff screen.</summary>
     EndedNotQueued,
 }

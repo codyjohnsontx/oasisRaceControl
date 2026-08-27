@@ -110,8 +110,8 @@ flowchart TB
   agent clears its own assignment the moment the button is pressed and queues
   the checkout durably, so a press the venue link swallowed still stops the next
   person's laps being stamped with the departed driver. Until the queued
-  checkout lands, laps on that rig carry no owner and arrive `accepted_unattributed`
-  - unclaimed on `/staff`, where staff already work them, rather than credited
+  checkout lands, laps on that rig carry no owner and arrive `accepted_unattributed` -
+  unclaimed on `/staff`, where staff already work them, rather than credited
   to somebody who has gone home. The queued checkout names the assignment it is
   ending (`POST /api/agent/checkout`), which is what makes it safe to re-send
   once the seat may belong to somebody else.

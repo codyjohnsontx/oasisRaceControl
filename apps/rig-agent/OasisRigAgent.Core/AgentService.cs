@@ -54,6 +54,13 @@ public sealed class AgentService : IAsyncDisposable
     // this rig has finished with, whatever a poll still reports about it.
     private volatile string? _pendingCheckout;
 
+    // Whether that pending sign-out reached disk. One held only in memory is
+    // still re-sent for as long as this agent runs, but it does not survive a
+    // restart - so it must never be reported as a delivery the backend is going
+    // to get. Promising one that a reboot would silently drop is the same false
+    // assurance, one layer down, as the swallowed press this whole path removes.
+    private volatile bool _pendingCheckoutIsDurable;
+
     public event Action<AgentStatus>? StatusChanged;
 
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
@@ -66,6 +73,8 @@ public sealed class AgentService : IAsyncDisposable
         // before any loop starts, so the first poll already knows not to adopt
         // the assignment it is about to close.
         _pendingCheckout = _queue.ReadPendingCheckout();
+        // Read back off disk, so by definition it survived a restart already.
+        _pendingCheckoutIsDurable = _pendingCheckout is not null;
     }
 
     public void Start()
@@ -155,9 +164,11 @@ public sealed class AgentService : IAsyncDisposable
                 // out instead would take the console's input loop with it, and
                 // the button would stop working at all: the failure this whole
                 // path exists to remove.
+                var durable = false;
                 try
                 {
                     _queue.SetPendingCheckout(ending);
+                    durable = true;
                 }
                 catch (Exception ex)
                 {
@@ -165,12 +176,17 @@ public sealed class AgentService : IAsyncDisposable
                         $"[agent] failed to record queued sign-out {ending}: {ex.Message}");
                 }
                 _pendingCheckout = ending;
+                _pendingCheckoutIsDurable = durable;
             }
-            // Whether the backend is owed anything once this press is done,
-            // read under the same lock that decided it. What the driver is told
-            // turns on this, so it must not be re-read after the call, where a
-            // settle on another loop could have changed the answer.
-            owedToBackend = _pendingCheckout is not null;
+            // Whether a delivery this agent can still promise is outstanding
+            // once this press is done, read under the same lock that decided
+            // it. What the driver is told turns on this, so it must not be
+            // re-read after the call, where a settle on another loop could have
+            // changed the answer. Durability is carried with the pending
+            // sign-out rather than tracked per press, so a later press that
+            // names no stint still reports the truth about the one already
+            // outstanding.
+            owedToBackend = _pendingCheckout is not null && _pendingCheckoutIsDurable;
         }
         PublishStatus();
 
@@ -273,7 +289,11 @@ public sealed class AgentService : IAsyncDisposable
         lock (_stampLock)
         {
             _queue.ClearPendingCheckout(assignmentId);
-            if (_pendingCheckout == assignmentId) _pendingCheckout = null;
+            if (_pendingCheckout == assignmentId)
+            {
+                _pendingCheckout = null;
+                _pendingCheckoutIsDurable = false;
+            }
         }
         PublishStatus();
     }

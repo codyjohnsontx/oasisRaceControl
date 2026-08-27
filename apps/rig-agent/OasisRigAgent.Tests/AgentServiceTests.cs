@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
 using OasisRigAgent.Core;
 using Xunit;
 
@@ -614,6 +615,75 @@ public sealed class AgentServiceTests : IDisposable
         Assert.NotNull(latest);
         Assert.False(latest!.CheckoutPending);
         Assert.Null(queue.ReadPendingCheckout());
+    }
+
+    /// <summary>The durable write is the whole reason the queued sign-out
+    /// survives a rig reboot, so a press that could not record one must not
+    /// claim the backend is going to be told. The retry still runs for as long
+    /// as this agent lives, but the driver is pointed at the staff screen,
+    /// because a restart before the link returns would lose it and let the
+    /// first poll re-adopt the departed stint - the very misattribution this
+    /// change exists to remove, one layer down.</summary>
+    [Fact]
+    public async Task A_sign_out_that_could_not_be_recorded_does_not_promise_delivery()
+    {
+        // The unwritable-outbox setup below is Unix-only. The rig runs on
+        // Windows, but the behaviour under test is platform-independent and the
+        // whole suite runs on the developer machines that build the agent.
+        if (OperatingSystem.IsWindows()) return;
+
+        // Build the outbox, then take write permission away, so the schema is
+        // there but the durable write fails the way a read-only or full disk
+        // makes it fail. Reads still work, which is what the status line and
+        // the assertions below need.
+        using (var setup = new EventQueue(_dbPath)) { }
+        // Disposing a SqliteConnection returns it to the pool with the file
+        // handle still open, so without this the EventQueue below would reuse a
+        // handle opened while the file was still writable and the write would
+        // succeed - the test would pass while proving nothing.
+        SqliteConnection.ClearAllPools();
+        // SetUnixFileMode rather than SetAttributes(ReadOnly): the latter does
+        // not clear the write bit here.
+        File.SetUnixFileMode(
+            _dbPath, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        try
+        {
+            var backend = new StubBackend();
+            backend.Assign(AssignmentId);
+            var telemetry = new FakeTelemetrySource();
+            using var queue = new EventQueue(_dbPath);
+            using var http = new HttpClient(backend);
+            var client = new BackendClient(http, "https://x.test", "t");
+            await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+            var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+            agent.Start();
+            await assigned;
+
+            AgentStatus? last = null;
+            agent.StatusChanged += s => last = s;
+
+            backend.SetOffline(true);
+            var result = await agent.SwitchDriverAsync();
+
+            // Not EndedPendingSync: nothing on disk will make this happen after
+            // a reboot, so the console must point at the staff screen instead.
+            Assert.Equal(SwitchDriverResult.EndedNotQueued, result);
+            Assert.Null(queue.ReadPendingCheckout());
+
+            // The local clear still stands. It is the half that must never
+            // depend on the outbox being writable.
+            Assert.NotNull(last);
+            Assert.Null(last!.Assignment);
+        }
+        finally
+        {
+            // So Dispose can delete it.
+            File.SetUnixFileMode(
+                _dbPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite
+                    | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
     }
 
     public void Dispose()
