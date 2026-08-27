@@ -32,7 +32,10 @@ live backend:
   poll. It names the assignment it is ending, so a checkout that lands after the
   next driver has checked in closes the stint it was pressed for and never
   theirs. In the meantime laps on that rig carry no owner and land unclaimed on
-  the staff dashboard
+  the staff dashboard. The one press with nothing to queue is one made by an
+  agent that has never completed an assignment poll: it cannot name a stint to
+  close, so it says so instead of promising a delivery, and a stint the backend
+  still holds open on that rig has to be cleared from the staff dashboard
 - ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
   source is built after the Phase 0 safety gate, Phase 1A supervised canary,
   and Phase 1B telemetry spike freeze the contract (`docs/venue-safety.md` and
