@@ -123,10 +123,14 @@ public sealed class AgentService : IAsyncDisposable
     /// /staff by the people already standing there.
     ///
     /// What the backend is owed is queued rather than dropped, so the stint is
-    /// closed there too as soon as it can be reached.</summary>
+    /// closed there too as soon as it can be reached - except when this agent
+    /// cannot name a stint to close, where there is nothing to queue and the
+    /// result says so rather than promising a delivery that will never
+    /// happen.</summary>
     public async Task<SwitchDriverResult> SwitchDriverAsync()
     {
         string? ending;
+        bool owedToBackend;
         lock (_stampLock)
         {
             ending = _assignment?.Id;
@@ -145,9 +149,28 @@ public sealed class AgentService : IAsyncDisposable
             // not what this guard is for.
             if (ending is not null)
             {
-                _queue.SetPendingCheckout(ending);
+                // A durable write that fails costs this press its reboot
+                // survival and nothing else - the retry runs off the field
+                // below for as long as this agent lives. Letting the exception
+                // out instead would take the console's input loop with it, and
+                // the button would stop working at all: the failure this whole
+                // path exists to remove.
+                try
+                {
+                    _queue.SetPendingCheckout(ending);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"[agent] failed to record queued sign-out {ending}: {ex.Message}");
+                }
                 _pendingCheckout = ending;
             }
+            // Whether the backend is owed anything once this press is done,
+            // read under the same lock that decided it. What the driver is told
+            // turns on this, so it must not be re-read after the call, where a
+            // settle on another loop could have changed the answer.
+            owedToBackend = _pendingCheckout is not null;
         }
         PublishStatus();
 
@@ -155,7 +178,10 @@ public sealed class AgentService : IAsyncDisposable
         // a bare bool cannot: the backend legitimately answers false when it had
         // nothing open to close, and that needs no retry.
         var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(ending, ct)));
-        if (!result.Ok) return SwitchDriverResult.EndedPendingSync;
+        if (!result.Ok)
+            return owedToBackend
+                ? SwitchDriverResult.EndedPendingSync
+                : SwitchDriverResult.EndedNotQueued;
 
         if (ending is not null) ClearPendingCheckout(ending);
         return result.Ended ? SwitchDriverResult.Ended : SwitchDriverResult.NoActiveSession;

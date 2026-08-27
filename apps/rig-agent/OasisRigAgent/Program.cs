@@ -68,6 +68,12 @@ _ = Task.Run(async () =>
                 {
                     SwitchDriverResult.Ended => "→ session ended.",
                     SwitchDriverResult.NoActiveSession => "→ no active session.",
+                    // The seat is empty here, but nothing was queued and nothing
+                    // will be sent later, so this is the one case staff have to
+                    // finish by hand.
+                    SwitchDriverResult.EndedNotQueued =>
+                        "→ session ended here. Backend offline and the server cannot be told - "
+                        + "if someone was checked in on this rig, clear it from the staff screen.",
                     // The seat IS empty; only the backend has yet to hear it.
                     // Say so, because until it does, laps on this rig arrive
                     // unclaimed and staff will see them on the dashboard.

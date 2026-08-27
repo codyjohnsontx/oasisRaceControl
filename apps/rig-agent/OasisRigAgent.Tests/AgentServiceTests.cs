@@ -581,6 +581,41 @@ public sealed class AgentServiceTests : IDisposable
         Assert.Null(payload["rigAssignmentId"]);
     }
 
+    /// <summary>The press this agent can do nothing about. The rig PC came up
+    /// during the outage and has never polled, so it cannot name the stint the
+    /// backend still holds open from the driver's own phone check-in: there is
+    /// nothing to queue, and nothing will reach the backend when the link
+    /// returns. Reporting it as a queued sign-out would tell staff the one thing
+    /// that is not true - that this is handled - while the stale stint sits
+    /// there ready to credit the next person's laps to whoever left.</summary>
+    [Fact]
+    public async Task Switch_driver_with_no_stint_to_name_promises_the_backend_nothing()
+    {
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        backend.SetOffline(true);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var offline = WaitForStatus(agent, s => s.Connection == ConnectionState.Offline);
+        agent.Start();
+        await offline;
+
+        AgentStatus? latest = null;
+        agent.StatusChanged += s => latest = s;
+
+        Assert.Equal(SwitchDriverResult.EndedNotQueued, await agent.SwitchDriverAsync());
+
+        // The display must agree with what the driver was told: nothing is
+        // waiting to be delivered, on this run or after a reboot.
+        Assert.NotNull(latest);
+        Assert.False(latest!.CheckoutPending);
+        Assert.Null(queue.ReadPendingCheckout());
+    }
+
     public void Dispose()
     {
         if (File.Exists(_dbPath)) File.Delete(_dbPath);

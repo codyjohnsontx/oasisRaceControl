@@ -67,7 +67,8 @@ public sealed record AgentStatus
 }
 
 /// <summary>What the "switch driver" action achieved. The stint is over locally
-/// in all three cases - they differ only in what the backend now knows.</summary>
+/// in every case - they differ only in what the backend now knows, and in
+/// whether it will ever be told.</summary>
 public enum SwitchDriverResult
 {
     /// <summary>The backend closed the assignment.</summary>
@@ -80,4 +81,10 @@ public enum SwitchDriverResult
     /// checkout is queued; until it lands, laps on this rig carry no owner and
     /// arrive as unclaimed rather than under the departed driver's name.</summary>
     EndedPendingSync,
+
+    /// <summary>The backend could not be reached and this agent has no stint to
+    /// name, so nothing was queued and nothing will be delivered later. The seat
+    /// is empty here and laps arrive unclaimed, but a stint the backend still
+    /// holds open on this rig can now only be closed from the staff screen.</summary>
+    EndedNotQueued,
 }
