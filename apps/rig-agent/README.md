@@ -36,9 +36,12 @@ live backend:
   one made by an agent that has never completed an assignment poll, which cannot
   name a stint to close and so has nothing to queue at all, and one whose outbox
   write failed - that retry runs for as long as the agent does, but a restart
-  before the link returns would lose it. Both say so instead of promising a
-  delivery, on the press and on the rig's status line, and a stint the backend
-  still holds open on that rig has to be cleared from the staff dashboard
+  before the link returns would lose it. Both say so on the press instead of
+  promising a delivery; the failed write is the one that leaves a retry
+  outstanding, so it says it again on the rig's status line until the backend
+  accounts for it, while the press that named no stint has nothing to show
+  there. Either way a stint the backend still holds open on that rig has to be
+  cleared from the staff dashboard
 - ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
   source is built after the Phase 0 safety gate, Phase 1A supervised canary,
   and Phase 1B telemetry spike freeze the contract (`docs/venue-safety.md` and
