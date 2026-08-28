@@ -50,8 +50,8 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
   const UPGRADE = "0004_unattributed_cause.sql";
   let admin: Client;
   let db: Client;
-  /** The rig and open assignment the fixture seeded, for tests that need to
-   *  write their own laps without reading another test's rows. */
+  /** The rig, driver, and open assignment the fixture seeded, for tests that
+   *  need to write their own laps without reading another test's rows. */
   let rigId: string;
   let assignmentId: string;
   let driverId: string;
