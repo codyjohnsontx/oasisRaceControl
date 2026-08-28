@@ -20,12 +20,18 @@
 -- Lock window, measured. ADD COLUMN takes ACCESS EXCLUSIVE on laps, and the
 -- runner applies each file in one transaction (apps/web/scripts/migrate.ts), so
 -- that lock is held through the backfill and the constraint's scan until this
--- file commits. On a 252,500-lap table (2,500 ownerless, 154 MB, Postgres 17) -
--- roughly twice the venue's table today - the file ran in 0.12-0.19 s, and lap
--- inserts running against it throughout waited 0.08-0.11 s at worst and then
--- succeeded: about 2,200 concurrent ownerless inserts over three runs, none
--- rejected, none lost. Apply before deploying the code (docs/deploy.md), while
--- the rigs are quiet if you can.
+-- file commits. Measured on two machines against a 252,500-lap table (2,500
+-- ownerless, ~150 MB, Postgres 17) - roughly twice the venue's table today -
+-- once with a single concurrent inserter and once with eight: the file applied
+-- in roughly 0.12-0.33 s, and lap inserts running against it throughout waited
+-- roughly 0.08-0.32 s at worst and then succeeded. Those figures are
+-- machine-dependent and widen with the number of writers, so read them as an
+-- envelope rather than a budget. What did not vary: across roughly 8,000
+-- concurrent ownerless inserts nothing failed - an insert queues on the lock
+-- rather than erroring, because the app pool sets no statement or query timeout
+-- (apps/web/src/lib/db.ts) - and every row landing after the commit was filled
+-- with not_recorded by the trigger below. Apply before deploying the code
+-- (docs/deploy.md), while the rigs are quiet if you can.
 --
 -- Do not split this file to shorten that window. Bounded transactions per step,
 -- or a NOT VALID constraint validated afterwards, are not a gentler version of

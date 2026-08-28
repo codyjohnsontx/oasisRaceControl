@@ -155,16 +155,22 @@ the agent handles heartbeat + assignment display + the durable outbox.
 **Migrate the database first, then deploy the code.** Every migration in
 `db/migrations` is additive, so a database that is *ahead* of the code is
 harmless; a database that is *behind* it means the app queries tables that do
-not exist and the routes needing them return HTTP 500.
+not exist and the routes needing them return HTTP 500. Additive is not
+automatic, though: because migrate runs first, a migration that adds a
+*constraint* also has to tolerate what the previous deployment is still writing.
+`0004_unattributed_cause.sql` is the worked example - its check constraint would
+have rejected that deployment's ownerless laps, and staying harmless took the
+before-insert trigger it ships with.
 
 `npm run db:migrate` applies each file in one transaction, so a lock a migration
 takes on a table is held until that whole file commits - and the file's own
-header is where its window is recorded. `0004_unattributed_cause.sql` is the
-heaviest so far, and it is small: on a table of 250,000 laps it holds `laps` for
-under a fifth of a second, and lap inserts arriving during that window waited
-about a tenth of a second and then succeeded, none rejected. Still, apply
-migrations while the rigs are quiet when you can, and always before the code
-that needs them.
+header is where its window is recorded. That file is the heaviest so far, and it
+is small: on a table of 250,000 laps it holds `laps` for a fraction of a second,
+and lap inserts arriving during that window queue and then succeed rather than
+failing, none rejected. How long exactly depends on the machine and on how many
+rigs are writing, so treat the header's measured range as an envelope. Still,
+apply migrations while the rigs are quiet when you can, and always before the
+code that needs them.
 
 `npm run build` runs `scripts/check-migrations.ts` before `next build`. It
 prints which database it is pointed at - host and database name, never the
