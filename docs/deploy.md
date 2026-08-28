@@ -157,6 +157,15 @@ the agent handles heartbeat + assignment display + the durable outbox.
 harmless; a database that is *behind* it means the app queries tables that do
 not exist and the routes needing them return HTTP 500.
 
+`npm run db:migrate` applies each file in one transaction, so a lock a migration
+takes on a table is held until that whole file commits - and the file's own
+header is where its window is recorded. `0004_unattributed_cause.sql` is the
+heaviest so far, and it is small: on a table of 250,000 laps it holds `laps` for
+under a fifth of a second, and lap inserts arriving during that window waited
+about a tenth of a second and then succeeded, none rejected. Still, apply
+migrations while the rigs are quiet when you can, and always before the code
+that needs them.
+
 `npm run build` runs `scripts/check-migrations.ts` before `next build`. It
 prints which database it is pointed at - host and database name, never the
 credentials - reads `schema_migrations`, and compares it with `db/migrations`.

@@ -16,6 +16,25 @@
 -- check constraint, a backfill for the rows that predate it, and a before-insert
 -- trigger that keeps the previous deployment's ingestion working between
 -- migrate and deploy.
+--
+-- Lock window, measured. ADD COLUMN takes ACCESS EXCLUSIVE on laps, and the
+-- runner applies each file in one transaction (apps/web/scripts/migrate.ts), so
+-- that lock is held through the backfill and the constraint's scan until this
+-- file commits. On a 252,500-lap table (2,500 ownerless, 154 MB, Postgres 17) -
+-- roughly twice the venue's table today - the file ran in 0.12-0.19 s, and lap
+-- inserts running against it throughout waited 0.08-0.11 s at worst and then
+-- succeeded: about 2,200 concurrent ownerless inserts over three runs, none
+-- rejected, none lost. Apply before deploying the code (docs/deploy.md), while
+-- the rigs are quiet if you can.
+--
+-- Do not split this file to shorten that window. Bounded transactions per step,
+-- or a NOT VALID constraint validated afterwards, are not a gentler version of
+-- it - they are a broken one. The previous deployment is still writing
+-- ownerless laps with no cause (the reason the trigger below exists), so
+-- outside one transaction those rows land between the backfill and the
+-- constraint, and the constraint is then rejected against its own table.
+-- Reproduced by running these same statements under that load with the
+-- transaction removed.
 
 -- Lowercase labels, matching assignment_end_reason and the names ingestion
 -- already uses in code, so the route writes the value it decided verbatim. A
