@@ -573,9 +573,11 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       post(rig, [{ ...LAP, eventId: "evt-nocause-0001", rigAssignmentId: null }]),
     );
 
-    // The cause is what /staff shows per row. A route that forgot to record it
-    // would produce this update's shape on insert, and the database refuses it
-    // there too - the constraint is the same either way.
+    // The cause is what /staff shows per row, and the constraint keeps it
+    // there: an ownerless lap can never be left without one. Update only. The
+    // same shape arriving on INSERT is not refused - the trigger fills
+    // not_recorded instead, deliberately, so that a deployment older than the
+    // column can keep writing between migrate and deploy (the next test).
     await expect(
       testDb().query(
         "update laps set unattributed_cause = null where event_id = $1",
