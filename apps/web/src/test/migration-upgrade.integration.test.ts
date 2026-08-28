@@ -50,7 +50,15 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
   const UPGRADE = "0004_unattributed_cause.sql";
   let admin: Client;
   let db: Client;
+  /** The rig and open assignment the fixture seeded, for tests that need to
+   *  write their own laps without reading another test's rows. */
+  let rigId: string;
+  let assignmentId: string;
+  let driverId: string;
 
+  // The whole fixture - a database at 0003 carrying laps, then upgraded - is
+  // built here rather than inside the first test, so that no test in this file
+  // depends on another test's body having run. Each `it` below only asserts.
   beforeAll(async () => {
     const serverUrl = safeTestDatabaseUrl()!;
     admin = new Client({ connectionString: withDatabase(serverUrl, "postgres") });
@@ -61,15 +69,7 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
     db = new Client({ connectionString: withDatabase(serverUrl, SCRATCH_DB) });
     await db.connect();
     for (const file of migrationsBefore(UPGRADE)) await apply(db, file);
-  });
 
-  afterAll(async () => {
-    await db?.end();
-    await admin?.query(`drop database if exists ${SCRATCH_DB} with (force)`);
-    await admin?.end();
-  });
-
-  it("applies in one transaction and backfills the laps that predate it", async () => {
     // A rig with one owned lap and one unclaimed lap, in the shape 0003 stored
     // them: no cause column exists yet, so there is nothing to say why.
     const { rows: [rig] } = await db.query<{ id: string }>(
@@ -82,6 +82,10 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
       "insert into rig_assignments (rig_id, driver_id) values ($1, $2) returning id",
       [rig!.id, driver!.id],
     );
+    rigId = rig!.id;
+    driverId = driver!.id;
+    assignmentId = assignment!.id;
+
     await db.query(
       `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name,
                          car_name, lap_time_ms, is_valid, invalid_reason, completed_at)
@@ -89,7 +93,7 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
                90000, true, null, now()),
               ('evt-unclaimed', $1, null, null, 'Spa-Francorchamps', 'Porsche 911 GT3 R',
                90001, false, 'UNATTRIBUTED', now())`,
-      [rig!.id, assignment!.id, driver!.id],
+      [rigId, assignmentId, driverId],
     );
 
     // The runner wraps each file in a transaction, and 0003's header warns that
@@ -97,7 +101,15 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
     // type and uses it in the same transaction, which Postgres allows - but
     // only a real apply proves the file does not trip that rule.
     await apply(db, UPGRADE);
+  });
 
+  afterAll(async () => {
+    await db?.end();
+    await admin?.query(`drop database if exists ${SCRATCH_DB} with (force)`);
+    await admin?.end();
+  });
+
+  it("applies in one transaction and backfills the laps that predate it", async () => {
     const { rows } = await db.query(
       "select event_id, unattributed_cause from laps order by event_id",
     );
@@ -122,12 +134,6 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
     // inserts in the 0003 shape - no cause column at all. Both kinds of lap it
     // writes must still land: the ownerless one with the honest label, the
     // owned one with none.
-    const { rows: [rig] } = await db.query<{ id: string }>(
-      "select id from rigs where rig_number = 1",
-    );
-    const { rows: [assignment] } = await db.query<{ id: string; driver_id: string }>(
-      "select id, driver_id from rig_assignments limit 1",
-    );
     await db.query(
       `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name,
                          car_name, lap_time_ms, is_valid, invalid_reason, completed_at)
@@ -135,7 +141,7 @@ describeDb("0004_unattributed_cause on a database already at 0003", () => {
                'Porsche 911 GT3 R', 90002, false, 'UNATTRIBUTED', now()),
               ('evt-old-writer-owned', $1, $2, $3, 'Spa-Francorchamps',
                'Porsche 911 GT3 R', 90003, true, null, now())`,
-      [rig!.id, assignment!.id, assignment!.driver_id],
+      [rigId, assignmentId, driverId],
     );
 
     const { rows } = await db.query(
