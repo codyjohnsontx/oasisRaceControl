@@ -10,6 +10,11 @@ namespace OasisRigAgent.Core;
 /// they are detected and only removed once the backend has accepted (or
 /// deduplicated) them, so a network outage or agent restart never loses a lap.
 /// The event_id primary key makes re-enqueuing the same lap a no-op.
+///
+/// It also holds the one other scrap of agent state that must outlive the
+/// process: a checkout the agent has already applied locally but has not yet
+/// managed to deliver. See <see cref="ReadPendingCheckout"/> for why that has
+/// to be on disk rather than in a field.
 /// </summary>
 public sealed class EventQueue : IDisposable
 {
@@ -30,6 +35,11 @@ public sealed class EventQueue : IDisposable
               payload    text not null,
               created_at text not null,
               resolved   integer not null default 1
+            );
+            create table if not exists pending_checkout (
+              id            integer primary key check (id = 1),
+              assignment_id text not null,
+              ended_at      text not null
             );
             """;
         cmd.ExecuteNonQuery();
@@ -165,6 +175,65 @@ public sealed class EventQueue : IDisposable
                && driven + serverClockOffset >= assignment.StartedAt
             ? assignment.Id
             : null;
+    }
+
+    /// <summary>The stint this agent has ended locally and still owes the
+    /// backend, or null if it owes none.
+    ///
+    /// This lives on disk rather than in a field because the case it exists for
+    /// is the one where the process does not survive: a rig PC that reboots
+    /// during the same outage that swallowed the checkout. On the way back up
+    /// the agent's first poll reports that assignment still open - the backend
+    /// was never told - and an agent that had forgotten the checkout would adopt
+    /// the departed driver again and stamp the next person's laps with them,
+    /// which is the whole defect the local clear removes.
+    ///
+    /// At most one is outstanding. A second switch-driver before the first has
+    /// been delivered replaces it: only the latest stint the agent ended is
+    /// still owed, and every earlier one has already been closed by it.</summary>
+    public string? ReadPendingCheckout()
+    {
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "select assignment_id from pending_checkout where id = 1";
+            return cmd.ExecuteScalar() as string;
+        }
+    }
+
+    /// <summary>Record that <paramref name="assignmentId"/> has been ended here
+    /// and the backend has yet to hear about it.</summary>
+    public void SetPendingCheckout(string assignmentId)
+    {
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = """
+                insert into pending_checkout (id, assignment_id, ended_at)
+                values (1, $id, $ended)
+                on conflict (id) do update
+                  set assignment_id = excluded.assignment_id,
+                      ended_at = excluded.ended_at;
+                """;
+            cmd.Parameters.AddWithValue("$id", assignmentId);
+            cmd.Parameters.AddWithValue("$ended", DateTimeOffset.UtcNow.ToString("o"));
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Forget a delivered checkout. Scoped to the assignment it
+    /// settled, so a late acknowledgement cannot wipe a newer checkout that a
+    /// second driver's sign-out recorded while the first was in flight - that
+    /// one is still owed, and dropping it would leave a stint open forever.</summary>
+    public void ClearPendingCheckout(string assignmentId)
+    {
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "delete from pending_checkout where id = 1 and assignment_id = $id";
+            cmd.Parameters.AddWithValue("$id", assignmentId);
+            cmd.ExecuteNonQuery();
+        }
     }
 
     private static JsonObject BuildPayload(LapCompleted lap)

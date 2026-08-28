@@ -64,8 +64,29 @@ _ = Task.Run(async () =>
                 break;
             case "s":
                 Console.WriteLine("→ switching driver…");
-                var ended = await agent.SwitchDriverAsync();
-                Console.WriteLine(ended ? "→ session ended." : "→ no active session.");
+                Console.WriteLine(await agent.SwitchDriverAsync() switch
+                {
+                    SwitchDriverResult.Ended => "→ session ended.",
+                    SwitchDriverResult.NoActiveSession => "→ no active session.",
+                    // The seat is empty here, but nothing durable was recorded,
+                    // so this is the one case staff have to finish by hand -
+                    // either there was no stint to name, or the outbox write
+                    // failed and a restart would lose the retry.
+                    SwitchDriverResult.EndedNotQueued =>
+                        "→ session ended here. Backend offline and the server may never be told - "
+                        + "if someone was checked in on this rig, clear it from the staff screen.",
+                    // The seat IS empty; only the backend has yet to hear it.
+                    // Say so, because until it does, laps on this rig arrive
+                    // unclaimed and staff will see them on the dashboard.
+                    SwitchDriverResult.EndedPendingSync =>
+                        "→ session ended here. Backend offline - it will be told when the connection returns.",
+                    // Every result is named above, so this is only reachable
+                    // once a new one is added. It says the one thing true of
+                    // all of them - the seat is empty here - rather than
+                    // inheriting another arm's promise about what the backend
+                    // has been told.
+                    _ => "→ session ended here.",
+                });
                 break;
         }
     }
@@ -92,5 +113,15 @@ static void Render(AgentStatus s)
         : s.AssignmentKnown ? "— available —" : "(checking)";
     var sim = s.SimRunning ? "sim running" : "sim idle";
     var pending = s.PendingLaps > 0 ? $"  |  {s.PendingLaps} lap(s) queued" : "";
-    Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}");
+    // The press prints its one-shot line once and scrolls away; this is the
+    // line staff still have in front of them an hour later, so it has to say
+    // the same thing - including naming the one case they have to finish by
+    // hand rather than reporting it as handled.
+    var checkout = s.Checkout switch
+    {
+        CheckoutDelivery.Queued => "  |  sign-out queued",
+        CheckoutDelivery.NotQueued => "  |  sign-out NOT saved - clear this rig from the staff screen",
+        _ => "",
+    };
+    Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{checkout}");
 }

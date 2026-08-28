@@ -47,6 +47,20 @@ public sealed class AgentService : IAsyncDisposable
     // afterwards is stamped with a stint that has ended.
     private int _assignmentGeneration;
 
+    // The stint this agent has ended locally but has not yet been able to tell
+    // the backend about, mirroring the queue's durable copy so the poll and the
+    // stamping path can read it without touching SQLite. Two jobs: it is the
+    // retry's target, and it is a tombstone - an assignment named here is one
+    // this rig has finished with, whatever a poll still reports about it.
+    private volatile string? _pendingCheckout;
+
+    // Whether that pending sign-out reached disk. One held only in memory is
+    // still re-sent for as long as this agent runs, but it does not survive a
+    // restart - so it must never be reported as a delivery the backend is going
+    // to get. Promising one that a reboot would silently drop is the same false
+    // assurance, one layer down, as the swallowed press this whole path removes.
+    private volatile bool _pendingCheckoutIsDurable;
+
     public event Action<AgentStatus>? StatusChanged;
 
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
@@ -55,6 +69,12 @@ public sealed class AgentService : IAsyncDisposable
         _client = client;
         _queue = queue;
         _telemetry = telemetry;
+        // A checkout left undelivered by the previous run of this agent. Read
+        // before any loop starts, so the first poll already knows not to adopt
+        // the assignment it is about to close.
+        _pendingCheckout = _queue.ReadPendingCheckout();
+        // Read back off disk, so by definition it survived a restart already.
+        _pendingCheckoutIsDurable = _pendingCheckout is not null;
     }
 
     public void Start()
@@ -99,20 +119,88 @@ public sealed class AgentService : IAsyncDisposable
         PublishStatus();
     }
 
-    /// <summary>The "switch driver" action: end the current assignment.</summary>
-    public async Task<bool> SwitchDriverAsync()
+    /// <summary>The "switch driver" action: end the current assignment.
+    ///
+    /// The seat empties HERE, before the backend is asked and whatever it
+    /// answers. Gating the local clear on the answer meant that a press the
+    /// backend could not receive did nothing at all: the departed driver stayed
+    /// in the seat as far as this agent was concerned, so the next person's laps
+    /// were stamped with their assignment - and, since nothing had closed that
+    /// assignment either, credited to them as valid ranking laps when the outbox
+    /// finally drained. Clearing first turns that into "no driver, visibly": the
+    /// next person's laps carry no owner, land as unclaimed, and are worked from
+    /// /staff by the people already standing there.
+    ///
+    /// What the backend is owed is queued rather than dropped, so the stint is
+    /// closed there too as soon as it can be reached - except when this agent
+    /// cannot name a stint to close, where there is nothing to queue and the
+    /// result says so rather than promising a delivery that will never
+    /// happen.</summary>
+    public async Task<SwitchDriverResult> SwitchDriverAsync()
     {
-        var ended = await RunBackend(ct => _client.CheckoutAsync(ct));
-        if (ended)
+        string? ending;
+        bool owedToBackend;
+        lock (_stampLock)
         {
-            lock (_stampLock)
+            ending = _assignment?.Id;
+            // Bumped inside the same lock that clears the assignment, so a poll
+            // already in flight cannot answer with the stint that just ended.
+            Interlocked.Increment(ref _assignmentGeneration);
+            _assignment = null;
+            // Durable before the network is touched: the press must survive a
+            // rig PC that reboots before the backend comes back.
+            //
+            // Nothing is queued when this agent has never managed to poll: it
+            // cannot name the stint, and a retry meaning "close whatever is
+            // open here" would eventually close somebody else's. Such an agent
+            // adopts whatever the first poll reports, which is the same
+            // exposure a driver who never presses anything already has, and is
+            // not what this guard is for.
+            if (ending is not null)
             {
-                Interlocked.Increment(ref _assignmentGeneration);
-                _assignment = null;
+                // A durable write that fails costs this press its reboot
+                // survival and nothing else - the retry runs off the field
+                // below for as long as this agent lives. Letting the exception
+                // out instead would take the console's input loop with it, and
+                // the button would stop working at all: the failure this whole
+                // path exists to remove.
+                var durable = false;
+                try
+                {
+                    _queue.SetPendingCheckout(ending);
+                    durable = true;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"[agent] failed to record queued sign-out {ending}: {ex.Message}");
+                }
+                _pendingCheckout = ending;
+                _pendingCheckoutIsDurable = durable;
             }
-            PublishStatus();
+            // Whether a delivery this agent can still promise is outstanding
+            // once this press is done, read under the same lock that decided
+            // it. What the driver is told turns on this, so it must not be
+            // re-read after the call, where a settle on another loop could have
+            // changed the answer. Durability is carried with the pending
+            // sign-out rather than tracked per press, so a later press that
+            // names no stint still reports the truth about the one already
+            // outstanding.
+            owedToBackend = _pendingCheckout is not null && _pendingCheckoutIsDurable;
         }
-        return ended;
+        PublishStatus();
+
+        // Ok distinguishes "the backend answered" from "the call failed", which
+        // a bare bool cannot: the backend legitimately answers false when it had
+        // nothing open to close, and that needs no retry.
+        var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(ending, ct)));
+        if (!result.Ok)
+            return owedToBackend
+                ? SwitchDriverResult.EndedPendingSync
+                : SwitchDriverResult.EndedNotQueued;
+
+        if (ending is not null) ClearPendingCheckout(ending);
+        return result.Ended ? SwitchDriverResult.Ended : SwitchDriverResult.NoActiveSession;
     }
 
     private async Task HeartbeatTick(CancellationToken ct)
@@ -133,6 +221,14 @@ public sealed class AgentService : IAsyncDisposable
         var poll = await RunBackend(async token => (Ok: true, Poll: await _client.GetAssignmentAsync(token)));
         if (!poll.Ok) return;
         var assignment = poll.Poll!.Assignment;
+
+        // A stint this agent has already ended is over, however open the backend
+        // still believes it to be - it believes that only because it has not
+        // been told yet. Adopting it back off the poll would undo the local
+        // clear and re-stamp the next person's laps with the departed driver,
+        // which is exactly the defect. The lie is not the poll's; the correction
+        // belongs here, on the way in.
+        if (assignment is not null && assignment.Id == _pendingCheckout) assignment = null;
 
         lock (_stampLock)
         {
@@ -159,6 +255,60 @@ public sealed class AgentService : IAsyncDisposable
                 _hasPolled = true;
             }
             _assignment = assignment;
+        }
+        PublishStatus();
+
+        // The backend is reachable, so this is the moment a checkout the driver
+        // pressed during an outage can finally be delivered.
+        await SettlePendingCheckout();
+    }
+
+    /// <summary>Deliver a checkout the backend could not be told about when the
+    /// driver pressed the button.
+    ///
+    /// It names the assignment it is closing, so it can only ever close that
+    /// one. By the time it lands the seat may legitimately belong to the next
+    /// driver, or staff may have cleared the rig, or that driver's own check-in
+    /// may have taken the stint over - in every one of those cases the backend
+    /// finds nothing to close, answers false, and this stops asking. Only a
+    /// backend that could not be reached at all leaves it queued.</summary>
+    private async Task SettlePendingCheckout()
+    {
+        var pending = _pendingCheckout;
+        if (pending is null) return;
+
+        var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(pending, ct)));
+        if (result.Ok) ClearPendingCheckout(pending);
+    }
+
+    /// <summary>Forget a checkout the backend has now accounted for. Scoped to
+    /// the assignment it settled: a second sign-out during the round trip
+    /// records a newer debt, and that one is still owed.</summary>
+    private void ClearPendingCheckout(string assignmentId)
+    {
+        lock (_stampLock)
+        {
+            // Contained for the same reason the durable write is, and it is the
+            // same outbox that fails: this runs on the press's own path, where
+            // an escaped exception would take the console's input loop with it
+            // and the button would stop working at all. A delete is a write, so
+            // no outage is needed to reach it - a backend that answers gets
+            // here too. The in-memory clear below happens regardless, so a bad
+            // outbox costs this sign-out its reboot survival and nothing more.
+            try
+            {
+                _queue.ClearPendingCheckout(assignmentId);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[agent] failed to forget delivered sign-out {assignmentId}: {ex.Message}");
+            }
+            if (_pendingCheckout == assignmentId)
+            {
+                _pendingCheckout = null;
+                _pendingCheckoutIsDurable = false;
+            }
         }
         PublishStatus();
     }
@@ -251,6 +401,13 @@ public sealed class AgentService : IAsyncDisposable
             AssignmentKnown = _hasPolled,
             SimRunning = _telemetry.SimRunning,
             PendingLaps = _queue.PendingCount(),
+            // Durability decides which of the two "outstanding" answers this
+            // is. Reporting a sign-out held only in memory as queued would make
+            // the line staff read all night contradict what the driver was told
+            // at the press, and promise a delivery a reboot would drop.
+            Checkout = _pendingCheckout is null
+                ? CheckoutDelivery.None
+                : _pendingCheckoutIsDurable ? CheckoutDelivery.Queued : CheckoutDelivery.NotQueued,
         });
     }
 

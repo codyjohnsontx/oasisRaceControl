@@ -24,7 +24,24 @@ live backend:
   would tell the backend the rig was empty and lose a checked-in driver's laps.
   An outbox left behind by a pre-`0.2` build upgrades the same way: nothing in it
   carries a stamp, so its whole backlog is held unresolved until that first poll
-- ✅ "Switch driver / sign out" (ends the assignment)
+- ✅ "Switch driver / sign out" - the stint ends on the rig the moment the
+  button is pressed, whether or not the backend can be reached. A press the
+  venue link swallowed used to do nothing at all, leaving the departed driver in
+  the seat and stamping the next person's laps with them; now the checkout is
+  queued durably (it survives a rig reboot) and re-sent on the next successful
+  poll. It names the assignment it is ending, so a checkout that lands after the
+  next driver has checked in closes the stint it was pressed for and never
+  theirs. In the meantime laps on that rig carry no owner and land unclaimed on
+  the staff dashboard. Two presses have nothing durable to be delivered from:
+  one made by an agent that has never completed an assignment poll, which cannot
+  name a stint to close and so has nothing to queue at all, and one whose outbox
+  write failed - that retry runs for as long as the agent does, but a restart
+  before the link returns would lose it. Both say so on the press instead of
+  promising a delivery; the failed write is the one that leaves a retry
+  outstanding, so it says it again on the rig's status line until the backend
+  accounts for it, while the press that named no stint has nothing to show
+  there. Either way a stint the backend still holds open on that rig has to be
+  cleared from the staff dashboard
 - ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
   source is built after the Phase 0 safety gate, Phase 1A supervised canary,
   and Phase 1B telemetry spike freeze the contract (`docs/venue-safety.md` and
@@ -82,8 +99,15 @@ polled and displayed the checked-in driver, queued simulated laps, flushed them
 (pending count returned to zero), and the laps appeared on the production
 leaderboard. Queue reliability (idempotency, oldest-first, restart survival),
 capture-time stamping across a checkout, the deferred stamp across an outage and
-restart, and the backend client's result mapping are covered by the xUnit suite
-(`dotnet test`).
+restart, the offline switch-driver and its queued checkout, and the backend
+client's result mapping are covered by the xUnit suite (`dotnet test`).
+
+The offline switch-driver was also run against a real `next start` backend on a
+throwaway Postgres: with the backend killed mid-session the driver's press left
+their assignment open and every following lap credited to them as a valid,
+ranking lap; with the fix the same run leaves those laps unclaimed and delivers
+the checkout when the backend returns. The departing driver's own laps, driven
+before the press, are still credited to them.
 
 A lap the backend cannot attribute - nobody was checked in when it was captured,
 it was driven outside the window of the assignment it names, or it names an

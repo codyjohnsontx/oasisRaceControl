@@ -59,4 +59,58 @@ public sealed record AgentStatus
     public required bool AssignmentKnown { get; init; }
     public required bool SimRunning { get; init; }
     public required int PendingLaps { get; init; }
+
+    /// <summary>What the rig still owes the backend for a switch-driver it
+    /// could not deliver. The seat is already empty here in every case; this
+    /// says only what the backend has yet to hear, and whether this rig will
+    /// still be able to tell it after a restart.</summary>
+    public CheckoutDelivery Checkout { get; init; }
+}
+
+/// <summary>Whether a sign-out the backend has not received yet is one this rig
+/// can still deliver.
+///
+/// Three answers rather than two, because "outstanding" and "outstanding and
+/// survivable" are different promises and the display makes one of them to
+/// staff all night. Collapsing them puts the persistent status line at odds
+/// with what the driver was told at the press.</summary>
+public enum CheckoutDelivery
+{
+    /// <summary>Nothing is owed: either the backend has it, or the press had no
+    /// stint to name in the first place.</summary>
+    None,
+
+    /// <summary>Recorded in the outbox, so it outlives this process and is
+    /// re-sent until the backend accounts for it.</summary>
+    Queued,
+
+    /// <summary>Outstanding, but only in this process - the outbox write
+    /// failed. The retry runs for as long as the agent does, so it is shown
+    /// rather than hidden; a restart before the link returns loses it, so the
+    /// rig has to be cleared from the staff screen instead.</summary>
+    NotQueued,
+}
+
+/// <summary>What the "switch driver" action achieved. The stint is over locally
+/// in every case - they differ only in what the backend now knows, and in
+/// whether it will ever be told.</summary>
+public enum SwitchDriverResult
+{
+    /// <summary>The backend closed the assignment.</summary>
+    Ended,
+
+    /// <summary>The backend had nothing open on this rig to close.</summary>
+    NoActiveSession,
+
+    /// <summary>The backend could not be reached. The stint ended here and the
+    /// checkout is queued; until it lands, laps on this rig carry no owner and
+    /// arrive as unclaimed rather than under the departed driver's name.</summary>
+    EndedPendingSync,
+
+    /// <summary>The backend could not be reached and nothing durable was
+    /// recorded to tell it later - either this agent has no stint to name, or
+    /// the outbox write failed. The seat is empty here and laps arrive
+    /// unclaimed, but nothing guarantees the stint the backend still holds open
+    /// will ever be closed, so it has to be cleared from the staff screen.</summary>
+    EndedNotQueued,
 }
