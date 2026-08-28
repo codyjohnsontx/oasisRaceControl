@@ -48,11 +48,13 @@ describe("UnclaimedLaps", () => {
       />,
     );
 
-    expect(html).toContain("Rig saw no check-in");
-    expect(html).toContain("Rig agent out of date");
-    expect(html).toContain("Unknown assignment");
-    expect(html).toContain("Rig clock out of sync, or offline at handover");
-    expect(html).toContain("Cause not recorded");
+    expect(causeSpanClass(html, "Rig saw no check-in")).not.toBeNull();
+    expect(causeSpanClass(html, "Rig agent out of date")).not.toBeNull();
+    expect(causeSpanClass(html, "Unknown assignment")).not.toBeNull();
+    expect(
+      causeSpanClass(html, "Rig clock out of sync, or offline at handover"),
+    ).not.toBeNull();
+    expect(causeSpanClass(html, "Cause not recorded")).not.toBeNull();
     // The enum labels never reach the screen.
     expect(html).not.toMatch(/nobody_checked_in|outside_assignment_window/);
   });
@@ -108,9 +110,9 @@ describe("UnclaimedLaps", () => {
       />,
     );
 
-    expect(html).toContain("Cause not recognised");
+    expect(causeSpanClass(html, "Cause not recognised")).not.toBeNull();
     // The rest of the list still renders, and nobody is sent to a rig over it.
-    expect(html).toContain("Rig saw no check-in");
+    expect(causeSpanClass(html, "Rig saw no check-in")).not.toBeNull();
     expect(causeSpanClass(html, "Cause not recognised")).not.toContain("text-invalid");
   });
 });

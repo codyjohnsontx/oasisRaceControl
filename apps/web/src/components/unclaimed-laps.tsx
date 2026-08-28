@@ -52,9 +52,13 @@ export function UnclaimedLaps({
         build too old to say who was driving, a check-in this rig has never
         had, or a finish time outside the check-in it names, which means the
         rig PC&apos;s clock has drifted or the rig was offline while the seat
-        changed hands. The exception is{" "}
-        <em>Cause not recorded</em>: those laps were stored before this screen
-        could say why, and there is nothing to act on.
+        changed hands. Two exceptions:{" "}
+        <em>Cause not recorded</em>, for laps stored before this screen could
+        say why, and{" "}
+        <em>Cause not recognised</em>, for a lap carrying a label this version
+        of the screen does not know, which happens only in the window after a
+        database update and before the release that matches it. There is
+        nothing to act on for either.
       </p>
       <p className="text-muted text-xs mb-3">
         If a customer says their laps are missing, find them here by rig and
