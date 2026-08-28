@@ -68,8 +68,28 @@ const WORDING: Record<UnattributedCause, UnattributedCauseWording> = {
   },
 };
 
+/**
+ * The words for a label this build has never heard of. Migrations are applied
+ * before the code that needs them (docs/deploy.md), so a migration that adds a
+ * sixth cause is live while the previous deployment is still serving `/staff`,
+ * and the first lap stored under the new label reaches that deployment's
+ * rendering. Neutral on purpose: a build that cannot read the label knows
+ * nothing about whether a rig is at fault, so it claims nothing and sends
+ * nobody.
+ */
+const UNRECOGNISED: UnattributedCauseWording = {
+  label: "Cause not recognised",
+  rigNeedsAttention: false,
+};
+
 export function describeUnattributedCause(
   cause: UnattributedCause,
 ): UnattributedCauseWording {
-  return WORDING[cause];
+  // The parameter type is a claim about the database, and the deploy order
+  // above can outlive it, so this is not dead code: without the fallback an
+  // unknown label yields undefined and the caller's first property read throws
+  // - taking the whole /staff page down over one row rather than spoiling it.
+  // The enum-range test in route.integration.test.ts is the drift guard; this
+  // is what the screen does in the window before that guard can run.
+  return WORDING[cause] ?? UNRECOGNISED;
 }

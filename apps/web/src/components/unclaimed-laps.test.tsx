@@ -91,4 +91,26 @@ describe("UnclaimedLaps", () => {
   it("renders nothing when nothing is unclaimed", () => {
     expect(renderToStaticMarkup(<UnclaimedLaps laps={[]} total={0} />)).toBe("");
   });
+
+  it("degrades to one honest row when the database holds a label this build lacks", () => {
+    // Migrations are applied before the code that needs them (docs/deploy.md),
+    // so a migration adding a sixth cause is live while the previous
+    // deployment still serves /staff. Reading an unknown label used to yield
+    // undefined and the row's first property read took the entire page down;
+    // one unreadable row must cost one row.
+    const html = renderToStaticMarkup(
+      <UnclaimedLaps
+        laps={[
+          lap("rig_rejected_lap" as UnattributedCause),
+          lap("nobody_checked_in"),
+        ]}
+        total={2}
+      />,
+    );
+
+    expect(html).toContain("Cause not recognised");
+    // The rest of the list still renders, and nobody is sent to a rig over it.
+    expect(html).toContain("Rig saw no check-in");
+    expect(causeSpanClass(html, "Cause not recognised")).not.toContain("text-invalid");
+  });
 });

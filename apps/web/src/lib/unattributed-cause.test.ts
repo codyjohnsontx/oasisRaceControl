@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { UNATTRIBUTED_CAUSES, describeUnattributedCause } from "./unattributed-cause";
+import {
+  UNATTRIBUTED_CAUSES,
+  describeUnattributedCause,
+  type UnattributedCause,
+} from "./unattributed-cause";
 
 describe("describeUnattributedCause", () => {
   it("has venue wording for every cause the database can hold", () => {
@@ -37,5 +41,22 @@ describe("describeUnattributedCause", () => {
     // Laps stored before 0004 kept no cause. Any of the four could have
     // applied, so the honest reading is unknown, not a rig fault.
     expect(describeUnattributedCause("not_recorded").rigNeedsAttention).toBe(false);
+  });
+
+  it("words a label this build has never heard of instead of returning nothing", () => {
+    // Migrate runs before deploy (docs/deploy.md), so a migration that adds a
+    // sixth label is live while the previous deployment is still serving. That
+    // build reads the new label here. Returning undefined for it makes the
+    // caller's first property read throw and takes the whole /staff page down
+    // over one row, so an unknown label gets neutral words instead. The cast is
+    // the point: the parameter type is a claim about the database that the
+    // deploy order can outlive.
+    const wording = describeUnattributedCause(
+      "rig_rejected_lap" as UnattributedCause,
+    );
+
+    expect(wording.label).toBe("Cause not recognised");
+    // Nobody is sent to a rig over a label we cannot read.
+    expect(wording.rigNeedsAttention).toBe(false);
   });
 });
