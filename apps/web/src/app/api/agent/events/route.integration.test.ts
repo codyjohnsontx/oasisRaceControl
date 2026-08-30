@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, expect, it } from "vitest";
 import { POST } from "./route";
+import { UNATTRIBUTED_CAUSES } from "@/lib/unattributed-cause";
 import {
   assignmentRows,
   closeTestDb,
@@ -25,7 +26,9 @@ import {
  * Attribution deliberately does NOT consult whichever assignment happens to be
  * open when the batch arrives, which is what used to credit a queued lap to the
  * next driver to check in. A lap that cannot be attributed is stored with no
- * driver, invalid and unrankable, rather than guessed at or discarded.
+ * driver, invalid and unrankable, rather than guessed at or discarded - and
+ * with the cause the route decided, which the database requires of every
+ * ownerless lap and forbids on every owned one.
  */
 
 const LAP = {
@@ -82,6 +85,7 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       rig_assignment_id: assignmentId,
       is_valid: true,
       invalid_reason: null,
+      unattributed_cause: null,
     });
   });
 
@@ -213,6 +217,7 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       rig_assignment_id: null,
       is_valid: false,
       invalid_reason: "UNATTRIBUTED",
+      unattributed_cause: "nobody_checked_in",
     });
 
     // A retry after SecondDriver checks in still does not hand it to them.
@@ -290,7 +295,11 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       ],
     });
     const laps = await lapRows();
-    expect(laps[0]).toMatchObject({ driver_id: null, invalid_reason: "UNATTRIBUTED" });
+    expect(laps[0]).toMatchObject({
+      driver_id: null,
+      invalid_reason: "UNATTRIBUTED",
+      unattributed_cause: "agent_sends_no_assignment_id",
+    });
     expect(laps[0]!.driver_id).not.toBe(driver.id);
   });
 
@@ -315,7 +324,11 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       results: [{ status: "accepted_unattributed" }],
     });
     const laps = await lapRows();
-    expect(laps[0]).toMatchObject({ driver_id: null, rig_assignment_id: null });
+    expect(laps[0]).toMatchObject({
+      driver_id: null,
+      rig_assignment_id: null,
+      unattributed_cause: "unknown_assignment",
+    });
   });
 
   it("keeps an unattributed lap off every leaderboard and out of every round", async () => {
@@ -516,6 +529,9 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       rig_assignment_id: null,
       is_valid: false,
       invalid_reason: "UNATTRIBUTED",
+      // The one cause that sends somebody to look at the rig's clock, or at
+      // whether it was offline while the seat changed hands.
+      unattributed_cause: "outside_assignment_window",
     });
   });
 
@@ -549,6 +565,77 @@ describeDb("POST /api/agent/events against real Postgres", () => {
         "evt-half-0001",
       ]),
     ).rejects.toThrow(/laps_attribution_all_or_none/);
+  });
+
+  it("will not let an unattributed lap lose its cause", async () => {
+    const rig = await seedRig(1);
+    await POST(
+      post(rig, [{ ...LAP, eventId: "evt-nocause-0001", rigAssignmentId: null }]),
+    );
+
+    // The cause is what /staff shows per row, and the constraint keeps it
+    // there: an ownerless lap can never be left without one. Update only. The
+    // same shape arriving on INSERT is not refused - the trigger fills
+    // not_recorded instead, deliberately, so that a deployment older than the
+    // column can keep writing between migrate and deploy (the next test).
+    await expect(
+      testDb().query(
+        "update laps set unattributed_cause = null where event_id = $1",
+        ["evt-nocause-0001"],
+      ),
+    ).rejects.toThrow(/laps_unattributed_has_cause/);
+  });
+
+  it("labels an ownerless lap inserted without a cause as not_recorded", async () => {
+    const rig = await seedRig(1);
+
+    // The shape the previous deployment's ingestion writes, which keeps landing
+    // between migrate and deploy (docs/deploy.md orders them that way). The
+    // trigger fills the one label that is true of it, rather than the constraint
+    // bouncing the lap back to the rig's outbox until the new code is live.
+    await testDb().query(
+      `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name,
+                         car_name, lap_time_ms, is_valid, invalid_reason, completed_at)
+       values ('evt-old-writer-0001', $1, null, null, 'Spa-Francorchamps',
+               'Porsche 911 GT3 R', 90000, false, 'UNATTRIBUTED', now())`,
+      [rig.id],
+    );
+
+    const laps = await lapRows();
+    expect(laps[0]).toMatchObject({
+      driver_id: null,
+      invalid_reason: "UNATTRIBUTED",
+      unattributed_cause: "not_recorded",
+    });
+  });
+
+  it("will not let an owned lap carry a cause", async () => {
+    const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+    const assignmentId = await openAssignment(rig.id, driver.id);
+    await POST(
+      post(rig, [{ ...LAP, eventId: "evt-owned-cause-0001", rigAssignmentId: assignmentId }]),
+    );
+
+    // A cause on a lap that has a driver would be a contradiction the staff
+    // list could never show, so it is unrepresentable rather than ignored.
+    await expect(
+      testDb().query(
+        "update laps set unattributed_cause = 'nobody_checked_in' where event_id = $1",
+        ["evt-owned-cause-0001"],
+      ),
+    ).rejects.toThrow(/laps_unattributed_has_cause/);
+  });
+
+  it("stores every cause the code knows as a label the database knows", async () => {
+    // The route writes the TypeScript label verbatim and /staff words it from
+    // the same list, so the enum and the list must agree exactly - a label on
+    // either side that the other lacks is a lap that cannot be stored, or one
+    // the screen cannot describe.
+    const { rows } = await testDb().query<{ labels: string[] }>(
+      "select enum_range(null::unattributed_cause)::text[] as labels",
+    );
+    expect(rows[0]!.labels).toEqual([...UNATTRIBUTED_CAUSES]);
   });
 
   it("judges each entry in a batch on its own window, even sharing an event_id", async () => {
@@ -763,13 +850,18 @@ describeDb("POST /api/agent/events against real Postgres", () => {
       ]),
     );
 
-    // Stored, but with no owner - rig 1's token cannot reach Bob.
+    // Stored, but with no owner - rig 1's token cannot reach Bob. From rig 1's
+    // side that assignment does not exist, which is what the row says.
     await expect(response.json()).resolves.toMatchObject({
       results: [{ status: "accepted_unattributed" }],
     });
     const laps = await lapRows();
     expect(laps).toHaveLength(1);
-    expect(laps[0]).toMatchObject({ driver_id: null, rig_assignment_id: null });
+    expect(laps[0]).toMatchObject({
+      driver_id: null,
+      rig_assignment_id: null,
+      unattributed_cause: "unknown_assignment",
+    });
     // Bob's assignment is untouched.
     const assignments = await assignmentRows();
     expect(assignments).toHaveLength(1);

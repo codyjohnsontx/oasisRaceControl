@@ -127,13 +127,21 @@ reboot. This does not close the case where the driver simply walks away without
 pressing anything.
 
 Laps the backend cannot attribute are STORED with a null `driver_id` and a null
-`rig_assignment_id`, invalid with reason `UNATTRIBUTED` - never credited to the
-next driver, never dropped, and settled by the agent so an unattended rig cannot
-fill its outbox. Unrankability is a database constraint, not a query convention:
-`laps_unattributed_is_invalid` makes a valid ownerless lap unrepresentable, so do
-not add a `driver_id is not null` filter to prove it - add a test that the
-constraint bites. `/staff` lists them under *Unclaimed laps*; attributing one to
-a driver is deliberately not built (see the SAFETY NOTE in
+`rig_assignment_id`, invalid with reason `UNATTRIBUTED`, and with
+`unattributed_cause` saying which of the four causes it was, or `not_recorded`
+when the writer recorded none - laps from before that column existed, and laps
+a deployment older than it writes between migrate and deploy, which a
+before-insert trigger fills so a database ahead of the code stays harmless
+(`db/migrations/0004_unattributed_cause.sql`) - never credited to the next
+driver, never dropped, and settled by the agent so an unattended rig cannot fill
+its outbox. Unrankability is a database constraint, not a query convention:
+`laps_unattributed_is_invalid` makes a valid ownerless lap unrepresentable and
+`laps_unattributed_has_cause` makes an ownerless lap with no cause (or an owned
+lap with one) unrepresentable, so do not add a `driver_id is not null` filter
+to prove it - add a test that the constraint bites. `/staff` lists them under
+*Unclaimed laps* with venue wording per cause; that wording, and the list the
+database enum must match, live only in `apps/web/src/lib/unattributed-cause.ts`.
+Attributing one to a driver is deliberately not built (see the SAFETY NOTE in
 `db/migrations/0003_unattributed_laps.sql` before building it).
 
 `lapTimeMs` is bounded at ingestion by `MAX_LAP_TIME_MS` in

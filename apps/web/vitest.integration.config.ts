@@ -20,7 +20,7 @@ export default defineConfig({
     alias: { "@": resolve(__dirname, "src") },
   },
   test: {
-    include: ["src/**/*.integration.test.ts"],
+    include: ["src/**/*.integration.test.{ts,tsx}"],
     globalSetup: ["src/test/global-setup.ts"],
     fileParallelism: false,
     env: {

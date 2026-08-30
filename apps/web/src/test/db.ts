@@ -156,11 +156,14 @@ export async function lapRows(): Promise<
     rig_assignment_id: string | null;
     is_valid: boolean;
     invalid_reason: string | null;
+    // Set exactly when driver_id is null - see db/migrations/0004.
+    unattributed_cause: string | null;
     lap_time_ms: number;
   }>
 > {
   const { rows } = await testDb().query(
-    `select event_id, driver_id, rig_assignment_id, is_valid, invalid_reason, lap_time_ms
+    `select event_id, driver_id, rig_assignment_id, is_valid, invalid_reason,
+            unattributed_cause, lap_time_ms
      from laps order by created_at, event_id`,
   );
   return rows;

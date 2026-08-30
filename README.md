@@ -74,13 +74,16 @@ is still Vercel plus Neon. Full walkthrough:
 
 ### Integration tests
 
-`npm test` covers pure logic and the API routes' auth/validation branches. The
-guarantees that live in Postgres - the `event_id` idempotency key, the
+`npm test` covers pure logic, the API routes' auth/validation branches, and
+components rendered to markup (`*.test.tsx` - no DOM shim, so a component test
+asserts on the HTML string; see `apps/web/vitest.config.ts`). The guarantees
+that live in Postgres - the `event_id` idempotency key, the
 one-open-assignment-per-rig/driver partial unique indexes, the
 `checkin_driver()` function, the sign-out that closes only the stint it names
-and only on the calling rig, and the check constraints that keep an
-unattributed lap unrankable - are covered by a separate suite that needs a real
-database:
+and only on the calling rig, the check constraints that keep an unattributed
+lap unrankable and make it say why, and the upgrade path of a migration onto a
+database that already holds laps - are covered by a separate suite that needs a
+real database:
 
 ```bash
 docker start oasis-pg   # or: docker run -d --name oasis-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16

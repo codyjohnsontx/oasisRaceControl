@@ -18,16 +18,23 @@ import { resolve } from "node:path";
  * behind `npm run db:check`, the deploy gate that refuses to build against a
  * database that is behind db/migrations. It is pure and needs no database.
  *
+ * `*.test.tsx` covers components that render to static markup through
+ * react-dom/server - no DOM shim is installed, so a component test here can
+ * only assert on the HTML string, which is enough for a component with no
+ * state and is the reason those components are kept hook-free.
+ *
  * The `@/` alias mirrors tsconfig paths so API route modules (which import
  * `@/lib/...`) can be imported directly by tests. Integration tests live in
- * *.integration.test.ts and are excluded here - see vitest.integration.config.ts.
+ * *.integration.test.{ts,tsx} and are excluded here - the exclude covers both
+ * extensions the include does, so no integration file can be picked up by this
+ * suite - see vitest.integration.config.ts.
  */
 export default defineConfig({
   resolve: {
     alias: { "@": resolve(__dirname, "src") },
   },
   test: {
-    include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
-    exclude: ["src/**/*.integration.test.ts", "node_modules/**"],
+    include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.ts"],
+    exclude: ["src/**/*.integration.test.{ts,tsx}", "node_modules/**"],
   },
 });
