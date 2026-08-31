@@ -200,7 +200,9 @@ public sealed class AgentServiceTests : IDisposable
                 lock (_storedLock) _stored.Add(eventId);
                 results.Add(new JsonObject
                 {
-                    ["type"] = type, ["eventId"] = eventId, ["status"] = "accepted",
+                    ["type"] = type,
+                    ["eventId"] = eventId,
+                    ["status"] = "accepted",
                 });
             }
             return Json(HttpStatusCode.OK, new JsonObject { ["results"] = results });
