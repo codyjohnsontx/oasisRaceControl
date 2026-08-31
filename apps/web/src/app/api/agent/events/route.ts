@@ -18,6 +18,15 @@ import { venueToday } from "@/lib/venue";
  * it and both change with it: the C# Rig Agent (apps/rig-agent) and the
  * fake-rig simulator (scripts/fake-rig.ts).
  *
+ * The 400 below is part of that contract as well. `detail` is zod's issue list,
+ * and the agent reads each issue's path (`["events", i, ...]`) to park exactly
+ * the laps this route named and keep flushing the rest of its outbox
+ * (`ReadRejections` in apps/rig-agent/OasisRigAgent.Core/BackendClient.cs). A
+ * refusal that names no lap is indistinguishable to it from the venue's network
+ * being down, so reshaping or dropping `detail` puts it back to re-sending the
+ * same batch every five seconds, with every lap queued behind the bad one going
+ * nowhere.
+ *
  * Attribution comes from the rigAssignmentId the agent stamped on each lap when
  * it captured it, never from the rig's currently-open assignment - a queued lap
  * can arrive long after its driver has left. A lap that cannot be attributed is
