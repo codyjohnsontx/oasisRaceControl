@@ -278,6 +278,106 @@ public sealed class EventQueueTests : IDisposable
         Assert.Null(batch.Single(e => e.EventId == "evt-2").Payload["rigAssignmentId"]);
     }
 
+    /// <summary>The wedge, at the outbox. A lap the backend has refused stops
+    /// being offered, and the laps queued behind it - which failed only because
+    /// the batch is validated whole - go out on the very next flush.</summary>
+    [Fact]
+    public void A_rejected_lap_stops_being_offered_and_unblocks_the_rest()
+    {
+        using var queue = new EventQueue(_dbPath);
+        queue.Enqueue(Lap("evt-1"), AssignmentId);
+        Thread.Sleep(5);
+        queue.Enqueue(Lap("evt-pit-in", lapTimeMs: 2_190_000), AssignmentId);
+        Thread.Sleep(5);
+        queue.Enqueue(Lap("evt-3"), AssignmentId);
+
+        queue.Reject(new[] { new RejectedEvent("evt-pit-in", "lapTimeMs: Too big") });
+
+        Assert.Equal(new[] { "evt-1", "evt-3" }, queue.PendingBatch(10).Select(e => e.EventId));
+    }
+
+    /// <summary>Refused is not deleted. The outbox holds the only copy of that
+    /// lap there has ever been, and a bound that lives in a redeployable backend
+    /// is not a reason to destroy it - so it stays, with the reason it was
+    /// parked, for a person to work.</summary>
+    [Fact]
+    public void A_rejected_lap_is_kept_with_the_reason_it_was_rejected()
+    {
+        using var queue = new EventQueue(_dbPath);
+        queue.Enqueue(Lap("evt-pit-in", lapTimeMs: 2_190_000), AssignmentId);
+
+        queue.Reject(new[] { new RejectedEvent("evt-pit-in", "lapTimeMs: Too big") });
+
+        var parked = Assert.Single(queue.RejectedEvents());
+        Assert.Equal("evt-pit-in", parked.EventId);
+        Assert.Equal("lapTimeMs: Too big", parked.Reason);
+        Assert.Equal(1, queue.RejectedCount());
+    }
+
+    /// <summary>A parked lap is not "queued". Counting it as one would leave the
+    /// rig's status line reading the same thing it read all the while that lap
+    /// was blocking the outbox, which is the symptom staff were told to watch
+    /// for.</summary>
+    [Fact]
+    public void A_rejected_lap_no_longer_counts_as_queued()
+    {
+        using var queue = new EventQueue(_dbPath);
+        queue.Enqueue(Lap("evt-1"), AssignmentId);
+        queue.Enqueue(Lap("evt-pit-in", lapTimeMs: 2_190_000), AssignmentId);
+
+        queue.Reject(new[] { new RejectedEvent("evt-pit-in", "lapTimeMs: Too big") });
+
+        Assert.Equal(1, queue.PendingCount());
+        Assert.Equal(1, queue.RejectedCount());
+    }
+
+    /// <summary>The quarantine outlives the process. A rig PC that reboots must
+    /// not go back to offering the lap the backend already refused - that would
+    /// re-wedge the outbox on every restart.</summary>
+    [Fact]
+    public void A_rejected_lap_stays_rejected_across_a_restart()
+    {
+        using (var queue = new EventQueue(_dbPath))
+        {
+            queue.Enqueue(Lap("evt-pit-in", lapTimeMs: 2_190_000), AssignmentId);
+            queue.Enqueue(Lap("evt-2"), AssignmentId);
+            queue.Reject(new[] { new RejectedEvent("evt-pit-in", "lapTimeMs: Too big") });
+        }
+
+        using var reopened = new EventQueue(_dbPath);
+
+        Assert.Equal("evt-2", reopened.PendingBatch(10).Single().EventId);
+        Assert.Equal("lapTimeMs: Too big", reopened.RejectedEvents().Single().Reason);
+    }
+
+    /// <summary>Only the first parking of a lap comes back, which is what makes
+    /// the agent's log line exactly-once per lap rather than once per flush.</summary>
+    [Fact]
+    public void Rejecting_a_lap_twice_reports_it_once()
+    {
+        using var queue = new EventQueue(_dbPath);
+        queue.Enqueue(Lap("evt-pit-in", lapTimeMs: 2_190_000), AssignmentId);
+
+        Assert.Single(queue.Reject(new[] { new RejectedEvent("evt-pit-in", "lapTimeMs: Too big") }));
+        Assert.Empty(queue.Reject(new[] { new RejectedEvent("evt-pit-in", "lapTimeMs: Too big") }));
+    }
+
+    /// <summary>An outbox from a build before the quarantine column: nothing in
+    /// it was ever refused - that build could not tell a refusal from an outage
+    /// and re-sent everything forever - so every row upgrades still
+    /// sendable.</summary>
+    [Fact]
+    public void An_outbox_without_the_quarantine_column_upgrades_with_every_lap_still_sendable()
+    {
+        WriteLegacyOutbox(("evt-legacy", DateTimeOffset.Parse("2026-08-22T09:05:00Z")));
+
+        using var upgraded = new EventQueue(_dbPath);
+        upgraded.ResolveUnresolved(CheckedInAt(DateTimeOffset.Parse("2026-08-22T09:00:00Z")), TimeSpan.Zero);
+
+        Assert.Equal("evt-legacy", upgraded.PendingBatch(10).Single().EventId);
+        Assert.Equal(0, upgraded.RejectedCount());
+    }
+
     /// <summary>The in-place upgrade of an outbox left behind by a pre-0.2
     /// build: no `resolved` column, and no `rigAssignmentId` in any payload
     /// because that build's Enqueue never wrote one. Back-filling those rows as

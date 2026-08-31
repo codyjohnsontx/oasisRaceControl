@@ -47,23 +47,47 @@ public sealed class BackendClient
             "accepted", "accepted_invalid", "accepted_unattributed", "duplicate",
         };
 
-    /// <summary>Submit a batch of queued lap payloads. Returns the event_ids the
-    /// backend has stored or deduplicated (safe to remove from the queue).
-    /// Anything it did not store - a transient error, or a status this agent is
-    /// too old to understand - is NOT returned, so the lap stays queued rather
-    /// than being silently dropped.</summary>
-    public async Task<IReadOnlyList<string>> SendLapsAsync(IReadOnlyList<QueuedEvent> events, CancellationToken ct)
+    /// <summary>Submit a batch of queued lap payloads.
+    ///
+    /// Two answers come back, and the difference is the point. <em>Settled</em>
+    /// event_ids are the ones the backend stored or deduplicated, safe to remove
+    /// from the queue; anything it did not store - a transient error, or a status
+    /// this agent is too old to understand - is left out, so the lap stays queued
+    /// rather than being silently dropped. <em>Rejected</em> events are the ones
+    /// it refused as invalid input, named individually, which the caller must
+    /// stop sending.
+    ///
+    /// Only a call that could not reach a backend at all still throws.</summary>
+    public async Task<SendLapsOutcome> SendLapsAsync(IReadOnlyList<QueuedEvent> events, CancellationToken ct)
     {
         var array = new JsonArray();
         foreach (var e in events) array.Add(e.Payload.DeepClone());
         var body = new JsonObject { ["events"] = array };
 
         using var res = await PostJsonAsync("api/agent/events", body, ct);
+        var payload = await res.Content.ReadAsStringAsync(ct);
+
+        // A refusal is an answer, not an outage. The batch is validated whole,
+        // so one bad lap fails all of them; throwing here - which is what this
+        // did - marked the rig offline and left the next flush re-sending the
+        // identical batch every five seconds, with every lap queued behind the
+        // bad one going nowhere for the rest of the night.
+        //
+        // Only a refusal that NAMES the events it is about is treated this way.
+        // A 401 from a rotated token, a 429, a proxy's HTML error page: all 4xx,
+        // none of them says which lap is wrong, and parking laps on any of them
+        // would quarantine a whole venue's night over a bad token. Those still
+        // throw, so they keep retrying and lose nothing.
+        if ((int)res.StatusCode is >= 400 and < 500)
+        {
+            var rejected = ReadRejections(payload, events);
+            if (rejected.Count > 0) return new SendLapsOutcome(Array.Empty<string>(), rejected);
+        }
         res.EnsureSuccessStatusCode();
 
-        var json = JsonNode.Parse(await res.Content.ReadAsStringAsync(ct));
+        var json = JsonNode.Parse(payload);
         var results = json?["results"]?.AsArray();
-        if (results is null) return Array.Empty<string>();
+        if (results is null) return SendLapsOutcome.Empty;
 
         // Match each result to its event by the idempotency key it echoes back,
         // never by position. Deleting the wrong row here would drop a lap that
@@ -79,8 +103,75 @@ public sealed class BackendClient
             if (SettledStatuses.Contains(status) && sent.Remove(eventId))
                 settled.Add(eventId);
         }
-        return settled;
+        return new SendLapsOutcome(settled, Array.Empty<RejectedEvent>());
     }
+
+    /// <summary>Which of the events just sent the backend named as invalid, read
+    /// from the zod issue list it returns as `detail`.
+    ///
+    /// Events are identified by their POSITION in the batch - `events[1]` is the
+    /// second payload posted - which is the same key the backend's own
+    /// attribution uses and for the same reason: a batch may legitimately repeat
+    /// an eventId, so position is the only field unique per row by construction.
+    ///
+    /// Deliberately unforgiving: an index this batch does not contain, a path
+    /// that is not about `events`, a body that is not JSON at all - each is
+    /// skipped, and a response that yields nothing usable ends up back on the
+    /// throwing path rather than quarantining a lap on a guess.</summary>
+    private static IReadOnlyList<RejectedEvent> ReadRejections(
+        string body, IReadOnlyList<QueuedEvent> sent)
+    {
+        JsonNode? json;
+        try { json = JsonNode.Parse(body); }
+        catch (JsonException) { return Array.Empty<RejectedEvent>(); }
+
+        // Matched as objects before either is indexed, because indexing a
+        // JSON node that is not one throws rather than answering null: a 4xx
+        // body that is a bare number, a string, or a gateway's top-level array
+        // would leave this method by an exception, and the whole point of it is
+        // that a reachable backend's refusal never does that.
+        if (json is not JsonObject root || root["detail"] is not JsonArray issues)
+            return Array.Empty<RejectedEvent>();
+
+        // First reason wins per lap: several issues can name the same event, and
+        // one line a human can act on beats a concatenation of all of them.
+        var reasons = new Dictionary<string, string>(StringComparer.Ordinal);
+        var order = new List<string>();
+        foreach (var issue in issues)
+        {
+            if (issue is not JsonObject fields) continue;
+            if (fields["path"] is not JsonArray path || path.Count < 2) continue;
+            if (Text(path[0]) != "events") continue;
+            if (path[1] is not JsonValue at || !at.TryGetValue<int>(out var index)) continue;
+            if (index < 0 || index >= sent.Count) continue;
+
+            var eventId = sent[index].EventId;
+            if (reasons.ContainsKey(eventId)) continue;
+            reasons[eventId] = Describe(fields, path);
+            order.Add(eventId);
+        }
+        return order.Select(id => new RejectedEvent(id, reasons[id])).ToList();
+    }
+
+    /// <summary>One issue as a line worth printing on a rig: the field it is
+    /// about, then what was wrong with it.</summary>
+    private static string Describe(JsonObject issue, JsonArray path)
+    {
+        var field = string.Join(
+            ".", path.Skip(2).Select(Text).Where(part => part.Length > 0));
+        var message = Text(issue["message"]);
+        if (message.Length == 0) message = Text(issue["code"]);
+        if (message.Length == 0) message = "rejected as invalid input";
+        return field.Length == 0 ? message : $"{field}: {message}";
+    }
+
+    /// <summary>A JSON node as plain text, empty when it is absent or not a
+    /// string - a path element is normally a string or a number and neither may
+    /// throw here.</summary>
+    private static string Text(JsonNode? node)
+        => node is JsonValue value && value.TryGetValue<string>(out var text)
+            ? text
+            : node?.ToString() ?? "";
 
     /// <summary>The rig's current driver assignment (null if nobody is checked
     /// in), together with the offset between this machine's clock and the
@@ -154,4 +245,15 @@ public sealed class BackendClient
         var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         return _http.PostAsync(path, content, ct);
     }
+}
+
+/// <summary>What one flush learned. Settled laps are gone from the backend's
+/// point of view and can leave the outbox; rejected laps were refused by name
+/// and must stop being offered. Both lists are usually empty - the ordinary
+/// case is that everything sent was stored.</summary>
+public sealed record SendLapsOutcome(
+    IReadOnlyList<string> Settled, IReadOnlyList<RejectedEvent> Rejected)
+{
+    public static SendLapsOutcome Empty { get; } =
+        new(Array.Empty<string>(), Array.Empty<RejectedEvent>());
 }

@@ -146,12 +146,22 @@ Attributing one to a driver is deliberately not built (see the SAFETY NOTE in
 
 `lapTimeMs` is bounded at ingestion by `MAX_LAP_TIME_MS` in
 `apps/web/src/lib/events.ts`, chosen from what a lap can be, with the reasoning
-on the constant; do not re-derive it from a `/tv` column width. A batch the
-server rejects with a 400 is a known agent-side wedge: the agent cannot tell it
-from the network being down and re-sends the same batch every flush, so one
-rejected lap holds every lap behind it. The mechanism and the follow-up
-(`oasis-agent-quarantine-rejected-events`) are in `docs/plan.md`'s failure
-list; do not fix it by loosening the server bound.
+on the constant; do not re-derive it from a `/tv` column width, and do not
+loosen it to make a rejected lap go away.
+
+A lap the server refuses is the agent's problem to hold, not to retry. The body
+is validated whole, so one bad lap 400s the whole batch; the agent reads the
+zod issue paths, which name events by their POSITION in the batch, parks exactly
+those rows in the outbox with the reason, and flushes the rest. Two halves of
+that are load-bearing and easy to undo. A parked lap is **kept and never
+re-sent** - the outbox holds the only copy there has ever been, and re-sending
+it is the wedge (the rig went offline and re-sent the identical batch every five
+seconds, holding every lap behind it). And only a refusal that **names events**
+quarantines anything: a 401 from a rotated token or a proxy's error page is also
+4xx and names no lap, so it still counts as unreachable and everything is
+retried - quarantining on it would retire a whole venue's night over a config
+change. Parked laps are counted and displayed apart from the queued ones, so the
+rig's status line does not read the way it read while it was wedged.
 
 ## Local dev
 

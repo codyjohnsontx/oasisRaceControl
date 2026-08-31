@@ -113,6 +113,12 @@ static void Render(AgentStatus s)
         : s.AssignmentKnown ? "— available —" : "(checking)";
     var sim = s.SimRunning ? "sim running" : "sim idle";
     var pending = s.PendingLaps > 0 ? $"  |  {s.PendingLaps} lap(s) queued" : "";
+    // Separate from the queued count on purpose: these are not waiting for the
+    // link to come back, they are waiting for a person. Counting them as queued
+    // is what the rig did while one of them was blocking the whole outbox.
+    var rejected = s.RejectedLaps > 0
+        ? $"  |  {s.RejectedLaps} lap(s) the backend rejected - kept, not sent"
+        : "";
     // The press prints its one-shot line once and scrolls away; this is the
     // line staff still have in front of them an hour later, so it has to say
     // the same thing - including naming the one case they have to finish by
@@ -123,5 +129,5 @@ static void Render(AgentStatus s)
         CheckoutDelivery.NotQueued => "  |  sign-out NOT saved - clear this rig from the staff screen",
         _ => "",
     };
-    Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{checkout}");
+    Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{rejected}{checkout}");
 }

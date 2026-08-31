@@ -318,12 +318,40 @@ public sealed class AgentService : IAsyncDisposable
         var batch = _queue.PendingBatch(FlushBatchSize);
         if (batch.Count == 0) return;
 
-        var settled = await RunBackend(token => _client.SendLapsAsync(batch, token));
-        if (settled is { Count: > 0 })
+        // Null means the backend could not be reached at all, which is the one
+        // case where re-sending this exact batch is the right thing to do.
+        var outcome = await RunBackend(token => _client.SendLapsAsync(batch, token));
+        if (outcome is null) return;
+
+        if (outcome.Rejected.Count > 0) Quarantine(outcome.Rejected);
+        if (outcome.Settled.Count > 0)
         {
-            _queue.Remove(settled);
+            _queue.Remove(outcome.Settled);
             PublishStatus();
         }
+    }
+
+    /// <summary>Park laps the backend refused by name, so the next flush carries
+    /// the rest of the queue instead of the same refusal.
+    ///
+    /// The backend validates a batch whole: one lap it will not accept fails all
+    /// fifty, and until that lap stops being offered every lap queued behind it
+    /// is stuck with it. Parking is what lets the queue drain past it. The lap
+    /// itself is kept - the outbox holds the only copy of it that has ever
+    /// existed - and it is never offered again, because offering it again is the
+    /// wedge.
+    ///
+    /// Logged once per lap, from what the outbox actually parked rather than
+    /// from what was refused, so the line is printed by the call that changed
+    /// something and a re-run cannot print it twice.</summary>
+    private void Quarantine(IReadOnlyList<RejectedEvent> rejected)
+    {
+        foreach (var lap in _queue.Reject(rejected))
+            Console.Error.WriteLine(
+                $"[agent] the backend will not accept lap {lap.EventId} ({lap.Reason}). "
+                + "It is kept in the outbox and will not be sent again; the rest of the "
+                + "queue is now free to flush.");
+        PublishStatus();
     }
 
     /// <summary>Runs a backend call, flipping connection state on success/failure.
@@ -401,6 +429,7 @@ public sealed class AgentService : IAsyncDisposable
             AssignmentKnown = _hasPolled,
             SimRunning = _telemetry.SimRunning,
             PendingLaps = _queue.PendingCount(),
+            RejectedLaps = _queue.RejectedCount(),
             // Durability decides which of the two "outstanding" answers this
             // is. Reporting a sign-out held only in memory as queued would make
             // the line staff read all night contradict what the driver was told

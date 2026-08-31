@@ -42,6 +42,20 @@ live backend:
   accounts for it, while the press that named no stint has nothing to show
   there. Either way a stint the backend still holds open on that rig has to be
   cleared from the staff dashboard
+- ✅ A lap the backend **refuses** is quarantined, not retried forever. The
+  body is validated whole, so one lap it will not accept 400s the entire batch;
+  the agent reads the zod issue paths, which name events by their position in
+  the batch, parks exactly those rows in the outbox with the reason the backend
+  gave, logs each once, and flushes the rest of the queue. The lap is kept and
+  never sent again - the outbox holds the only copy of it there has ever been -
+  and it is counted apart from the queued laps on the status line, because it is
+  waiting for a person rather than for the link to come back. Before this any
+  non-2xx threw, which the agent could not tell from the venue's network being
+  down, so it marked the rig offline and re-sent the identical oldest-first
+  batch every five seconds: one bad lap held every lap queued behind it for the
+  rest of the night. Only a refusal that NAMES events quarantines anything; a
+  401 from a rotated rig token, a 429, or a proxy's error page names no lap, so
+  those still count as unreachable and everything is retried
 - ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
   source is built after the Phase 0 safety gate, Phase 1A supervised canary,
   and Phase 1B telemetry spike freeze the contract (`docs/venue-safety.md` and
@@ -50,6 +64,69 @@ live backend:
 The current host is a **console app** (runs on macOS/Linux/Windows, so it can be
 tested anywhere). A tray-icon + status-window Windows shell is a later UI pass
 that wraps the same `OasisRigAgent.Core`.
+
+## Un-parking a quarantined lap
+
+Quarantine is one-way. The agent parks a lap the backend refused and nothing in
+the agent ever un-parks it: no retry, no timer, no restart, no command. Getting
+a parked lap moving again is a hand edit of the rig's outbox, and this is how
+you do it.
+
+Nothing is lost while it sits there. The lap stays in the outbox with the
+reason the backend gave, and the status line counts it apart from the queued
+laps (`n lap(s) the backend rejected - kept, not sent`), so the rig tells you
+the condition exists rather than reading the way it read while the wedge was
+live.
+
+**Know which case you are in before you touch anything.**
+
+- *One lap, or a few.* The backend refused those specific laps and accepted the
+  rest. This is the ordinary case: a 36-minute pit-box in-lap past the ingestion
+  bound, a payload a build produced wrong. The queue drains, the count stops
+  growing, and it can wait until morning.
+- *The count climbs and never stops.* Every batch is being refused by name. That
+  is a web-side validation **tightening** - a deploy that narrowed what
+  `/api/agent/events` accepts, the shape of commit `2adf3cc`, which added the
+  `lapTimeMs` bound - now 400s every batch and names every lap in it, so the
+  agent parks the night's laps as fast as it flushes them. Fix or roll back the
+  backend first. Un-parking before the backend accepts those laps parks them
+  again on the next flush.
+
+**Recovery, in order:**
+
+1. Stop the agent on that rig.
+2. Open its outbox: `outbox.db`, beside the executable
+   (`AppContext.BaseDirectory` - the same folder as `OasisRigAgent.exe` and
+   `agent.config.json`).
+3. See what is parked and why. `rejected_reason` is the whole story: null means
+   the row is still sendable, non-null means it is parked and holds the line the
+   backend gave for it.
+
+   ```sql
+   select event_id, created_at, rejected_reason from outbox
+   where rejected_reason is not null order by created_at asc;
+   ```
+
+4. Confirm the backend now accepts what it refused. Read the reason, and check
+   the deploy actually changed: a raised bound, a reverted validator, a fixed
+   payload. If nothing changed, stop here - the next flush will park these rows
+   again with the same reason.
+5. Clear the reason on the rows you want back. They become ordinary queued laps
+   and go out on the next flush, oldest first.
+
+   ```sql
+   -- one lap
+   update outbox set rejected_reason = null where event_id = '<event-id>';
+   -- everything parked, after a backend fix that covers all of it
+   update outbox set rejected_reason = null where rejected_reason is not null;
+   ```
+
+6. Start the agent. The parked count drops to zero and the queued count picks
+   those laps up. If they are refused again, they park again with the current
+   reason, and nothing is lost.
+
+Laps that are genuinely invalid and are never going to be accepted can be left
+parked. They cost one row each and keep the record of what the rig captured.
 
 ## Projects
 
@@ -108,6 +185,17 @@ their assignment open and every following lap credited to them as a valid,
 ranking lap; with the fix the same run leaves those laps unclaimed and delivers
 the checkout when the backend returns. The departing driver's own laps, driven
 before the press, are still credited to them.
+
+The quarantine was run the same way, against `next start` on a throwaway
+Postgres. Seeded with a four-lap backlog whose second lap is a 36-minute pit-box
+in-lap (iRacing's `LapLastLapTime` includes time parked in the box, so this is a
+real lap, not corrupt data), the agent before the fix flapped between online and
+offline and held all four laps indefinitely with none stored. After it, the rig
+stays online, the bad lap is named once on the console and parked, and the three
+good laps land attributed and valid on the leaderboard. Restarting the agent on
+that outbox does not re-offer the parked lap; pointing it at the same backend
+with a rotated token quarantines nothing and keeps retrying, which is what stops
+a bad token from retiring a night's laps.
 
 A lap the backend cannot attribute - nobody was checked in when it was captured,
 it was driven outside the window of the assignment it names, or it names an

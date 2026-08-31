@@ -31,10 +31,11 @@ public sealed class EventQueue : IDisposable
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = """
             create table if not exists outbox (
-              event_id   text primary key,
-              payload    text not null,
-              created_at text not null,
-              resolved   integer not null default 1
+              event_id        text primary key,
+              payload         text not null,
+              created_at      text not null,
+              resolved        integer not null default 1,
+              rejected_reason text
             );
             create table if not exists pending_checkout (
               id            integer primary key check (id = 1),
@@ -44,6 +45,19 @@ public sealed class EventQueue : IDisposable
             """;
         cmd.ExecuteNonQuery();
         AddResolvedColumnIfMissing();
+        AddRejectedReasonColumnIfMissing();
+    }
+
+    /// <summary>Whether the outbox table already has a column. `create table if
+    /// not exists` will not add one to a file an older agent build left behind,
+    /// so every column added after the first release needs its own ALTER.</summary>
+    private bool HasOutboxColumn(string name)
+    {
+        using var probe = _connection.CreateCommand();
+        probe.CommandText =
+            "select count(*) from pragma_table_info('outbox') where name = $name";
+        probe.Parameters.AddWithValue("$name", name);
+        return Convert.ToInt32(probe.ExecuteScalar()) > 0;
     }
 
     /// <summary>An outbox written by an agent build that predates the unresolved
@@ -66,13 +80,25 @@ public sealed class EventQueue : IDisposable
     /// queued backlog.</summary>
     private void AddResolvedColumnIfMissing()
     {
-        using var probe = _connection.CreateCommand();
-        probe.CommandText =
-            "select count(*) from pragma_table_info('outbox') where name = 'resolved'";
-        if (Convert.ToInt32(probe.ExecuteScalar()) > 0) return;
+        if (HasOutboxColumn("resolved")) return;
 
         using var alter = _connection.CreateCommand();
         alter.CommandText = "alter table outbox add column resolved integer not null default 0";
+        alter.ExecuteNonQuery();
+    }
+
+    /// <summary>The quarantine column, for an outbox written before it existed.
+    /// Null means "still sendable", which is what every row an older build left
+    /// behind is - the backend had never refused any of them, because this agent
+    /// could not tell a refusal from an outage and simply re-sent them forever.
+    /// So there is no back-fill to do here: the ALTER's null default already
+    /// says the right thing about every existing row.</summary>
+    private void AddRejectedReasonColumnIfMissing()
+    {
+        if (HasOutboxColumn("rejected_reason")) return;
+
+        using var alter = _connection.CreateCommand();
+        alter.CommandText = "alter table outbox add column rejected_reason text";
         alter.ExecuteNonQuery();
     }
 
@@ -275,16 +301,26 @@ public sealed class EventQueue : IDisposable
     }
 
     /// <summary>Oldest-first batch of queued payloads (as parsed JSON nodes).
-    /// Unresolved laps are deliberately invisible here: transmitting one would
-    /// reach the backend as "nobody was checked in", which is exactly the answer
-    /// the agent does not have yet.</summary>
+    /// Two kinds of row are deliberately invisible here.
+    ///
+    /// An UNRESOLVED lap: transmitting one would reach the backend as "nobody
+    /// was checked in", which is exactly the answer the agent does not have yet.
+    ///
+    /// A QUARANTINED lap: the backend has already refused it by name, so
+    /// re-sending it can only produce the same refusal - and because the batch
+    /// is validated whole, that refusal takes every lap queued behind it down
+    /// with it. Leaving it out of the batch is what unblocks the rest.</summary>
     public IReadOnlyList<QueuedEvent> PendingBatch(int limit)
     {
         lock (_lock)
         {
             using var cmd = _connection.CreateCommand();
             cmd.CommandText =
-                "select event_id, payload from outbox where resolved = 1 order by created_at asc limit $limit";
+                """
+                select event_id, payload from outbox
+                where resolved = 1 and rejected_reason is null
+                order by created_at asc limit $limit
+                """;
             cmd.Parameters.AddWithValue("$limit", limit);
 
             var results = new List<QueuedEvent>();
@@ -317,15 +353,87 @@ public sealed class EventQueue : IDisposable
         }
     }
 
-    /// <summary>Everything the outbox is still holding, unresolved laps
-    /// included - they are queued and will be sent, just not yet.</summary>
+    /// <summary>Park events the backend has refused by name, so the flush loop
+    /// stops offering them. Returns the ones this call actually quarantined.
+    ///
+    /// The lap is KEPT, exactly as it was queued. The outbox holds the only copy
+    /// there has ever been, a refusal is not proof the lap did not happen, and
+    /// the bound that refused it lives in a backend that can be redeployed - so
+    /// this parks the row for a human, it does not throw the lap away. Nothing
+    /// un-parks a row automatically: an automatic retry is the wedge this exists
+    /// to remove.
+    ///
+    /// Scoped to rows not already parked, so the caller can log exactly once per
+    /// lap from what comes back. A row can only be offered to the backend while
+    /// it is unparked, so that is once for good.</summary>
+    public IReadOnlyList<RejectedEvent> Reject(IEnumerable<RejectedEvent> rejections)
+    {
+        lock (_lock)
+        {
+            using var tx = _connection.BeginTransaction();
+            var parked = new List<RejectedEvent>();
+            foreach (var rejection in rejections)
+            {
+                using var cmd = _connection.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandText =
+                    """
+                    update outbox set rejected_reason = $reason
+                    where event_id = $id and rejected_reason is null
+                    """;
+                cmd.Parameters.AddWithValue("$reason", rejection.Reason);
+                cmd.Parameters.AddWithValue("$id", rejection.EventId);
+                if (cmd.ExecuteNonQuery() > 0) parked.Add(rejection);
+            }
+            tx.Commit();
+            return parked;
+        }
+    }
+
+    /// <summary>Laps the outbox is still holding that it will send, unresolved
+    /// ones included - they are queued and will go, just not yet. Quarantined
+    /// laps are NOT counted: nothing will ever send them, and reporting them
+    /// as queued would leave the rig's status line saying the same thing it said
+    /// while the wedge was live.</summary>
     public int PendingCount()
     {
         lock (_lock)
         {
             using var cmd = _connection.CreateCommand();
-            cmd.CommandText = "select count(*) from outbox";
+            cmd.CommandText = "select count(*) from outbox where rejected_reason is null";
             return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+    }
+
+    /// <summary>Laps parked because the backend refused them. Held, and shown,
+    /// because somebody has to decide what becomes of them.</summary>
+    public int RejectedCount()
+    {
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "select count(*) from outbox where rejected_reason is not null";
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+    }
+
+    /// <summary>Every parked lap with the reason it was parked, oldest first -
+    /// what a human needs to see to work them.</summary>
+    public IReadOnlyList<RejectedEvent> RejectedEvents()
+    {
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText =
+                """
+                select event_id, rejected_reason from outbox
+                where rejected_reason is not null order by created_at asc
+                """;
+
+            var results = new List<RejectedEvent>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) results.Add(new RejectedEvent(reader.GetString(0), reader.GetString(1)));
+            return results;
         }
     }
 
@@ -333,3 +441,9 @@ public sealed class EventQueue : IDisposable
 }
 
 public sealed record QueuedEvent(string EventId, JsonNode Payload);
+
+/// <summary>A queued lap the backend refused, and the reason it gave, in the
+/// words of the field it named - "lapTimeMs: Too big: expected number to be
+/// <=1800000". It is what the console prints and what the outbox stores, so it
+/// has to mean something to whoever reads the rig an hour later.</summary>
+public sealed record RejectedEvent(string EventId, string Reason);

@@ -58,7 +58,16 @@ public sealed record AgentStatus
     /// on, so the display must not claim the rig is free either.</summary>
     public required bool AssignmentKnown { get; init; }
     public required bool SimRunning { get; init; }
+
+    /// <summary>Laps the outbox is holding that it still intends to send.</summary>
     public required int PendingLaps { get; init; }
+
+    /// <summary>Laps the backend refused as invalid input. They are held, not
+    /// sent and not thrown away, so they are counted apart from the ones still
+    /// going: rolling them into <see cref="PendingLaps"/> would leave the rig
+    /// reading "n lap(s) queued" forever, which is what it read while one
+    /// rejected lap was blocking the whole outbox.</summary>
+    public required int RejectedLaps { get; init; }
 
     /// <summary>What the rig still owes the backend for a switch-driver it
     /// could not deliver. The seat is already empty here in every case; this
