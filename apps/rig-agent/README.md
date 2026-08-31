@@ -65,6 +65,69 @@ The current host is a **console app** (runs on macOS/Linux/Windows, so it can be
 tested anywhere). A tray-icon + status-window Windows shell is a later UI pass
 that wraps the same `OasisRigAgent.Core`.
 
+## Un-parking a quarantined lap
+
+Quarantine is one-way. The agent parks a lap the backend refused and nothing in
+the agent ever un-parks it: no retry, no timer, no restart, no command. Getting
+a parked lap moving again is a hand edit of the rig's outbox, and this is how
+you do it.
+
+Nothing is lost while it sits there. The lap stays in the outbox with the
+reason the backend gave, and the status line counts it apart from the queued
+laps (`n lap(s) the backend rejected - kept, not sent`), so the rig tells you
+the condition exists rather than reading the way it read while the wedge was
+live.
+
+**Know which case you are in before you touch anything.**
+
+- *One lap, or a few.* The backend refused those specific laps and accepted the
+  rest. This is the ordinary case: a 36-minute pit-box in-lap past the ingestion
+  bound, a payload a build produced wrong. The queue drains, the count stops
+  growing, and it can wait until morning.
+- *The count climbs and never stops.* Every batch is being refused by name. That
+  is a web-side validation **tightening** - a deploy that narrowed what
+  `/api/agent/events` accepts, the shape of commit `2adf3cc`, which added the
+  `lapTimeMs` bound - now 400s every batch and names every lap in it, so the
+  agent parks the night's laps as fast as it flushes them. Fix or roll back the
+  backend first. Un-parking before the backend accepts those laps parks them
+  again on the next flush.
+
+**Recovery, in order:**
+
+1. Stop the agent on that rig.
+2. Open its outbox: `outbox.db`, beside the executable
+   (`AppContext.BaseDirectory` - the same folder as `OasisRigAgent.exe` and
+   `agent.config.json`).
+3. See what is parked and why. `rejected_reason` is the whole story: null means
+   the row is still sendable, non-null means it is parked and holds the line the
+   backend gave for it.
+
+   ```sql
+   select event_id, created_at, rejected_reason from outbox
+   where rejected_reason is not null order by created_at asc;
+   ```
+
+4. Confirm the backend now accepts what it refused. Read the reason, and check
+   the deploy actually changed: a raised bound, a reverted validator, a fixed
+   payload. If nothing changed, stop here - the next flush will park these rows
+   again with the same reason.
+5. Clear the reason on the rows you want back. They become ordinary queued laps
+   and go out on the next flush, oldest first.
+
+   ```sql
+   -- one lap
+   update outbox set rejected_reason = null where event_id = '<event-id>';
+   -- everything parked, after a backend fix that covers all of it
+   update outbox set rejected_reason = null where rejected_reason is not null;
+   ```
+
+6. Start the agent. The parked count drops to zero and the queued count picks
+   those laps up. If they are refused again, they park again with the current
+   reason, and nothing is lost.
+
+Laps that are genuinely invalid and are never going to be accepted can be left
+parked. They cost one row each and keep the record of what the rig captured.
+
 ## Projects
 
 ```text

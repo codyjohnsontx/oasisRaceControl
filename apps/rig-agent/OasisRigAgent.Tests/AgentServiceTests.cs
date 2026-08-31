@@ -787,7 +787,6 @@ public sealed class AgentServiceTests : IDisposable
         });
     }
 
-    /// <summary>Runs <paramref name="body"/> against an outbox whose schema is
     /// <summary>A lap already in the outbox when the agent starts - a rig coming
     /// back from an outage with a backlog, which is exactly when a bad lap is
     /// sitting in front of good ones.</summary>
@@ -892,6 +891,7 @@ public sealed class AgentServiceTests : IDisposable
         Assert.Equal(1, reopened.RejectedCount());
     }
 
+    /// <summary>Runs <paramref name="body"/> against an outbox whose schema is
     /// in place but whose file cannot be written, the way a read-only or a full
     /// disk makes every write fail. Reads still work, which is what the status
     /// line and these assertions need.

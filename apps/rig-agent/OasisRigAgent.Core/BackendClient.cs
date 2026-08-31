@@ -125,7 +125,13 @@ public sealed class BackendClient
         try { json = JsonNode.Parse(body); }
         catch (JsonException) { return Array.Empty<RejectedEvent>(); }
 
-        if (json?["detail"] is not JsonArray issues) return Array.Empty<RejectedEvent>();
+        // Matched as objects before either is indexed, because indexing a
+        // JSON node that is not one throws rather than answering null: a 4xx
+        // body that is a bare number, a string, or a gateway's top-level array
+        // would leave this method by an exception, and the whole point of it is
+        // that a reachable backend's refusal never does that.
+        if (json is not JsonObject root || root["detail"] is not JsonArray issues)
+            return Array.Empty<RejectedEvent>();
 
         // First reason wins per lap: several issues can name the same event, and
         // one line a human can act on beats a concatenation of all of them.
@@ -133,14 +139,15 @@ public sealed class BackendClient
         var order = new List<string>();
         foreach (var issue in issues)
         {
-            if (issue?["path"] is not JsonArray path || path.Count < 2) continue;
+            if (issue is not JsonObject fields) continue;
+            if (fields["path"] is not JsonArray path || path.Count < 2) continue;
             if (Text(path[0]) != "events") continue;
             if (path[1] is not JsonValue at || !at.TryGetValue<int>(out var index)) continue;
             if (index < 0 || index >= sent.Count) continue;
 
             var eventId = sent[index].EventId;
             if (reasons.ContainsKey(eventId)) continue;
-            reasons[eventId] = Describe(issue, path);
+            reasons[eventId] = Describe(fields, path);
             order.Add(eventId);
         }
         return order.Select(id => new RejectedEvent(id, reasons[id])).ToList();
@@ -148,7 +155,7 @@ public sealed class BackendClient
 
     /// <summary>One issue as a line worth printing on a rig: the field it is
     /// about, then what was wrong with it.</summary>
-    private static string Describe(JsonNode issue, JsonArray path)
+    private static string Describe(JsonObject issue, JsonArray path)
     {
         var field = string.Join(
             ".", path.Skip(2).Select(Text).Where(part => part.Length > 0));

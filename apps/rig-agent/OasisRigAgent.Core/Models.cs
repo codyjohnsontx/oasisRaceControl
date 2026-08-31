@@ -67,7 +67,7 @@ public sealed record AgentStatus
     /// going: rolling them into <see cref="PendingLaps"/> would leave the rig
     /// reading "n lap(s) queued" forever, which is what it read while one
     /// rejected lap was blocking the whole outbox.</summary>
-    public int RejectedLaps { get; init; }
+    public required int RejectedLaps { get; init; }
 
     /// <summary>What the rig still owes the backend for a switch-driver it
     /// could not deliver. The seat is already empty here in every case; this
