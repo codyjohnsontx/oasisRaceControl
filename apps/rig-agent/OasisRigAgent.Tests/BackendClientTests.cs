@@ -138,9 +138,9 @@ public sealed class BackendClientTests
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        var settled = await client.SendLapsAsync(
+        var settled = (await client.SendLapsAsync(
             new[] { Queued("evt-1"), Queued("evt-2"), Queued("evt-3"), Queued("evt-4") },
-            CancellationToken.None);
+            CancellationToken.None)).Settled;
 
         Assert.Equal(new[] { "evt-1", "evt-2", "evt-3", "evt-4" }, settled);
     }
@@ -155,7 +155,7 @@ public sealed class BackendClientTests
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        var settled = await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
+        var settled = (await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None)).Settled;
 
         Assert.Equal(new[] { "evt-1" }, settled);
     }
@@ -168,7 +168,7 @@ public sealed class BackendClientTests
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        var settled = await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
+        var settled = (await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None)).Settled;
 
         Assert.Equal(new[] { "evt-1" }, settled);
     }
@@ -187,8 +187,8 @@ public sealed class BackendClientTests
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        var settled = await client.SendLapsAsync(
-            new[] { Queued("evt-1"), Queued("evt-2") }, CancellationToken.None);
+        var settled = (await client.SendLapsAsync(
+            new[] { Queued("evt-1"), Queued("evt-2") }, CancellationToken.None)).Settled;
 
         Assert.Empty(settled);
     }
@@ -207,8 +207,8 @@ public sealed class BackendClientTests
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        var settled = await client.SendLapsAsync(
-            new[] { Queued("evt-1"), Queued("evt-2") }, CancellationToken.None);
+        var settled = (await client.SendLapsAsync(
+            new[] { Queued("evt-1"), Queued("evt-2") }, CancellationToken.None)).Settled;
 
         Assert.Equal(new[] { "evt-2" }, settled);
     }
@@ -221,7 +221,7 @@ public sealed class BackendClientTests
             """));
         var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
 
-        var settled = await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
+        var settled = (await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None)).Settled;
 
         Assert.Empty(settled);
     }
@@ -235,6 +235,149 @@ public sealed class BackendClientTests
         await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
 
         Assert.Contains("\"rigAssignmentId\":\"a-1\"", handler.LastBody!);
+    }
+
+    /// <summary>The response `POST /api/agent/events` really sends when a lap
+    /// fails validation, copied from a live run of the route against the venue
+    /// schema rather than invented here: `detail` is zod's issue list and each
+    /// issue names its lap by POSITION in the batch.</summary>
+    private static string InvalidInput(params (int Index, string Field, string Message)[] issues)
+        => """{"error":"invalid_input","detail":["""
+           + string.Join(",", issues.Select(i =>
+               $$"""{"code":"too_big","path":["events",{{i.Index}},"{{i.Field}}"],"message":"{{i.Message}}"}"""))
+           + "]}";
+
+    /// <summary>The wedge, at the client. A batch is validated whole, so one lap
+    /// the backend will not accept fails all of them; this used to throw, which
+    /// the agent could not tell from the venue's network being down, so it
+    /// re-sent the identical batch every five seconds forever.
+    ///
+    /// Now the refusal comes back as an answer naming the lap that caused it.
+    /// Nothing settles - none of these laps was stored - but the caller learns
+    /// which one to stop sending.</summary>
+    [Fact]
+    public async Task SendLaps_reports_the_rejected_lap_instead_of_throwing()
+    {
+        var handler = new StubHandler(_ => (
+            HttpStatusCode.BadRequest,
+            InvalidInput((1, "lapTimeMs", "Too big: expected number to be <=1800000"))));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        var outcome = await client.SendLapsAsync(
+            new[] { Queued("evt-1"), Queued("evt-2"), Queued("evt-3") }, CancellationToken.None);
+
+        Assert.Empty(outcome.Settled);
+        var rejected = Assert.Single(outcome.Rejected);
+        Assert.Equal("evt-2", rejected.EventId);
+        // The reason names the field, so the console line is worth reading.
+        Assert.Equal("lapTimeMs: Too big: expected number to be <=1800000", rejected.Reason);
+    }
+
+    /// <summary>zod reports every issue in one response, so a batch with two bad
+    /// laps names both and the queue clears in one flush rather than one per
+    /// round trip.</summary>
+    [Fact]
+    public async Task SendLaps_reports_every_rejected_lap_in_one_response()
+    {
+        var handler = new StubHandler(_ => (
+            HttpStatusCode.BadRequest,
+            InvalidInput(
+                (0, "lapTimeMs", "Too big: expected number to be <=1800000"),
+                (2, "eventId", "Too small: expected string to have >=8 characters"))));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        var outcome = await client.SendLapsAsync(
+            new[] { Queued("evt-1"), Queued("evt-2"), Queued("evt-3") }, CancellationToken.None);
+
+        Assert.Equal(new[] { "evt-1", "evt-3" }, outcome.Rejected.Select(r => r.EventId));
+    }
+
+    /// <summary>A 4xx that names no lap must NOT quarantine anything. A rotated
+    /// rig token answers 401 on every batch in the venue; parking laps on it
+    /// would quietly retire a whole night's driving over a config change. It
+    /// throws, so the agent keeps the laps and keeps retrying, which is right.</summary>
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, """{"error":"unauthorized"}""")]
+    [InlineData(HttpStatusCode.TooManyRequests, """{"error":"rate_limited"}""")]
+    // The body-level failure: real, but it names no lap to blame.
+    [InlineData(HttpStatusCode.BadRequest,
+        """{"error":"invalid_input","detail":[{"code":"invalid_type","path":["events"]}]}""")]
+    // Not this backend at all - a proxy or captive portal in the way.
+    [InlineData(HttpStatusCode.Forbidden, "<html><body>Forbidden</body></html>")]
+    public async Task SendLaps_still_throws_on_a_4xx_that_names_no_lap(
+        HttpStatusCode status, string body)
+    {
+        var handler = new StubHandler(_ => (status, body));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None));
+    }
+
+    /// <summary>An index outside the batch cannot name one of these laps, so it
+    /// is skipped - and with nothing left to quarantine the response falls back
+    /// to the throwing path rather than parking a lap on a guess.</summary>
+    [Fact]
+    public async Task SendLaps_ignores_an_issue_naming_a_lap_it_did_not_send()
+    {
+        var handler = new StubHandler(_ => (
+            HttpStatusCode.BadRequest, InvalidInput((7, "lapTimeMs", "Too big"))));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None));
+    }
+
+    /// <summary>Several issues can land on one lap. It is quarantined once, and
+    /// the reason is the first one - a line staff can act on beats a
+    /// concatenation of every rule it broke.</summary>
+    [Fact]
+    public async Task SendLaps_quarantines_a_lap_once_however_many_issues_name_it()
+    {
+        var handler = new StubHandler(_ => (
+            HttpStatusCode.BadRequest,
+            InvalidInput(
+                (0, "lapTimeMs", "Too big: expected number to be <=1800000"),
+                (0, "carName", "Invalid input: expected string, received undefined"))));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        var outcome = await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
+
+        var rejected = Assert.Single(outcome.Rejected);
+        Assert.Equal("lapTimeMs: Too big: expected number to be <=1800000", rejected.Reason);
+    }
+
+    /// <summary>The discriminator case: zod's path stops at `type` and there is
+    /// no field beyond it, so the reason is still readable rather than a bare
+    /// colon.</summary>
+    [Fact]
+    public async Task SendLaps_describes_a_rejection_that_names_no_field_below_the_lap()
+    {
+        var handler = new StubHandler(_ => (HttpStatusCode.BadRequest, """
+            {"error":"invalid_input","detail":[
+              {"code":"invalid_union","path":["events",0],
+               "message":"Invalid discriminator value. Expected 'RIG_HEARTBEAT' | 'LAP_COMPLETED'"}]}
+            """));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        var outcome = await client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None);
+
+        Assert.Equal(
+            "Invalid discriminator value. Expected 'RIG_HEARTBEAT' | 'LAP_COMPLETED'",
+            Assert.Single(outcome.Rejected).Reason);
+    }
+
+    /// <summary>A 5xx is the backend's own failure, not a verdict on any lap.
+    /// It keeps throwing so the batch is retried whole.</summary>
+    [Fact]
+    public async Task SendLaps_still_throws_on_a_server_error()
+    {
+        var handler = new StubHandler(_ => (
+            HttpStatusCode.InternalServerError, """{"error":"server_error"}"""));
+        var client = new BackendClient(new HttpClient(handler), "https://x.test", "t");
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.SendLapsAsync(new[] { Queued("evt-1") }, CancellationToken.None));
     }
 
     [Fact]

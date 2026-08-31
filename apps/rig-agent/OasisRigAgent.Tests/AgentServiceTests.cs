@@ -120,6 +120,9 @@ public sealed class AgentServiceTests : IDisposable
                 await gate.Task.WaitAsync(cancellationToken);
             }
 
+            if (path.EndsWith("/events") && ValidatesLapTimes)
+                return await IngestEvents(request, cancellationToken);
+
             var body = path.EndsWith("/assignment")
                 ? AssignmentBody(
                     _assignmentId,
@@ -133,6 +136,81 @@ public sealed class AgentServiceTests : IDisposable
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             };
         }
+
+        /// <summary>Opt in to the route's lapTimeMs bound. Off by default so the
+        /// tests above keep their "nothing ever settles" backend, which is what
+        /// lets them inspect an outbox the flush loop would otherwise drain.</summary>
+        public bool ValidatesLapTimes { get; init; }
+
+        /// <summary>MAX_LAP_TIME_MS from apps/web/src/lib/events.ts: thirty
+        /// minutes. A lap past it is not a slow lap, it is a session timer or
+        /// the wrong unit read as one.</summary>
+        private const int MaxLapTimeMs = 30 * 60_000;
+
+        private readonly object _storedLock = new();
+        private readonly List<string> _stored = new();
+
+        /// <summary>The laps this backend actually stored, in arrival order.</summary>
+        public IReadOnlyList<string> StoredLapIds
+        {
+            get { lock (_storedLock) return _stored.ToArray(); }
+        }
+
+        /// <summary>What `POST /api/agent/events` does with a batch, faithfully
+        /// enough for the wedge: the body is validated WHOLE, so one lap over
+        /// the bound rejects all of them with 400 `invalid_input` and zod's
+        /// issue list naming the offender by its position in the batch. Only a
+        /// batch that passes stores anything.</summary>
+        private async Task<HttpResponseMessage> IngestEvents(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            var events = JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!["events"]!.AsArray();
+
+            var issues = new JsonArray();
+            for (var i = 0; i < events.Count; i++)
+            {
+                var lapTimeMs = events[i]?["lapTimeMs"]?.GetValue<int>();
+                if (lapTimeMs is null or <= MaxLapTimeMs) continue;
+                issues.Add(new JsonObject
+                {
+                    ["origin"] = "number",
+                    ["code"] = "too_big",
+                    ["maximum"] = MaxLapTimeMs,
+                    ["path"] = new JsonArray("events", i, "lapTimeMs"),
+                    ["message"] = $"Too big: expected number to be <={MaxLapTimeMs}",
+                });
+            }
+            if (issues.Count > 0)
+                return Json(HttpStatusCode.BadRequest, new JsonObject
+                {
+                    ["error"] = "invalid_input",
+                    ["detail"] = issues,
+                });
+
+            var results = new JsonArray();
+            foreach (var e in events)
+            {
+                var type = e!["type"]!.GetValue<string>();
+                if (type != "LAP_COMPLETED")
+                {
+                    results.Add(new JsonObject { ["type"] = type, ["status"] = "ok" });
+                    continue;
+                }
+                var eventId = e["eventId"]!.GetValue<string>();
+                lock (_storedLock) _stored.Add(eventId);
+                results.Add(new JsonObject
+                {
+                    ["type"] = type, ["eventId"] = eventId, ["status"] = "accepted",
+                });
+            }
+            return Json(HttpStatusCode.OK, new JsonObject { ["results"] = results });
+        }
+
+        private static HttpResponseMessage Json(HttpStatusCode status, JsonNode body) =>
+            new(status)
+            {
+                Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
 
         /// <summary>The route's rule: close the named assignment if it is the
         /// one open here, or whatever is open when none is named.</summary>
@@ -710,6 +788,110 @@ public sealed class AgentServiceTests : IDisposable
     }
 
     /// <summary>Runs <paramref name="body"/> against an outbox whose schema is
+    /// <summary>A lap already in the outbox when the agent starts - a rig coming
+    /// back from an outage with a backlog, which is exactly when a bad lap is
+    /// sitting in front of good ones.</summary>
+    private static LapCompleted Backlog(string eventId, int lapTimeMs) => new()
+    {
+        EventId = eventId,
+        TrackName = "Spa-Francorchamps",
+        TrackConfig = "Grand Prix Pits",
+        CarName = "Porsche 911 GT3 R",
+        LapNumber = 1,
+        LapTimeMs = lapTimeMs,
+        IncidentDelta = 0,
+        CompletedAt = DateTimeOffset.UtcNow,
+    };
+
+    /// <summary>The wedge, end to end at the agent.
+    ///
+    /// The backend validates a batch whole, so one lap it will not accept fails
+    /// all fifty. The agent could not tell that 400 from the venue's network
+    /// being down: it marked the rig offline and the next flush re-sent the
+    /// identical batch five seconds later, and again, and again - every lap
+    /// queued behind the bad one going nowhere for the rest of the night.
+    ///
+    /// The over-bound lap here is the case PR #23's review found to be reachable
+    /// with real telemetry rather than only with corrupt data: iRacing's
+    /// LapLastLapTime includes pit-box time, so a driver who parks for half an
+    /// hour and comes back out produces a genuine in-lap past the thirty-minute
+    /// bound.</summary>
+    [Fact]
+    public async Task A_lap_the_backend_refuses_is_parked_and_the_laps_behind_it_go_through()
+    {
+        var backend = new StubBackend { ValidatesLapTimes = true };
+        backend.Assign(AssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        queue.Enqueue(Backlog("evt-flying-lap", 138_400), AssignmentId);
+        queue.Enqueue(Backlog("evt-pit-in-lap", 2_190_000), AssignmentId);
+        queue.Enqueue(Backlog("evt-out-lap", 137_900), AssignmentId);
+
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var seen = new List<ConnectionState>();
+        agent.StatusChanged += status => { lock (seen) seen.Add(status.Connection); };
+        agent.Start();
+
+        // Two flush rounds five seconds apart: the first is refused and parks
+        // the bad lap, the second carries the two good ones.
+        await WaitForStatus(
+            agent, s => s.PendingLaps == 0 && s.RejectedLaps == 1, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(new[] { "evt-flying-lap", "evt-out-lap" }, backend.StoredLapIds);
+        var parked = Assert.Single(queue.RejectedEvents());
+        Assert.Equal("evt-pit-in-lap", parked.EventId);
+        // Kept with the reason, because somebody has to decide what becomes of it.
+        Assert.Contains("lapTimeMs", parked.Reason);
+
+        // A refusal is not an outage. The backend answered - it answered "no" -
+        // and a rig that reports itself offline over that sends staff looking
+        // for a network problem that is not there.
+        lock (seen) Assert.DoesNotContain(ConnectionState.Offline, seen);
+    }
+
+    /// <summary>The refusal is final. Once parked, the lap is never offered
+    /// again - not on the next flush, and not after the rig PC reboots, which
+    /// would otherwise re-wedge the outbox on every restart.</summary>
+    [Fact]
+    public async Task A_parked_lap_is_not_offered_again_after_a_restart()
+    {
+        var backend = new StubBackend { ValidatesLapTimes = true };
+        backend.Assign(AssignmentId);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+
+        using (var queue = new EventQueue(_dbPath))
+        {
+            queue.Enqueue(Backlog("evt-pit-in-lap", 2_190_000), AssignmentId);
+            await using var agent = new AgentService(Config(), client, queue, new FakeTelemetrySource());
+            // Subscribed before Start: the only lap here is the bad one, so the
+            // first flush parks it and publishes the final numbers straight
+            // away - a wait attached afterwards would have missed them and hung.
+            var parked = WaitForStatus(agent, s => s.PendingLaps == 0 && s.RejectedLaps == 1);
+            agent.Start();
+            await parked;
+        }
+        // Disposing a SqliteConnection returns it to the pool with the file
+        // handle open, so the reopened queue must not inherit it.
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = new EventQueue(_dbPath);
+        // The next night's first lap. It is the probe: if the restarted agent
+        // put the parked lap back in the batch, this good lap would 400 with it
+        // and never drain - which is the wedge, one reboot later.
+        reopened.Enqueue(Backlog("evt-next-night", 138_100), AssignmentId);
+        await using var restarted = new AgentService(Config(), client, reopened, new FakeTelemetrySource());
+        var drained = WaitForStatus(restarted, s => s.PendingLaps == 0);
+        restarted.Start();
+        await drained;
+
+        Assert.Equal(new[] { "evt-next-night" }, backend.StoredLapIds);
+        Assert.Equal(1, reopened.RejectedCount());
+    }
+
     /// in place but whose file cannot be written, the way a read-only or a full
     /// disk makes every write fail. Reads still work, which is what the status
     /// line and these assertions need.
