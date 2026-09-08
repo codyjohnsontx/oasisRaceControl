@@ -87,6 +87,20 @@ type Metric = {
 };
 
 async function main(): Promise<void> {
+  // A NaN here does not stop the run, it degrades it silently: `--minutes 30m`
+  // collapses the hold to nothing and every check then passes over twenty
+  // seconds of traffic, and `--interval 20s` reaches every worker's
+  // setInterval as a 1 ms lap. Both would write a summary that looks ordinary.
+  for (const [name, value] of [
+    ["rigs", RIGS],
+    ["minutes", MINUTES],
+    ["interval", INTERVAL_S],
+  ] as const) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(`--${name} must be a positive number, got "${arg(name, "")}".`);
+    }
+  }
+
   const configured = process.env.SOAK_DATABASE_URL;
   const url = configured ? safeTestDatabaseUrl(configured) : null;
   if (!url) {
@@ -428,13 +442,17 @@ async function summarise(
   const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
   const resends = sentIds.length - distinctIds.length;
 
-  // A lap post the backend never ruled on: fake-rig records what it sent even
-  // when the request fails, so the id is in `sentIds` with no verdict behind
-  // it. That is what makes the duplicate arithmetic below unanswerable.
-  const lapPostsWithoutVerdicts = lapPosts.filter(
-    (m) => (m.results ?? []).length !== (m.sent ?? []).length,
+  // A lap post the backend never confirmed holding: fake-rig records what it
+  // sent even when the request fails, so the id is in `sentIds` with no verdict
+  // behind it — and a 200 can still carry `error`, which is a verdict that the
+  // row was NOT stored, leaving nothing for a later resend to duplicate. Both
+  // are what make the duplicate arithmetic below unanswerable.
+  const lapPostsNotStored = lapPosts.filter(
+    (m) =>
+      (m.results ?? []).filter((r) => r.status !== "error").length !==
+      (m.sent ?? []).length,
   ).length;
-  const lapVerdictsComplete = lapPostsWithoutVerdicts === 0;
+  const lapVerdictsComplete = lapPostsNotStored === 0;
 
   const transportErrors = metrics.filter((m) => m.error !== undefined);
   const nonOk = metrics.filter((m) => m.error === undefined && m.status !== 200);
@@ -497,19 +515,20 @@ async function summarise(
       detail: `${strays} unaccounted-for laps on soak rigs`,
     },
     {
-      // Only computable when every lap post came back with a verdict. A post
-      // that failed still contributes its event id to `sentIds`, so a failed
-      // original followed by a successful resend would count as a resend the
-      // backend never saw and had no duplicate to absorb. That is a gap in the
-      // evidence, not a defect in the backend, and reporting it either way
-      // would be wrong - so it is declared indeterminate and the run does not
-      // pass on it. The request check below is what names the underlying cause.
+      // Only computable when every lap post came back stored. A post that
+      // failed, or that the backend answered `error`, still contributes its
+      // event id to `sentIds`, so a failed original followed by a successful
+      // resend would count as a resend the backend never saw and had no
+      // duplicate to absorb. That is a gap in the evidence, not a defect in
+      // the backend, and reporting it either way would be wrong - so it is
+      // declared indeterminate and the run does not pass on it. The request
+      // check below is what names the underlying cause.
       name: "duplicate event ids were absorbed, not double-stored",
       pass: lapVerdictsComplete && tally("duplicate") === resends,
       detail: lapVerdictsComplete
         ? `${tally("duplicate")} duplicate verdicts / ${resends} resends`
-        : `indeterminate - ${lapPostsWithoutVerdicts} lap post(s) returned no verdict, ` +
-          `so the ${resends} recorded resends cannot be matched against ` +
+        : `indeterminate - ${lapPostsNotStored} lap post(s) were never confirmed ` +
+          `stored, so the ${resends} recorded resends cannot be matched against ` +
           `${tally("duplicate")} duplicate verdicts`,
     },
     {
