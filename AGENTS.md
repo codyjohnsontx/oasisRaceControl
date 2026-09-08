@@ -163,6 +163,30 @@ retried - quarantining on it would retire a whole venue's night over a config
 change. Parked laps are counted and displayed apart from the queued ones, so the
 rig's status line does not read the way it read while it was wedged.
 
+## The twenty-rig soak
+
+The venue has 20-25 sims and the platform had only ever been driven by one rig
+at a time, so `apps/web/scripts/soak.ts` runs N concurrent `fake-rig.ts`
+workers against a local production build and reconciles what they sent against
+what the database holds. Runbook, the committed numbers, and - importantly -
+what the run does NOT cover are in
+[docs/soak-20-rigs.md](docs/soak-20-rigs.md); the machine-readable result is
+`docs/soak-20-rigs.json`.
+
+Three things about it are load-bearing. It reconciles **on event id, not a time
+window**, so a re-run against the same database can neither inflate nor deflate
+the count. Its two latency ceilings are the .NET agent's own flush interval and
+HTTP timeout, not targets invented to be met - what a change actually gets
+compared against is the committed JSON, which is why that file names the machine
+it was produced on. And the load generator is the ordinary `fake-rig.ts` given
+`--metrics`, deliberately not a second simulator, so the soak measures the same
+client the demos run.
+
+It needs a disposable database and refuses anything else: `SOAK_DATABASE_URL`
+goes through the integration suite's `src/test/db-guard.ts`. Use a throwaway
+Postgres, not the shared local `oasis-pg` - other lanes apply their own
+migrations to that one.
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which

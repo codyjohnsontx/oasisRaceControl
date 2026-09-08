@@ -6,10 +6,10 @@ simulator drives one token, and `SimulatedTelemetrySource` drives one agent. So
 "twenty stations" was a design intent with nothing measured behind it.
 
 This is the measurement. Twenty concurrent rig processes against a local
-production build for an hour, asserting the two things that decide whether the
-venue works at that width: **every lap is stored exactly once and credited to
-the right driver**, and **the write path stays inside the timings the real .NET
-agent is built around**.
+production build, held long enough to matter, asserting the two things that
+decide whether the venue works at that width: **every lap is stored exactly once
+and credited to the right driver**, and **the write path stays inside the
+timings the real .NET agent is built around**.
 
 Run it with [`apps/web/scripts/soak.ts`](../apps/web/scripts/soak.ts). The
 committed result of the run described here is
@@ -17,7 +17,54 @@ committed result of the run described here is
 
 ---
 
-## RESULTS_PLACEHOLDER
+## The run
+
+**2026-09-08, run `20260908T165259`. 20 rigs, 30.3 minutes, all seven checks passed.**
+Full machine-readable result: [`soak-20-rigs.json`](soak-20-rigs.json).
+
+| | |
+|---|---|
+| Load | 20 rigs, one lap per 20 s each, against a local `next start` production build |
+| Machine | Apple M1 Pro, 10 cores, 16 GB, Node v22.23.1, PostgreSQL 17.10 |
+| Requests | **6,650** (3.65/s) - 1,800 lap posts, 1,220 heartbeats, 3,630 assignment polls |
+| Laps | **1,800 sent** → 1,663 distinct + 137 deliberate resends → **1,663 stored** |
+| Losses | **0** laps lost, **0** misattributed, **0** unattributed, **0** strays |
+| Errors | **0** transport errors, **0** non-200 responses |
+
+```
+events   p50 8ms   p90 23ms   p95 29ms   p99 51ms   max 346ms
+polls    p50 6ms   p90 17ms   p95 23ms   p99 42ms   max 337ms
+```
+
+### What the numbers say
+
+**Nothing was lost and nothing was misfiled.** 1,663 distinct laps sent, 1,663 stored, every
+one credited to the driver in that seat. The 137 deliberate resends produced exactly 137
+`duplicate` verdicts and not one extra row, so the idempotency key holds under twenty
+concurrent writers rather than merely usually holding.
+
+**The write path is nowhere near the agent's tolerances.** p95 of 29 ms sits **172x** under
+the agent's 5 s flush interval, and the single worst request of the run - 346 ms - is **43x**
+under its 15 s HTTP timeout. At this width the backend is not the constraint.
+
+**The 258 invalid laps are the simulator's doing, not a finding.** `fake-rig.ts` generates
+roughly 15% dirty laps (`incidentDelta > 0`) and the seeded combo runs a 0-incident limit;
+258 of 1,663 is 15.5%. They are stored invalid with a reason, which is the correct outcome.
+
+### Two honest caveats about this particular run
+
+**It ran for 30 minutes, not the hour originally planned.** This machine was running five
+other agent workers at the time and had already lost workers to memory exhaustion earlier in
+the day, so the run was deliberately shortened to halve the exposure. 1,800 lap posts is
+still an ample sample for p95 and p99; it is a thinner one for `max`, which is a single
+observation by definition. Free memory held between 35% and 60% throughout and swap did not
+climb (1.34 GB, flat), so the soak itself was never the machine's problem.
+
+**The machine was shared, and that makes these numbers conservative rather than flattering.**
+System load average spiked to 34 on 10 cores around the 15-minute mark from unrelated work
+while the rig worker count stayed constant at 20. The 346 ms maximum was measured under that
+contention. A dedicated machine would report lower, not higher - so the ceiling recorded here
+is a safe one to compare against.
 
 ---
 
@@ -71,14 +118,15 @@ DATABASE_URL="$SOAK_DATABASE_URL" npx tsx scripts/migrate.ts --seed
 DATABASE_URL="$SOAK_DATABASE_URL" SESSION_SECRET=anything-local npm run build
 DATABASE_URL="$SOAK_DATABASE_URL" SESSION_SECRET=anything-local PORT=3111 npm run start &
 
-# 4. The soak.
-npx tsx scripts/soak.ts --rigs 20 --minutes 60 --base http://127.0.0.1:3111 \
+# 4. The soak. `--minutes 30` is what produced the committed result above;
+#    raise it on a machine that has the run to itself.
+npx tsx scripts/soak.ts --rigs 20 --minutes 30 --base http://127.0.0.1:3111 \
   --out ../../docs/soak-20-rigs.json
 ```
 
 `--rigs`, `--minutes`, `--interval`, `--base`, `--work` and `--out` are all
 adjustable; `scripts/soak.ts`'s header documents them. A two-minute run is
-enough to check the harness itself before spending an hour.
+enough to check the harness itself before spending real time on it.
 
 ### What the script does
 
@@ -118,7 +166,10 @@ The number is real but narrow, and the wording it supports should be too.
 - **Twenty rigs enrolled by script, not by an installer.** There is still no
   rig-enrollment endpoint - standing twenty real rigs up at the venue remains
   manual work this run does not address.
+- **Thirty minutes, not a venue night.** Long enough to rule out per-request
+  faults and to size p95 and p99; too short to say anything about connection-pool
+  exhaustion, table bloat or anything else that only appears after hours.
 
-What it does establish: at twenty stations and a realistic lap cadence, the
-ingestion path loses nothing, misattributes nothing, and answers far inside the
-agent's own tolerances on one machine.
+What it does establish: at twenty stations and a realistic lap cadence, for half
+an hour on one machine, the ingestion path loses nothing, misattributes nothing,
+and answers far inside the agent's own tolerances.
