@@ -90,12 +90,11 @@ async function main(): Promise<void> {
   const configured = process.env.SOAK_DATABASE_URL;
   const url = configured ? safeTestDatabaseUrl(configured) : null;
   if (!url) {
-    console.error(
+    throw new Error(
       "SOAK_DATABASE_URL is not set. It must be a local, disposable database " +
         "with 'test' in its name — this script writes rigs, drivers and " +
         "assignments into it. See docs/soak-20-rigs.md.",
     );
-    process.exit(1);
   }
 
   mkdirSync(WORK_DIR, { recursive: true });
@@ -617,7 +616,10 @@ function report(s: Awaited<ReturnType<typeof summarise>>): void {
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+// Not process.exit, for the same reason the success path is not: stderr is
+// asynchronous to a pipe or a file, and this message is the only explanation a
+// refused run produces.
 main().catch((error: Error) => {
   console.error(`[soak] ${error.message}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

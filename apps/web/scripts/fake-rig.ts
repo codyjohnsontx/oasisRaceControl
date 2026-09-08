@@ -87,14 +87,28 @@ async function pollAssignment(): Promise<void> {
     const res = await fetch(`${BASE}/api/agent/assignment`, {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
-    const body = (await res.json().catch(() => ({}))) as {
-      assignment?: { id: string } | null;
-    };
+    const body = res.ok
+      ? ((await res.json().catch(() => null)) as {
+          assignment: { id: string } | null;
+        } | null)
+      : null;
+    const unreadable = res.ok && body === null;
     // Recorded before the status is judged, so a rejected poll is counted as
     // the HTTP answer it was and not as a rig that could not reach the stack.
-    record({ kind: "poll", ms: Date.now() - startedAt, status: res.status });
+    // A 200 whose body would not parse is no answer at all, so it is recorded
+    // as the failure it is rather than as an assignment.
+    record({
+      kind: "poll",
+      ms: Date.now() - startedAt,
+      status: res.status,
+      ...(unreadable ? { error: "unreadable assignment body" } : {}),
+    });
     if (!res.ok) {
       console.error(`[fake-rig] assignment poll failed: HTTP ${res.status}`);
+      return;
+    }
+    if (!body) {
+      console.error(`[fake-rig] assignment poll returned an unreadable body`);
       return;
     }
     const next = body.assignment?.id ?? null;
