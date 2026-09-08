@@ -46,13 +46,15 @@ const METRICS_PATH = arg("metrics", "");
 
 /** One line per request, or nothing at all when --metrics is not given.
  *  Appends are synchronous and each process owns its own file, so the lines
- *  never interleave and a Ctrl+C loses at most the request in flight. */
+ *  never interleave and a Ctrl+C loses at most the request in flight. The
+ *  bearer token is not among the fields: this file is written wherever the
+ *  operator points it, and the reader identifies a rig by its own file. */
 function record(entry: Record<string, unknown>): void {
   if (!METRICS_PATH) return;
   try {
     appendFileSync(
       METRICS_PATH,
-      `${JSON.stringify({ t: new Date().toISOString(), token: TOKEN, ...entry })}\n`,
+      `${JSON.stringify({ t: new Date().toISOString(), ...entry })}\n`,
     );
   } catch (error) {
     console.error(`[fake-rig] metrics write failed:`, (error as Error).message);
@@ -85,9 +87,16 @@ async function pollAssignment(): Promise<void> {
     const res = await fetch(`${BASE}/api/agent/assignment`, {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = (await res.json()) as { assignment: { id: string } | null };
+    const body = (await res.json().catch(() => ({}))) as {
+      assignment?: { id: string } | null;
+    };
+    // Recorded before the status is judged, so a rejected poll is counted as
+    // the HTTP answer it was and not as a rig that could not reach the stack.
     record({ kind: "poll", ms: Date.now() - startedAt, status: res.status });
+    if (!res.ok) {
+      console.error(`[fake-rig] assignment poll failed: HTTP ${res.status}`);
+      return;
+    }
     const next = body.assignment?.id ?? null;
     if (next !== assignmentId) {
       console.log(`[fake-rig] assignment: ${next ?? "nobody checked in"}`);

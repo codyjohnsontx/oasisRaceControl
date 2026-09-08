@@ -61,7 +61,7 @@ const INTERVAL_S = Number(arg("interval", "20"));
 const BASE = arg("base", "http://localhost:3000").replace(/\/$/, "");
 const OUT = arg("out", "");
 /** Kept clear of the seed's rigs 1-3 so a soak can run on a seeded database. */
-const RIG_NUMBER_BASE = Number(arg("rig-number-base", "101"));
+const RIG_NUMBER_BASE = 101;
 
 const RUN_ID = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
 const WORK_DIR = arg("work", join(tmpdir(), `oasis-soak-${RUN_ID}`));
@@ -78,7 +78,6 @@ type Rig = {
 /** One request as the rig experienced it (scripts/fake-rig.ts --metrics). */
 type Metric = {
   t: string;
-  token: string;
   kind: "lap" | "heartbeat" | "poll";
   ms: number;
   status?: number;
@@ -88,7 +87,8 @@ type Metric = {
 };
 
 async function main(): Promise<void> {
-  const url = safeTestDatabaseUrl(process.env.SOAK_DATABASE_URL);
+  const configured = process.env.SOAK_DATABASE_URL;
+  const url = configured ? safeTestDatabaseUrl(configured) : null;
   if (!url) {
     console.error(
       "SOAK_DATABASE_URL is not set. It must be a local, disposable database " +
@@ -125,9 +125,16 @@ async function main(): Promise<void> {
   const endedAt = new Date();
 
   console.log(`[soak] ${MINUTES} min elapsed — stopping ${workers.length} workers`);
-  await stopAll(workers);
+  const diedEarly = await stopAll(workers);
 
-  const metrics = rigs.flatMap((rig) => readMetrics(rig));
+  const metricsByRig = rigs.map((rig) => readMetrics(rig));
+  const failure = loadFailure(rigs, workers, diedEarly, metricsByRig);
+  if (failure) {
+    await client.end();
+    throw new Error(failure);
+  }
+
+  const metrics = metricsByRig.flat();
   const summary = await summarise(client, rigs, metrics, startedAt, endedAt, url);
   await client.end();
 
@@ -270,11 +277,20 @@ function startWorker(rig: Rig): ChildProcess {
   );
 }
 
-async function stopAll(workers: ChildProcess[]): Promise<void> {
+/**
+ * Signals every worker and reports the indexes of the ones that were already
+ * gone - the only moment a worker lost mid-run is distinguishable from one this
+ * script stopped, since after the kills every child has an exit code.
+ */
+async function stopAll(workers: ChildProcess[]): Promise<number[]> {
+  const diedEarly: number[] = [];
   const exits = workers.map(
-    (child) =>
+    (child, i) =>
       new Promise<void>((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        if (child.exitCode !== null || child.signalCode !== null) {
+          diedEarly.push(i);
+          return resolve();
+        }
         child.once("exit", () => resolve());
         child.kill("SIGINT");
         // A worker mid-request can outlive SIGINT; nothing it does after this
@@ -286,6 +302,44 @@ async function stopAll(workers: ChildProcess[]): Promise<void> {
       }),
   );
   await Promise.all(exits);
+  return diedEarly;
+}
+
+/**
+ * Why this run cannot be summarised, or null when it can. Every check is
+ * computed from what the rigs recorded sending, so a run whose workers were
+ * killed at minute two still has every lap they sent stored, still absorbs
+ * every duplicate, and still passes all seven - over ninety seconds of traffic
+ * a summary would file under the full duration and twenty rigs. A run that
+ * lost a worker, or never heard from one, is refused rather than written up.
+ */
+function loadFailure(
+  rigs: Rig[],
+  workers: ChildProcess[],
+  diedEarly: number[],
+  metricsByRig: Metric[][],
+): string | null {
+  const lost = diedEarly.map((i) => {
+    const child = workers[i]!;
+    return `rig ${rigs[i]!.rigNumber} (${child.signalCode ?? `exit ${child.exitCode}`})`;
+  });
+  if (lost.length > 0) {
+    return (
+      `${lost.length} of ${workers.length} workers died before the run ended: ` +
+      `${lost.join(", ")}. Their traffic stopped when they did, so this run is ` +
+      `not ${RIGS} rigs for ${MINUTES} minutes and its numbers are not comparable.`
+    );
+  }
+
+  const silent = rigs.filter((_, i) => metricsByRig[i]!.length === 0);
+  if (silent.length > 0) {
+    return (
+      `${silent.length} workers recorded no requests at all (rigs ` +
+      `${silent.map((r) => r.rigNumber).join(", ")}). There is nothing to ` +
+      `reconcile for them, and checks computed over nothing pass vacuously.`
+    );
+  }
+  return null;
 }
 
 function readMetrics(rig: Rig): Metric[] {
@@ -364,11 +418,15 @@ async function summarise(
     [distinctIds],
   );
 
+  // Distinct failures, deliberately not merged: a lap credited to the wrong
+  // driver and a lap the backend refused to credit at all are opposite
+  // behaviours, and one driver per rig for the whole run means neither is
+  // acceptable here.
   const ownerByRigId = new Map(rigs.map((r) => [r.rigId, r.driverId]));
-  const misattributed = stored.filter(
-    (lap) => lap.driver_id !== ownerByRigId.get(lap.rig_id),
-  );
   const unattributed = stored.filter((lap) => lap.driver_id === null);
+  const misattributed = stored.filter(
+    (lap) => lap.driver_id !== null && lap.driver_id !== ownerByRigId.get(lap.rig_id),
+  );
 
   // Anything this run's rigs wrote that the rigs themselves never recorded
   // sending — cross-talk between rigs, or a stale worker from another run.
@@ -394,7 +452,7 @@ async function summarise(
     },
     {
       name: "every lap is credited to the driver in that seat",
-      pass: misattributed.length === 0,
+      pass: misattributed.length === 0 && unattributed.length === 0,
       detail: `${misattributed.length} misattributed, ${unattributed.length} unattributed`,
     },
     {
