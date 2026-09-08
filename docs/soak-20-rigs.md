@@ -77,7 +77,7 @@ Seven checks, and the script exits non-zero if any of them fails.
 | Every lap sent is stored | The outbox exists so a lap survives an outage. A lap that reaches the backend and then vanishes is the failure no retry can fix. |
 | Every lap is credited to the driver in that seat | The project's stated core invariant. Twenty rigs writing concurrently is exactly where a shared-state mistake would show up as somebody else's lap time. |
 | No lap appears that no rig sent | Catches cross-talk: one rig's traffic landing on another rig's assignment. |
-| Duplicate event ids were absorbed | fake-rig deliberately re-sends about one lap in fourteen. Under concurrency the idempotency key has to hold, not merely usually hold. |
+| Duplicate event ids were absorbed | fake-rig deliberately re-sends about one lap in fourteen. Under concurrency the idempotency key has to hold, not merely usually hold. Reported **indeterminate** (and not passed) if any lap post came back without a verdict: a failed original followed by a successful resend would otherwise read as the backend failing to absorb a duplicate, which is an accusation the evidence does not support. |
 | Every request answered 200 | A 500 is survivable (the agent retries) but it is not "twenty stations working". |
 | Events **p95 < 5s** | The agent flushes its outbox every 5 seconds (`AgentService.FlushInterval`). Past that, a rig's outbox drains slower than it fills and the backlog grows for as long as the load lasts. |
 | Events **max < 15s** | The agent's HTTP timeout (`OasisRigAgent/Program.cs`). Past it the agent abandons the request and re-sends the whole batch. |

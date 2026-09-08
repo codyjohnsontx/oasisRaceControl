@@ -105,45 +105,53 @@ async function main(): Promise<void> {
   const client = new Client({ connectionString: url });
   await client.connect();
 
-  let rigs: Rig[];
+  // Owned out here so the cleanup below can see workers that were started
+  // before whatever went wrong: a failure partway through the ramp would
+  // otherwise leave the ones already up driving the stack after this exits.
+  const workers: ChildProcess[] = [];
+  let summary: Awaited<ReturnType<typeof summarise>>;
   try {
-    rigs = await provision(client, RIGS);
+    const rigs = await provision(client, RIGS);
     console.log(`[soak] provisioned rigs ${rigs[0]!.rigNumber}-${rigs.at(-1)!.rigNumber}`);
     await preflight(rigs);
-  } catch (error) {
-    await client.end();
-    throw error;
+
+    // The clock covers the staggered ramp-up as well as the steady state, so
+    // every request a worker made falls inside the window the rates are
+    // computed over. At an hour the ramp is one interval and moves nothing.
+    const startedAt = new Date();
+    await startWorkers(rigs, workers);
+    console.log(`[soak] ${workers.length} workers up — holding load for ${MINUTES} min`);
+    await sleep(MINUTES * 60_000);
+    const endedAt = new Date();
+
+    console.log(`[soak] ${MINUTES} min elapsed — stopping ${workers.length} workers`);
+    const diedEarly = await stopAll(workers);
+
+    const metricsByRig = rigs.map((rig) => readMetrics(rig));
+    const failure = loadFailure(rigs, workers, diedEarly, metricsByRig);
+    if (failure) throw new Error(failure);
+
+    summary = await summarise(client, rigs, metricsByRig.flat(), startedAt, endedAt, url);
+  } finally {
+    // Nothing past this point is measured, so a worker still alive here is one
+    // this script failed to stop. Twenty orphaned processes left hammering the
+    // stack is a worse outcome than any error being propagated, and closing
+    // the client must not mask that error either.
+    for (const child of workers) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+    await client.end().catch(() => {});
   }
-
-  // The clock covers the staggered ramp-up as well as the steady state, so
-  // every request a worker made falls inside the window the rates are computed
-  // over. At an hour the ramp is one interval and moves nothing.
-  const startedAt = new Date();
-  const workers = await startWorkers(rigs);
-  console.log(`[soak] ${workers.length} workers up — holding load for ${MINUTES} min`);
-  await sleep(MINUTES * 60_000);
-  const endedAt = new Date();
-
-  console.log(`[soak] ${MINUTES} min elapsed — stopping ${workers.length} workers`);
-  const diedEarly = await stopAll(workers);
-
-  const metricsByRig = rigs.map((rig) => readMetrics(rig));
-  const failure = loadFailure(rigs, workers, diedEarly, metricsByRig);
-  if (failure) {
-    await client.end();
-    throw new Error(failure);
-  }
-
-  const metrics = metricsByRig.flat();
-  const summary = await summarise(client, rigs, metrics, startedAt, endedAt, url);
-  await client.end();
 
   report(summary);
   if (OUT) {
     writeFileSync(OUT, `${JSON.stringify(summary, null, 2)}\n`);
     console.log(`[soak] summary written to ${OUT}`);
   }
-  process.exit(summary.checks.every((c) => c.pass) ? 0 : 1);
+  // Not process.exit: report() writes through console.log, and on a pipe or a
+  // file stdout is asynchronous, so exiting here can truncate the summary the
+  // run exists to produce. Setting the code lets Node drain and exit on its own.
+  process.exitCode = summary.checks.every((c) => c.pass) ? 0 : 1;
 }
 
 /**
@@ -240,14 +248,29 @@ const metricsPath = (rig: Rig): string => join(WORK_DIR, `rig-${rig.rigNumber}.j
  * down, and a backend that only ever sees a thundering herd is measured against
  * a load it will not meet. The spread costs one interval of the run.
  */
-async function startWorkers(rigs: Rig[]): Promise<ChildProcess[]> {
+async function startWorkers(rigs: Rig[], started: ChildProcess[]): Promise<void> {
   const gapMs = (INTERVAL_S * 1000) / rigs.length;
-  const workers: ChildProcess[] = [];
   for (const rig of rigs) {
-    workers.push(startWorker(rig));
+    started.push(startWorker(rig));
     await sleep(gapMs);
+    throwIfLaunchFailed();
   }
-  return workers;
+  throwIfLaunchFailed();
+}
+
+/**
+ * `spawn` reports a failure to launch through the child's `error` event rather
+ * than by throwing, and an `error` event with no listener is re-raised as an
+ * uncaught exception. Collecting them here turns that into an ordinary failure
+ * the caller's cleanup can act on, and checking between spawns means a bad
+ * launch stops the ramp instead of being discovered after the full hold.
+ */
+const launchErrors: string[] = [];
+
+function throwIfLaunchFailed(): void {
+  if (launchErrors.length > 0) {
+    throw new Error(`worker launch failed - ${launchErrors.join("; ")}`);
+  }
 }
 
 /**
@@ -258,7 +281,7 @@ async function startWorkers(rigs: Rig[]): Promise<ChildProcess[]> {
  * (~88 MB resident each either way — the saving is in moving parts, not RAM.)
  */
 function startWorker(rig: Rig): ChildProcess {
-  return spawn(
+  const child = spawn(
     process.execPath,
     [
       "--import", "tsx",
@@ -275,6 +298,10 @@ function startWorker(rig: Rig): ChildProcess {
       stdio: ["ignore", "ignore", "ignore"],
     },
   );
+  child.once("error", (error: Error) => {
+    launchErrors.push(`rig ${rig.rigNumber}: ${error.message}`);
+  });
+  return child;
 }
 
 /**
@@ -293,12 +320,13 @@ async function stopAll(workers: ChildProcess[]): Promise<number[]> {
         }
         child.once("exit", () => resolve());
         child.kill("SIGINT");
-        // A worker mid-request can outlive SIGINT; nothing it does after this
-        // point is measured, so it is not allowed to hold the run open.
-        setTimeout(() => {
-          child.kill("SIGKILL");
-          resolve();
-        }, 5_000).unref();
+        // A worker mid-request can outlive SIGINT, so escalate - but resolve
+        // ONLY from the exit event. Resolving alongside the SIGKILL would let
+        // readMetrics run while a worker was still appending: that request
+        // would drop out of the reconciliation, and a lap already stored would
+        // then surface as an unexplained stray. SIGKILL cannot be caught, so
+        // waiting for the exit costs nothing and removes the race.
+        setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
       }),
   );
   await Promise.all(exits);
@@ -399,6 +427,15 @@ async function summarise(
   const distinctIds = [...new Set(sentIds)];
   const verdicts = lapPosts.flatMap((m) => m.results ?? []);
   const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
+  const resends = sentIds.length - distinctIds.length;
+
+  // A lap post the backend never ruled on: fake-rig records what it sent even
+  // when the request fails, so the id is in `sentIds` with no verdict behind
+  // it. That is what makes the duplicate arithmetic below unanswerable.
+  const lapPostsWithoutVerdicts = lapPosts.filter(
+    (m) => (m.results ?? []).length !== (m.sent ?? []).length,
+  ).length;
+  const lapVerdictsComplete = lapPostsWithoutVerdicts === 0;
 
   const transportErrors = metrics.filter((m) => m.error !== undefined);
   const nonOk = metrics.filter((m) => m.error === undefined && m.status !== 200);
@@ -461,11 +498,20 @@ async function summarise(
       detail: `${strays} unaccounted-for laps on soak rigs`,
     },
     {
+      // Only computable when every lap post came back with a verdict. A post
+      // that failed still contributes its event id to `sentIds`, so a failed
+      // original followed by a successful resend would count as a resend the
+      // backend never saw and had no duplicate to absorb. That is a gap in the
+      // evidence, not a defect in the backend, and reporting it either way
+      // would be wrong - so it is declared indeterminate and the run does not
+      // pass on it. The request check below is what names the underlying cause.
       name: "duplicate event ids were absorbed, not double-stored",
-      pass: tally("duplicate") === sentIds.length - distinctIds.length,
-      detail: `${tally("duplicate")} duplicate verdicts / ${
-        sentIds.length - distinctIds.length
-      } resends`,
+      pass: lapVerdictsComplete && tally("duplicate") === resends,
+      detail: lapVerdictsComplete
+        ? `${tally("duplicate")} duplicate verdicts / ${resends} resends`
+        : `indeterminate - ${lapPostsWithoutVerdicts} lap post(s) returned no verdict, ` +
+          `so the ${resends} recorded resends cannot be matched against ` +
+          `${tally("duplicate")} duplicate verdicts`,
     },
     {
       name: "every request answered 200",
@@ -516,7 +562,7 @@ async function summarise(
     laps: {
       sent: sentIds.length,
       distinct: distinctIds.length,
-      deliberateResends: sentIds.length - distinctIds.length,
+      deliberateResends: resends,
       stored: stored.length,
       valid: stored.filter((l) => l.is_valid).length,
       invalid: stored.filter((l) => !l.is_valid).length,
