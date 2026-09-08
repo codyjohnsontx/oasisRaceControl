@@ -31,9 +31,16 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+} from "node:fs";
 import { cpus, totalmem, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Client } from "pg";
 import { safeTestDatabaseUrl } from "../src/test/db-guard";
 
@@ -59,12 +66,15 @@ const RIGS = Number(arg("rigs", "20"));
 const MINUTES = Number(arg("minutes", "60"));
 const INTERVAL_S = Number(arg("interval", "20"));
 const BASE = arg("base", "http://localhost:3000").replace(/\/$/, "");
-const OUT = arg("out", "");
+const OUT = arg("out", "") && resolve(arg("out", ""));
 /** Kept clear of the seed's rigs 1-3 so a soak can run on a seeded database. */
 const RIG_NUMBER_BASE = 101;
 
 const RUN_ID = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-const WORK_DIR = arg("work", join(tmpdir(), `oasis-soak-${RUN_ID}`));
+/** Absolute, because this process and its workers do not share a cwd: the
+ *  workers run from apps/web, so a relative --work would name two different
+ *  directories and every worker's metrics would land where nothing reads. */
+const WORK_DIR = resolve(arg("work", join(tmpdir(), `oasis-soak-${RUN_ID}`)));
 
 type Rig = {
   rigNumber: number;
@@ -98,6 +108,21 @@ async function main(): Promise<void> {
   ] as const) {
     if (!Number.isFinite(value) || value <= 0) {
       throw new Error(`--${name} must be a positive number, got "${arg(name, "")}".`);
+    }
+  }
+
+  // The summary is only written once the load has been held, so a --out nobody
+  // can write to costs the whole run the one artifact it exists to produce -
+  // and the runbook's `--out ../../docs/...` is relative to apps/web, which is
+  // exactly the kind of path that resolves somewhere else from the repo root.
+  if (OUT) {
+    try {
+      accessSync(dirname(OUT), constants.W_OK);
+    } catch {
+      throw new Error(
+        `--out ${arg("out", "")} resolves to ${OUT}, whose directory is not an ` +
+          `existing writable directory.`,
+      );
     }
   }
 
@@ -144,7 +169,14 @@ async function main(): Promise<void> {
     const failure = loadFailure(rigs, workers, diedEarly, metricsByRig);
     if (failure) throw new Error(failure);
 
-    summary = await summarise(client, rigs, metricsByRig.flat(), startedAt, endedAt, url);
+    summary = await summarise(
+      client,
+      rigs,
+      metricsByRig.flatMap((m) => m.metrics),
+      startedAt,
+      endedAt,
+      url,
+    );
   } finally {
     // Nothing past this point is measured, so a worker still alive here is one
     // this script failed to stop. Twenty orphaned processes left hammering the
@@ -252,7 +284,13 @@ async function preflight(rigs: Rig[]): Promise<void> {
   console.log(`[soak] preflight ok: ${rigs.length} rigs authenticated and checked in`);
 }
 
-const metricsPath = (rig: Rig): string => join(WORK_DIR, `rig-${rig.rigNumber}.jsonl`);
+/** Scoped by run, not just by rig: fake-rig APPENDS, so two runs sharing a
+ *  --work directory would otherwise read as one - twice the requests over one
+ *  run's duration, every percentile computed across both, and all seven checks
+ *  still passing. Keeping a directory's runs side by side is the point of the
+ *  flag; blending them into one summary is what must not happen. */
+const metricsPath = (rig: Rig): string =>
+  join(WORK_DIR, `${RUN_ID}-rig-${rig.rigNumber}.jsonl`);
 
 /**
  * Spawns the workers spread evenly across one lap interval rather than all in
@@ -358,7 +396,7 @@ function loadFailure(
   rigs: Rig[],
   workers: ChildProcess[],
   diedEarly: number[],
-  metricsByRig: Metric[][],
+  metricsByRig: ReturnType<typeof readMetrics>[],
 ): string | null {
   const lost = diedEarly.map((i) => {
     const child = workers[i]!;
@@ -372,7 +410,7 @@ function loadFailure(
     );
   }
 
-  const silent = rigs.filter((_, i) => metricsByRig[i]!.length === 0);
+  const silent = rigs.filter((_, i) => metricsByRig[i]!.metrics.length === 0);
   if (silent.length > 0) {
     return (
       `${silent.length} workers recorded no requests at all (rigs ` +
@@ -380,23 +418,41 @@ function loadFailure(
       `reconcile for them, and checks computed over nothing pass vacuously.`
     );
   }
+
+  const unreadable = rigs.filter((_, i) => metricsByRig[i]!.unreadableLines > 0);
+  if (unreadable.length > 0) {
+    const lines = metricsByRig.reduce((n, m) => n + m.unreadableLines, 0);
+    return (
+      `${lines} metric line(s) could not be read (rigs ` +
+      `${unreadable.map((r) => r.rigNumber).join(", ")}). Each one is a request ` +
+      `missing from the reconciliation, and a lap already stored would be ` +
+      `reported as a stray no rig sent.`
+    );
+  }
   return null;
 }
 
-function readMetrics(rig: Rig): Metric[] {
+/**
+ * A line the reader cannot read is a request that vanishes from the
+ * reconciliation, and a lap already in the database would then be reported as
+ * a stray no rig sent. They are counted rather than dropped so `loadFailure`
+ * can refuse the run: a reader that silently discards what it cannot parse is
+ * a check that cannot fail.
+ */
+function readMetrics(rig: Rig): { metrics: Metric[]; unreadableLines: number } {
   const path = metricsPath(rig);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    // The last line can be a partial write if a worker was killed mid-append.
-    .flatMap((line) => {
-      try {
-        return [JSON.parse(line) as Metric];
-      } catch {
-        return [];
-      }
-    });
+  if (!existsSync(path)) return { metrics: [], unreadableLines: 0 };
+  const metrics: Metric[] = [];
+  let unreadableLines = 0;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      metrics.push(JSON.parse(line) as Metric);
+    } catch {
+      unreadableLines += 1;
+    }
+  }
+  return { metrics, unreadableLines };
 }
 
 type Check = { name: string; pass: boolean; detail: string };

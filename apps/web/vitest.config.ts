@@ -14,9 +14,11 @@ import { resolve } from "node:path";
  * explicit but unsafe TEST_DATABASE_URL is a hard error instead, since it was an
  * instruction.
  *
- * `scripts/` is in the include glob for one file: the migration bookkeeping
- * behind `npm run db:check`, the deploy gate that refuses to build against a
- * database that is behind db/migrations. It is pure and needs no database.
+ * `scripts/` is in the include glob for two files, neither needing a database:
+ * the migration bookkeeping behind `npm run db:check` (the deploy gate that
+ * refuses to build against a database behind db/migrations), which is pure; and
+ * fake-rig's shutdown drain, which spawns the simulator against a stub server
+ * on a loopback port because a signal's effect is only observable end to end.
  *
  * `*.test.tsx` covers components that render to static markup through
  * react-dom/server - no DOM shim is installed, so a component test here can

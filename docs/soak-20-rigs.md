@@ -145,7 +145,11 @@ enough to check the harness itself before spending real time on it.
 A run that lost a worker part-way, or never heard from one at all, is refused
 with an error instead of being summarised: its traffic stopped when the worker
 did, so every check would still pass - over less load than the summary would
-claim it was. There is no JSON from such a run, which is deliberate; re-run it.
+claim it was. A run holding a metrics line the reader cannot parse is refused
+for the same reason from the other direction: that request drops out of the
+reconciliation, and a lap already in the database would then be reported as a
+stray nobody sent. There is no JSON from such a run, which is deliberate;
+re-run it.
 
 The workers are the ordinary [`scripts/fake-rig.ts`](../apps/web/scripts/fake-rig.ts)
 with its `--metrics` flag, not a second simulator written for load. The soak

@@ -23,7 +23,8 @@
  * demo: it writes a JSONL record of every request - latency, HTTP status, and
  * the per-event verdict the backend returned - which scripts/soak.ts aggregates
  * across twenty of these processes (docs/soak-20-rigs.md). Nothing else changes
- * when it is set, so the soak measures the same simulator the demos run.
+ * when it is set, so the soak measures the same simulator the demos run - the
+ * shutdown drain at the foot of this file is unconditional for the same reason.
  */
 
 import { appendFileSync } from "node:fs";
@@ -46,7 +47,7 @@ const METRICS_PATH = arg("metrics", "");
 
 /** One line per request, or nothing at all when --metrics is not given.
  *  Appends are synchronous and each process owns its own file, so the lines
- *  never interleave and a Ctrl+C loses at most the request in flight. The
+ *  never interleave and a stop loses nothing the drain below can wait for. The
  *  bearer token is not among the fields: this file is written wherever the
  *  operator points it, and the reader identifies a rig by its own file. */
 function record(entry: Record<string, unknown>): void {
@@ -68,6 +69,19 @@ const COMBO = {
 };
 
 const POLL_MS = 10_000;
+/** How long a drain waits for the request in flight. Shorter than the soak's
+ *  five-second SIGKILL escalation, so a hung request loses its line rather than
+ *  the worker being killed with the whole shutdown still pending. */
+const DRAIN_DEADLINE_MS = 3_000;
+
+let inFlight = 0;
+let draining = false;
+
+/** Nothing left to record: leave immediately rather than idling out the
+ *  deadline. Called from every request's `finally`, after its line is on disk. */
+function exitWhenDrained(): void {
+  if (draining && inFlight === 0) process.exit(0);
+}
 
 let lapNumber = 0;
 let lastEventId: string | null = null;
@@ -83,6 +97,7 @@ let assignmentId: string | null | undefined;
 
 async function pollAssignment(): Promise<void> {
   const startedAt = Date.now();
+  inFlight += 1;
   try {
     const res = await fetch(`${BASE}/api/agent/assignment`, {
       headers: { authorization: `Bearer ${TOKEN}` },
@@ -119,6 +134,9 @@ async function pollAssignment(): Promise<void> {
   } catch (error) {
     record({ kind: "poll", ms: Date.now() - startedAt, error: (error as Error).message });
     console.error(`[fake-rig] assignment poll failed:`, (error as Error).message);
+  } finally {
+    inFlight -= 1;
+    exitWhenDrained();
   }
 }
 
@@ -126,6 +144,7 @@ async function post(events: AgentEvent[]): Promise<void> {
   const kind = events[0]?.type === "LAP_COMPLETED" ? "lap" : "heartbeat";
   const sent = events.flatMap((e) => (e.type === "LAP_COMPLETED" ? [e.eventId] : []));
   const startedAt = Date.now();
+  inFlight += 1;
   try {
     const res = await fetch(`${BASE}/api/agent/events`, {
       method: "POST",
@@ -151,6 +170,9 @@ async function post(events: AgentEvent[]): Promise<void> {
   } catch (error) {
     record({ kind, ms: Date.now() - startedAt, sent, error: (error as Error).message });
     console.error(`[fake-rig] request failed:`, (error as Error).message);
+  } finally {
+    inFlight -= 1;
+    exitWhenDrained();
   }
 }
 
@@ -193,16 +215,40 @@ console.log(`[fake-rig] driving ${COMBO.trackName} / ${COMBO.carName}`);
 console.log(`[fake-rig] api=${BASE} lap every ${INTERVAL_MS / 1000}s — Ctrl+C to stop`);
 
 void pollAssignment();
-setInterval(() => void pollAssignment(), POLL_MS);
 void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]);
-setInterval(() => void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]), 30_000);
-setInterval(() => {
-  // The real agent queues these laps unresolved and stamps them once a poll
-  // gets through; a simulator with no outbox just waits for the answer rather
-  // than inventing one.
-  if (assignmentId === undefined) {
-    console.log("[fake-rig] no assignment poll has succeeded yet - skipping this lap");
-    return;
-  }
-  void post([nextLap(assignmentId)]);
-}, INTERVAL_MS);
+
+const timers = [
+  setInterval(() => void pollAssignment(), POLL_MS),
+  setInterval(
+    () => void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]),
+    30_000,
+  ),
+  setInterval(() => {
+    // The real agent queues these laps unresolved and stamps them once a poll
+    // gets through; a simulator with no outbox just waits for the answer rather
+    // than inventing one.
+    if (assignmentId === undefined) {
+      console.log("[fake-rig] no assignment poll has succeeded yet - skipping this lap");
+      return;
+    }
+    void post([nextLap(assignmentId)]);
+  }, INTERVAL_MS),
+];
+
+/**
+ * Dying mid-post loses the metrics line for a lap the backend has ALREADY
+ * stored, and the reader then has a lap in the database that no rig recorded
+ * sending - a stray, which is the exact shape of the defect the venue cares
+ * about, manufactured by the harness rather than found by it. So a stop stops
+ * new requests and lets the one in flight finish and write its line. Bounded
+ * both ways: a hung request is abandoned at DRAIN_DEADLINE_MS, and a second
+ * signal finds no listener and terminates outright.
+ */
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    draining = true;
+    for (const timer of timers) clearInterval(timer);
+    setTimeout(() => process.exit(0), DRAIN_DEADLINE_MS).unref();
+    exitWhenDrained();
+  });
+}
