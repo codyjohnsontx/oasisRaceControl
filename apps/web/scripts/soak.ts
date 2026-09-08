@@ -1,0 +1,519 @@
+/**
+ * Twenty-rig soak — puts a number behind "a platform for a 20-25 station venue".
+ *
+ * Runs N concurrent scripts/fake-rig.ts processes against a local stack for a
+ * fixed duration, then asserts on what the venue actually cares about: that
+ * every lap the rigs sent is stored exactly once, credited to the driver who
+ * was in that seat, and that the write path stayed inside the timings the real
+ * .NET agent is built around. Results and method: docs/soak-20-rigs.md.
+ *
+ * Usage (see docs/soak-20-rigs.md for the full runbook):
+ *   SOAK_DATABASE_URL=postgres://postgres:postgres@localhost:5455/oasis_soak_test \
+ *   npx tsx scripts/soak.ts --rigs 20 --minutes 60 --out ../../docs/soak-20-rigs.json
+ *
+ *     --rigs <n>          concurrent rig processes           default: 20
+ *     --minutes <n>       how long to hold the load          default: 60
+ *     --interval <s>      seconds between laps per rig       default: 20
+ *     --base <url>        the stack under test               default: http://localhost:3000
+ *     --work <dir>        where worker logs/metrics land     default: a temp dir
+ *     --out <path>        write the summary JSON here        default: print only
+ *
+ * The database is provisioned by this script and must be disposable: it is read
+ * through the same guard the integration suite uses (src/test/db-guard.ts), so a
+ * managed host, a non-local host, or a name without "test" in it is refused
+ * before a connection is opened. Migrate and seed it first — the soak adds rigs
+ * and drivers but does not build a schema, and the seeded featured combo is what
+ * decides which of the generated laps rank.
+ *
+ * It does NOT put the customer-facing read path under load: twenty writers, no
+ * wall polling alongside them. The numbers are the ingestion path's, and the
+ * doc says so rather than implying more.
+ */
+import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { cpus, totalmem, tmpdir } from "node:os";
+import { join } from "node:path";
+import { Client } from "pg";
+import { safeTestDatabaseUrl } from "../src/test/db-guard";
+
+/**
+ * Both ceilings are the real agent's own numbers, not a target invented to be
+ * met. Past the flush interval (AgentService.FlushInterval) a rig's outbox
+ * drains slower than it fills, so the backlog grows for as long as the load
+ * lasts; past the HTTP timeout (OasisRigAgent/Program.cs) the agent abandons
+ * the request outright and re-sends the batch. They are deliberately loose —
+ * they say "the venue still works", not "this is fast". What a change actually
+ * gets compared against is the measured figure recorded in the committed
+ * summary, which is why that file names the machine it was produced on.
+ */
+const AGENT_FLUSH_INTERVAL_MS = 5_000;
+const AGENT_HTTP_TIMEOUT_MS = 15_000;
+
+const arg = (name: string, fallback: string): string => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
+};
+
+const RIGS = Number(arg("rigs", "20"));
+const MINUTES = Number(arg("minutes", "60"));
+const INTERVAL_S = Number(arg("interval", "20"));
+const BASE = arg("base", "http://localhost:3000").replace(/\/$/, "");
+const OUT = arg("out", "");
+/** Kept clear of the seed's rigs 1-3 so a soak can run on a seeded database. */
+const RIG_NUMBER_BASE = Number(arg("rig-number-base", "101"));
+
+const RUN_ID = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+const WORK_DIR = arg("work", join(tmpdir(), `oasis-soak-${RUN_ID}`));
+
+type Rig = {
+  rigNumber: number;
+  rigId: string;
+  driverId: string;
+  driverName: string;
+  assignmentId: string;
+  token: string;
+};
+
+/** One request as the rig experienced it (scripts/fake-rig.ts --metrics). */
+type Metric = {
+  t: string;
+  token: string;
+  kind: "lap" | "heartbeat" | "poll";
+  ms: number;
+  status?: number;
+  error?: string;
+  sent?: string[];
+  results?: Array<{ eventId?: string; status: string }>;
+};
+
+async function main(): Promise<void> {
+  const url = safeTestDatabaseUrl(process.env.SOAK_DATABASE_URL);
+  if (!url) {
+    console.error(
+      "SOAK_DATABASE_URL is not set. It must be a local, disposable database " +
+        "with 'test' in its name — this script writes rigs, drivers and " +
+        "assignments into it. See docs/soak-20-rigs.md.",
+    );
+    process.exit(1);
+  }
+
+  mkdirSync(WORK_DIR, { recursive: true });
+  console.log(`[soak] run ${RUN_ID}: ${RIGS} rigs x ${MINUTES} min against ${BASE}`);
+  console.log(`[soak] worker logs and metrics: ${WORK_DIR}`);
+
+  const client = new Client({ connectionString: url });
+  await client.connect();
+
+  let rigs: Rig[];
+  try {
+    rigs = await provision(client, RIGS);
+    console.log(`[soak] provisioned rigs ${rigs[0]!.rigNumber}-${rigs.at(-1)!.rigNumber}`);
+    await preflight(rigs);
+  } catch (error) {
+    await client.end();
+    throw error;
+  }
+
+  // The clock covers the staggered ramp-up as well as the steady state, so
+  // every request a worker made falls inside the window the rates are computed
+  // over. At an hour the ramp is one interval and moves nothing.
+  const startedAt = new Date();
+  const workers = await startWorkers(rigs);
+  console.log(`[soak] ${workers.length} workers up — holding load for ${MINUTES} min`);
+  await sleep(MINUTES * 60_000);
+  const endedAt = new Date();
+
+  console.log(`[soak] ${MINUTES} min elapsed — stopping ${workers.length} workers`);
+  await stopAll(workers);
+
+  const metrics = rigs.flatMap((rig) => readMetrics(rig));
+  const summary = await summarise(client, rigs, metrics, startedAt, endedAt, url);
+  await client.end();
+
+  report(summary);
+  if (OUT) {
+    writeFileSync(OUT, `${JSON.stringify(summary, null, 2)}\n`);
+    console.log(`[soak] summary written to ${OUT}`);
+  }
+  process.exit(summary.checks.every((c) => c.pass) ? 0 : 1);
+}
+
+/**
+ * Creates the rigs, drivers and open assignments the run needs, and hands back
+ * the bearer tokens. Re-running reuses the same rig numbers and drivers with a
+ * fresh token, so a soak database can be soaked again without accumulating a
+ * new set of twenty rigs each time.
+ *
+ * Everything each rig writes is therefore owned by one driver for the whole
+ * run: attribution is asserted exactly rather than approximately, at the cost
+ * of not exercising a seat changing hands mid-load. The check-in/checkout races
+ * that a driver change would exercise already have their own integration tests.
+ */
+async function provision(client: Client, count: number): Promise<Rig[]> {
+  const rigs: Rig[] = [];
+  for (let i = 0; i < count; i++) {
+    const rigNumber = RIG_NUMBER_BASE + i;
+    const token = `soak-${RUN_ID}-rig-${rigNumber}-${randomUUID().slice(0, 8)}`;
+    const hash = createHash("sha256").update(token).digest("hex");
+    const driverName = `Soak Driver ${rigNumber}`;
+
+    const { rows: rigRows } = await client.query<{ id: string }>(
+      `insert into rigs (rig_number, display_name, agent_token_hash)
+       values ($1, $2, $3)
+       on conflict (rig_number)
+         do update set agent_token_hash = excluded.agent_token_hash
+       returning id`,
+      [rigNumber, `Soak Rig ${rigNumber}`, hash],
+    );
+    const rigId = rigRows[0]!.id;
+
+    const { rows: driverRows } = await client.query<{ id: string }>(
+      `insert into drivers (display_name, is_guest) values ($1, true)
+       on conflict (display_name) do update set updated_at = now()
+       returning id`,
+      [driverName],
+    );
+    const driverId = driverRows[0]!.id;
+
+    // one_open_assignment_per_rig / _per_driver are partial unique indexes, so
+    // a re-run has to close last run's stint before opening this one.
+    await client.query(
+      `update rig_assignments set ended_at = now(), end_reason = 'staff_cleared'
+       where ended_at is null and (rig_id = $1 or driver_id = $2)`,
+      [rigId, driverId],
+    );
+    const { rows: assignmentRows } = await client.query<{ id: string }>(
+      `insert into rig_assignments (rig_id, driver_id) values ($1, $2) returning id`,
+      [rigId, driverId],
+    );
+
+    rigs.push({
+      rigNumber,
+      rigId,
+      driverId,
+      driverName,
+      assignmentId: assignmentRows[0]!.id,
+      token,
+    });
+  }
+  return rigs;
+}
+
+/**
+ * Proves the stack is up and every token resolves to its own open assignment
+ * before an hour is spent on it. A soak that discovers in post-processing that
+ * the server was never listening has cost an hour to learn nothing.
+ */
+async function preflight(rigs: Rig[]): Promise<void> {
+  for (const rig of rigs) {
+    const res = await fetch(`${BASE}/api/agent/assignment`, {
+      headers: { authorization: `Bearer ${rig.token}` },
+    }).catch((error: Error) => {
+      throw new Error(`${BASE} is not answering: ${error.message}`);
+    });
+    if (!res.ok) throw new Error(`rig ${rig.rigNumber}: assignment poll HTTP ${res.status}`);
+    const body = (await res.json()) as { assignment: { id: string } | null };
+    if (body.assignment?.id !== rig.assignmentId) {
+      throw new Error(
+        `rig ${rig.rigNumber}: backend reports assignment ${body.assignment?.id ?? "none"}, ` +
+          `expected ${rig.assignmentId} — is it pointed at the soak database?`,
+      );
+    }
+  }
+  console.log(`[soak] preflight ok: ${rigs.length} rigs authenticated and checked in`);
+}
+
+const metricsPath = (rig: Rig): string => join(WORK_DIR, `rig-${rig.rigNumber}.jsonl`);
+
+/**
+ * Spawns the workers spread evenly across one lap interval rather than all in
+ * the same millisecond. Twenty rigs firing together every twenty seconds is a
+ * synthetic drumbeat, not a venue: real stations start whenever somebody sits
+ * down, and a backend that only ever sees a thundering herd is measured against
+ * a load it will not meet. The spread costs one interval of the run.
+ */
+async function startWorkers(rigs: Rig[]): Promise<ChildProcess[]> {
+  const gapMs = (INTERVAL_S * 1000) / rigs.length;
+  const workers: ChildProcess[] = [];
+  for (const rig of rigs) {
+    workers.push(startWorker(rig));
+    await sleep(gapMs);
+  }
+  return workers;
+}
+
+/**
+ * `node --import tsx`, not the `tsx` CLI: the CLI is a launcher that spawns the
+ * real worker as a child, so twenty rigs would be forty processes and SIGINT
+ * would have to survive being forwarded. Registering the loader in-process
+ * makes each rig exactly one process that this script signals directly.
+ * (~88 MB resident each either way — the saving is in moving parts, not RAM.)
+ */
+function startWorker(rig: Rig): ChildProcess {
+  return spawn(
+    process.execPath,
+    [
+      "--import", "tsx",
+      join(__dirname, "fake-rig.ts"),
+      "--token", rig.token,
+      "--base", BASE,
+      "--interval", String(INTERVAL_S),
+      "--metrics", metricsPath(rig),
+    ],
+    {
+      cwd: join(__dirname, ".."),
+      // A worker's own chatter is one line per request; twenty of them for an
+      // hour is noise nobody reads, and the metrics file holds what matters.
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
+}
+
+async function stopAll(workers: ChildProcess[]): Promise<void> {
+  const exits = workers.map(
+    (child) =>
+      new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        child.once("exit", () => resolve());
+        child.kill("SIGINT");
+        // A worker mid-request can outlive SIGINT; nothing it does after this
+        // point is measured, so it is not allowed to hold the run open.
+        setTimeout(() => {
+          child.kill("SIGKILL");
+          resolve();
+        }, 5_000).unref();
+      }),
+  );
+  await Promise.all(exits);
+}
+
+function readMetrics(rig: Rig): Metric[] {
+  const path = metricsPath(rig);
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    // The last line can be a partial write if a worker was killed mid-append.
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as Metric];
+      } catch {
+        return [];
+      }
+    });
+}
+
+type Check = { name: string; pass: boolean; detail: string };
+
+/** Nearest-rank percentile: the smallest sample at or above the given share. */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  return sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)]!;
+}
+
+function latency(samples: number[]) {
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+    count: sorted.length,
+    meanMs: sorted.length
+      ? Math.round(sorted.reduce((a, b) => a + b, 0) / sorted.length)
+      : 0,
+    p50Ms: percentile(sorted, 0.5),
+    p90Ms: percentile(sorted, 0.9),
+    p95Ms: percentile(sorted, 0.95),
+    p99Ms: percentile(sorted, 0.99),
+    maxMs: sorted.at(-1) ?? 0,
+  };
+}
+
+async function summarise(
+  client: Client,
+  rigs: Rig[],
+  metrics: Metric[],
+  startedAt: Date,
+  endedAt: Date,
+  url: string,
+) {
+  const byKind = (kind: Metric["kind"]) => metrics.filter((m) => m.kind === kind);
+  const lapPosts = byKind("lap");
+
+  // What the rigs believe they sent. Duplicates are deliberate: fake-rig
+  // re-sends roughly one lap in fourteen to exercise the idempotency key, so
+  // sends and distinct ids are different numbers and both matter.
+  const sentIds = lapPosts.flatMap((m) => m.sent ?? []);
+  const distinctIds = [...new Set(sentIds)];
+  const verdicts = lapPosts.flatMap((m) => m.results ?? []);
+  const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
+
+  const transportErrors = metrics.filter((m) => m.error !== undefined);
+  const nonOk = metrics.filter((m) => m.error === undefined && m.status !== 200);
+
+  // What the database actually holds, matched to the ids the rigs recorded —
+  // not to a time window, so a re-run against the same database cannot inflate
+  // or deflate the count.
+  const { rows: stored } = await client.query<{
+    event_id: string;
+    rig_id: string;
+    driver_id: string | null;
+    is_valid: boolean;
+    unattributed_cause: string | null;
+  }>(
+    `select event_id, rig_id, driver_id, is_valid, unattributed_cause
+     from laps where event_id = any($1::text[])`,
+    [distinctIds],
+  );
+
+  const ownerByRigId = new Map(rigs.map((r) => [r.rigId, r.driverId]));
+  const misattributed = stored.filter(
+    (lap) => lap.driver_id !== ownerByRigId.get(lap.rig_id),
+  );
+  const unattributed = stored.filter((lap) => lap.driver_id === null);
+
+  // Anything this run's rigs wrote that the rigs themselves never recorded
+  // sending — cross-talk between rigs, or a stale worker from another run.
+  const { rows: strayRows } = await client.query<{ count: string }>(
+    `select count(*) from laps
+     where rig_id = any($1::uuid[]) and created_at >= $2
+       and not (event_id = any($3::text[]))`,
+    [rigs.map((r) => r.rigId), startedAt.toISOString(), distinctIds],
+  );
+  const strays = Number(strayRows[0]!.count);
+
+  const events = latency([...lapPosts, ...byKind("heartbeat")].map((m) => m.ms));
+  const polls = latency(byKind("poll").map((m) => m.ms));
+  const durationS = (endedAt.getTime() - startedAt.getTime()) / 1000;
+
+  const { rows: pgRows } = await client.query<{ version: string }>("select version()");
+
+  const checks: Check[] = [
+    {
+      name: "every lap sent is stored",
+      pass: stored.length === distinctIds.length,
+      detail: `${stored.length} stored / ${distinctIds.length} distinct sent`,
+    },
+    {
+      name: "every lap is credited to the driver in that seat",
+      pass: misattributed.length === 0,
+      detail: `${misattributed.length} misattributed, ${unattributed.length} unattributed`,
+    },
+    {
+      name: "no lap appears that no rig sent",
+      pass: strays === 0,
+      detail: `${strays} unaccounted-for laps on soak rigs`,
+    },
+    {
+      name: "duplicate event ids were absorbed, not double-stored",
+      pass: tally("duplicate") === sentIds.length - distinctIds.length,
+      detail: `${tally("duplicate")} duplicate verdicts / ${
+        sentIds.length - distinctIds.length
+      } resends`,
+    },
+    {
+      name: "every request answered 200",
+      pass: transportErrors.length === 0 && nonOk.length === 0,
+      detail: `${transportErrors.length} transport errors, ${nonOk.length} non-200`,
+    },
+    {
+      name: `events p95 under the agent's ${AGENT_FLUSH_INTERVAL_MS / 1000}s flush interval`,
+      pass: events.p95Ms < AGENT_FLUSH_INTERVAL_MS,
+      detail: `p95 ${events.p95Ms} ms`,
+    },
+    {
+      name: `events max under the agent's ${AGENT_HTTP_TIMEOUT_MS / 1000}s HTTP timeout`,
+      pass: events.maxMs < AGENT_HTTP_TIMEOUT_MS,
+      detail: `max ${events.maxMs} ms`,
+    },
+  ];
+
+  return {
+    runId: RUN_ID,
+    startedAt: startedAt.toISOString(),
+    endedAt: endedAt.toISOString(),
+    durationMinutes: Math.round(durationS / 6) / 10,
+    load: {
+      rigs: rigs.length,
+      lapIntervalSeconds: INTERVAL_S,
+      base: BASE,
+      note:
+        "Ingestion path only — no customer-display read load ran alongside these writers.",
+    },
+    machine: {
+      cpu: cpus()[0]?.model ?? "unknown",
+      cores: cpus().length,
+      memoryGb: Math.round(totalmem() / 1024 ** 3),
+      node: process.version,
+      postgres: pgRows[0]!.version.split(" ").slice(0, 2).join(" "),
+      database: new URL(url).pathname.slice(1),
+    },
+    requests: {
+      total: metrics.length,
+      perSecond: Math.round((metrics.length / durationS) * 100) / 100,
+      lapPosts: lapPosts.length,
+      heartbeats: byKind("heartbeat").length,
+      assignmentPolls: byKind("poll").length,
+      transportErrors: transportErrors.length,
+      nonOk: nonOk.length,
+    },
+    laps: {
+      sent: sentIds.length,
+      distinct: distinctIds.length,
+      deliberateResends: sentIds.length - distinctIds.length,
+      stored: stored.length,
+      valid: stored.filter((l) => l.is_valid).length,
+      invalid: stored.filter((l) => !l.is_valid).length,
+      misattributed: misattributed.length,
+      unattributed: unattributed.length,
+      strays,
+      verdicts: {
+        accepted: tally("accepted"),
+        acceptedInvalid: tally("accepted_invalid"),
+        acceptedUnattributed: tally("accepted_unattributed"),
+        duplicate: tally("duplicate"),
+        error: tally("error"),
+      },
+    },
+    latency: { events, assignmentPolls: polls },
+    thresholds: {
+      eventsP95Ms: AGENT_FLUSH_INTERVAL_MS,
+      eventsMaxMs: AGENT_HTTP_TIMEOUT_MS,
+      source: "apps/rig-agent: AgentService.FlushInterval, Program.cs HttpClient.Timeout",
+    },
+    checks,
+  };
+}
+
+function report(s: Awaited<ReturnType<typeof summarise>>): void {
+  console.log(`\n=== soak ${s.runId} — ${s.load.rigs} rigs, ${s.durationMinutes} min ===`);
+  console.log(
+    `requests ${s.requests.total} (${s.requests.perSecond}/s): ` +
+      `${s.requests.lapPosts} lap posts, ${s.requests.heartbeats} heartbeats, ` +
+      `${s.requests.assignmentPolls} polls`,
+  );
+  console.log(
+    `laps     ${s.laps.sent} sent (${s.laps.distinct} distinct, ` +
+      `${s.laps.deliberateResends} resent) -> ${s.laps.stored} stored ` +
+      `(${s.laps.valid} valid, ${s.laps.invalid} invalid)`,
+  );
+  console.log(
+    `events   p50 ${s.latency.events.p50Ms}ms  p95 ${s.latency.events.p95Ms}ms  ` +
+      `p99 ${s.latency.events.p99Ms}ms  max ${s.latency.events.maxMs}ms`,
+  );
+  console.log(
+    `polls    p50 ${s.latency.assignmentPolls.p50Ms}ms  ` +
+      `p95 ${s.latency.assignmentPolls.p95Ms}ms  max ${s.latency.assignmentPolls.maxMs}ms`,
+  );
+  console.log("");
+  for (const check of s.checks) {
+    console.log(`${check.pass ? "PASS" : "FAIL"}  ${check.name} — ${check.detail}`);
+  }
+  console.log("");
+}
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+main().catch((error: Error) => {
+  console.error(`[soak] ${error.message}`);
+  process.exit(1);
+});
