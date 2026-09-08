@@ -6,6 +6,10 @@
  * URL, so the suite deliberately ignores DATABASE_URL and reads only
  * TEST_DATABASE_URL - and even then requires a local host and a database name
  * containing "test". Anything else is a hard failure, never a warning.
+ *
+ * It has one caller outside the test suites: `scripts/soak.ts` hands it
+ * SOAK_DATABASE_URL explicitly, because the soak provisions rigs, drivers and
+ * assignments and must never reach the venue's data either.
  */
 
 /** Hosts that are never acceptable, checked first so the error names the risk. */

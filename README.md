@@ -24,7 +24,7 @@ packages/shared/     # Event schemas and shared types (Phase 2)
 db/                  # SQL migrations + dev seed (Postgres — Neon in prod)
 deploy/              # Container image + Kustomize manifests + the local `kind` workflow
 spike/               # Phase 1 throwaway telemetry recorder — proves iRacing SDK ground truth
-docs/                # Plan, spike checklist, spike findings, ops runbook
+docs/                # Plan, architecture, ops runbooks, and measured results
 ```
 
 ## Status

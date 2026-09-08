@@ -142,6 +142,11 @@ enough to check the harness itself before spending real time on it.
    not on a time window, so a re-run against the same database can neither
    inflate nor deflate the count.
 
+A run that lost a worker part-way, or never heard from one at all, is refused
+with an error instead of being summarised: its traffic stopped when the worker
+did, so every check would still pass - over less load than the summary would
+claim it was. There is no JSON from such a run, which is deliberate; re-run it.
+
 The workers are the ordinary [`scripts/fake-rig.ts`](../apps/web/scripts/fake-rig.ts)
 with its `--metrics` flag, not a second simulator written for load. The soak
 therefore measures the same client the demos and the Kubernetes manifests run.
