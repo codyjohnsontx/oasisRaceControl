@@ -32,15 +32,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  accessSync,
-  constants,
+  closeSync,
   mkdirSync,
+  openSync,
   readFileSync,
   writeFileSync,
   existsSync,
 } from "node:fs";
 import { cpus, totalmem, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { Client } from "pg";
 import { safeTestDatabaseUrl } from "../src/test/db-guard";
 
@@ -111,21 +111,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // The summary is only written once the load has been held, so a --out nobody
-  // can write to costs the whole run the one artifact it exists to produce -
-  // and the runbook's `--out ../../docs/...` is relative to apps/web, which is
-  // exactly the kind of path that resolves somewhere else from the repo root.
-  if (OUT) {
-    try {
-      accessSync(dirname(OUT), constants.W_OK);
-    } catch {
-      throw new Error(
-        `--out ${arg("out", "")} resolves to ${OUT}, whose directory is not an ` +
-          `existing writable directory.`,
-      );
-    }
-  }
-
   const configured = process.env.SOAK_DATABASE_URL;
   const url = configured ? safeTestDatabaseUrl(configured) : null;
   if (!url) {
@@ -134,6 +119,23 @@ async function main(): Promise<void> {
         "with 'test' in its name — this script writes rigs, drivers and " +
         "assignments into it. See docs/soak-20-rigs.md.",
     );
+  }
+
+  // The summary is only written once the load has been held, so a --out that
+  // cannot be written costs the whole run the one artifact it exists to
+  // produce. Opening the target itself is what settles it: the directory being
+  // writable says nothing about `--out ../../docs` naming that directory, or
+  // about an existing file being read-only.
+  if (OUT) {
+    try {
+      closeSync(openSync(OUT, "a"));
+    } catch {
+      throw new Error(
+        `--out ${arg("out", "")} resolves to ${OUT}, which cannot be opened for ` +
+          `writing - it is a directory, an unwritable file, or under a folder ` +
+          `that does not exist.`,
+      );
+    }
   }
 
   mkdirSync(WORK_DIR, { recursive: true });

@@ -12,7 +12,12 @@ import { afterEach, describe, expect, it } from "vitest";
  * no rig recorded sending - a stray, which is the shape of the one defect the
  * venue actually fears, manufactured by the harness. The metrics JSONL is the
  * contract between this script and the soak's reader, so the assertion is on
- * the line that lands in it.
+ * the lines that land in it.
+ *
+ * Nothing here counts scheduled laps: how many the interval fires before the
+ * signal arrives is wall-clock luck on a loaded machine. What is asserted is
+ * the drain's own property - every lap the backend received has its line -
+ * which is decided by the shutdown path and by nothing else.
  */
 
 const SCRIPT = fileURLToPath(new URL("./fake-rig.ts", import.meta.url));
@@ -30,13 +35,25 @@ afterEach(() => {
   workDir = undefined;
 });
 
+type Stub = {
+  port: number;
+  /** Every lap event id the backend has taken delivery of, in arrival order. */
+  lapsReceived: string[];
+  /** The first of them, resolved while its response is still being held. */
+  firstLap: Promise<string>;
+};
+
 /**
  * A stand-in backend that answers the assignment poll and heartbeats at once
- * but holds the lap post open, so the stop signal below lands while the request
- * is genuinely in flight rather than by luck of timing.
+ * but holds every lap post open, so the stop signal below always lands while a
+ * request is genuinely in flight rather than by luck of timing.
  */
-function stubBackend(onLapReceived: () => void, lapDelayMs: number): Promise<number> {
+function stubBackend(lapDelayMs: number): Promise<Stub> {
   const assignmentId = "11111111-2222-3333-4444-555555555555";
+  const lapsReceived: string[] = [];
+  let announce: (id: string) => void = () => {};
+  const firstLap = new Promise<string>((resolve) => (announce = resolve));
+
   server = createServer((req, res) => {
     if (req.url?.startsWith("/api/agent/assignment")) {
       res.writeHead(200, { "content-type": "application/json" });
@@ -46,8 +63,9 @@ function stubBackend(onLapReceived: () => void, lapDelayMs: number): Promise<num
     let raw = "";
     req.on("data", (chunk) => (raw += chunk));
     req.on("end", () => {
-      const events = (JSON.parse(raw) as { events: Array<{ type: string; eventId?: string }> })
-        .events;
+      const { events } = JSON.parse(raw) as {
+        events: Array<{ type: string; eventId?: string }>;
+      };
       const laps = events.filter((e) => e.type === "LAP_COMPLETED");
       const answer = (): void => {
         res.writeHead(200, { "content-type": "application/json" });
@@ -58,13 +76,21 @@ function stubBackend(onLapReceived: () => void, lapDelayMs: number): Promise<num
         );
       };
       if (laps.length === 0) return answer();
-      onLapReceived();
+      for (const lap of laps) {
+        lapsReceived.push(lap.eventId!);
+        announce(lap.eventId!);
+      }
       setTimeout(answer, lapDelayMs);
     });
   });
-  return new Promise((done) => {
+
+  return new Promise((listening) => {
     server!.listen(0, "127.0.0.1", () => {
-      done((server!.address() as { port: number }).port);
+      listening({
+        port: (server!.address() as { port: number }).port,
+        lapsReceived,
+        firstLap,
+      });
     });
   });
 }
@@ -80,17 +106,14 @@ describe("fake-rig shutdown", () => {
   it("records the lap post it was mid-way through when it is told to stop", async () => {
     workDir = mkdtempSync(join(tmpdir(), "fake-rig-drain-"));
     const metrics = join(workDir, "rig.jsonl");
-
-    let lapSeen: () => void = () => {};
-    const lapReceived = new Promise<void>((seen) => (lapSeen = seen));
-    const port = await stubBackend(() => lapSeen(), 300);
+    const stub = await stubBackend(300);
 
     child = spawn(
       process.execPath,
       [
         "--import", "tsx",
         SCRIPT,
-        "--base", `http://127.0.0.1:${port}`,
+        "--base", `http://127.0.0.1:${stub.port}`,
         "--interval", "1",
         "--metrics", metrics,
       ],
@@ -98,13 +121,22 @@ describe("fake-rig shutdown", () => {
     );
     const exited = new Promise<void>((done) => child!.once("exit", () => done()));
 
-    await lapReceived;
+    // Signalled while this lap's response is still held open, so its line
+    // cannot already have been written when the signal is delivered.
+    const inFlight = await stub.firstLap;
     child.kill("SIGINT");
     await exited;
 
     const lapPosts = metricLines(metrics).filter((line) => line.kind === "lap");
-    expect(lapPosts).toHaveLength(1);
-    expect(lapPosts[0]!.sent).toHaveLength(1);
-    expect(lapPosts[0]!.results).toHaveLength(1);
+    const recorded = lapPosts.flatMap((line) => line.sent as string[]);
+
+    expect(recorded).toContain(inFlight);
+    expect(recorded).toEqual(expect.arrayContaining(stub.lapsReceived));
+
+    const inFlightLine = lapPosts.find((line) =>
+      (line.sent as string[]).includes(inFlight),
+    )!;
+    expect(inFlightLine.results).toHaveLength(1);
+    expect(inFlightLine.status).toBe(200);
   }, 30_000);
 });
