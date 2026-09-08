@@ -7,17 +7,19 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
- * The simulator's shutdown drain. A worker killed between the backend storing
- * a lap and the metrics line being written leaves scripts/soak.ts holding a lap
- * no rig recorded sending - a stray, which is the shape of the one defect the
- * venue actually fears, manufactured by the harness. The metrics JSONL is the
- * contract between this script and the soak's reader, so the assertion is on
- * the lines that land in it.
+ * How the simulator behaves when it is stopped, which is what decides whether
+ * scripts/soak.ts can be believed. A worker killed between the backend storing
+ * a lap and its outcome line being written would leave the soak holding a lap
+ * no rig recorded sending - a stray, the shape of the one defect the venue
+ * actually fears, manufactured by the harness. Two answers to that, one test
+ * each: a stop drains the request in flight, and a kill it cannot survive still
+ * leaves the lap NAMED, so the soak can report it as one it cannot account for.
+ * The metrics JSONL is the contract between this script and the soak's reader,
+ * so both assertions are on the lines that land in it.
  *
  * Nothing here counts scheduled laps: how many the interval fires before the
- * signal arrives is wall-clock luck on a loaded machine. What is asserted is
- * the drain's own property - every lap the backend received has its line -
- * which is decided by the shutdown path and by nothing else.
+ * signal arrives is wall-clock luck on a loaded machine. What is asserted are
+ * properties of the shutdown path and of nothing else.
  */
 
 const SCRIPT = fileURLToPath(new URL("./fake-rig.ts", import.meta.url));
@@ -45,10 +47,11 @@ type Stub = {
 
 /**
  * A stand-in backend that answers the assignment poll and heartbeats at once
- * but holds every lap post open, so the stop signal below always lands while a
- * request is genuinely in flight rather than by luck of timing.
+ * but holds every lap post open - for `lapDelayMs`, or forever with "never" -
+ * so the stop signal below always lands while a request is genuinely in flight
+ * rather than by luck of timing.
  */
-function stubBackend(lapDelayMs: number): Promise<Stub> {
+function stubBackend(lapDelayMs: number | "never"): Promise<Stub> {
   const assignmentId = "11111111-2222-3333-4444-555555555555";
   const lapsReceived: string[] = [];
   let announce: (id: string) => void = () => {};
@@ -80,7 +83,7 @@ function stubBackend(lapDelayMs: number): Promise<Stub> {
         lapsReceived.push(lap.eventId!);
         announce(lap.eventId!);
       }
-      setTimeout(answer, lapDelayMs);
+      if (lapDelayMs !== "never") setTimeout(answer, lapDelayMs);
     });
   });
 
@@ -138,5 +141,43 @@ describe("fake-rig shutdown", () => {
     )!;
     expect(inFlightLine.results).toHaveLength(1);
     expect(inFlightLine.status).toBe(200);
+  }, 30_000);
+
+  it("names the lap it was sending even when it is killed outright", async () => {
+    workDir = mkdtempSync(join(tmpdir(), "fake-rig-killed-"));
+    const metrics = join(workDir, "rig.jsonl");
+    // Never answered: SIGKILL then lands with the request unanswerable, which
+    // is what the drain deadline and the soak's SIGKILL escalation both reach.
+    const stub = await stubBackend("never");
+
+    child = spawn(
+      process.execPath,
+      [
+        "--import", "tsx",
+        SCRIPT,
+        "--base", `http://127.0.0.1:${stub.port}`,
+        "--interval", "1",
+        "--metrics", metrics,
+      ],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    );
+    const exited = new Promise<void>((done) => child!.once("exit", () => done()));
+
+    const abandoned = await stub.firstLap;
+    child.kill("SIGKILL");
+    await exited;
+
+    const lines = metricLines(metrics);
+    const announced = lines
+      .filter((line) => line.kind === "attempt")
+      .flatMap((line) => line.sent as string[]);
+    const outcomes = lines
+      .filter((line) => line.kind === "lap")
+      .flatMap((line) => line.sent as string[]);
+
+    // Announced but never answered for: the soak reads exactly this difference
+    // and reports the lap as indeterminate instead of as a stray.
+    expect(announced).toContain(abandoned);
+    expect(outcomes).not.toContain(abandoned);
   }, 30_000);
 });

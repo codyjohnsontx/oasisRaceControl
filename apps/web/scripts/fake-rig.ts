@@ -21,12 +21,15 @@
  *
  * `--metrics` is what makes this script usable as a load generator as well as a
  * demo: it writes a JSONL record of every request - latency, HTTP status, and
- * the per-event verdict the backend returned - which scripts/soak.ts aggregates
- * across twenty of these processes (docs/soak-20-rigs.md). Nothing else changes
- * when it is set, so the soak measures the same simulator the demos run - the
- * shutdown drain at the foot of this file is unconditional for the same reason.
+ * the per-event verdict the backend returned - plus a line naming each lap
+ * BEFORE it is sent, which is what lets scripts/soak.ts tell a lap it cannot
+ * account for from a lap the backend invented (docs/soak-20-rigs.md). Nothing
+ * else changes when it is set, so the soak measures the same simulator the
+ * demos run - the shutdown drain at the foot of this file is unconditional for
+ * the same reason.
  */
 
+import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { z } from "zod";
 import { heartbeatEvent, type LapCompletedEvent } from "../src/lib/events";
@@ -45,11 +48,13 @@ const INTERVAL_MS = Number(arg("interval", "20")) * 1000;
 const PACE_MS = Number(arg("pace", "138500"));
 const METRICS_PATH = arg("metrics", "");
 
-/** One line per request, or nothing at all when --metrics is not given.
- *  Appends are synchronous and each process owns its own file, so the lines
- *  never interleave and a stop loses nothing the drain below can wait for. The
- *  bearer token is not among the fields: this file is written wherever the
- *  operator points it, and the reader identifies a rig by its own file. */
+/** One line per request plus one per lap about to be sent, or nothing at all
+ *  when --metrics is not given. Appends are synchronous and each process owns
+ *  its own file, so the lines never interleave and a stop loses nothing the
+ *  drain below can wait for. Nothing here derives from the bearer token - not
+ *  a field, and not the event ids, which is why RIG_TAG below is random rather
+ *  than a slice of the token: this file is written wherever the operator points
+ *  it, and the reader identifies a rig by its own file. */
 function record(entry: Record<string, unknown>): void {
   if (!METRICS_PATH) return;
   try {
@@ -70,8 +75,10 @@ const COMBO = {
 
 const POLL_MS = 10_000;
 /** How long a drain waits for the request in flight. Shorter than the soak's
- *  five-second SIGKILL escalation, so a hung request loses its line rather than
- *  the worker being killed with the whole shutdown still pending. */
+ *  five-second SIGKILL escalation, so a hung request is abandoned rather than
+ *  the worker being killed with the whole shutdown still pending. The lap it
+ *  was sending is not lost when that happens - its `attempt` line is already on
+ *  disk, and the reader reports it as one it cannot account for. */
 const DRAIN_DEADLINE_MS = 3_000;
 
 let inFlight = 0;
@@ -82,6 +89,12 @@ let draining = false;
 function exitWhenDrained(): void {
   if (draining && inFlight === 0) process.exit(0);
 }
+
+/** What makes this process's event ids unique among the rigs sharing a
+ *  database. Random, and deliberately not a slice of the token: event ids reach
+ *  the metrics file and `laps.event_id`, and a credential must not be
+ *  reconstructable from either. */
+const RIG_TAG = randomUUID().slice(0, 8);
 
 let lapNumber = 0;
 let lastEventId: string | null = null;
@@ -143,6 +156,12 @@ async function pollAssignment(): Promise<void> {
 async function post(events: AgentEvent[]): Promise<void> {
   const kind = events[0]?.type === "LAP_COMPLETED" ? "lap" : "heartbeat";
   const sent = events.flatMap((e) => (e.type === "LAP_COMPLETED" ? [e.eventId] : []));
+  // Named before it leaves, because the request that follows can outlive this
+  // process: a lap the backend has already stored, whose outcome line never
+  // got written, would otherwise be a lap in the database that no rig ever
+  // mentioned. The reader can only call that indeterminate if it knows the rig
+  // was in the middle of sending it.
+  if (sent.length > 0) record({ kind: "attempt", sent });
   const startedAt = Date.now();
   inFlight += 1;
   try {
@@ -197,7 +216,7 @@ function nextLap(assignment: string | null): LapCompletedEvent {
 
   const dirty = Math.random() < 0.15;
   const jitter = Math.round((Math.random() - 0.35) * 2500); // improves over time-ish
-  lastEventId = `fake-${TOKEN.slice(-8)}-${Date.now()}-${lapNumber}`;
+  lastEventId = `fake-${RIG_TAG}-${Date.now()}-${lapNumber}`;
 
   return {
     type: "LAP_COMPLETED",
@@ -236,13 +255,12 @@ const timers = [
 ];
 
 /**
- * Dying mid-post loses the metrics line for a lap the backend has ALREADY
- * stored, and the reader then has a lap in the database that no rig recorded
- * sending - a stray, which is the exact shape of the defect the venue cares
- * about, manufactured by the harness rather than found by it. So a stop stops
- * new requests and lets the one in flight finish and write its line. Bounded
- * both ways: a hung request is abandoned at DRAIN_DEADLINE_MS, and a second
- * signal finds no listener and terminates outright.
+ * Dying mid-post loses the outcome line for a lap the backend has ALREADY
+ * stored. So a stop stops new requests and lets the one in flight finish and
+ * write its line. Bounded both ways: a hung request is abandoned at
+ * DRAIN_DEADLINE_MS, and a second signal finds no listener and terminates
+ * outright - and what the drain cannot wait for, the `attempt` line above
+ * keeps honest rather than silent.
  */
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {

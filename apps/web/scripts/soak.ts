@@ -36,6 +36,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  rmSync,
   writeFileSync,
   existsSync,
 } from "node:fs";
@@ -86,7 +87,7 @@ type Rig = {
 };
 
 /** One request as the rig experienced it (scripts/fake-rig.ts --metrics). */
-type Metric = {
+type RequestMetric = {
   t: string;
   kind: "lap" | "heartbeat" | "poll";
   ms: number;
@@ -95,6 +96,18 @@ type Metric = {
   sent?: string[];
   results?: Array<{ eventId?: string; status: string }>;
 };
+
+/**
+ * A lap the rig had begun sending, written before the request left it. A worker
+ * killed between the backend committing the row and its outcome line being
+ * written leaves this line and no other, which is the difference between "the
+ * backend produced a lap nobody sent" and "this run cannot account for one lap"
+ * - the first is an accusation, the second is the truth. Not a request: it is
+ * never counted or timed as one.
+ */
+type AttemptMetric = { t: string; kind: "attempt"; sent: string[] };
+
+type Metric = RequestMetric | AttemptMetric;
 
 async function main(): Promise<void> {
   // A NaN here does not stop the run, it degrades it silently: `--minutes 30m`
@@ -127,6 +140,7 @@ async function main(): Promise<void> {
   // writable says nothing about `--out ../../docs` naming that directory, or
   // about an existing file being read-only.
   if (OUT) {
+    const existed = existsSync(OUT);
     try {
       closeSync(openSync(OUT, "a"));
     } catch {
@@ -136,6 +150,10 @@ async function main(): Promise<void> {
           `that does not exist.`,
       );
     }
+    // The probe must leave the filesystem as it found it: a run that is refused
+    // writes no summary, and a zero-byte file at the summary path reads as a
+    // corrupt result rather than an absent one.
+    if (!existed) rmSync(OUT, { force: true });
   }
 
   mkdirSync(WORK_DIR, { recursive: true });
@@ -288,11 +306,14 @@ async function preflight(rigs: Rig[]): Promise<void> {
 
 /** Scoped by run, not just by rig: fake-rig APPENDS, so two runs sharing a
  *  --work directory would otherwise read as one - twice the requests over one
- *  run's duration, every percentile computed across both, and all seven checks
+ *  run's duration, every percentile computed across both, and every check
  *  still passing. Keeping a directory's runs side by side is the point of the
  *  flag; blending them into one summary is what must not happen. */
 const metricsPath = (rig: Rig): string =>
   join(WORK_DIR, `${RUN_ID}-rig-${rig.rigNumber}.jsonl`);
+
+const logPath = (rig: Rig): string =>
+  join(WORK_DIR, `${RUN_ID}-rig-${rig.rigNumber}.log`);
 
 /**
  * Spawns the workers spread evenly across one lap interval rather than all in
@@ -308,7 +329,6 @@ async function startWorkers(rigs: Rig[], started: ChildProcess[]): Promise<void>
     await sleep(gapMs);
     throwIfLaunchFailed();
   }
-  throwIfLaunchFailed();
 }
 
 /**
@@ -334,6 +354,12 @@ function throwIfLaunchFailed(): void {
  * (~88 MB resident each either way — the saving is in moving parts, not RAM.)
  */
 function startWorker(rig: Rig): ChildProcess {
+  // A worker's chatter is one line per request and nobody reads it live, but it
+  // is the only place a failed metrics append is reported - and the only thing
+  // to look at when a run is refused for a worker that recorded nothing. The
+  // parent's descriptor is closed straight after the spawn; the child holds its
+  // own.
+  const log = openSync(logPath(rig), "a");
   const child = spawn(
     process.execPath,
     [
@@ -346,11 +372,10 @@ function startWorker(rig: Rig): ChildProcess {
     ],
     {
       cwd: join(__dirname, ".."),
-      // A worker's own chatter is one line per request; twenty of them for an
-      // hour is noise nobody reads, and the metrics file holds what matters.
-      stdio: ["ignore", "ignore", "ignore"],
+      stdio: ["ignore", log, log],
     },
   );
+  closeSync(log);
   child.once("error", (error: Error) => {
     launchErrors.push(`rig ${rig.rigNumber}: ${error.message}`);
   });
@@ -390,7 +415,7 @@ async function stopAll(workers: ChildProcess[]): Promise<number[]> {
  * Why this run cannot be summarised, or null when it can. Every check is
  * computed from what the rigs recorded sending, so a run whose workers were
  * killed at minute two still has every lap they sent stored, still absorbs
- * every duplicate, and still passes all seven - over ninety seconds of traffic
+ * every duplicate, and still passes every check - over ninety seconds of traffic
  * a summary would file under the full duration and twenty rigs. A run that
  * lost a worker, or never heard from one, is refused rather than written up.
  */
@@ -488,7 +513,9 @@ async function summarise(
   endedAt: Date,
   url: string,
 ) {
-  const byKind = (kind: Metric["kind"]) => metrics.filter((m) => m.kind === kind);
+  const requests = metrics.filter((m): m is RequestMetric => m.kind !== "attempt");
+  const attempts = metrics.filter((m): m is AttemptMetric => m.kind === "attempt");
+  const byKind = (kind: RequestMetric["kind"]) => requests.filter((m) => m.kind === kind);
   const lapPosts = byKind("lap");
 
   // What the rigs believe they sent. Duplicates are deliberate: fake-rig
@@ -496,6 +523,15 @@ async function summarise(
   // sends and distinct ids are different numbers and both matter.
   const sentIds = lapPosts.flatMap((m) => m.sent ?? []);
   const distinctIds = [...new Set(sentIds)];
+
+  // Laps a rig announced and then never reported an outcome for - it was killed
+  // between the two. Whether the backend stored them is unknowable from here,
+  // so they are neither counted as sent nor blamed on the backend: they are
+  // named, counted and reported as the gap they are.
+  const outcomeRecorded = new Set(sentIds);
+  const indeterminateIds = [
+    ...new Set(attempts.flatMap((m) => m.sent).filter((id) => !outcomeRecorded.has(id))),
+  ];
   const verdicts = lapPosts.flatMap((m) => m.results ?? []);
   const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
   const resends = sentIds.length - distinctIds.length;
@@ -512,8 +548,8 @@ async function summarise(
   ).length;
   const lapVerdictsComplete = lapPostsNotStored === 0;
 
-  const transportErrors = metrics.filter((m) => m.error !== undefined);
-  const nonOk = metrics.filter((m) => m.error === undefined && m.status !== 200);
+  const transportErrors = requests.filter((m) => m.error !== undefined);
+  const nonOk = requests.filter((m) => m.error === undefined && m.status !== 200);
 
   // What the database actually holds, matched to the ids the rigs recorded —
   // not to a time window, so a re-run against the same database cannot inflate
@@ -541,12 +577,20 @@ async function summarise(
   );
 
   // Anything this run's rigs wrote that the rigs themselves never recorded
-  // sending — cross-talk between rigs, or a stale worker from another run.
+  // sending — cross-talk between rigs, or a stale worker from another run. The
+  // indeterminate ids are excluded because a rig DID announce them: a lap this
+  // run cannot account for is not evidence of a lap the backend invented, and
+  // reporting it as one would be the false accusation this whole path exists
+  // to prevent. They are counted on their own below instead.
   const { rows: strayRows } = await client.query<{ count: string }>(
     `select count(*) from laps
      where rig_id = any($1::uuid[]) and created_at >= $2
        and not (event_id = any($3::text[]))`,
-    [rigs.map((r) => r.rigId), startedAt.toISOString(), distinctIds],
+    [
+      rigs.map((r) => r.rigId),
+      startedAt.toISOString(),
+      [...distinctIds, ...indeterminateIds],
+    ],
   );
   const strays = Number(strayRows[0]!.count);
 
@@ -570,7 +614,28 @@ async function summarise(
     {
       name: "no lap appears that no rig sent",
       pass: strays === 0,
-      detail: `${strays} unaccounted-for laps on soak rigs`,
+      detail:
+        `${strays} laps on soak rigs that no rig announced` +
+        (indeterminateIds.length > 0
+          ? ` (${indeterminateIds.length} indeterminate lap(s) held out of this ` +
+            `count - the next check is where they are answered for)`
+          : ""),
+    },
+    {
+      // Deliberately its own check rather than a footnote on the one above.
+      // These laps were announced and then lost their outcome when the worker
+      // was killed mid-request; the backend may well have stored every one of
+      // them. What the run cannot do is say so, and a measurement that cannot
+      // say so must not quietly pass either.
+      name: "every lap a rig announced has a recorded outcome",
+      pass: indeterminateIds.length === 0,
+      detail:
+        `${indeterminateIds.length} lap(s) sent with no outcome recorded` +
+        (indeterminateIds.length > 0
+          ? `: ${indeterminateIds.join(", ")}. This run cannot say whether they ` +
+            `were stored, so it does not claim they were and does not blame the ` +
+            `backend for them.`
+          : ""),
     },
     {
       // Only computable when every lap post came back stored. A post that
@@ -627,8 +692,8 @@ async function summarise(
       database: new URL(url).pathname.slice(1),
     },
     requests: {
-      total: metrics.length,
-      perSecond: Math.round((metrics.length / durationS) * 100) / 100,
+      total: requests.length,
+      perSecond: Math.round((requests.length / durationS) * 100) / 100,
       lapPosts: lapPosts.length,
       heartbeats: byKind("heartbeat").length,
       assignmentPolls: byKind("poll").length,
@@ -645,6 +710,10 @@ async function summarise(
       misattributed: misattributed.length,
       unattributed: unattributed.length,
       strays,
+      /** Announced by a rig, outcome never recorded - see the check of the same
+       *  name. Always present, including as 0: a reader must be able to tell a
+       *  run that accounted for everything from one that did not report. */
+      indeterminate: indeterminateIds.length,
       verdicts: {
         accepted: tally("accepted"),
         acceptedInvalid: tally("accepted_invalid"),
@@ -674,6 +743,10 @@ function report(s: Awaited<ReturnType<typeof summarise>>): void {
     `laps     ${s.laps.sent} sent (${s.laps.distinct} distinct, ` +
       `${s.laps.deliberateResends} resent) -> ${s.laps.stored} stored ` +
       `(${s.laps.valid} valid, ${s.laps.invalid} invalid)`,
+  );
+  console.log(
+    `accounts ${s.laps.strays} stray, ${s.laps.indeterminate} indeterminate ` +
+      `(announced, outcome never recorded)`,
   );
   console.log(
     `events   p50 ${s.latency.events.p50Ms}ms  p95 ${s.latency.events.p95Ms}ms  ` +
