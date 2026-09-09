@@ -111,7 +111,8 @@ export function safeTestDatabaseUrl(
   if (!/test/i.test(database)) {
     throw new UnsafeTestDatabaseError(
       `Refusing to run destructive tests against database "${database}" - ` +
-        `its name must contain "test" to prove it is disposable.`,
+        `its name must contain "test" to prove it is disposable. Set a ` +
+        `disposable database in ${variable}.`,
     );
   }
 

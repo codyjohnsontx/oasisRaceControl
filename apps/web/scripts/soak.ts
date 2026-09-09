@@ -50,6 +50,11 @@ import {
   describeAttributionFailures,
   type ExpectedOwner,
 } from "./soak-attribution";
+import {
+  accountForLaps,
+  type Metric,
+  type RequestMetric,
+} from "./soak-lap-accounting";
 
 /**
  * Both ceilings are the real agent's own numbers, not a target invented to be
@@ -93,29 +98,6 @@ type Rig = {
   assignmentId: string;
   token: string;
 };
-
-/** One request as the rig experienced it (scripts/fake-rig.ts --metrics). */
-type RequestMetric = {
-  t: string;
-  kind: "lap" | "heartbeat" | "poll";
-  ms: number;
-  status?: number;
-  error?: string;
-  sent?: string[];
-  results?: Array<{ eventId?: string; status: string }>;
-};
-
-/**
- * A lap the rig had begun sending, written before the request left it. A worker
- * killed between the backend committing the row and its outcome line being
- * written leaves this line and no other, which is the difference between "the
- * backend produced a lap nobody sent" and "this run cannot account for one lap"
- * - the first is an accusation, the second is the truth. Not a request: it is
- * never counted or timed as one.
- */
-type AttemptMetric = { t: string; kind: "attempt"; sent: string[] };
-
-type Metric = RequestMetric | AttemptMetric;
 
 async function main(): Promise<void> {
   // A NaN here does not stop the run, it degrades it silently: `--minutes 30m`
@@ -556,77 +538,26 @@ async function summarise(
   url: string,
 ) {
   const requests = metrics.filter((m): m is RequestMetric => m.kind !== "attempt");
-  const attempts = metrics.filter((m): m is AttemptMetric => m.kind === "attempt");
   const byKind = (kind: RequestMetric["kind"]) => requests.filter((m) => m.kind === kind);
   const lapPosts = byKind("lap");
 
-  // What the rigs believe they sent. Duplicates are deliberate: fake-rig
-  // re-sends roughly one lap in fourteen to exercise the idempotency key, so
-  // sends and distinct ids are different numbers and both matter.
-  const sentIds = lapPosts.flatMap((m) => m.sent ?? []);
-  const distinctIds = [...new Set(sentIds)];
-
-  const verdicts = lapPosts.flatMap((m) => m.results ?? []);
+  // What every check below is allowed to claim, and the one part of this script
+  // that has been wrong five times - so it lives in its own module with its own
+  // test rather than inline here (scripts/soak-lap-accounting.ts).
+  const {
+    sentIds,
+    distinctIds,
+    resends,
+    verdicts,
+    storedIds,
+    refusedIds,
+    refusedThenStored,
+    refusedAndStillMissing,
+    unansweredSentIds,
+    indeterminateIds,
+    lapPostsNotStored,
+  } = accountForLaps(metrics);
   const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
-  const resends = sentIds.length - distinctIds.length;
-
-  // Two framings, deliberately kept apart, because collapsing them into one is
-  // what let a refusal disappear. IDS answer storage accounting - was this lap
-  // ultimately stored - and a set is the right model for that. VERDICTS answer
-  // what the backend DID, and are counted as the events they are: a refusal
-  // happened whatever a later resend went on to do, so the refusal check reads
-  // the verdict stream and never asks how the lap ended up. A lap can honestly
-  // be both refused once and ultimately stored.
-  //
-  // STORED - a verdict that is not `error`, so the row is there. This and only
-  // this is the storage check's denominator.
-  // REFUSED - an `error` verdict: the insert threw and the backend said so. A
-  // known failure with a named culprit, so it fails a check of its own. The
-  // ones a later resend covered are the MORE interesting half, not the less -
-  // that is the retry path masking a backend ingestion failure - so they are
-  // reported rather than cancelled out.
-  // INDETERMINATE - no verdict at all: the worker was killed between announcing
-  // the lap and recording its outcome, or the answer never arrived or could not
-  // be read. Terminal state IS the right model here, because the question is
-  // whether this run can account for the lap and a later answered post does
-  // account for it; the failed post itself is not lost either way - the request
-  // check counts it as an event and `lapPostsNotStored` makes the duplicate
-  // arithmetic decline to rule on it.
-  const outcomeRecorded = new Set(sentIds);
-  const storedIds = new Set(
-    lapPosts.flatMap((m) =>
-      (m.sent ?? []).filter((id) =>
-        (m.results ?? []).some((r) => r.eventId === id && r.status !== "error"),
-      ),
-    ),
-  );
-  const refusedIds = [
-    ...new Set(
-      verdicts.flatMap((v) => (v.status === "error" && v.eventId ? [v.eventId] : [])),
-    ),
-  ];
-  const refusedThenStored = refusedIds.filter((id) => storedIds.has(id));
-  const refused = new Set(refusedIds);
-  const unansweredSentIds = distinctIds.filter(
-    (id) => !storedIds.has(id) && !refused.has(id),
-  );
-  const indeterminateIds = [
-    ...new Set([
-      ...attempts.flatMap((m) => m.sent).filter((id) => !outcomeRecorded.has(id)),
-      ...unansweredSentIds,
-    ]),
-  ];
-
-  // A lap post the backend never confirmed holding: fake-rig records what it
-  // sent even when the request fails, so the id is in `sentIds` with no verdict
-  // behind it — and a 200 can still carry `error`, which is a verdict that the
-  // row was NOT stored, leaving nothing for a later resend to duplicate. Both
-  // are what make the duplicate arithmetic below unanswerable.
-  const lapPostsNotStored = lapPosts.filter(
-    (m) =>
-      (m.results ?? []).filter((r) => r.status !== "error").length !==
-      (m.sent ?? []).length,
-  ).length;
   const lapVerdictsComplete = lapPostsNotStored === 0;
 
   // Three ways a request fails and they are not the same failure, so they are
@@ -696,10 +627,10 @@ async function summarise(
 
   const { rows: pgRows } = await client.query<{ version: string }>("select version()");
 
-  const refusedAndStillMissing =
-    distinctIds.length - storedIds.size - unansweredSentIds.length;
   const heldOut = [
-    ...(refusedAndStillMissing > 0 ? [`${refusedAndStillMissing} refused`] : []),
+    ...(refusedAndStillMissing.length > 0
+      ? [`${refusedAndStillMissing.length} refused`]
+      : []),
     ...(unansweredSentIds.length > 0 ? [`${unansweredSentIds.length} unanswered`] : []),
   ];
 
