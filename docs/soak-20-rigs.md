@@ -22,6 +22,15 @@ committed result of the run described here is
 **2026-09-08, run `20260908T165259`. 20 rigs, 30.3 minutes, all seven checks passed.**
 Full machine-readable result: [`soak-20-rigs.json`](soak-20-rigs.json).
 
+> **The committed JSON has seven checks; the script now emits eight.** That file
+> is the run exactly as measured and is never regenerated or edited - a number
+> it did not measure would be a fabricated one. The eighth check (*every lap a
+> rig announced has a recorded outcome*) and the `laps.indeterminate` field were
+> added afterwards, so a reader comparing the two is looking at a change in the
+> output's shape, not at a check that quietly disappeared. Nothing added since
+> moved a measured value: the reconciliation was re-run against the raw
+> per-worker metrics and the database, and the figures below still hold.
+
 | | |
 |---|---|
 | Load | 20 rigs, one lap per 20 s each, against a local `next start` production build |

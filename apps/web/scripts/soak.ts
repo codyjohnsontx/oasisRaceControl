@@ -44,6 +44,11 @@ import { cpus, totalmem, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "pg";
 import { safeTestDatabaseUrl } from "../src/test/db-guard";
+import {
+  attributionFailures,
+  describeAttributionFailures,
+  type ExpectedOwner,
+} from "./soak-attribution";
 
 /**
  * Both ceilings are the real agent's own numbers, not a target invented to be
@@ -189,10 +194,30 @@ async function main(): Promise<void> {
     const failure = loadFailure(rigs, workers, diedEarly, metricsByRig);
     if (failure) throw new Error(failure);
 
+    // Which rig announced which lap. Built here because this is the last point
+    // that still knows: each worker writes its own metrics file, and the flat
+    // list below cannot say who wrote a line. Without it the owner check has
+    // only the stored row to go on, and a stored row cannot be its own witness
+    // - see scripts/soak-attribution.ts.
+    const announcedBy = new Map<string, ExpectedOwner>();
+    metricsByRig.forEach(({ metrics }, i) => {
+      const rig = rigs[i]!;
+      for (const metric of metrics) {
+        for (const eventId of metric.sent ?? []) {
+          announcedBy.set(eventId, {
+            rigNumber: rig.rigNumber,
+            rigId: rig.rigId,
+            driverId: rig.driverId,
+          });
+        }
+      }
+    });
+
     summary = await summarise(
       client,
       rigs,
       metricsByRig.flatMap((m) => m.metrics),
+      announcedBy,
       startedAt,
       endedAt,
       url,
@@ -509,6 +534,7 @@ async function summarise(
   client: Client,
   rigs: Rig[],
   metrics: Metric[],
+  announcedBy: ReadonlyMap<string, ExpectedOwner>,
   startedAt: Date,
   endedAt: Date,
   url: string,
@@ -570,11 +596,12 @@ async function summarise(
   // driver and a lap the backend refused to credit at all are opposite
   // behaviours, and one driver per rig for the whole run means neither is
   // acceptable here.
-  const ownerByRigId = new Map(rigs.map((r) => [r.rigId, r.driverId]));
+  //
+  // The owner comparison is against the rig that ANNOUNCED each lap, not the
+  // rig it was stored under: a cross-rig landing is self-consistent and would
+  // pass the latter. scripts/soak-attribution.ts owns that rule and its test.
   const unattributed = stored.filter((lap) => lap.driver_id === null);
-  const misattributed = stored.filter(
-    (lap) => lap.driver_id !== null && lap.driver_id !== ownerByRigId.get(lap.rig_id),
-  );
+  const misattributed = attributionFailures(stored, announcedBy);
 
   // Anything this run's rigs wrote that the rigs themselves never recorded
   // sending — cross-talk between rigs, or a stale worker from another run. The
@@ -609,7 +636,12 @@ async function summarise(
     {
       name: "every lap is credited to the driver in that seat",
       pass: misattributed.length === 0 && unattributed.length === 0,
-      detail: `${misattributed.length} misattributed, ${unattributed.length} unattributed`,
+      // Named, not just counted: a misattribution is the one failure here that
+      // someone has to go and chase, and "1 misattributed" gives them nothing
+      // to start from.
+      detail:
+        `${misattributed.length} misattributed, ${unattributed.length} unattributed` +
+        (misattributed.length > 0 ? ` - ${describeAttributionFailures(misattributed)}` : ""),
     },
     {
       name: "no lap appears that no rig sent",
