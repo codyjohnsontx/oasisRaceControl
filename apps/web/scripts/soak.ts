@@ -570,21 +570,28 @@ async function summarise(
   const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
   const resends = sentIds.length - distinctIds.length;
 
-  // Every lap a rig announced lands in exactly one of three categories, and
-  // each check below is entitled to reason about one of them.
+  // Two framings, deliberately kept apart, because collapsing them into one is
+  // what let a refusal disappear. IDS answer storage accounting - was this lap
+  // ultimately stored - and a set is the right model for that. VERDICTS answer
+  // what the backend DID, and are counted as the events they are: a refusal
+  // happened whatever a later resend went on to do, so the refusal check reads
+  // the verdict stream and never asks how the lap ended up. A lap can honestly
+  // be both refused once and ultimately stored.
   //
-  // STORED - the backend answered with a verdict that is not `error`, so the
-  // row is there. This and only this is the storage check's denominator.
-  // REFUSED - the backend answered `error`: the insert threw and it said so.
-  // That is a KNOWN failure with a named culprit, so it fails a check of its
-  // own. Calling it unknowable would hide the single most important thing this
-  // soak can find behind the word "unknown", which is worse than the false
-  // accusation the categories exist to prevent - nobody chases a failure the
-  // report has already absorbed.
+  // STORED - a verdict that is not `error`, so the row is there. This and only
+  // this is the storage check's denominator.
+  // REFUSED - an `error` verdict: the insert threw and the backend said so. A
+  // known failure with a named culprit, so it fails a check of its own. The
+  // ones a later resend covered are the MORE interesting half, not the less -
+  // that is the retry path masking a backend ingestion failure - so they are
+  // reported rather than cancelled out.
   // INDETERMINATE - no verdict at all: the worker was killed between announcing
   // the lap and recording its outcome, or the answer never arrived or could not
-  // be read. Only this one is genuinely unknowable, so only this one gets the
-  // "cannot say" wording, and it is still never a stray and never a pass.
+  // be read. Terminal state IS the right model here, because the question is
+  // whether this run can account for the lap and a later answered post does
+  // account for it; the failed post itself is not lost either way - the request
+  // check counts it as an event and `lapPostsNotStored` makes the duplicate
+  // arithmetic decline to rule on it.
   const outcomeRecorded = new Set(sentIds);
   const storedIds = new Set(
     lapPosts.flatMap((m) =>
@@ -593,14 +600,15 @@ async function summarise(
       ),
     ),
   );
-  const errorAnswered = new Set(
-    verdicts.flatMap((v) => (v.status === "error" && v.eventId ? [v.eventId] : [])),
-  );
-  const refusedIds = distinctIds.filter(
-    (id) => !storedIds.has(id) && errorAnswered.has(id),
-  );
+  const refusedIds = [
+    ...new Set(
+      verdicts.flatMap((v) => (v.status === "error" && v.eventId ? [v.eventId] : [])),
+    ),
+  ];
+  const refusedThenStored = refusedIds.filter((id) => storedIds.has(id));
+  const refused = new Set(refusedIds);
   const unansweredSentIds = distinctIds.filter(
-    (id) => !storedIds.has(id) && !errorAnswered.has(id),
+    (id) => !storedIds.has(id) && !refused.has(id),
   );
   const indeterminateIds = [
     ...new Set([
@@ -688,8 +696,10 @@ async function summarise(
 
   const { rows: pgRows } = await client.query<{ version: string }>("select version()");
 
+  const refusedAndStillMissing =
+    distinctIds.length - storedIds.size - unansweredSentIds.length;
   const heldOut = [
-    ...(refusedIds.length > 0 ? [`${refusedIds.length} refused`] : []),
+    ...(refusedAndStillMissing > 0 ? [`${refusedAndStillMissing} refused`] : []),
     ...(unansweredSentIds.length > 0 ? [`${unansweredSentIds.length} unanswered`] : []),
   ];
 
@@ -703,7 +713,8 @@ async function summarise(
       name: "every lap sent is stored",
       pass: storedLaps.length === storedIds.size,
       detail:
-        `${storedLaps.length} stored / ${storedIds.size} confirmed stored` +
+        `${storedLaps.length} rows in the database / ` +
+        `${storedIds.size} laps the backend said it stored` +
         (heldOut.length > 0
           ? ` (${heldOut.join(" and ")} lap(s) held out, each counted by its own check below)`
           : ""),
@@ -714,14 +725,19 @@ async function summarise(
       // known failure with a named culprit - twenty concurrent writers making
       // an insert throw is precisely what this soak exists to catch, and a
       // headline that holds only because such a failure was filed under
-      // "unknown" is a lie with numbers attached.
+      // "unknown" is a lie with numbers attached. Counted from the verdicts, so
+      // a resend that later stored the lap cannot empty this check out.
       name: "the backend refused no lap it was handed",
       pass: refusedIds.length === 0,
       detail:
         `${refusedIds.length} lap(s) the backend answered \`error\` on` +
         (refusedIds.length > 0
           ? `: ${refusedIds.join(", ")}. It reported its own insert failure, so ` +
-            `these definitely arrived and were definitely not stored.`
+            `each of these arrived and was not stored when it answered` +
+            (refusedThenStored.length > 0
+              ? `. ${refusedThenStored.length} of them a later resend did store, so the ` +
+                `retry path is masking a real ingestion failure.`
+              : `.`)
           : ""),
     },
     {
@@ -845,9 +861,14 @@ async function summarise(
       misattributed: misattributed.length,
       unattributed: unattributed.length,
       strays,
-      /** Answered `error` by the backend and never stored under any other
-       *  verdict - a known refusal, not a gap. Always present, including as 0. */
+      /** Laps the backend answered `error` on at least once. Read off the
+       *  verdicts, so a later resend storing the same lap does not unmake the
+       *  refusal; `verdicts.error` below is the raw event count. Always
+       *  present, including as 0. */
       refused: refusedIds.length,
+      /** Of those, the ones a later resend did store - the retry path masking a
+       *  backend ingestion failure, which a bare pass would have hidden. */
+      refusedThenStored: refusedThenStored.length,
       /** Announced by a rig, outcome never recorded - see the check of the same
        *  name. Always present, including as 0: a reader must be able to tell a
        *  run that accounted for everything from one that did not report. */
@@ -884,8 +905,8 @@ function report(s: Awaited<ReturnType<typeof summarise>>): void {
   );
   console.log(
     `accounts ${s.laps.strays} stray, ${s.laps.refused} refused ` +
-      `(backend answered error), ${s.laps.indeterminate} indeterminate ` +
-      `(announced, no verdict at all)`,
+      `(backend answered error, ${s.laps.refusedThenStored} later stored on resend), ` +
+      `${s.laps.indeterminate} indeterminate (announced, no verdict at all)`,
   );
   console.log(
     `events   p50 ${s.latency.events.p50Ms}ms  p95 ${s.latency.events.p95Ms}ms  ` +
