@@ -198,7 +198,7 @@ async function post(events: AgentEvent[]): Promise<void> {
       status: res.status,
       sent,
       results: body?.results ?? [],
-      ...(body === null ? { error: "unreadable events body" } : {}),
+      ...(res.ok && body === null ? { error: "unreadable events body" } : {}),
     });
     console.log(`[fake-rig] ${res.status}`, JSON.stringify(body));
   } catch (error) {
