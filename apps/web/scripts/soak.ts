@@ -574,7 +574,17 @@ async function summarise(
   ).length;
   const lapVerdictsComplete = lapPostsNotStored === 0;
 
-  const transportErrors = requests.filter((m) => m.error !== undefined);
+  // Three ways a request fails and they are not the same failure, so they are
+  // not one number. `error` alone does not mean the network did: a poll that
+  // answered 200 with a body that would not parse carries a status AND an
+  // error (fake-rig's `unreadable assignment body`). Counting that as a
+  // transport error would send an operator hunting a network fault this run
+  // never saw. The split is on what arrived: no status at all is a rejected
+  // fetch, a status with an error is an answer that could not be used.
+  const transportErrors = requests.filter((m) => m.status === undefined);
+  const unusableAnswers = requests.filter(
+    (m) => m.status !== undefined && m.error !== undefined,
+  );
   const nonOk = requests.filter((m) => m.error === undefined && m.status !== 200);
 
   // What the database actually holds, matched to the ids the rigs recorded —
@@ -687,8 +697,13 @@ async function summarise(
     },
     {
       name: "every request answered 200",
-      pass: transportErrors.length === 0 && nonOk.length === 0,
-      detail: `${transportErrors.length} transport errors, ${nonOk.length} non-200`,
+      pass:
+        transportErrors.length === 0 &&
+        nonOk.length === 0 &&
+        unusableAnswers.length === 0,
+      detail:
+        `${transportErrors.length} transport errors, ${nonOk.length} non-200, ` +
+        `${unusableAnswers.length} answered but unusable`,
     },
     {
       name: `events p95 under the agent's ${AGENT_FLUSH_INTERVAL_MS / 1000}s flush interval`,
@@ -730,6 +745,11 @@ async function summarise(
       assignmentPolls: byKind("poll").length,
       transportErrors: transportErrors.length,
       nonOk: nonOk.length,
+      /** Answered, but with nothing usable in it - a 200 whose body would not
+       *  parse. Its own count because it is neither a network fault nor a bad
+       *  status, and naming it either would misdirect whoever chases it.
+       *  Always present, including as 0. */
+      unusableAnswers: unusableAnswers.length,
     },
     laps: {
       sent: sentIds.length,
