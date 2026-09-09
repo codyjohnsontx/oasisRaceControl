@@ -526,7 +526,9 @@ These are real and are not fixed in this milestone.
   A single-node-per-workload laptop cluster cannot demonstrate them honestly.
 - **This is not a load test.** Nothing here says anything about how the app
   behaves under venue traffic, and no number in this document should be read
-  that way.
+  that way. The venue-width measurement that does exist is the twenty-rig
+  ingestion soak in [soak-20-rigs.md](../soak-20-rigs.md), and it runs against
+  a local `next start` build rather than against this cluster.
 
 ---
 

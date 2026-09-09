@@ -24,7 +24,7 @@ packages/shared/     # Event schemas and shared types (Phase 2)
 db/                  # SQL migrations + dev seed (Postgres — Neon in prod)
 deploy/              # Container image + Kustomize manifests + the local `kind` workflow
 spike/               # Phase 1 throwaway telemetry recorder — proves iRacing SDK ground truth
-docs/                # Plan, spike checklist, spike findings, ops runbook
+docs/                # Plan, architecture, ops runbooks, and measured results
 ```
 
 ## Status
@@ -117,6 +117,8 @@ pointed at Neon. Nothing loads `.env.local` for tests, so give it a URL:
 ```bash
 TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5433/oasis_test" npm test
 ```
+
+Neither suite says anything about the venue's width. That measurement is a separate twenty-rig ingestion soak; its runbook and committed result are in [docs/soak-20-rigs.md](docs/soak-20-rigs.md).
 
 Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Check in **first**: like the real agent, the fake rig polls `GET /api/agent/assignment` and stamps each lap with the assignment that was open when it was driven, and the ingestion API attributes from that stamp rather than crediting the lap to whoever is checked in when it arrives (`docs/plan.md`, event model). Laps driven before you check in are stored *unattributed* - kept, unrankable, and listed on `/staff` under **Unclaimed laps**. They are never backfilled onto you once you do check in. Staff dashboard is at `/staff`. To try league night, open a round from `/staff` against the combo the fake rig drives, then watch `/league` and the round's page fill up.
 

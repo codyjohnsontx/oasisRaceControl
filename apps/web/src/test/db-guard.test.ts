@@ -171,3 +171,40 @@ describe("safeTestDatabaseUrl", () => {
     );
   });
 });
+
+/**
+ * The guard is read by two callers with two different variables, and its
+ * contract says every refusal names the one the caller handed over: a soak
+ * refused for its own SOAK_DATABASE_URL must not send the operator off to edit
+ * TEST_DATABASE_URL, which they never set. That promise is a sentence in the
+ * JSDoc until something makes it fail, and one refusal had already drifted out
+ * of it.
+ */
+describe("safeTestDatabaseUrl names the variable the caller handed it", () => {
+  const refusals: Array<[string, string]> = [
+    ["a URL that will not parse", "://user:pw@host/oasis_test"],
+    [
+      "a routing parameter that moves where pg connects",
+      "postgres://postgres@localhost/oasis_test?host=prod.neon.tech",
+    ],
+    ["an unrecognised parameter", "postgres://postgres@localhost/oasis_test?nonsense=1"],
+    ["a managed host", "postgres://postgres@ep-x.neon.tech/oasis_test"],
+    ["a non-local host", "postgres://postgres@db.internal/oasis_test"],
+    ["a database name that does not prove it is disposable", "postgres://postgres@localhost/oasis_soak"],
+  ];
+
+  it.each(refusals)("says SOAK_DATABASE_URL when refusing %s", (_case, url) => {
+    expect(() => safeTestDatabaseUrl(url, "SOAK_DATABASE_URL")).toThrow(
+      /SOAK_DATABASE_URL/,
+    );
+    expect(() => safeTestDatabaseUrl(url, "SOAK_DATABASE_URL")).not.toThrow(
+      /TEST_DATABASE_URL/,
+    );
+  });
+
+  it("falls back to TEST_DATABASE_URL for the integration suite, which passes none", () => {
+    expect(() => safeTestDatabaseUrl("postgres://postgres@localhost/oasis_soak")).toThrow(
+      /TEST_DATABASE_URL/,
+    );
+  });
+});

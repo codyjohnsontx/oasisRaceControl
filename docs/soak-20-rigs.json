@@ -1,0 +1,109 @@
+{
+  "runId": "20260908T165259",
+  "startedAt": "2026-09-08T16:52:59.900Z",
+  "endedAt": "2026-09-08T17:23:20.049Z",
+  "durationMinutes": 30.3,
+  "load": {
+    "rigs": 20,
+    "lapIntervalSeconds": 20,
+    "base": "http://127.0.0.1:3111",
+    "note": "Ingestion path only — no customer-display read load ran alongside these writers."
+  },
+  "machine": {
+    "cpu": "Apple M1 Pro",
+    "cores": 10,
+    "memoryGb": 16,
+    "node": "v22.23.1",
+    "postgres": "PostgreSQL 17.10",
+    "database": "oasis_soak_test"
+  },
+  "requests": {
+    "total": 6650,
+    "perSecond": 3.65,
+    "lapPosts": 1800,
+    "heartbeats": 1220,
+    "assignmentPolls": 3630,
+    "transportErrors": 0,
+    "nonOk": 0
+  },
+  "laps": {
+    "sent": 1800,
+    "distinct": 1663,
+    "deliberateResends": 137,
+    "stored": 1663,
+    "valid": 1405,
+    "invalid": 258,
+    "misattributed": 0,
+    "unattributed": 0,
+    "strays": 0,
+    "verdicts": {
+      "accepted": 1405,
+      "acceptedInvalid": 258,
+      "acceptedUnattributed": 0,
+      "duplicate": 137,
+      "error": 0
+    }
+  },
+  "latency": {
+    "events": {
+      "count": 3020,
+      "meanMs": 12,
+      "p50Ms": 8,
+      "p90Ms": 23,
+      "p95Ms": 29,
+      "p99Ms": 51,
+      "maxMs": 346
+    },
+    "assignmentPolls": {
+      "count": 3630,
+      "meanMs": 9,
+      "p50Ms": 6,
+      "p90Ms": 17,
+      "p95Ms": 23,
+      "p99Ms": 42,
+      "maxMs": 337
+    }
+  },
+  "thresholds": {
+    "eventsP95Ms": 5000,
+    "eventsMaxMs": 15000,
+    "source": "apps/rig-agent: AgentService.FlushInterval, Program.cs HttpClient.Timeout"
+  },
+  "checks": [
+    {
+      "name": "every lap sent is stored",
+      "pass": true,
+      "detail": "1663 stored / 1663 distinct sent"
+    },
+    {
+      "name": "every lap is credited to the driver in that seat",
+      "pass": true,
+      "detail": "0 misattributed, 0 unattributed"
+    },
+    {
+      "name": "no lap appears that no rig sent",
+      "pass": true,
+      "detail": "0 unaccounted-for laps on soak rigs"
+    },
+    {
+      "name": "duplicate event ids were absorbed, not double-stored",
+      "pass": true,
+      "detail": "137 duplicate verdicts / 137 resends"
+    },
+    {
+      "name": "every request answered 200",
+      "pass": true,
+      "detail": "0 transport errors, 0 non-200"
+    },
+    {
+      "name": "events p95 under the agent's 5s flush interval",
+      "pass": true,
+      "detail": "p95 29 ms"
+    },
+    {
+      "name": "events max under the agent's 15s HTTP timeout",
+      "pass": true,
+      "detail": "max 346 ms"
+    }
+  ]
+}
