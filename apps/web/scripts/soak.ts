@@ -566,40 +566,48 @@ async function summarise(
   const sentIds = lapPosts.flatMap((m) => m.sent ?? []);
   const distinctIds = [...new Set(sentIds)];
 
-  // Laps a rig announced and then never reported an outcome for - it was killed
-  // between the two. Whether the backend stored them is unknowable from here,
-  // so they are neither counted as sent nor blamed on the backend: they are
-  // named, counted and reported as the gap they are.
+  const verdicts = lapPosts.flatMap((m) => m.results ?? []);
+  const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
+  const resends = sentIds.length - distinctIds.length;
+
+  // Every lap a rig announced lands in exactly one of three categories, and
+  // each check below is entitled to reason about one of them.
   //
-  // Two ways a lap ends up here, and the second is the less obvious one. A rig
-  // may have announced it and never recorded an outcome at all (killed between
-  // the two). Or it recorded the post and the backend never confirmed holding
-  // the lap - a rejected fetch, a body that would not parse, an `error` verdict
-  // - which means the lap may never have arrived. Counting the second kind as
-  // "sent" made `every lap sent is stored` report a lap the backend may never
-  // have seen as a lap the backend lost: the false-stray accusation again,
-  // wearing the other check's hat.
+  // STORED - the backend answered with a verdict that is not `error`, so the
+  // row is there. This and only this is the storage check's denominator.
+  // REFUSED - the backend answered `error`: the insert threw and it said so.
+  // That is a KNOWN failure with a named culprit, so it fails a check of its
+  // own. Calling it unknowable would hide the single most important thing this
+  // soak can find behind the word "unknown", which is worse than the false
+  // accusation the categories exist to prevent - nobody chases a failure the
+  // report has already absorbed.
+  // INDETERMINATE - no verdict at all: the worker was killed between announcing
+  // the lap and recording its outcome, or the answer never arrived or could not
+  // be read. Only this one is genuinely unknowable, so only this one gets the
+  // "cannot say" wording, and it is still never a stray and never a pass.
   const outcomeRecorded = new Set(sentIds);
-  const confirmedIds = new Set(
+  const storedIds = new Set(
     lapPosts.flatMap((m) =>
       (m.sent ?? []).filter((id) =>
         (m.results ?? []).some((r) => r.eventId === id && r.status !== "error"),
       ),
     ),
   );
-  // Split out because only this half was ever in the storage check's
-  // denominator: the announced-but-never-answered ids below never reached
-  // `sentIds`, so they were never counted as sent in the first place.
-  const unconfirmedSentIds = distinctIds.filter((id) => !confirmedIds.has(id));
+  const errorAnswered = new Set(
+    verdicts.flatMap((v) => (v.status === "error" && v.eventId ? [v.eventId] : [])),
+  );
+  const refusedIds = distinctIds.filter(
+    (id) => !storedIds.has(id) && errorAnswered.has(id),
+  );
+  const unansweredSentIds = distinctIds.filter(
+    (id) => !storedIds.has(id) && !errorAnswered.has(id),
+  );
   const indeterminateIds = [
     ...new Set([
       ...attempts.flatMap((m) => m.sent).filter((id) => !outcomeRecorded.has(id)),
-      ...unconfirmedSentIds,
+      ...unansweredSentIds,
     ]),
   ];
-  const verdicts = lapPosts.flatMap((m) => m.results ?? []);
-  const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
-  const resends = sentIds.length - distinctIds.length;
 
   // A lap post the backend never confirmed holding: fake-rig records what it
   // sent even when the request fails, so the id is in `sentIds` with no verdict
@@ -648,11 +656,11 @@ async function summarise(
   // The owner comparison is against the rig that ANNOUNCED each lap, not the
   // rig it was stored under: a cross-rig landing is self-consistent and would
   // pass the latter. scripts/soak-attribution.ts owns that rule and its test.
-  // Rows for laps the backend confirmed, which is what the storage check below
-  // is entitled to reason about. `stored` itself stays the wider set - a lap
-  // that landed without a confirmed verdict is still owned by somebody, so
+  // Rows for laps the backend said it stored, which is what the storage check
+  // below is entitled to reason about. `stored` itself stays the wider set - a
+  // lap that landed without a stored verdict is still owned by somebody, so
   // attribution is still judged on it.
-  const confirmedStored = stored.filter((lap) => confirmedIds.has(lap.event_id));
+  const storedLaps = stored.filter((lap) => storedIds.has(lap.event_id));
   const unattributed = stored.filter((lap) => lap.driver_id === null);
   const misattributed = attributionFailures(stored, announcedBy);
 
@@ -680,19 +688,40 @@ async function summarise(
 
   const { rows: pgRows } = await client.query<{ version: string }>("select version()");
 
+  const heldOut = [
+    ...(refusedIds.length > 0 ? [`${refusedIds.length} refused`] : []),
+    ...(unansweredSentIds.length > 0 ? [`${unansweredSentIds.length} unanswered`] : []),
+  ];
+
   const checks: Check[] = [
     {
-      // Denominator is the laps the backend CONFIRMED holding, not everything a
-      // rig recorded sending. A post the backend never confirmed may never have
-      // arrived, and counting it here would report a lap that was possibly
-      // never received as one the backend lost - an accusation this evidence
-      // cannot support. Those are held out and counted by the outcome check.
+      // Denominator is the laps the backend said it STORED, not everything a
+      // rig recorded sending. A lap it refused and a lap it never answered for
+      // are different failures with checks of their own; counting either here
+      // would report it as a lap the backend lost, which is only true of one of
+      // them and provable of neither from this check's evidence.
       name: "every lap sent is stored",
-      pass: confirmedStored.length === confirmedIds.size,
+      pass: storedLaps.length === storedIds.size,
       detail:
-        `${confirmedStored.length} stored / ${confirmedIds.size} confirmed sent` +
-        (unconfirmedSentIds.length > 0
-          ? ` (${unconfirmedSentIds.length} unconfirmed lap(s) held out and counted below)`
+        `${storedLaps.length} stored / ${storedIds.size} confirmed stored` +
+        (heldOut.length > 0
+          ? ` (${heldOut.join(" and ")} lap(s) held out, each counted by its own check below)`
+          : ""),
+    },
+    {
+      // A lap the backend named in its own answer and refused to store: the
+      // insert threw and the route reported it. Its own check because it is a
+      // known failure with a named culprit - twenty concurrent writers making
+      // an insert throw is precisely what this soak exists to catch, and a
+      // headline that holds only because such a failure was filed under
+      // "unknown" is a lie with numbers attached.
+      name: "the backend refused no lap it was handed",
+      pass: refusedIds.length === 0,
+      detail:
+        `${refusedIds.length} lap(s) the backend answered \`error\` on` +
+        (refusedIds.length > 0
+          ? `: ${refusedIds.join(", ")}. It reported its own insert failure, so ` +
+            `these definitely arrived and were definitely not stored.`
           : ""),
     },
     {
@@ -717,10 +746,12 @@ async function summarise(
     },
     {
       // Deliberately its own check rather than a footnote on the one above.
-      // These laps were announced and then lost their outcome when the worker
-      // was killed mid-request; the backend may well have stored every one of
-      // them. What the run cannot do is say so, and a measurement that cannot
-      // say so must not quietly pass either.
+      // These laps carry no verdict at all - the worker was killed mid-request,
+      // or the answer never arrived or could not be read - so the backend may
+      // well have stored every one of them. What the run cannot do is say so,
+      // and a measurement that cannot say so must not quietly pass either. A
+      // lap the backend refused is not here: it HAS an outcome, and the refusal
+      // check above is where it is answered for.
       name: "every lap a rig announced has a recorded outcome",
       pass: indeterminateIds.length === 0,
       detail:
@@ -814,6 +845,9 @@ async function summarise(
       misattributed: misattributed.length,
       unattributed: unattributed.length,
       strays,
+      /** Answered `error` by the backend and never stored under any other
+       *  verdict - a known refusal, not a gap. Always present, including as 0. */
+      refused: refusedIds.length,
       /** Announced by a rig, outcome never recorded - see the check of the same
        *  name. Always present, including as 0: a reader must be able to tell a
        *  run that accounted for everything from one that did not report. */
@@ -849,8 +883,9 @@ function report(s: Awaited<ReturnType<typeof summarise>>): void {
       `(${s.laps.valid} valid, ${s.laps.invalid} invalid)`,
   );
   console.log(
-    `accounts ${s.laps.strays} stray, ${s.laps.indeterminate} indeterminate ` +
-      `(announced, outcome never recorded)`,
+    `accounts ${s.laps.strays} stray, ${s.laps.refused} refused ` +
+      `(backend answered error), ${s.laps.indeterminate} indeterminate ` +
+      `(announced, no verdict at all)`,
   );
   console.log(
     `events   p50 ${s.latency.events.p50Ms}ms  p95 ${s.latency.events.p95Ms}ms  ` +

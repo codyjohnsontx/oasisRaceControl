@@ -22,15 +22,16 @@ committed result of the run described here is
 **2026-09-08, run `20260908T165259`. 20 rigs, 30.3 minutes, all seven checks passed.**
 Full machine-readable result: [`soak-20-rigs.json`](soak-20-rigs.json).
 
-> **The committed JSON has seven checks; the script now emits eight.** That file
+> **The committed JSON has seven checks; the script now emits nine.** That file
 > is the run exactly as measured and is never regenerated or edited - a number
-> it did not measure would be a fabricated one. The eighth check (*every lap a
-> rig announced has a recorded outcome*) and the `laps.indeterminate` and
+> it did not measure would be a fabricated one. The two later checks (*every lap
+> a rig announced has a recorded outcome* and *the backend refused no lap it was
+> handed*) and the `laps.indeterminate`, `laps.refused` and
 > `requests.unusableAnswers` fields were added afterwards, so a reader comparing
 > the two is looking at a change in the output's shape, not at a check that
-> quietly disappeared. Nothing added since
-> moved a measured value: the reconciliation was re-run against the raw
-> per-worker metrics and the database, and the figures below still hold.
+> quietly disappeared. Nothing added since moved a measured value: the
+> reconciliation was re-run against the raw per-worker metrics and the database,
+> and the figures below still hold.
 
 | | |
 |---|---|
@@ -80,14 +81,22 @@ is a safe one to compare against.
 
 ## What it asserts, and why those numbers
 
-Eight checks, and the script exits non-zero if any of them fails.
+Nine checks, and the script exits non-zero if any of them fails.
+
+Every lap a rig announced falls into exactly one of three categories, and each
+one is a different check's business: **stored** (the backend answered with a
+verdict that is not `error`), **refused** (it answered `error` - a known failure
+it named itself), and **indeterminate** (no verdict at all - the only genuinely
+unknowable case). Merging the last two would hide a failure the backend
+reported behind the word "unknown".
 
 | Check | Why it is the one that matters |
 |---|---|
-| Every lap sent is stored | The outbox exists so a lap survives an outage. A lap that reaches the backend and then vanishes is the failure no retry can fix. The denominator is the laps the backend **confirmed** holding, not everything a rig recorded sending: a post the backend never confirmed may never have arrived, so counting it here would report a lap that was possibly never received as one the backend lost. Those are held out and counted by the outcome check below. |
+| Every lap sent is stored | The outbox exists so a lap survives an outage. A lap that reaches the backend and then vanishes is the failure no retry can fix. The denominator is the laps the backend said it **stored**, not everything a rig recorded sending. A lap it refused and a lap it never answered for are held out and each has its own row below, because one is a known failure and the other is a genuine unknown - reporting either under this heading would call it a lap the backend lost. |
+| The backend refused no lap it was handed | An `error` verdict is the backend naming a lap in its own answer and reporting that the insert threw (`/api/agent/events`). It definitely arrived and definitely was not stored, so it is neither a loss this check can prove nor an evidence gap: it fails on its own line, with the ids. Twenty concurrent writers making an insert throw is exactly the failure this soak exists to catch, and filing it under "unknown" would mean nobody goes looking for it. |
 | Every lap is credited to the driver in that seat | The project's stated core invariant. Twenty rigs writing concurrently is exactly where a shared-state mistake would show up as somebody else's lap time. This is also the check that catches cross-talk - one rig's lap landing on another rig's assignment - because the comparison is against the rig that ANNOUNCED each lap, taken from that rig's own metrics file, not against the rig the lap was stored under (`scripts/soak-attribution.ts`). |
-| No lap appears that no rig sent | Catches a lap on a soak rig that no rig announced at all - a worker left over from another run, say, still posting with a token this run reused. A lap one of this run's rigs announced is NOT this check's business however badly it landed: it carries an announced event id, so it is excluded here by construction and answered for by the attribution check above or the outcome check below. |
-| Every lap a rig announced has a recorded outcome | Two populations land here, and the second is the larger one. fake-rig writes a line naming each lap **before** it sends it, so a worker killed between the backend committing the row and the outcome line being written is still known to have sent it; those laps are held out of the stray count above. And every lap post the backend never confirmed holding - a rejected fetch, a 200 whose body would not parse, or an `error` verdict - is held out of the storage check above and counted here too, because a lap that may never have arrived must not be reported as a lap the backend lost. Both are named here with their ids: this run cannot say whether they were stored, so it says that rather than accusing the backend of inventing or losing a lap. Non-zero fails the run - a measurement that could not account for something must not pass quietly. |
+| No lap appears that no rig sent | Catches a lap row on a soak rig carrying an event id no rig in this run ever sent. What can actually produce one is a SECOND soak running concurrently against the same database: its workers authenticate with their own freshly minted tokens, their laps land on the same rig rows after this run's `startedAt`, and this run never announced those ids. (A leftover worker from an *earlier* run cannot - `provision()` rotates every rig's token hash before the clock starts, so its posts get a 401 and write nothing.) A lap one of this run's rigs announced is NOT this check's business however badly it landed: it carries an announced event id, so it is excluded here by construction and answered for by one of the rows above or below. |
+| Every lap a rig announced has a recorded outcome | Laps carrying **no verdict at all**, which is the only genuinely unknowable category. Two ways in. fake-rig writes a line naming each lap **before** it sends it, so a worker killed between the backend committing the row and the outcome line being written is still known to have sent it. And a post whose answer never arrived or could not be used - a rejected fetch, a non-200, a 200 whose body would not parse - leaves its laps unanswered too. Both are held out of the storage check and the stray count above and named here with their ids: this run cannot say whether they were stored, so it says that rather than accusing the backend of inventing or losing a lap. A lap the backend **refused** is not here - it has an outcome, and its own row above. Non-zero fails the run - a measurement that could not account for something must not pass quietly. |
 | Duplicate event ids were absorbed | fake-rig deliberately re-sends about one lap in fourteen. Under concurrency the idempotency key has to hold, not merely usually hold. Reported **indeterminate** (and not passed) if any lap post came back without a verdict, or with an `error` verdict saying the row was not stored: a failed original followed by a successful resend would otherwise read as the backend failing to absorb a duplicate, which is an accusation the evidence does not support. |
 | Every request answered 200 | A 500 is survivable (the agent retries) but it is not "twenty stations working". Three failures, counted apart because they send whoever chases them to three different places: a **transport error** (no answer at all), a **non-200**, and an **answered but unusable** request - a 200 whose body would not parse, which is not a network fault and is not counted as one. |
 | Events **p95 < 5s** | The agent flushes its outbox every 5 seconds (`AgentService.FlushInterval`). Past that, a rig's outbox drains slower than it fills and the backlog grows for as long as the load lasts. |
