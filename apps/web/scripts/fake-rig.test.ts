@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -179,5 +179,41 @@ describe("fake-rig shutdown", () => {
     // and reports the lap as indeterminate instead of as a stray.
     expect(announced).toContain(abandoned);
     expect(outcomes).not.toContain(abandoned);
+  }, 30_000);
+});
+
+/**
+ * The other half of the same contract: the metrics file is the ONLY record that
+ * a lap was announced, so a worker that cannot write to it can no longer be
+ * reconciled. Carrying on would leave laps in the database that no rig recorded
+ * sending, which the soak can only read as laps the backend invented - the
+ * accusation the `attempt` line above exists to prevent. It has to die loudly
+ * instead, so the soak refuses the run.
+ */
+describe("fake-rig metrics", () => {
+  it("exits non-zero when it cannot record a request", async () => {
+    workDir = mkdtempSync(join(tmpdir(), "fake-rig-unwritable-"));
+    // A directory that does not exist, standing in for the full disk: every
+    // append throws, starting with the first poll's.
+    const metrics = join(workDir, "missing", "rig.jsonl");
+    const stub = await stubBackend(0);
+
+    child = spawn(
+      process.execPath,
+      [
+        "--import", "tsx",
+        SCRIPT,
+        "--base", `http://127.0.0.1:${stub.port}`,
+        "--interval", "1",
+        "--metrics", metrics,
+      ],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    );
+    const exit = new Promise<{ code: number | null; signal: string | null }>((done) =>
+      child!.once("exit", (code, signal) => done({ code, signal })),
+    );
+
+    await expect(exit).resolves.toEqual({ code: 1, signal: null });
+    expect(existsSync(metrics)).toBe(false);
   }, 30_000);
 });

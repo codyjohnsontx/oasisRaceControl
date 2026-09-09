@@ -49,12 +49,17 @@ const ALLOWED_PARAMS = new Set(["sslmode", "application_name", "connect_timeout"
 export class UnsafeTestDatabaseError extends Error {}
 
 /**
- * Returns the validated TEST_DATABASE_URL, or null when it is unset (the
- * integration suite then skips rather than failing).
+ * Returns the validated URL, or null when it is unset (the integration suite
+ * then skips rather than failing).
+ *
+ * `variable` is the environment variable `raw` was read from, and every refusal
+ * names it: a caller passing its own URL (scripts/soak.ts, SOAK_DATABASE_URL)
+ * would otherwise be told to go and fix a variable it never set.
  * @throws UnsafeTestDatabaseError if the URL is set but unsafe to truncate.
  */
 export function safeTestDatabaseUrl(
   raw: string | undefined = process.env.TEST_DATABASE_URL,
+  variable = "TEST_DATABASE_URL",
 ): string | null {
   if (!raw || raw.trim() === "") return null;
 
@@ -63,7 +68,7 @@ export function safeTestDatabaseUrl(
     url = new URL(raw);
   } catch {
     throw new UnsafeTestDatabaseError(
-      `TEST_DATABASE_URL is not a valid URL: ${redact(raw)}`,
+      `${variable} is not a valid URL: ${redact(raw)}`,
     );
   }
 
@@ -72,14 +77,14 @@ export function safeTestDatabaseUrl(
     const lower = name.toLowerCase();
     if (ROUTING_PARAMS.has(lower)) {
       throw new UnsafeTestDatabaseError(
-        `TEST_DATABASE_URL must not set the "${lower}" parameter: it overrides ` +
+        `${variable} must not set the "${lower}" parameter: it overrides ` +
           `where pg connects, so the URL's own hostname would no longer be the ` +
           `real target.`,
       );
     }
     if (!ALLOWED_PARAMS.has(lower)) {
       throw new UnsafeTestDatabaseError(
-        `TEST_DATABASE_URL has an unrecognised parameter "${lower}". Only ` +
+        `${variable} has an unrecognised parameter "${lower}". Only ` +
           `${[...ALLOWED_PARAMS].join(", ")} are allowed, so an unknown ` +
           `connection option cannot redirect these destructive tests.`,
       );
@@ -91,14 +96,14 @@ export function safeTestDatabaseUrl(
   if (MANAGED_HOST.test(host)) {
     throw new UnsafeTestDatabaseError(
       `Refusing to run destructive tests against managed host "${host}". ` +
-        `TEST_DATABASE_URL must be a local throwaway database.`,
+        `${variable} must be a local throwaway database.`,
     );
   }
 
   if (!LOCAL_HOST.has(host)) {
     throw new UnsafeTestDatabaseError(
       `Refusing to run destructive tests against non-local host "${host}". ` +
-        `TEST_DATABASE_URL must point at localhost.`,
+        `${variable} must point at localhost.`,
     );
   }
 

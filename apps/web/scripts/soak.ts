@@ -130,7 +130,7 @@ async function main(): Promise<void> {
   }
 
   const configured = process.env.SOAK_DATABASE_URL;
-  const url = configured ? safeTestDatabaseUrl(configured) : null;
+  const url = configured ? safeTestDatabaseUrl(configured, "SOAK_DATABASE_URL") : null;
   if (!url) {
     throw new Error(
       "SOAK_DATABASE_URL is not set. It must be a local, disposable database " +
@@ -380,10 +380,10 @@ function throwIfLaunchFailed(): void {
  */
 function startWorker(rig: Rig): ChildProcess {
   // A worker's chatter is one line per request and nobody reads it live, but it
-  // is the only place a failed metrics append is reported - and the only thing
-  // to look at when a run is refused for a worker that recorded nothing. The
-  // parent's descriptor is closed straight after the spawn; the child holds its
-  // own.
+  // is where a worker that died says why - a failed metrics append, say, which
+  // ends it - and the only thing to look at when a run is refused for a worker
+  // that recorded nothing. The parent's descriptor is closed straight after the
+  // spawn; the child holds its own.
   const log = openSync(logPath(rig), "a");
   const child = spawn(
     process.execPath,
@@ -585,9 +585,8 @@ async function summarise(
     rig_id: string;
     driver_id: string | null;
     is_valid: boolean;
-    unattributed_cause: string | null;
   }>(
-    `select event_id, rig_id, driver_id, is_valid, unattributed_cause
+    `select event_id, rig_id, driver_id, is_valid
      from laps where event_id = any($1::text[])`,
     [distinctIds],
   );

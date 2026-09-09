@@ -54,7 +54,15 @@ const METRICS_PATH = arg("metrics", "");
  *  drain below can wait for. Nothing here derives from the bearer token - not
  *  a field, and not the event ids, which is why RIG_TAG below is random rather
  *  than a slice of the token: this file is written wherever the operator points
- *  it, and the reader identifies a rig by its own file. */
+ *  it, and the reader identifies a rig by its own file.
+ *
+ *  A line that cannot be written ends this worker. The file is the only record
+ *  that a lap was ever announced, so carrying on past a failed append (a full
+ *  disk, a --metrics path that stopped being writable) would leave laps in the
+ *  database that no rig recorded sending - which the reader can only read as
+ *  the backend inventing them. Exiting non-zero makes the soak refuse the run
+ *  instead, which is the honest answer. Demos are untouched: no --metrics, no
+ *  append. */
 function record(entry: Record<string, unknown>): void {
   if (!METRICS_PATH) return;
   try {
@@ -64,6 +72,7 @@ function record(entry: Record<string, unknown>): void {
     );
   } catch (error) {
     console.error(`[fake-rig] metrics write failed:`, (error as Error).message);
+    process.exit(1);
   }
 }
 

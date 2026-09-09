@@ -84,8 +84,8 @@ Eight checks, and the script exits non-zero if any of them fails.
 | Check | Why it is the one that matters |
 |---|---|
 | Every lap sent is stored | The outbox exists so a lap survives an outage. A lap that reaches the backend and then vanishes is the failure no retry can fix. |
-| Every lap is credited to the driver in that seat | The project's stated core invariant. Twenty rigs writing concurrently is exactly where a shared-state mistake would show up as somebody else's lap time. |
-| No lap appears that no rig sent | Catches cross-talk: one rig's traffic landing on another rig's assignment. |
+| Every lap is credited to the driver in that seat | The project's stated core invariant. Twenty rigs writing concurrently is exactly where a shared-state mistake would show up as somebody else's lap time. This is also the check that catches cross-talk - one rig's lap landing on another rig's assignment - because the comparison is against the rig that ANNOUNCED each lap, taken from that rig's own metrics file, not against the rig the lap was stored under (`scripts/soak-attribution.ts`). |
+| No lap appears that no rig sent | Catches a lap on a soak rig that no rig announced at all - a worker left over from another run, or two rigs sharing a token. A lap that landed on the wrong rig is NOT this check's business: it carries an announced event id, so it is excluded here by construction and caught by the attribution check above. |
 | Every lap a rig announced has a recorded outcome | fake-rig writes a line naming each lap **before** it sends it, so a worker killed between the backend committing the row and the outcome line being written is still known to have sent it. Those laps are held out of the stray count above and counted here instead, with their ids: this run cannot say whether they were stored, so it says that rather than accusing the backend of inventing a lap. Non-zero fails the run - a measurement that could not account for something must not pass quietly. |
 | Duplicate event ids were absorbed | fake-rig deliberately re-sends about one lap in fourteen. Under concurrency the idempotency key has to hold, not merely usually hold. Reported **indeterminate** (and not passed) if any lap post came back without a verdict, or with an `error` verdict saying the row was not stored: a failed original followed by a successful resend would otherwise read as the backend failing to absorb a duplicate, which is an accusation the evidence does not support. |
 | Every request answered 200 | A 500 is survivable (the agent retries) but it is not "twenty stations working". |
@@ -158,7 +158,10 @@ did, so every check would still pass - over less load than the summary would
 claim it was. A run holding a metrics line the reader cannot parse is refused
 for the same reason from the other direction: that request drops out of the
 reconciliation, and a lap already in the database would then be reported as a
-stray nobody sent. There is no JSON from such a run, which is deliberate;
+stray nobody sent. A worker whose metrics line cannot be written at all - a
+full disk, an unwritable `--work` - ends itself rather than carrying on
+unrecorded, so it arrives here as a lost worker instead of as a file with
+silent holes in it. There is no JSON from such a run, which is deliberate;
 re-run it.
 
 The workers are the ordinary [`scripts/fake-rig.ts`](../apps/web/scripts/fake-rig.ts)
