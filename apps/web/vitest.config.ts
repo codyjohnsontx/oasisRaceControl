@@ -14,14 +14,14 @@ import { resolve } from "node:path";
  * explicit but unsafe TEST_DATABASE_URL is a hard error instead, since it was an
  * instruction.
  *
- * `scripts/` is in the include glob for three files, none needing a database:
+ * `scripts/` is in the include glob for four files, none needing a database:
  * the migration bookkeeping behind `npm run db:check` (the deploy gate that
  * refuses to build against a database behind db/migrations), which is pure;
- * the soak's attribution rule (scripts/soak-attribution.ts), also pure, and a
- * separate module from scripts/soak.ts precisely so it can be imported here;
- * and fake-rig's shutdown drain, which spawns the simulator against a stub
- * server on a loopback port because a signal's effect is only observable end
- * to end.
+ * the soak's attribution rule (scripts/soak-attribution.ts) and its lap
+ * accounting (scripts/soak-lap-accounting.ts), both pure and both separate
+ * modules from scripts/soak.ts precisely so they can be imported here; and
+ * fake-rig's shutdown drain, which spawns the simulator against a stub server
+ * on a loopback port because a signal's effect is only observable end to end.
  *
  * `*.test.tsx` covers components that render to static markup through
  * react-dom/server - no DOM shim is installed, so a component test here can
