@@ -587,10 +587,14 @@ async function summarise(
       ),
     ),
   );
+  // Split out because only this half was ever in the storage check's
+  // denominator: the announced-but-never-answered ids below never reached
+  // `sentIds`, so they were never counted as sent in the first place.
+  const unconfirmedSentIds = distinctIds.filter((id) => !confirmedIds.has(id));
   const indeterminateIds = [
     ...new Set([
       ...attempts.flatMap((m) => m.sent).filter((id) => !outcomeRecorded.has(id)),
-      ...distinctIds.filter((id) => !confirmedIds.has(id)),
+      ...unconfirmedSentIds,
     ]),
   ];
   const verdicts = lapPosts.flatMap((m) => m.results ?? []);
@@ -687,8 +691,8 @@ async function summarise(
       pass: confirmedStored.length === confirmedIds.size,
       detail:
         `${confirmedStored.length} stored / ${confirmedIds.size} confirmed sent` +
-        (indeterminateIds.length > 0
-          ? ` (${indeterminateIds.length} unconfirmed lap(s) held out and counted below)`
+        (unconfirmedSentIds.length > 0
+          ? ` (${unconfirmedSentIds.length} unconfirmed lap(s) held out and counted below)`
           : ""),
     },
     {
