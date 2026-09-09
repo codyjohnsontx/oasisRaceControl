@@ -182,9 +182,14 @@ async function post(events: AgentEvent[]): Promise<void> {
       },
       body: JSON.stringify({ events }),
     });
-    const body = (await res.json().catch(() => ({}))) as {
+    // Same shape as the assignment poll above, and for the same reason: a 200
+    // whose body will not parse is not an answer. Swallowing it into `{}` here
+    // recorded a clean 200 with no results, so the events endpoint was the one
+    // place `unusableAnswers` could never see - the poll was fixed and this was
+    // left, a half-applied fix that reads as a whole one.
+    const body = (await res.json().catch(() => null)) as {
       results?: Array<{ eventId?: string; status: string }>;
-    };
+    } | null;
     // `sent` and `results` are both recorded: a lap the backend never ruled on
     // is the loss a soak exists to catch, and only the difference shows it.
     record({
@@ -192,7 +197,8 @@ async function post(events: AgentEvent[]): Promise<void> {
       ms: Date.now() - startedAt,
       status: res.status,
       sent,
-      results: body.results ?? [],
+      results: body?.results ?? [],
+      ...(body === null ? { error: "unreadable events body" } : {}),
     });
     console.log(`[fake-rig] ${res.status}`, JSON.stringify(body));
   } catch (error) {

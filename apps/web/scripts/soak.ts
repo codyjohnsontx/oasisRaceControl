@@ -9,7 +9,7 @@
  *
  * Usage (see docs/soak-20-rigs.md for the full runbook):
  *   SOAK_DATABASE_URL=postgres://postgres:postgres@localhost:5455/oasis_soak_test \
- *   npx tsx scripts/soak.ts --rigs 20 --minutes 60 --out ../../docs/soak-20-rigs.json
+ *   npx tsx scripts/soak.ts --rigs 20 --minutes 30 --out ../../docs/soak-20-rigs-2026-09-09.json
  *
  *     --rigs <n>          concurrent rig processes           default: 20
  *     --minutes <n>       how long to hold the load          default: 60
@@ -17,6 +17,7 @@
  *     --base <url>        the stack under test               default: http://localhost:3000
  *     --work <dir>        where worker logs/metrics land     default: a temp dir
  *     --out <path>        write the summary JSON here        default: print only
+ *     --overwrite         replace an existing --out file    default: refuse
  *
  * The database is provisioned by this script and must be disposable: it is read
  * through the same guard the integration suite uses (src/test/db-guard.ts), so a
@@ -73,6 +74,8 @@ const MINUTES = Number(arg("minutes", "60"));
 const INTERVAL_S = Number(arg("interval", "20"));
 const BASE = arg("base", "http://localhost:3000").replace(/\/$/, "");
 const OUT = arg("out", "") && resolve(arg("out", ""));
+/** Opt-in to replacing an existing --out file; see the refusal in main(). */
+const OVERWRITE = process.argv.includes("--overwrite");
 /** Kept clear of the seed's rigs 1-3 so a soak can run on a seeded database. */
 const RIG_NUMBER_BASE = 101;
 
@@ -146,6 +149,19 @@ async function main(): Promise<void> {
   // about an existing file being read-only.
   if (OUT) {
     const existed = existsSync(OUT);
+    // A committed result is a record of one run and is never regenerated, and
+    // the runbook says so - but a sentence asking people not to overwrite a
+    // file is a check that cannot fail. Refusing here is what makes the
+    // sentence a description rather than a plea, and it is refused BEFORE the
+    // clock starts so nobody learns it after holding the load for half an hour.
+    if (existed && !OVERWRITE) {
+      throw new Error(
+        `--out ${arg("out", "")} resolves to ${OUT}, which already exists. A ` +
+          `soak result is the record of one run and is not regenerated; write ` +
+          `a new file, or pass --overwrite if you genuinely mean to replace ` +
+          `this one.`,
+      );
+    }
     try {
       closeSync(openSync(OUT, "a"));
     } catch {
@@ -554,9 +570,28 @@ async function summarise(
   // between the two. Whether the backend stored them is unknowable from here,
   // so they are neither counted as sent nor blamed on the backend: they are
   // named, counted and reported as the gap they are.
+  //
+  // Two ways a lap ends up here, and the second is the less obvious one. A rig
+  // may have announced it and never recorded an outcome at all (killed between
+  // the two). Or it recorded the post and the backend never confirmed holding
+  // the lap - a rejected fetch, a body that would not parse, an `error` verdict
+  // - which means the lap may never have arrived. Counting the second kind as
+  // "sent" made `every lap sent is stored` report a lap the backend may never
+  // have seen as a lap the backend lost: the false-stray accusation again,
+  // wearing the other check's hat.
   const outcomeRecorded = new Set(sentIds);
+  const confirmedIds = new Set(
+    lapPosts.flatMap((m) =>
+      (m.sent ?? []).filter((id) =>
+        (m.results ?? []).some((r) => r.eventId === id && r.status !== "error"),
+      ),
+    ),
+  );
   const indeterminateIds = [
-    ...new Set(attempts.flatMap((m) => m.sent).filter((id) => !outcomeRecorded.has(id))),
+    ...new Set([
+      ...attempts.flatMap((m) => m.sent).filter((id) => !outcomeRecorded.has(id)),
+      ...distinctIds.filter((id) => !confirmedIds.has(id)),
+    ]),
   ];
   const verdicts = lapPosts.flatMap((m) => m.results ?? []);
   const tally = (status: string) => verdicts.filter((v) => v.status === status).length;
@@ -609,6 +644,11 @@ async function summarise(
   // The owner comparison is against the rig that ANNOUNCED each lap, not the
   // rig it was stored under: a cross-rig landing is self-consistent and would
   // pass the latter. scripts/soak-attribution.ts owns that rule and its test.
+  // Rows for laps the backend confirmed, which is what the storage check below
+  // is entitled to reason about. `stored` itself stays the wider set - a lap
+  // that landed without a confirmed verdict is still owned by somebody, so
+  // attribution is still judged on it.
+  const confirmedStored = stored.filter((lap) => confirmedIds.has(lap.event_id));
   const unattributed = stored.filter((lap) => lap.driver_id === null);
   const misattributed = attributionFailures(stored, announcedBy);
 
@@ -638,9 +678,18 @@ async function summarise(
 
   const checks: Check[] = [
     {
+      // Denominator is the laps the backend CONFIRMED holding, not everything a
+      // rig recorded sending. A post the backend never confirmed may never have
+      // arrived, and counting it here would report a lap that was possibly
+      // never received as one the backend lost - an accusation this evidence
+      // cannot support. Those are held out and counted by the outcome check.
       name: "every lap sent is stored",
-      pass: stored.length === distinctIds.length,
-      detail: `${stored.length} stored / ${distinctIds.length} distinct sent`,
+      pass: confirmedStored.length === confirmedIds.size,
+      detail:
+        `${confirmedStored.length} stored / ${confirmedIds.size} confirmed sent` +
+        (indeterminateIds.length > 0
+          ? ` (${indeterminateIds.length} unconfirmed lap(s) held out and counted below)`
+          : ""),
     },
     {
       name: "every lap is credited to the driver in that seat",

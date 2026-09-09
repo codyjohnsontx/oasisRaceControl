@@ -130,14 +130,17 @@ DATABASE_URL="$SOAK_DATABASE_URL" SESSION_SECRET=anything-local npm run build
 DATABASE_URL="$SOAK_DATABASE_URL" SESSION_SECRET=anything-local PORT=3111 npm run start &
 
 # 4. The soak. `--minutes 30` is what produced the committed result above;
-#    raise it on a machine that has the run to itself.
+#    raise it on a machine that has the run to itself. Write a NEW file -
+#    soak-20-rigs.json is the record of the run above and `--out` refuses to
+#    overwrite an existing file (pass --overwrite only if you mean it).
 npx tsx scripts/soak.ts --rigs 20 --minutes 30 --base http://127.0.0.1:3111 \
-  --out ../../docs/soak-20-rigs.json
+  --out ../../docs/soak-20-rigs-2026-09-09.json
 ```
 
-`--rigs`, `--minutes`, `--interval`, `--base`, `--work` and `--out` are all
-adjustable; `scripts/soak.ts`'s header documents them. A two-minute run is
-enough to check the harness itself before spending real time on it.
+`--rigs`, `--minutes`, `--interval`, `--base`, `--work`, `--out` and
+`--overwrite` are all adjustable; `scripts/soak.ts`'s header documents them. A
+two-minute run is enough to check the harness itself before spending real time
+on it.
 
 ### What the script does
 
