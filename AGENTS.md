@@ -187,6 +187,27 @@ goes through the integration suite's `src/test/db-guard.ts`. Use a throwaway
 Postgres, not the shared local `oasis-pg` - other lanes apply their own
 migrations to that one.
 
+Two files beside it are not the soak, and the split is deliberate. `soak.ts`
+executes on import: it exports nothing, reads `process.argv` into module-level
+constants and calls `main()` unguarded at the bottom, so importing it starts a
+run (or the refusal). That is why anything in it that needs a unit test lives
+in a pure module next to it - `scripts/soak-attribution.ts` reconciles who each
+stored lap belongs to, `scripts/soak-lap-accounting.ts` decides what the summary
+may claim about each lap - and both import nothing, which is what lets the
+default `npm test` suite include them (`vitest.config.ts` records the same
+reason). Folding either back into `soak.ts` leaves its tests with nothing to
+import.
+
+`scripts/soak-lap-accounting.test.ts` is a defect record, not a set of edge
+cases. Its header names five defects that accounting really shipped, each
+caught by someone reading a diff and none by a test until the suite existed.
+They were fixed on PR #28's branch before it was squash-merged as `e742623` -
+in the header's order `4a723e6`, `5010336`, `8c8fb03` finished by `2f7ea58`,
+`67697ee` and `0122bb7` - hashes `main` does not reach, so look them up through
+the pull request. The sixth of that family, a cross-rig landing credited to the
+wrong driver (`ab557cb`), is the first case of `scripts/soak-attribution.test.ts`.
+The header says why not to prune them as speculative; read it before agreeing.
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which
