@@ -23,6 +23,17 @@ describe("staffLoginRefusal", () => {
     expect(message).toContain(String(MIN_STAFF_PASSWORD_LENGTH));
   });
 
+  it("names the email as the field to fix when the address is malformed", () => {
+    const message = staffLoginRefusal(400, "invalid_email");
+
+    expect(message).toBe(STAFF_LOGIN_REFUSALS.invalid_email);
+    expect(message).not.toBe(STAFF_LOGIN_REFUSALS.invalid_input);
+    expect(message.toLowerCase()).toContain("email address");
+    for (const giveaway of ["account", "no such", "not found", "not registered"]) {
+      expect(message.toLowerCase()).not.toContain(giveaway);
+    }
+  });
+
   it("gives a server error its own message, blaming the site not the typing", () => {
     expect(staffLoginRefusal(500, "server_error")).toBe(STAFF_LOGIN_REFUSALS.server_error);
     expect(STAFF_LOGIN_REFUSALS.server_error).not.toBe(STAFF_LOGIN_REFUSALS.invalid_credentials);

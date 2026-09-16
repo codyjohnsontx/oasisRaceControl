@@ -21,6 +21,8 @@
 export const MIN_STAFF_PASSWORD_LENGTH = 8;
 
 export const STAFF_LOGIN_REFUSALS = {
+  /** About the address as typed, never about whether an account uses it. */
+  invalid_email: "That isn't a valid email address. Check it for typos and try again.",
   password_too_short: `Password must be at least ${MIN_STAFF_PASSWORD_LENGTH} characters. If the one you were given is shorter, it has to be set again before it will work here.`,
   /** Wrong email and wrong password both land here, deliberately. */
   invalid_credentials: "Email or password didn't match. Check both and try again.",
@@ -40,10 +42,11 @@ export const STAFF_LOGIN_REFUSALS = {
  * no code to read, and it still must not fall through to a bare failure.
  */
 export function staffLoginRefusal(status: number, error?: unknown): string {
-  if (status === 429 || error === "rate_limited") return STAFF_LOGIN_REFUSALS.rate_limited;
+  if (status === 429) return STAFF_LOGIN_REFUSALS.rate_limited;
+  if (error === "invalid_email") return STAFF_LOGIN_REFUSALS.invalid_email;
   if (error === "password_too_short") return STAFF_LOGIN_REFUSALS.password_too_short;
   if (error === "invalid_credentials") return STAFF_LOGIN_REFUSALS.invalid_credentials;
-  if (status >= 500 || error === "server_error") return STAFF_LOGIN_REFUSALS.server_error;
+  if (status >= 500) return STAFF_LOGIN_REFUSALS.server_error;
   if (error === "invalid_input") return STAFF_LOGIN_REFUSALS.invalid_input;
   return STAFF_LOGIN_REFUSALS.unknown;
 }

@@ -55,6 +55,30 @@ describe("POST /api/staff/login", () => {
     expect(queryOne).not.toHaveBeenCalled();
   });
 
+  it("names an empty password as too short, not as unreadable input", async () => {
+    const response = await POST(post({ email: "shift@oasis.test", password: "" }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "password_too_short" });
+    expect(queryOne).not.toHaveBeenCalled();
+  });
+
+  it("names a malformed email, and refuses it before any lookup", async () => {
+    const response = await POST(post({ email: "shift@oasis", password: "correct-horse" }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_email" });
+    expect(queryOne).not.toHaveBeenCalled();
+  });
+
+  it("still answers a body with a missing field as unreadable input", async () => {
+    const response = await POST(post({ email: "shift@oasis.test" }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_input" });
+    expect(queryOne).not.toHaveBeenCalled();
+  });
+
   it("answers a wrong email exactly as it answers a wrong password", async () => {
     queryOne.mockResolvedValueOnce(null); // no staff row for this address
     const noAccount = await POST(post({ email: "nobody@oasis.test", password: "correct-horse" }));

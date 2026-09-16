@@ -220,8 +220,9 @@ One of those cases must never become two. A wrong email and a wrong password
 are answered identically, by the same code and the same message, so the form
 gives nothing away about which addresses have staff accounts - turning it into
 "no account with that email" is a regression, not a nicety, and
-`route.test.ts` pins the pair as byte-identical. Password length is the case
-that IS safe to name, because it is judged before any lookup.
+`route.test.ts` pins the pair as byte-identical. A malformed email address and
+a too-short password are the cases that ARE safe to name, because both are
+judged before any lookup and describe only what was typed.
 
 Nothing enforces that minimum when a password is SET: Oasis creates staff
 accounts and resets their passwords only by SQL, which is how a live account
