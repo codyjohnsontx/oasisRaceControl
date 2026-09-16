@@ -208,6 +208,26 @@ the pull request. The sixth of that family, a cross-rig landing credited to the
 wrong driver (`ab557cb`), is the first case of `scripts/soak-attribution.test.ts`.
 The header says why not to prune them as speculative; read it before agreeing.
 
+## Staff sign-in refusals
+
+Every refusal on `/staff/login` is worded in one place,
+`apps/web/src/lib/staff-login-refusal.ts`, which also owns
+`MIN_STAFF_PASSWORD_LENGTH`; the page renders whatever `staffLoginRefusal`
+returns and the route answers with the codes it maps. Add a case by adding a
+code there, not by branching in the page.
+
+One of those cases must never become two. A wrong email and a wrong password
+are answered identically, by the same code and the same message, so the form
+gives nothing away about which addresses have staff accounts - turning it into
+"no account with that email" is a regression, not a nicety, and
+`route.test.ts` pins the pair as byte-identical. A malformed email address and
+a too-short password are the cases that ARE safe to name, because both are
+judged before any lookup and describe only what was typed.
+
+Nothing enforces that minimum when a password is SET: Oasis creates staff
+accounts and resets their passwords only by SQL, which is how a live account
+came to hold a password the login route would always refuse.
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which

@@ -43,7 +43,7 @@ One-time setup:
    - **Local**: `docker run -d --name oasis-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=oasis -p 5433:5432 postgres:16`
    - **Neon**: create a project at neon.tech and copy the **pooled** connection string (the `-pooler` host, with `sslmode=require`).
 2. Copy `apps/web/.env.example` to `apps/web/.env.local` and fill in `DATABASE_URL` and `SESSION_SECRET`.
-3. Apply schema + dev data: `npm run db:migrate && npm run db:seed` (from `apps/web`). Seed data: rigs 1–3, QR tokens `demo-rig-1..3`, drivers with PIN 1234, staff login `staff@oasis.test` / `oasis-staff-demo`, tonight's featured combo. **The seed is for local/demo environments only** — its rig tokens, QR slugs, PINs, and staff password are deliberately guessable. In production, run only `db:migrate`, enroll rigs with random tokens (`openssl rand -hex 32`), and insert real staff rows with strong bcrypt-hashed passwords.
+3. Apply schema + dev data: `npm run db:migrate && npm run db:seed` (from `apps/web`). Seed data: rigs 1–3, QR tokens `demo-rig-1..3`, drivers with PIN 1234, staff login `staff@oasis.test` / `oasis-staff-demo`, tonight's featured combo. **The seed is for local/demo environments only** — its rig tokens, QR slugs, PINs, and staff password are deliberately guessable. In production, run only `db:migrate`, enroll rigs with random tokens (`openssl rand -hex 32`), and insert real staff rows with strong bcrypt-hashed passwords - no shorter than `MIN_STAFF_PASSWORD_LENGTH` in `apps/web/src/lib/staff-login-refusal.ts`, which sign-in enforces and nothing checks when the row is written.
 4. Vercel: import this repo, set root directory to `apps/web`, add the same two env vars (use the Neon pooled URL).
 
 Daily loop:
