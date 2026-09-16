@@ -4,8 +4,14 @@ import { queryOne } from "@/lib/db";
 import { setStaffSession } from "@/lib/staff";
 import { parseJsonBody } from "@/lib/http";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { MIN_STAFF_PASSWORD_LENGTH } from "@/lib/staff-login-refusal";
 
-const body = z.object({ email: z.email(), password: z.string().min(8).max(200) });
+// The minimum is checked below rather than in the schema so the refusal can
+// name it. A body that fails the schema is answered "invalid_input", which
+// cannot tell the operator which rule it broke - the whole point of the
+// 2026-09-13 incident. Safe to say before any lookup: it describes what was
+// typed, never whether an account exists.
+const body = z.object({ email: z.email(), password: z.string().min(1).max(200) });
 
 // Same timing-equalization trick as driver login. Cost 6 to match the
 // gen_salt('bf') default used for seeded staff hashes, so the unknown-user
@@ -19,6 +25,10 @@ export async function POST(request: Request) {
 
   const input = await parseJsonBody(request, body);
   if (input instanceof Response) return input;
+
+  if (input.password.length < MIN_STAFF_PASSWORD_LENGTH) {
+    return Response.json({ error: "password_too_short" }, { status: 400 });
+  }
 
   try {
     const staff = await queryOne<{

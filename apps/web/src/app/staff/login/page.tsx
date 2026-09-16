@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { staffLoginRefusal } from "@/lib/staff-login-refusal";
 
 export default function StaffLoginPage() {
   const router = useRouter();
@@ -20,7 +21,10 @@ export default function StaffLoginPage() {
         body: JSON.stringify({ email, password }),
       });
       if (!res.ok) {
-        setError(res.status === 429 ? "Too many attempts — wait a minute" : "Sign-in failed");
+        // .catch: a refusal that never reached the route (a proxy's HTML error
+        // page) has no code to read, and staffLoginRefusal answers on status.
+        const data = await res.json().catch(() => ({}));
+        setError(staffLoginRefusal(res.status, data.error));
         return;
       }
       router.push("/staff");
