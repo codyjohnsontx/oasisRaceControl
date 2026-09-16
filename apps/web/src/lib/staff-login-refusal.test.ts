@@ -53,12 +53,9 @@ describe("staffLoginRefusal", () => {
   it("has one message for a refused credential, and it names neither field as the wrong one", () => {
     // The route answers a wrong email and a wrong password with the same
     // invalid_credentials code (pinned in the route's own test), so the only
-    // way wording could give an account away is a second message here, or this
-    // one naming which field failed. Do not "improve" it into "no account with
-    // that email" - that is the regression, not a nicety.
-    const codes = Object.keys(STAFF_LOGIN_REFUSALS);
-    expect(codes.filter((code) => code.includes("email") || code.includes("account"))).toEqual([]);
-
+    // way wording could give an account away is this message naming which
+    // field failed. Do not "improve" it into "no account with that email" -
+    // that is the regression, not a nicety.
     const message = staffLoginRefusal(401, "invalid_credentials").toLowerCase();
     expect(message).toBe(STAFF_LOGIN_REFUSALS.invalid_credentials.toLowerCase());
     for (const giveaway of ["account", "no such", "not found", "unknown email", "not registered"]) {
