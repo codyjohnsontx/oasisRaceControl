@@ -11,7 +11,7 @@ using OasisRigAgent.Core.Iracing;
 //   OasisRigAgent.exe              run the agent (needs agent.config.json)
 //   OasisRigAgent.exe --diagnose   read iRacing and print what it sees; posts nothing
 
-if (args.Any(a => a is "--diagnose" or "diagnose" or "--diag" or "diag"))
+if (args.Contains("--diagnose"))
     return Diagnose();
 
 // Startup failures (bad config, unwritable outbox db, invalid backend URL, …)
@@ -161,6 +161,7 @@ static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
     source.LapDecided += d => Log(d.Lap is { } lap
         ? $"lap {d.LapCompleted} {FormatLap(lap.LapTimeMs)} incidents={(lap.IncidentDelta?.ToString() ?? "n/a")} queued as track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
         : $"lap {d.LapCompleted} skipped: {d.SkipReason}");
+    source.LapCounterResynced += message => Log(message);
     source.Faulted += ex => Log($"ERROR telemetry stopped: {ex.Message} - restart the agent");
     return source;
 
@@ -226,6 +227,7 @@ static int Diagnose()
             Console.WriteLine($"[{Now()}] LAP {d.LapCompleted}  -> would NOT post: {d.SkipReason}");
         }
     };
+    source.LapCounterResynced += message => Console.WriteLine($"[{Now()}]   ({message}; no lap)");
     source.Faulted += ex => Console.WriteLine($"[{Now()}] ERROR telemetry stopped: {ex.GetType().Name}: {ex.Message} - restart the program and send this line");
 
     source.Start();

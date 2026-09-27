@@ -245,7 +245,8 @@ The featured combo matches lap strings exactly, so the agent prints the
 `TrackDisplayName` / `TrackConfigName` / `CarScreenName` it posts on every lap
 and the diagnostic prints the `featured_combos` SQL to paste; never type those
 names from memory. `apps/web/scripts/manual-lap.ts` posts one lap by hand for
-whoever is checked in on a rig, the fallback when a rig cannot read the sim.
+whoever is checked in on a rig, in the featured combo it reads from the app -
+the fallback when a rig cannot read the sim.
 
 ## Local dev
 

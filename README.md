@@ -54,7 +54,7 @@ Daily loop:
 cd apps/web
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulates Rig 01 sending heartbeats + laps (needs dev seed)
-npx tsx scripts/manual-lap.ts --token <rig token> --time 2:32.340   # post one lap by hand for whoever is checked in on that rig
+npx tsx scripts/manual-lap.ts --token <rig token> --base <app url> --time 2:32.340   # fallback when a rig cannot read iRacing: post one lap by hand, in today's featured combo, for whoever is checked in on that rig
 npm test           # unit tests, plus the league lifecycle suite when a local database is reachable
 npm run db:check   # read-only: is DATABASE_URL's database behind db/migrations?
 npm run db:migrate # apply any new migrations in db/migrations/

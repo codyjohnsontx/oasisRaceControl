@@ -163,6 +163,62 @@ public sealed class LapDetectorTests
     }
 
     [Fact]
+    public void ExitingTheCarIsAResyncNotALapAndTheNextLapsAreStillTimedOnce()
+    {
+        // The owner's first real run (2026-09-26, 20:01-20:02): lap 3 posted at
+        // 2:14.906, then on exiting the car LapCompleted fell to 0 and came back
+        // to 3 within the same second.
+        var resynced = new List<string>();
+        _detector.Resynced += resynced.Add;
+        Cruise(Tick(3, 134.906f), 10);
+        Drive(Tick(0, 134.906f, onTrack: false, surface: -1));
+        Cruise(Tick(3, 134.906f), 10);
+        Assert.Empty(_decisions);
+        Assert.Equal("lap counter resynced 0 -> 3", Assert.Single(resynced));
+
+        // Back in the car: out of the pits, the counter restarts from zero.
+        Cruise(Tick(0, 134.906f, pit: true), 10);
+        Cruise(Tick(1, 134.906f), LapDetector.LapTimeDeadlineTicks + 10);
+        Assert.All(_decisions, d => Assert.Null(d.Lap));
+
+        Drive(Tick(2, 135.5f));
+        var posted = Assert.Single(_decisions, d => d.Lap is not null);
+        Assert.Equal(135500, posted.Lap!.LapTimeMs);
+        Assert.Single(resynced);
+    }
+
+    [Fact]
+    public void TheLapAfterAResyncCarriesItsOwnTimeNeverTheStaleOne()
+    {
+        Cruise(Tick(3, 134.906f), 10);
+        Drive(Tick(0, 134.906f, onTrack: false, surface: -1));
+        Cruise(Tick(3, 134.906f), 10);
+        Drive(Tick(4, 136.0f));
+
+        var lap = Assert.Single(_decisions).Lap!;
+        Assert.Equal(136000, lap.LapTimeMs);
+        Assert.Equal(4, lap.LapNumber);
+        Assert.DoesNotContain(_decisions, d => d.Lap?.LapTimeMs == 134906);
+    }
+
+    [Fact]
+    public void ALapStillShowingTheTimeFromBeforeTheDropIsStale()
+    {
+        // Out at lap 1 and straight back to it: a rise of one, but the time
+        // channel never moves off the lap already posted.
+        Cruise(Tick(1, 134.906f), 10);
+        Drive(Tick(0, 134.906f, onTrack: false, surface: -1));
+        _detector.Reset();                        // iRacing dropped out and back in between
+        Cruise(Tick(0, 134.906f), 10);
+        Drive(Tick(1, 134.906f));
+        Cruise(Tick(1, 134.906f), LapDetector.LapTimeDeadlineTicks + 10);
+
+        var d = Assert.Single(_decisions);
+        Assert.Null(d.Lap);
+        Assert.Contains("stale", d.SkipReason);
+    }
+
+    [Fact]
     public void CounterJumpingByMoreThanOneIsNotTimed()
     {
         Cruise(Tick(1, 155.0f), 10);

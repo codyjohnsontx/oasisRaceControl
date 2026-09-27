@@ -46,6 +46,7 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
             LapDecided?.Invoke(decision);
             if (decision.Lap is not null) LapCompleted?.Invoke(decision.Lap);
         };
+        lapDetector.Resynced += message => LapCounterResynced?.Invoke(message);
         _frames = new IracingFrameProcessor(lapDetector);
         _frames.ConnectionChanged += up => ConnectionChanged?.Invoke(up);
         _frames.Attached += header => Attached?.Invoke(header);
@@ -70,6 +71,8 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
     public event Action<string>? SessionInfoIncomplete;
     /// <summary>Every lap boundary, posted or skipped, with the reason.</summary>
     public event Action<LapDecision>? LapDecided;
+    /// <summary>The lap counter came back up after going down (garage, reset, tow) and was re-baselined; no lap.</summary>
+    public event Action<string>? LapCounterResynced;
     /// <summary>Watched variables this iRacing build does not publish, once per connection.</summary>
     public event Action<IReadOnlyList<string>>? MissingVariables;
     /// <summary>Something outside telemetry itself the loop could not recover from

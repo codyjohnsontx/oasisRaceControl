@@ -77,8 +77,15 @@ public sealed record LapDecision(
 ///     mid-lap - the next crossing is skipped as incomplete.
 ///   - Replay: ticks while `IsReplayPlaying` is true are ignored and the lap in
 ///     progress is marked incomplete.
-///   - Session change: `SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing,
-///     or the counter going backwards, re-baselines with no lap emitted.
+///   - Session change: `SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing
+///     re-baselines with no lap emitted.
+///   - Counter going down (exit to the garage, reset, tow, session restart): a
+///     resync, not a lap and not a jump. A rise of more than one straight after
+///     it - iRacing briefly restoring the old count, seen on a real rig - quietly
+///     re-baselines and raises <see cref="Resynced"/>; a rise of one is a lap
+///     like any other. The `LapLastLapTime` shown at the drop is remembered as
+///     stale, across <see cref="Reset"/> too, and a lap still showing it is
+///     skipped rather than posting that time twice.
 ///   - Counter jump of more than one (ticks missed): re-baselined, skipped.
 ///   - Pause: nothing crosses the line, so nothing happens; the lap time comes
 ///     from the sim's own clock, which pauses too.
@@ -105,6 +112,8 @@ public sealed class LapDetector
     private int? _previousLap, _previousReset;
     private bool? _previousOnTrack;
     private Pending? _pending;
+    private bool _resyncing;
+    private float? _staleLapTime;
 
     private sealed record Pending(int LapCompleted, int Deadline, float? TimeBefore, int? Incidents,
         bool Pit, bool Incomplete, bool Replay);
@@ -120,11 +129,16 @@ public sealed class LapDetector
     public SessionCombo? Combo { get; set; }
 
     public event Action<LapDecision>? Decided;
+    /// <summary>The counter came back up after going down and was re-baselined
+    /// with no lap decided; the message says from what to what.</summary>
+    public event Action<string>? Resynced;
 
-    /// <summary>Forget everything: iRacing went away, or is starting over.</summary>
+    /// <summary>Forget everything: iRacing went away, or is starting over. The
+    /// stale lap time is kept - the time channel can still show it afterwards.</summary>
     public void Reset()
     {
         _lastLapCompleted = null;
+        _resyncing = false;
         _lastLapTimeSeen = null;
         _lapStartIncidents = null;
         _session = default;
@@ -158,7 +172,11 @@ public sealed class LapDetector
         // Remembered AFTER this tick is judged, so a pending lap compares the
         // time channel against what it read before the counter moved - which is
         // what lets a time that lands on the very same tick be trusted at once.
-        if (t.LapLastLapTime is float seen) _lastLapTimeSeen = seen;
+        if (t.LapLastLapTime is float seen)
+        {
+            _lastLapTimeSeen = seen;
+            if (seen > 0 && seen != _staleLapTime) _staleLapTime = null;
+        }
     }
 
     private void ObserveCounter(TelemetryTick t)
@@ -174,8 +192,19 @@ public sealed class LapDetector
 
         if (lapCompleted < _lastLapCompleted)
         {
-            // Session restart or a reset that rewound the counter.
             _pending = null;
+            _resyncing = true;
+            _staleLapTime = t.LapLastLapTime ?? _lastLapTimeSeen;
+            Baseline(lapCompleted, t);
+            return;
+        }
+
+        var resync = _resyncing;
+        _resyncing = false;
+        if (resync && lapCompleted - _lastLapCompleted > 1)
+        {
+            _pending = null;
+            Resynced?.Invoke($"lap counter resynced {_lastLapCompleted} -> {lapCompleted}");
             Baseline(lapCompleted, t);
             return;
         }
@@ -248,7 +277,7 @@ public sealed class LapDetector
         // The time is trusted once it differs from the previous lap's, or once
         // the deadline passes (two identical laps to the millisecond are rare
         // but possible, and the deadline is what lets them through).
-        var caughtUp = time is float f && f > 0 && f != p.TimeBefore;
+        var caughtUp = time is float f && f > 0 && f != p.TimeBefore && f != _staleLapTime;
         if (!caughtUp && _tick < p.Deadline) return;
         _pending = null;
 
@@ -262,6 +291,8 @@ public sealed class LapDetector
         if (p.Replay) return new LapDecision(n, null, "a replay was playing during this lap - not timed");
         if (p.Incomplete) return new LapDecision(n, null, "the car was reset, towed or left the track mid-lap - not timed");
         if (p.Pit) return new LapDecision(n, null, "the lap went through the pit lane (out lap or pit stop) - not timed");
+        if (time is float t && t > 0 && t == _staleLapTime)
+            return new LapDecision(n, null, "lap time unchanged since the counter resynced (stale) - not timed");
         if (time is not float seconds || seconds <= 0)
             return new LapDecision(n, null, "iRacing reported no lap time for it (out lap or invalid lap)");
 

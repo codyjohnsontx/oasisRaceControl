@@ -103,10 +103,17 @@ tick sequences):
   trip to the garage mid-lap (`Lap` going down, `EnterExitReset` changing,
   `PlayerTrackSurface` -1, `IsOnTrack` dropping), a lap during which a replay
   was playing, a counter jump of more than one (missed ticks), a time over
-  thirty minutes (the backend's bound), and a lap that completes before the
-  session info has named a track and car.
-- A new session (`SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing,
-  or the counter going backwards), iRacing dropping out of a session, or
+  thirty minutes (the backend's bound), a lap that completes before the
+  session info has named a track and car, and a lap still showing the lap time
+  that was on screen when the counter last went down (stale).
+- `LapCompleted` going DOWN (exit to the garage, reset, tow, session restart)
+  is a resync, not a lap and not a jump: a rise of more than one straight
+  after it - iRacing briefly putting the old count back, seen on a real rig -
+  quietly re-baselines, and the log prints one `lap counter resynced` line. A
+  rise of one is a lap like any other, and the stale-time rule above keeps it
+  from re-posting the lap time shown before the drop.
+- A new session (`SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing),
+  iRacing dropping out of a session, or
   iRacing closing and reopening all re-baseline the detector with no lap
   emitted. iRacing not running is the normal idle state: the source retries
   once a second and the status line says `sim idle`.

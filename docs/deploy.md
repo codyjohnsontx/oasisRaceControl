@@ -140,8 +140,10 @@ vars, which override the file):
   simplest option; a Windows Service is sturdier if you want it.
 
 If a rig cannot read the sim, staff can post a driver's lap by hand from any
-machine with the rig's token: `npx tsx scripts/manual-lap.ts` in `apps/web`
-(usage in the file header).
+machine with the rig's token: `npx tsx scripts/manual-lap.ts --token <rig token>
+--base https://oasis-race-control.vercel.app --time 2:32.340` in `apps/web`
+(usage in the file header). The lap carries today's featured combo as that app
+holds it, so set the combo first; the script refuses without one.
 
 ---
 
