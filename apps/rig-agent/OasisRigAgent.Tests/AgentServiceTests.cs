@@ -149,6 +149,13 @@ public sealed class AgentServiceTests : IDisposable
 
         private readonly object _storedLock = new();
         private readonly List<string> _stored = new();
+        private readonly Dictionary<string, string?> _storedCompletedAt = new();
+
+        /// <summary>The completedAt each stored lap arrived with, verbatim.</summary>
+        public IReadOnlyDictionary<string, string?> StoredCompletedAt
+        {
+            get { lock (_storedLock) return new Dictionary<string, string?>(_storedCompletedAt); }
+        }
 
         /// <summary>The laps this backend actually stored, in arrival order.</summary>
         public IReadOnlyList<string> StoredLapIds
@@ -197,7 +204,11 @@ public sealed class AgentServiceTests : IDisposable
                     continue;
                 }
                 var eventId = e["eventId"]!.GetValue<string>();
-                lock (_storedLock) _stored.Add(eventId);
+                lock (_storedLock)
+                {
+                    _stored.Add(eventId);
+                    _storedCompletedAt[eventId] = e["completedAt"]?.GetValue<string>();
+                }
                 results.Add(new JsonObject
                 {
                     ["type"] = type,
@@ -300,6 +311,75 @@ public sealed class AgentServiceTests : IDisposable
         Assert.Null(
             queued.Single(e => e.EventId == "evt-after-checkout")
                 .Payload["rigAssignmentId"]);
+    }
+
+    private static AgentConfig WalkUpConfig() => Config() with { RigQrToken = "qr-rig-1" };
+
+    private const string DepartedAssignmentId = "7c2e4a10-5b3d-4e8f-a1c2-0d9e8f7a6b5c";
+
+    /// <summary>The crash-and-restart case in walk-up mode. The last driver
+    /// closed the program and their sign-out never landed, so the backend still
+    /// has their stint open when the agent starts again. The agent must not
+    /// adopt it off the poll - a lap driven now is nobody's - and starting up
+    /// ends it, so it cannot collect laps later either.</summary>
+    [Fact]
+    public async Task Walk_up_start_ends_the_stint_a_previous_process_left_open_and_never_stamps_it()
+    {
+        var backend = new StubBackend();
+        backend.Assign(DepartedAssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(WalkUpConfig(), client, queue, telemetry);
+
+        var polled = WaitForStatus(agent, s => s.AssignmentKnown);
+        agent.Start();
+        await polled;
+
+        telemetry.Emit("evt-before-anyone-signs-in");
+
+        Assert.True(await agent.EmptySeatAsync());
+        Assert.Equal(new string?[] { null }, backend.Checkouts);
+        Assert.Null(backend.OpenAssignmentId);
+
+        telemetry.Emit("evt-after-the-seat-is-emptied");
+
+        var batch = queue.PendingBatch(10);
+        Assert.Equal(2, batch.Count);
+        Assert.All(batch, e =>
+        {
+            Assert.True(e.Payload.AsObject().ContainsKey("rigAssignmentId"));
+            Assert.Null(e.Payload["rigAssignmentId"]);
+        });
+    }
+
+    /// <summary>The ordinary walk-up path: the stint the rig's own check-in
+    /// created stamps the next lap at once, without waiting for a poll, and the
+    /// driver pressing Enter ends it.</summary>
+    [Fact]
+    public async Task Walk_up_stamps_the_stint_its_own_check_in_created()
+    {
+        var backend = new StubBackend();
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(WalkUpConfig(), client, queue, telemetry);
+        agent.Start();
+
+        backend.Assign(AssignmentId);
+        agent.SeatCheckedInDriver(new DriverCheckIn("Mike", true, "d1", AssignmentId));
+        telemetry.Emit("evt-mike");
+
+        Assert.Equal(SwitchDriverResult.Ended, await agent.SwitchDriverAsync());
+        telemetry.Emit("evt-after-mike");
+
+        var queued = queue.PendingBatch(10);
+        Assert.Equal(AssignmentId,
+            queued.Single(e => e.EventId == "evt-mike").Payload["rigAssignmentId"]!.GetValue<string>());
+        Assert.Null(queued.Single(e => e.EventId == "evt-after-mike").Payload["rigAssignmentId"]);
+        Assert.Equal(new string?[] { AssignmentId }, backend.Checkouts);
     }
 
     /// <summary>A sign-out that happens while an assignment poll is in flight
@@ -419,6 +499,52 @@ public sealed class AgentServiceTests : IDisposable
         Assert.All(
             batch,
             e => Assert.Equal(AssignmentId, e.Payload["rigAssignmentId"]!.GetValue<string>()));
+    }
+
+    /// <summary>The venue wifi drops in the middle of the event, after the rig
+    /// already knows who is in the seat. Laps driven during the outage wait in
+    /// the SQLite outbox, stamped with that stint and carrying the time they
+    /// were driven, and go out unchanged when the link returns - so the backend
+    /// still finds them inside the driver's check-in window.</summary>
+    [Fact]
+    public async Task Laps_driven_during_a_mid_event_outage_are_sent_later_with_their_original_times()
+    {
+        var checkedInAt = DateTimeOffset.Parse("2026-09-27T15:00:00Z");
+        var backend = new StubBackend { ValidatesLapTimes = true };
+        backend.Assign(AssignmentId, checkedInAt);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+        agent.Start();
+        await assigned;
+
+        // The wifi drops. Two laps are driven at 15:10 and 15:12.
+        backend.SetOffline(true);
+        var offline = WaitForStatus(agent, s => s.Connection == ConnectionState.Offline);
+        var lap1At = checkedInAt.AddMinutes(10);
+        var lap2At = checkedInAt.AddMinutes(12);
+        telemetry.Emit("evt-wifi-1", lap1At);
+        telemetry.Emit("evt-wifi-2", lap2At);
+
+        var held = queue.PendingBatch(10);
+        Assert.Equal(2, held.Count);
+        Assert.All(held, e => Assert.Equal(AssignmentId, e.Payload["rigAssignmentId"]!.GetValue<string>()));
+        Assert.Equal(lap1At.ToString("O"), held[0].Payload["completedAt"]!.GetValue<string>());
+        Assert.Equal(lap2At.ToString("O"), held[1].Payload["completedAt"]!.GetValue<string>());
+        await offline;
+
+        // The link returns; the next flush is at most one interval away.
+        var drained = WaitForStatus(agent, s => s.PendingLaps == 0 && s.Connection == ConnectionState.Online, TimeSpan.FromSeconds(30));
+        backend.SetOffline(false);
+        await drained;
+
+        Assert.Equal(new[] { "evt-wifi-1", "evt-wifi-2" }, backend.StoredLapIds);
+        Assert.Equal(lap1At.ToString("O"), backend.StoredCompletedAt["evt-wifi-1"]);
+        Assert.Equal(lap2At.ToString("O"), backend.StoredCompletedAt["evt-wifi-2"]);
     }
 
     /// <summary>The morning boot, which the deferred stamp must not turn back

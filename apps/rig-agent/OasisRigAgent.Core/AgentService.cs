@@ -1,9 +1,10 @@
 namespace OasisRigAgent.Core;
 
 /// <summary>
-/// Orchestrates the rig agent: queues detected laps, and runs the three
-/// background loops — heartbeat, assignment poll, and queue flush. Exposes a
-/// single StatusChanged event the UI renders. All backend calls funnel through
+/// Orchestrates the rig agent: queues detected laps, and runs the background
+/// loops - heartbeat, assignment poll, queue flush, and the sim-state check.
+/// Exposes a StatusChanged event the UI renders, and a Notice event for
+/// one-line problems the host prints. All backend calls funnel through
 /// RunBackend so one place owns the online/offline state transition.
 /// </summary>
 public sealed class AgentService : IAsyncDisposable
@@ -11,7 +12,9 @@ public sealed class AgentService : IAsyncDisposable
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FlushInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SimStateInterval = TimeSpan.FromSeconds(1);
     private const int FlushBatchSize = 50;
+    private bool _publishedSimRunning;
 
     private readonly AgentConfig _config;
     private readonly BackendClient _client;
@@ -61,7 +64,26 @@ public sealed class AgentService : IAsyncDisposable
     // assurance, one layer down, as the swallowed press this whole path removes.
     private volatile bool _pendingCheckoutIsDurable;
 
+    // Walk-up mode (the rig is the check-in): the only stint this agent will
+    // stamp a lap with is one its own check-in created in this process. A poll
+    // can end that stint here but never hand over another - not one a previous
+    // run left open, and not a phone check-in either.
+    private readonly bool _ownStintsOnly;
+
     public event Action<AgentStatus>? StatusChanged;
+
+    /// <summary>A lap was queued with the stint it was stamped with (null:
+    /// nobody was in the seat, so the backend will store it unclaimed). Not
+    /// raised for a lap held unresolved until the first poll.</summary>
+    public event Action<LapCompleted, string?>? LapQueued;
+
+    /// <summary>The backend has these queued events now, by event id.</summary>
+    public event Action<IReadOnlyList<string>>? LapsPosted;
+
+    /// <summary>Something went wrong that the person at the rig or staff
+    /// should read - a lap the backend refused, the outbox failing - as one
+    /// line for whichever console the host shows.</summary>
+    public event Action<string>? Notice;
 
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
     {
@@ -69,6 +91,7 @@ public sealed class AgentService : IAsyncDisposable
         _client = client;
         _queue = queue;
         _telemetry = telemetry;
+        _ownStintsOnly = config.RigQrToken is not null;
         // A checkout left undelivered by the previous run of this agent. Read
         // before any loop starts, so the first poll already knows not to adopt
         // the assignment it is about to close.
@@ -99,16 +122,24 @@ public sealed class AgentService : IAsyncDisposable
                 // would assert the rig was empty, permanently unattributing laps
                 // that have a driver. Those laps wait unresolved for the first
                 // poll that gets through.
+                string? stamp = null;
+                var stamped = false;
                 lock (_stampLock)
                 {
-                    if (_hasPolled) _queue.Enqueue(lap, _assignment?.Id);
+                    if (_hasPolled || _ownStintsOnly)
+                    {
+                        stamp = _assignment?.Id;
+                        _queue.Enqueue(lap, stamp);
+                        stamped = true;
+                    }
                     else _queue.EnqueueUnresolved(lap);
                 }
+                if (stamped) LapQueued?.Invoke(lap, stamp);
                 PublishStatus();
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[agent] failed to queue lap {lap.EventId}: {ex.Message}");
+                Notice?.Invoke($"[agent] failed to queue lap {lap.EventId}: {ex.Message}");
             }
         };
         _telemetry.Start();
@@ -116,6 +147,11 @@ public sealed class AgentService : IAsyncDisposable
         _loops.Add(RunLoop(HeartbeatInterval, HeartbeatTick, runImmediately: true));
         _loops.Add(RunLoop(PollInterval, PollAssignmentTick, runImmediately: true));
         _loops.Add(RunLoop(FlushInterval, FlushQueueTick, runImmediately: true));
+        // The sim's state is not an event the telemetry contract carries, and
+        // the walk-up screen shows a warning while iRacing is not in a session
+        // - one that has to go away the moment it is. A once-a-second check
+        // publishes the change; nothing else republishes on the sim's account.
+        _loops.Add(RunLoop(SimStateInterval, SimStateTick, runImmediately: false));
         PublishStatus();
     }
 
@@ -172,7 +208,7 @@ public sealed class AgentService : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine(
+                    Notice?.Invoke(
                         $"[agent] failed to record queued sign-out {ending}: {ex.Message}");
                 }
                 _pendingCheckout = ending;
@@ -201,6 +237,37 @@ public sealed class AgentService : IAsyncDisposable
 
         if (ending is not null) ClearPendingCheckout(ending);
         return result.Ended ? SwitchDriverResult.Ended : SwitchDriverResult.NoActiveSession;
+    }
+
+    /// <summary>Walk-up mode: put the driver this rig just checked in into the
+    /// seat, so the very next lap is stamped with their stint. The generation
+    /// bump drops a poll already in flight, which describes the rig before
+    /// this check-in.</summary>
+    public void SeatCheckedInDriver(DriverCheckIn checkIn)
+    {
+        lock (_stampLock)
+        {
+            Interlocked.Increment(ref _assignmentGeneration);
+            _assignment = new Assignment(checkIn.AssignmentId, checkIn.DriverId, checkIn.DisplayName, DateTimeOffset.UtcNow);
+        }
+        PublishStatus();
+    }
+
+    /// <summary>Walk-up mode, on start: end whatever stint is open on this rig -
+    /// one a previous run of this agent left behind when it was closed without
+    /// a sign-out landing, or a phone check-in. True once the backend has
+    /// answered, whether or not there was anything to end.</summary>
+    public async Task<bool> EmptySeatAsync()
+    {
+        var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(null, ct)));
+        return result.Ok;
+    }
+
+    private Task SimStateTick(CancellationToken ct)
+    {
+        var running = _telemetry.SimRunning;
+        if (running != _publishedSimRunning) PublishStatus();
+        return Task.CompletedTask;
     }
 
     private async Task HeartbeatTick(CancellationToken ct)
@@ -232,6 +299,8 @@ public sealed class AgentService : IAsyncDisposable
 
         lock (_stampLock)
         {
+            if (_ownStintsOnly && assignment is not null && assignment.Id != _assignment?.Id) assignment = null;
+
             // Somebody signed out while this was in flight. The answer in hand
             // describes the rig before that, so applying it would resurrect a
             // stint the driver has already ended. Drop it whole - including the
@@ -260,7 +329,7 @@ public sealed class AgentService : IAsyncDisposable
 
         // The backend is reachable, so this is the moment a checkout the driver
         // pressed during an outage can finally be delivered.
-        await SettlePendingCheckout();
+        await SettlePendingCheckoutAsync();
     }
 
     /// <summary>Deliver a checkout the backend could not be told about when the
@@ -271,14 +340,20 @@ public sealed class AgentService : IAsyncDisposable
     /// driver, or staff may have cleared the rig, or that driver's own check-in
     /// may have taken the stint over - in every one of those cases the backend
     /// finds nothing to close, answers false, and this stops asking. Only a
-    /// backend that could not be reached at all leaves it queued.</summary>
-    private async Task SettlePendingCheckout()
+    /// backend that could not be reached at all leaves it queued.
+    ///
+    /// Walk-up mode runs it before every check-in: the backend answers a
+    /// check-in on a stint still open for the same driver with that same
+    /// stint, and seating one this rig still owes a sign-out for would have
+    /// the next poll end it under the driver. True once nothing is owed.</summary>
+    public async Task<bool> SettlePendingCheckoutAsync()
     {
         var pending = _pendingCheckout;
-        if (pending is null) return;
+        if (pending is null) return true;
 
         var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(pending, ct)));
         if (result.Ok) ClearPendingCheckout(pending);
+        return result.Ok;
     }
 
     /// <summary>Forget a checkout the backend has now accounted for. Scoped to
@@ -301,7 +376,7 @@ public sealed class AgentService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine(
+                Notice?.Invoke(
                     $"[agent] failed to forget delivered sign-out {assignmentId}: {ex.Message}");
             }
             if (_pendingCheckout == assignmentId)
@@ -328,6 +403,7 @@ public sealed class AgentService : IAsyncDisposable
         {
             _queue.Remove(outcome.Settled);
             PublishStatus();
+            LapsPosted?.Invoke(outcome.Settled);
         }
     }
 
@@ -347,7 +423,7 @@ public sealed class AgentService : IAsyncDisposable
     private void Quarantine(IReadOnlyList<RejectedEvent> rejected)
     {
         foreach (var lap in _queue.Reject(rejected))
-            Console.Error.WriteLine(
+            Notice?.Invoke(
                 $"[agent] the backend will not accept lap {lap.EventId} ({lap.Reason}). "
                 + "It is kept in the outbox and will not be sent again; the rest of the "
                 + "queue is now free to flush.");
@@ -407,7 +483,7 @@ public sealed class AgentService : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[agent] tick failed: {ex.Message}");
+            Notice?.Invoke($"[agent] tick failed: {ex.Message}");
             return true;
         }
     }
@@ -421,7 +497,17 @@ public sealed class AgentService : IAsyncDisposable
 
     private void PublishStatus()
     {
-        StatusChanged?.Invoke(new AgentStatus
+        var status = CurrentStatus();
+        _publishedSimRunning = status.SimRunning;
+        StatusChanged?.Invoke(status);
+    }
+
+    /// <summary>What the agent knows right now - the same snapshot
+    /// <see cref="StatusChanged"/> publishes, for a screen that has just been
+    /// redrawn.</summary>
+    public AgentStatus CurrentStatus()
+    {
+        return new AgentStatus
         {
             RigNumber = _config.RigNumber,
             Connection = _connection,
@@ -437,7 +523,7 @@ public sealed class AgentService : IAsyncDisposable
             Checkout = _pendingCheckout is null
                 ? CheckoutDelivery.None
                 : _pendingCheckoutIsDurable ? CheckoutDelivery.Queued : CheckoutDelivery.NotQueued,
-        });
+        };
     }
 
     public async ValueTask DisposeAsync()

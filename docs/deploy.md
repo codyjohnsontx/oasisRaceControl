@@ -122,20 +122,36 @@ vars, which override the file):
   "backendBaseUrl": "https://<your-vercel-domain>",
   "rigToken": "<this rig's secret bearer token>",
   "rigNumber": 1,
-  "simulateTelemetry": false
+  "rigQrToken": "<this rig's /r/<token> slug>",
+  "telemetry": "iracing"
 }
 ```
 
+- `rigQrToken` turns on walk-up mode: the rig asks for a name and a 4-digit
+  PIN, logs that driver in (or registers them) through the app's own sign-in
+  and check-in, posts their laps, and signs them out when they press Enter or
+  close the program. The same name and PIN bring a returning driver back to
+  their own row on either rig, both days; five wrong PINs lock the name for 15
+  minutes (`apps/rig-agent/README.md`, Walk-up mode).
+  Leave it out to keep the staff console.
 - `backendBaseUrl` must be `https://` (the agent rejects non-HTTPS except
   localhost, since the token rides on every request).
 - Each rig gets its own `rigToken`; the backend scopes the agent to that rig.
-- Auto-start on login via Windows Task Scheduler is the simplest option; a
-  Windows Service is sturdier if you want it.
+- `telemetry: "iracing"` reads laps from the sim's shared memory on that PC;
+  `"simulated"` emits fake laps for testing; `"none"` gives heartbeat and
+  driver display only. Run `OasisRigAgent.exe --diagnose` on a new rig first:
+  it reads without posting and prints the exact track, layout and car strings
+  iRacing uses, which the featured combo must match character for character
+  (`apps/rig-agent/README.md`, iRacing telemetry).
+- The agent must run as the Windows user that runs iRacing (the shared-memory
+  map is per session). Auto-start on login via Windows Task Scheduler is the
+  simplest option; a Windows Service is sturdier if you want it.
 
-Lap detection itself is still stubbed pending the off-site safety gate, supervised
-canary, and iRacing spike — until then run
-with `simulateTelemetry: true` to exercise the full path, or leave it off and
-the agent handles heartbeat + assignment display + the durable outbox.
+If a rig cannot read the sim, staff can post a driver's lap by hand from any
+machine with the rig's token: `npx tsx scripts/manual-lap.ts --token <rig token>
+--base https://oasis-race-control.vercel.app --time 2:32.340` in `apps/web`
+(usage in the file header). The lap carries today's featured combo as that app
+holds it, so set the combo first; the script refuses without one.
 
 ---
 

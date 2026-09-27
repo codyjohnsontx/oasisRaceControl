@@ -16,6 +16,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="OasisRigAgent.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="agent.config.sample.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

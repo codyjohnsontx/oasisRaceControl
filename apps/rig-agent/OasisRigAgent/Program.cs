@@ -1,19 +1,29 @@
+using System.Runtime.InteropServices;
+using OasisRigAgent;
 using OasisRigAgent.Core;
+using OasisRigAgent.Core.Iracing;
 
-// Oasis Race Control — Rig Agent (skeleton console host).
+// Oasis Race Control - Rig Agent (console host).
 //
 // Runs the agent against the backend: heartbeat, current-driver display,
-// durable lap queue. Lap DETECTION is stubbed behind ITelemetrySource until the
-// Phase 1 iRacing spike lands — run with SimulateTelemetry to exercise the full
-// path today. The tray/window UI is a later pass that wraps this same Core.
+// durable lap queue, and - with "telemetry": "iracing" - laps read from the
+// sim's shared memory on this PC. The tray/window UI is a later pass that
+// wraps this same Core.
+//
+//   OasisRigAgent.exe              run the agent (needs agent.config.json)
+//   OasisRigAgent.exe --diagnose   read iRacing and print what it sees; posts nothing
 
-// Startup failures (bad config, unwritable outbox db, invalid backend URL, …)
+if (args.Contains("--diagnose"))
+    return Diagnose();
+
+// Startup failures (bad config, unwritable outbox db, invalid backend URL, ...)
 // all get the same friendly message instead of a raw stack trace.
 var configPath = Path.Combine(AppContext.BaseDirectory, "agent.config.json");
 AgentConfig config;
 EventQueue queueInit;
 HttpClient httpInit;
 AgentService agentInit;
+ITelemetrySource telemetry;
 try
 {
     config = AgentConfig.Load(configPath);
@@ -22,9 +32,14 @@ try
     queueInit = new EventQueue(Path.Combine(AppContext.BaseDirectory, "outbox.db"));
     httpInit = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
     var client = new BackendClient(httpInit, config.BackendBaseUrl, config.RigToken);
-    ITelemetrySource telemetry = config.SimulateTelemetry
-        ? new SimulatedTelemetrySource(TimeSpan.FromSeconds(8))
-        : new NullTelemetrySource();
+    telemetry = config.TelemetryMode switch
+    {
+        TelemetryMode.Iracing => config.RigQrToken is null
+            ? AttachTelemetryLog(new IracingTelemetrySource())
+            : new IracingTelemetrySource(),
+        TelemetryMode.Simulated => new SimulatedTelemetrySource(TimeSpan.FromSeconds(8)),
+        _ => new NullTelemetrySource(),
+    };
     agentInit = new AgentService(config, client, queueInit, telemetry);
 }
 catch (Exception ex)
@@ -38,17 +53,62 @@ using var queue = queueInit;
 using var http = httpInit;
 await using var agent = agentInit;
 
-agent.StatusChanged += Render;
+// Walk-up mode's screen exists before the agent starts, so nothing the sim or
+// the agent reports in the first moments is printed where a redraw erases it.
+WalkUpScreen? walkUp = null;
+if (config.RigQrToken is null)
+{
+    agent.StatusChanged += s => Console.WriteLine(StatusLine(s));
+    agent.Notice += Console.Error.WriteLine;
+}
+else
+{
+    var screen = new WalkUpScreen(new SystemPromptConsole(), agent);
+    walkUp = screen;
+    if (telemetry is IracingTelemetrySource iracing) AttachDriverLog(iracing, screen);
+    agent.StatusChanged += OnlyWhenItMatters(s => screen.Log(StatusLine(s)));
+    agent.Notice += screen.Log;
+}
 agent.Start();
 
-Console.WriteLine($"Oasis Rig Agent — Rig {config.RigNumber:D2}  ({config.BackendBaseUrl})");
-Console.WriteLine(config.SimulateTelemetry
-    ? "Telemetry: SIMULATED (emitting fake laps)"
-    : "Telemetry: none (real iRacing source lands after the spike)");
+Console.WriteLine($"Oasis Rig Agent - Rig {config.RigNumber:D2}  ({config.BackendBaseUrl})");
+Console.WriteLine(config.TelemetryMode switch
+{
+    TelemetryMode.Iracing => "Telemetry: iRacing shared memory (laps post automatically; each one is logged below with the exact strings sent)",
+    TelemetryMode.Simulated => "Telemetry: SIMULATED (emitting fake laps)",
+    _ => "Telemetry: none (heartbeat and driver display only)",
+});
+var quit = new CancellationTokenSource();
+
+if (walkUp is not null && config.RigQrToken is { } qrToken)
+{
+    // Walk-up mode: the rig itself is the check-in. Every way out - input
+    // ending, Ctrl+C, the window's close button (SIGHUP; CTRL_CLOSE_EVENT on
+    // Windows), a shutdown (SIGTERM; CTRL_SHUTDOWN_EVENT) and the runtime's own
+    // exit - runs the same sign-out once, and the signal handlers wait for it,
+    // because Windows ends the process as soon as a close handler returns.
+    Console.WriteLine("Walk-up mode: type your name and a 4-digit PIN to start driving, press Enter to log out.");
+    Console.WriteLine(new string('-', 60));
+    var checkIn = new DriverCheckInClient(config.BackendBaseUrl, qrToken);
+    var signOut = new Lazy<Task>(() => DriverPrompt.SignOutOnExitAsync(agent));
+    void SignOutBeforeExit()
+    {
+        quit.Cancel();
+        signOut.Value.GetAwaiter().GetResult();
+    }
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
+    using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => { context.Cancel = true; SignOutBeforeExit(); });
+    using var onShutdown = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; SignOutBeforeExit(); });
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => SignOutBeforeExit();
+    await DriverPrompt.RunAsync(agent, checkIn, config.RigNumber, walkUp, quit.Token);
+    await signOut.Value;
+    Console.WriteLine("Shutting down...");
+    return 0;
+}
+
 Console.WriteLine("Commands:  s = switch driver / sign out   q = quit");
 Console.WriteLine(new string('-', 60));
 
-using var quit = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
 
 _ = Task.Run(async () =>
@@ -63,29 +123,29 @@ _ = Task.Run(async () =>
                 quit.Cancel();
                 break;
             case "s":
-                Console.WriteLine("→ switching driver…");
+                Console.WriteLine("-> switching driver...");
                 Console.WriteLine(await agent.SwitchDriverAsync() switch
                 {
-                    SwitchDriverResult.Ended => "→ session ended.",
-                    SwitchDriverResult.NoActiveSession => "→ no active session.",
+                    SwitchDriverResult.Ended => "-> session ended.",
+                    SwitchDriverResult.NoActiveSession => "-> no active session.",
                     // The seat is empty here, but nothing durable was recorded,
                     // so this is the one case staff have to finish by hand -
                     // either there was no stint to name, or the outbox write
                     // failed and a restart would lose the retry.
                     SwitchDriverResult.EndedNotQueued =>
-                        "→ session ended here. Backend offline and the server may never be told - "
+                        "-> session ended here. Backend offline and the server may never be told - "
                         + "if someone was checked in on this rig, clear it from the staff screen.",
                     // The seat IS empty; only the backend has yet to hear it.
                     // Say so, because until it does, laps on this rig arrive
                     // unclaimed and staff will see them on the dashboard.
                     SwitchDriverResult.EndedPendingSync =>
-                        "→ session ended here. Backend offline - it will be told when the connection returns.",
+                        "-> session ended here. Backend offline - it will be told when the connection returns.",
                     // Every result is named above, so this is only reachable
                     // once a new one is added. It says the one thing true of
                     // all of them - the seat is empty here - rather than
                     // inheriting another arm's promise about what the backend
                     // has been told.
-                    _ => "→ session ended here.",
+                    _ => "-> session ended here.",
                 });
                 break;
         }
@@ -95,22 +155,22 @@ _ = Task.Run(async () =>
 try { await Task.Delay(Timeout.Infinite, quit.Token); }
 catch (OperationCanceledException) { }
 
-Console.WriteLine("Shutting down…");
+Console.WriteLine("Shutting down...");
 return 0;
 
-static void Render(AgentStatus s)
+static string StatusLine(AgentStatus s)
 {
     var conn = s.Connection switch
     {
-        ConnectionState.Online => "● online",
-        ConnectionState.Offline => "○ offline",
-        _ => "◌ connecting",
+        ConnectionState.Online => "online",
+        ConnectionState.Offline => "OFFLINE",
+        _ => "connecting",
     };
     // A null assignment the agent has never been able to ask about is not an
     // available rig, and saying so would be a guess in the display too.
     var driver = s.Assignment is { } a
         ? a.DriverDisplayName
-        : s.AssignmentKnown ? "— available —" : "(checking)";
+        : s.AssignmentKnown ? "- available -" : "(checking)";
     var sim = s.SimRunning ? "sim running" : "sim idle";
     var pending = s.PendingLaps > 0 ? $"  |  {s.PendingLaps} lap(s) queued" : "";
     // Separate from the queued count on purpose: these are not waiting for the
@@ -129,5 +189,143 @@ static void Render(AgentStatus s)
         CheckoutDelivery.NotQueued => "  |  sign-out NOT saved - clear this rig from the staff screen",
         _ => "",
     };
-    Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{rejected}{checkout}");
+    return $"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{rejected}{checkout}";
 }
+
+/// <summary>Walk-up mode's status line: printed when something the person at
+/// the rig or staff would act on changes - the connection, whether the sim is
+/// running, laps waiting while offline, laps the backend refused, a sign-out
+/// still owed - rather than on every poll.</summary>
+static Action<AgentStatus> OnlyWhenItMatters(Action<AgentStatus> render)
+{
+    object? last = null;
+    var gate = new object();
+    return s =>
+    {
+        object key = (s.Connection, s.SimRunning,
+            s.Connection == ConnectionState.Online ? 0 : s.PendingLaps, s.RejectedLaps, s.Checkout);
+        lock (gate)
+        {
+            if (Equals(key, last)) return;
+            last = key;
+        }
+        render(s);
+    };
+}
+
+/// <summary>What walk-up mode prints about the sim on the screen: a lap that
+/// was not timed and why, and the problems a driver can see and report -
+/// iRacing not running, lap reading stopped. The two that last until a restart
+/// stand under the banner of every screen. A timed lap is the prompt's to
+/// print, because only it knows whether the lap was queued for a driver and
+/// when the backend took it. The exact combo strings
+/// are for staff and live in --diagnose and the staff console.</summary>
+static void AttachDriverLog(IracingTelemetrySource source, WalkUpScreen screen)
+{
+    source.ConnectionChanged += up => screen.Log(up ? "iRacing connected." : "iRacing is not running or not in a session - laps resume when it is back.");
+    source.MissingVariables += names => screen.Standing($"WARNING: this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected. Tell staff.");
+    source.LapDecided += d =>
+    {
+        if (d.Lap is null) screen.Log($"Lap {d.LapCompleted} not counted: {d.SkipReason}");
+    };
+    source.Faulted += ex => screen.Standing($"ERROR: lap reading stopped: {ex.Message} - tell staff to restart the program.");
+}
+
+/// <summary>What the normal run prints about the sim, on top of the status
+/// line: connection changes, the combo strings exactly as they will be posted,
+/// and every lap boundary with its verdict. The featured combo on the backend
+/// matches these strings exactly, so they are printed verbatim and quoted.</summary>
+static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
+{
+    source.ConnectionChanged += up => Log(up ? "iRacing connected" : "iRacing not running or not in a session (waiting; laps resume when it is back)");
+    source.Attached += header => Log($"iRacing header: {header}");
+    source.HeaderRejected += (header, reason) => Log($"iRacing shared memory not ready: {reason} (header: {header?.ToString() ?? "unreadable"}) - retrying every second");
+    source.ComboChanged += combo => Log($"session: {Describe(combo)}");
+    source.SessionInfoIncomplete += found => Log($"session info does not name a track and car yet (found: {found})");
+    source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected");
+    source.LapDecided += d => Log(d.Lap is { } lap
+        ? $"lap {d.LapCompleted} {LapTime.Format(lap.LapTimeMs)} incidents={(lap.IncidentDelta?.ToString() ?? "n/a")} queued as track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
+        : $"lap {d.LapCompleted} skipped: {d.SkipReason}");
+    source.LapCounterResynced += message => Log(message);
+    source.Faulted += ex => Log($"ERROR telemetry stopped: {ex.Message} - restart the agent");
+    return source;
+
+    static void Log(string message) => Console.WriteLine($"[telemetry {DateTime.Now:HH:mm:ss}] {message}");
+}
+
+/// <summary>Read-only check for a rig PC: is iRacing seen, what does it call the
+/// track, layout and car, and does each lap come through. Posts nothing, needs no
+/// config, writes no outbox. This is the first thing to run on a real rig.</summary>
+static int Diagnose()
+{
+    Console.WriteLine("Oasis Rig Agent - iRacing DIAGNOSTIC (reads only; nothing is posted or saved)");
+    Console.WriteLine("Start iRacing, join a session and get in the car. Drive laps. Press Enter to stop.");
+    Console.WriteLine(new string('-', 72));
+
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.WriteLine("This has to run on the Windows rig PC that runs iRacing.");
+        return 3;
+    }
+
+    using var source = new IracingTelemetrySource();
+    var laps = 0;
+    source.ConnectionChanged += up => Console.WriteLine(up
+        ? $"[{Now()}] iRacing CONNECTED"
+        : $"[{Now()}] iRacing NOT RUNNING or not in a session - waiting (start the sim or load a session)");
+    source.Attached += header =>
+        Console.WriteLine($"[{Now()}] HEADER {header}");
+    source.HeaderRejected += (header, reason) =>
+    {
+        Console.WriteLine($"[{Now()}] shared memory NOT READY: {reason}");
+        Console.WriteLine($"           raw header: {header?.ToString() ?? "could not be read"}");
+        Console.WriteLine("           (normal while a session loads - retrying every second; if it never clears, send these lines)");
+    };
+    source.ComboChanged += combo =>
+    {
+        Console.WriteLine($"[{Now()}] SESSION {Describe(combo)}");
+        Console.WriteLine($"           iRacing ids: TrackName=\"{combo.TrackName}\" TrackID={combo.TrackId} CarID={combo.CarId} PlayerCarIdx={combo.PlayerCarIdx}");
+        Console.WriteLine("           featured-combo SQL for the wall (copy exactly):");
+        Console.WriteLine($"           insert into featured_combos (combo_date, track_name, track_config, car_name, incident_limit)");
+        Console.WriteLine($"           values (venue_today(), {Sql(combo.TrackDisplayName)}, {Sql(combo.TrackConfigName)}, {Sql(combo.CarScreenName)}, 0)");
+        Console.WriteLine("           on conflict (combo_date) do update set track_name = excluded.track_name, track_config = excluded.track_config, car_name = excluded.car_name, incident_limit = excluded.incident_limit;");
+    };
+    source.SessionInfoIncomplete += found =>
+    {
+        Console.WriteLine($"[{Now()}] session info read but it does not name a track and car yet (still loading?)");
+        Console.WriteLine($"           found: {found}");
+        Console.WriteLine("           (if SESSION never follows once you are in the car, send these lines)");
+    };
+    source.MissingVariables += names =>
+        Console.WriteLine($"[{Now()}] WARNING this iRacing build does not publish: {string.Join(", ", names)}");
+    source.LapDecided += d =>
+    {
+        if (d.Lap is { } lap)
+        {
+            laps++;
+            Console.WriteLine($"[{Now()}] LAP {d.LapCompleted}  {LapTime.Format(lap.LapTimeMs)}  incidents={(lap.IncidentDelta?.ToString() ?? "n/a")}  -> would POST"
+                + $"  track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
+                + (lap.IncidentDelta > 0 ? "  (backend stores it but marks it invalid: incidents over the limit)" : ""));
+        }
+        else
+        {
+            Console.WriteLine($"[{Now()}] LAP {d.LapCompleted}  -> would NOT post: {d.SkipReason}");
+        }
+    };
+    source.LapCounterResynced += message => Console.WriteLine($"[{Now()}]   ({message}; no lap)");
+    source.Faulted += ex => Console.WriteLine($"[{Now()}] ERROR telemetry stopped: {ex.GetType().Name}: {ex.Message} - restart the program and send this line");
+
+    source.Start();
+    Console.WriteLine($"[{Now()}] looking for iRacing shared memory...");
+    Console.ReadLine();
+    source.Stop();
+    Console.WriteLine($"stopped. {laps} lap(s) would have been posted.");
+    return 0;
+
+    static string Now() => DateTime.Now.ToString("HH:mm:ss");
+    static string Sql(string? s) => s is null ? "null" : $"'{s.Replace("'", "''")}'";
+}
+
+static string Describe(SessionCombo c)
+    => $"track=\"{c.TrackDisplayName}\" config=\"{c.TrackConfigName}\" car=\"{c.CarScreenName}\"";
+

@@ -31,9 +31,9 @@ docs/                # Plan, architecture, ops runbooks, and measured results
 
 ## Status
 
-- **Phase 0 (off-site venue safety gate): in progress and blocking all Oasis execution.** The recorder has a repository-owned, dependency-free read-only telemetry path and bounded logging, but it is **not authorized for venue use** until a signed candidate passes two clean Windows 11 VM rehearsals and project-owner safety sign-off. See `docs/venue-safety.md`.
-- **Phase 1 (Oasis canary + iRacing spike): blocked by Phase 0.** The `laps` table and agent event contract remain provisional until an approved canary and recording session complete. See `docs/spike-checklist.md`, `docs/spike-findings.md`, and `spike/`.
-- **Phase 2 (simulated web/API slice): substantially built in parallel.** Check-in, driver portal, TV leaderboard, staff dashboard, league night, ingestion API, fake-rig simulator, and most non-telemetry agent infrastructure work. Real iRacing lap detection and the Windows agent UI remain incomplete.
+- **Phase 0 (venue safety gate): lifted by the project owner on 2026-09-26** ("disregard that rule we are past that. We need this to run"). `docs/venue-safety.md` keeps the guidance (read-only iRacing access, no elevation, bounded logging) as recommendations and as the checklist for a signed release; it no longer blocks running the agent on Oasis computers.
+- **Phase 1 (Oasis canary + iRacing spike): superseded by the agent's own `--diagnose` run on the owner's rig (2026-09-26).** The `laps` table and agent event contract remain provisional until an approved canary and recording session complete. See `docs/spike-checklist.md`, `docs/spike-findings.md`, and `spike/`.
+- **Phase 2 (web/API slice and rig agent): built.** Check-in, driver portal, TV leaderboard, staff dashboard, league night, ingestion API, fake-rig simulator, and the agent's outbox, attribution and quarantine all work. The agent also reads laps from iRacing's shared memory (`"telemetry": "iracing"`); its lap detection is verified against real iRacing on the owner's rig with `OasisRigAgent.exe --diagnose` (2026-09-26, test drive, FIA F4 at COTA Grand Prix), and that read-only diagnostic is the first check on any rig; **posting laps to the hosted app from a rig is not yet verified** (`apps/rig-agent/README.md`). The Windows agent UI remains a console.
 
 ## Web app development
 
@@ -54,6 +54,7 @@ Daily loop:
 cd apps/web
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulates Rig 01 sending heartbeats + laps (needs dev seed)
+npx tsx scripts/manual-lap.ts --token <rig token> --base <app url> --time 2:32.340   # fallback when a rig cannot read iRacing: post one lap by hand, in today's featured combo, for whoever is checked in on that rig
 npm test           # unit tests, plus the league lifecycle suite when a local database is reachable
 npm run db:check   # read-only: is DATABASE_URL's database behind db/migrations?
 npm run db:migrate # apply any new migrations in db/migrations/

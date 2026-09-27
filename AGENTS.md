@@ -237,13 +237,52 @@ Nothing enforces that minimum when a password is SET: Oasis creates staff
 accounts and resets their passwords only by SQL, which is how a live account
 came to hold a password the login route would always refuse.
 
+## iRacing lap detection
+
+The agent reads laps from iRacing's shared memory with
+`OasisRigAgent.Core/Iracing/`: the spike recorder's parser ported (read-only
+map, no package), a line scanner for the session-info YAML, and `LapDetector`,
+a pure state machine over telemetry ticks. Detection rules and every skip
+reason are documented on `LapDetector` and pinned by
+`OasisRigAgent.Tests/Iracing/LapDetectorTests.cs`; change the rule and its
+test together. Lap detection is verified against real iRacing on the owner's
+rig with `OasisRigAgent.exe --diagnose` (reads and prints, posts nothing) on
+2026-09-26 - the garage-exit resync test replays that log - but most trap
+sequences are still hand-built from the SDK's documented behaviour, and a rig
+posting to the hosted app is not yet verified. Run `--diagnose` first on any rig.
+
+The featured combo matches lap strings exactly, so the agent prints the
+`TrackDisplayName` / `TrackConfigName` / `CarScreenName` it posts on every lap
+and the diagnostic prints the `featured_combos` SQL to paste; never type those
+names from memory. `apps/web/scripts/manual-lap.ts` posts one lap by hand for
+whoever is checked in on a rig, in the featured combo it reads from the app -
+the fallback when a rig cannot read the sim.
+
+## Walk-up check-in on the rig
+
+With `rigQrToken` in its config the agent signs a typed name and 4-digit PIN
+in through the backend's existing login, register and check-in routes as an
+HTTP client with a cookie jar (`OasisRigAgent.Core/DriverCheckInClient.cs`),
+so a returning driver keeps one row and it works against whatever web commit
+is deployed without a server change - verify request shapes against the
+served commit, not only main. In this mode the agent stamps laps only with a
+stint its own check-in created in this process (`AgentService`), and every
+start ends whatever is open on the rig before the name prompt; do not let the
+poll adopt a stint again, or a restart credits the departed driver. Every
+exit path in `Program.cs` runs the durable switch-driver and waits for it. The
+loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
+test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
+`OASIS_TEST_BACKEND_URL`).
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which
   is not on the default PATH; the exact commands are in
   `apps/rig-agent/README.md` (Run from source). No CI workflow builds the agent
   (`spike-safety.yml` covers `spike/` only), so that local run is the only
-  check it gets.
+  check it gets. The iRacing source only reads on Windows; on macOS
+  `--diagnose` exits 3 and `"telemetry": "iracing"` fails at start-up, so run
+  the agent here with `OASIS_TELEMETRY=simulated`.
 - `apps/web/.env.local` is gitignored and its comments have gone stale before.
   Read `DATABASE_URL` itself before assuming which database (local Docker
   `oasis-pg` on 5433, or Neon) a dev server or migration is pointed at.

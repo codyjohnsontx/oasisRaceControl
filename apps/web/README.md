@@ -14,6 +14,9 @@ Quick reference once set up:
 ```bash
 npm run dev        # http://localhost:3000
 npm run fake-rig   # simulate a rig agent sending laps
+npx tsx scripts/manual-lap.ts --token <rig token> --base <app url> --time 2:32.340
+                   # post ONE lap by hand for whoever is checked in on that rig
+                   # (fallback when a rig cannot read iRacing; header has usage)
 npm test           # vitest suites (see Integration tests in the root README)
 npm run build      # production build - refuses to build against a database
                    # that is behind db/migrations

@@ -1,8 +1,13 @@
 # Phase 0 — venue-computer safety gate
 
-Status: **IN PROGRESS — NO OASIS EXECUTION AUTHORIZED**
+Status: **GATE LIFTED BY THE PROJECT OWNER ON 2026-09-26.** The owner's words, deciding that the rig agent runs on Oasis computers for the 2026-09-27 off-site event: "disregard that rule we are past that. We need this to run". Running this project's software on Oasis computers no longer waits on this gate. Everything below stays as recorded guidance - read-only access to iRacing, no elevation, no writes to the sim, bounded resources - and as the checklist for a signed venue release when one is wanted; none of it is deleted, and none of it blocks the event build.
 
 This gate protects equipment that Oasis owns and depends on. A passing build, a valid signature, or confidence in the source is not enough. The exact signed bytes must have complete off-site evidence and project-owner safety sign-off before the supervised canary in `spike-checklist.md`.
+
+## What ran on Oasis computers, and when
+
+- 2026-09-26: the project owner personally ran the rig agent read-only (`OasisRigAgent.exe --diagnose`) on the 2 rig computers Oasis is taking to the off-site event; it attached to iRacing and timed laps correctly (the log is on the pull request that added iRacing lap detection).
+- 2026-09-26: the project owner lifted this gate for this project's software on Oasis computers ("disregard that rule we are past that. We need this to run") and decided the agent, with telemetry set to iracing, runs on the 2 event computers for the 2026-09-27 off-site event.
 
 ## Threat model
 

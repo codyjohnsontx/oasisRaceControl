@@ -6,7 +6,9 @@ Oasis Sim Racing is a physical venue with ~20–25 Windows iRacing simulators. C
 
 This plan follows a completed product-discovery round with the owner. It covers the MVP only; payment/booking integration, native apps, ratings, and multi-venue SaaS are explicitly deferred.
 
-**Venue-safety gate:** no executable from this project may run on an Oasis computer until Phase 0 is complete. A build, passing unit tests, or a valid signature is not venue authorization. The exact signed artifact must pass the off-site Windows 11 evidence gate and project-owner safety sign-off first.
+**Venue-safety gate: lifted by the project owner on 2026-09-26** ("disregard that rule we are past that. We need this to run"). The Phase 0 guidance in [`docs/venue-safety.md`](venue-safety.md) stays as recommendations (read-only access to iRacing, no elevation, no writes to the sim) and as the checklist for a signed venue release; it no longer blocks running this project's software on Oasis computers.
+
+**Recorded:** on 2026-09-26 the project owner ran the rig agent read-only (`OasisRigAgent.exe --diagnose`) on the 2 off-site event rig computers and decided the agent (telemetry iracing) runs on them for the 2026-09-27 event. See [`docs/venue-safety.md`](venue-safety.md#what-ran-on-oasis-computers-and-when).
 
 ## Confirmed decisions (from discovery)
 
@@ -123,7 +125,7 @@ Per-rig bearer tokens (hashed at rest, staff-rotatable); agents can only write t
 
 **Phase 1B — controlled iRacing telemetry spike (blocked by Phase 1A).** Using the same executable and SHA-256, prove iRacing detect/close, session identity + restarts, track/config/car IDs, lap number + time, per-lap incident delta, off-track/surface signals, reset-to-pits, recorder-restart recovery, duplicate handling, and a lap landing right before exit. Deliverable: findings mapping every desired field to a real SDK field or an explicit unavailable verdict. **Schema is not final until this lands.**
 
-**Phase 2 — one rig, end to end (simulated web/API slice substantially built in parallel).** Check-in, guest + name/PIN auth, driver portal, TV/track leaderboards, staff dashboard v1, database migrations, lap ingestion, fake-rig simulator, and the agent's authentication/heartbeat/assignment/durable-outbox infrastructure exist. Real iRacing lap detection, validity behavior, the Windows tray/status shell, and the real-rig verification remain blocked by Phase 1B.
+**Phase 2 — one rig, end to end (simulated web/API slice substantially built in parallel).** Check-in, guest + name/PIN auth, driver portal, TV/track leaderboards, staff dashboard v1, database migrations, lap ingestion, fake-rig simulator, and the agent's authentication/heartbeat/assignment/durable-outbox infrastructure exist. The agent's iRacing lap detection has since been built; what has and has not been verified against real iRacing is tracked in `apps/rig-agent/README.md`. The Windows tray/status shell is not built.
 
 **Phase 3 — three-rig pilot.** Simultaneous submissions, takeover/move flows under real customers, QR print quality, mobile-browser matrix, unplug-the-ethernet tests, staff corrections in anger, TV readability from the door, idle-timeout tuning. Add challenge CRUD + challenge leaderboard. Measure: % sessions attributed, scan→check-in completion, median check-in time, duplicate rate, staff corrections/night.
 

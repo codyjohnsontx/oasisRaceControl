@@ -3,10 +3,9 @@ namespace OasisRigAgent.Core;
 /// <summary>
 /// A completed lap detected by a telemetry source, before it is queued.
 ///
-/// PROVISIONAL CONTRACT: mirrors the backend's LAP_COMPLETED event
-/// (apps/web/src/lib/events.ts). Field details may change when the Phase 1
-/// iRacing spike findings land; the real telemetry source is built against the
-/// frozen version.
+/// Mirrors the backend's LAP_COMPLETED event (apps/web/src/lib/events.ts);
+/// both ends of the wire change together. Iracing.LapDetector fills it from the
+/// sim, SimulatedTelemetrySource from a timer.
 /// </summary>
 public sealed record LapCompleted
 {
