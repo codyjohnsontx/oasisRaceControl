@@ -2,13 +2,19 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatLapTime } from "@/lib/time";
-import { type Board, type BoardRow, trackKey } from "@/lib/leaderboards";
+import {
+  type Board,
+  type BoardRow,
+  TONIGHT_FEED_MAX_ROWS,
+  trackKey,
+} from "@/lib/leaderboards";
 import { roundLabel, type LeagueRound } from "@/lib/league";
 import type { SeasonStanding } from "@/lib/league-scoring";
 import { venueToday } from "@/lib/venue";
 import {
   type AnyTvBoardDefinition,
   type TvBoardProps,
+  type TvMode,
   type TvSlide,
   defineTvBoard,
 } from "@/lib/tv-rotation";
@@ -87,6 +93,15 @@ const driverCount = (n: number) => `${n} driver${n === 1 ? "" : "s"}`;
 
 // ---- tonight board: the featured combo ------------------------------------
 
+/**
+ * The tonight board plays two ways. In the rotation it is the top ten of the
+ * featured combo, one slide among the others. With `everyone` it is the event
+ * view of `/tv`: the same board and the same feed, asking for every driver with
+ * a lap today (up to the feed's ceiling) and scrolling through them, because at
+ * an off-site event the point is that everybody finds their own name.
+ */
+type TonightSpec = { everyone: boolean };
+
 type TonightRow = {
   driver_id: string;
   display_name: string;
@@ -111,10 +126,15 @@ const CELEBRATION_MS = 7_000;
  */
 const previousBests = new Map<string, number>();
 
-const TONIGHT_BOARD = defineTvBoard<null, TonightData>({
+const TONIGHT_BOARD = defineTvBoard<TonightSpec, TonightData>({
   kind: "tonight",
-  async load(_spec, signal) {
-    const data = (await fetchJson("/api/leaderboard/tonight", signal)) as TonightData;
+  async load(spec, signal) {
+    // The rotation's slide asks for nothing, so the request the venue's wall
+    // has always made is unchanged; only the event view asks for the ceiling.
+    const url = spec.everyone
+      ? `/api/leaderboard/tonight?limit=${TONIGHT_FEED_MAX_ROWS}`
+      : "/api/leaderboard/tonight";
+    const data = (await fetchJson(url, signal)) as TonightData;
     if (!Array.isArray(data.rows)) throw new Error("malformed tonight response");
     // An empty feed is the venue day rolling over. This runs on every pass,
     // including the ones where the slide is then skipped as empty, so it is the
@@ -129,21 +149,25 @@ const TONIGHT_BOARD = defineTvBoard<null, TonightData>({
   Board: TonightBoard,
 });
 
-function TonightBoard({ data, stale, hold }: TvBoardProps<null, TonightData>) {
+function TonightBoard({ spec, data, stale, hold }: TvBoardProps<TonightSpec, TonightData>) {
   const celebration = usePersonalBest(data.rows, hold);
   const { combo } = data;
 
   return (
     <>
       <ArcadeHighScores
-        eyebrow="Fastest tonight"
+        eyebrow={spec.everyone ? "Event leaderboard" : "Fastest tonight"}
         title={combo?.track_name ?? "Tonight's fastest"}
-        subtitle={
-          combo
-            ? [combo.track_config, combo.car_name].filter(Boolean).join(" · ")
-            : "Every combo driven today"
-        }
-        entries={data.rows.slice(0, SLOT_COUNT).map(toEntry)}
+        subtitle={[
+          ...(combo ? [combo.track_config, combo.car_name] : ["Every combo driven today"]),
+          // Counted on the rows rather than in SQL: the event view holds every
+          // driver, so here the two are the same number.
+          spec.everyone ? driverCount(data.rows.length) : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+        entries={(spec.everyone ? data.rows : data.rows.slice(0, SLOT_COUNT)).map(toEntry)}
+        layout={spec.everyone ? "scroll" : "slots"}
         stale={stale}
       />
       {celebration && (
@@ -352,9 +376,11 @@ export const TV_BOARD_TYPES: Record<string, AnyTvBoardDefinition> = {
 };
 
 /**
- * The rotation: the league standings, then tonight's featured combo, then every
- * track with laps on it, in the order `listBoards()` returns them (track name,
- * then layout).
+ * The rotation lists, one per `TvMode`.
+ *
+ * The venue's rotation: the league standings, then tonight's featured combo,
+ * then every track with laps on it, in the order `listBoards()` returns them
+ * (track name, then layout).
  *
  * League goes first so that on a Wednesday the wall reaches the board that
  * holds it straight away rather than cycling the arcade boards first; on every
@@ -364,11 +390,21 @@ export const TV_BOARD_TYPES: Record<string, AnyTvBoardDefinition> = {
  * Slides whose data fails to load or comes back empty are skipped at play time
  * by the engine, so this list can name a board optimistically - the tonight
  * slide simply drops out on a day nobody has driven yet.
+ *
+ * The event view is one slide: the tonight board with everyone on it. Nothing
+ * else is listed, so the engine has nothing to cycle to and keeps refreshing
+ * that board - which is the whole difference between the two modes. At an
+ * off-site event the tonight board and the all-time board are the same laps
+ * under two headings, and a league slide with no season is a counter in the
+ * footer that never plays; the owner saw "three displays" of one event.
  */
-export function buildRotation(boards: Board[]): TvSlide[] {
+export function buildRotation(boards: Board[], mode: TvMode = "rotation"): TvSlide[] {
+  if (mode === "event") {
+    return [{ key: "event", kind: "tonight", spec: { everyone: true } satisfies TonightSpec }];
+  }
   return [
     { key: "league", kind: "league", spec: null },
-    { key: "tonight", kind: "tonight", spec: null },
+    { key: "tonight", kind: "tonight", spec: { everyone: false } satisfies TonightSpec },
     ...boards.map((board) => ({
       key: `track:${trackKey(board)}`,
       kind: "track",

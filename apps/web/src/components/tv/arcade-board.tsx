@@ -1,15 +1,20 @@
 import { formatGap, formatLapTime } from "@/lib/time";
+import { AutoScroll } from "./auto-scroll";
 
 /**
  * Shared presentation for `/tv` boards: an arcade high-score table, sized to be
  * read from across the shop. Board types feed it entries; it owns nothing about
  * loading or rotation.
  *
- * Every board renders the same `SLOT_COUNT` rank slots whether or not they're
- * filled. That's deliberate on two counts: an arcade table with unclaimed slots
- * reads as an invitation rather than as a bug, and a constant row height keeps
- * the layout from jumping as the rotation moves between a busy board and a
- * quiet one.
+ * Two layouts of the same table. In the rotation (`layout: "slots"`, the
+ * default) every board renders the same `SLOT_COUNT` rank slots whether or not
+ * they're filled. That's deliberate on two counts: an arcade table with
+ * unclaimed slots reads as an invitation rather than as a bug, and a constant
+ * row height keeps the layout from jumping as the rotation moves between a
+ * busy board and a quiet one. The event view (`layout: "scroll"`) is the
+ * opposite job - show everyone - so it draws every entry at the row's own
+ * height and lets `AutoScroll` carry the ones below the fold up on their own.
+ * Header, rule, headings and the row itself are the same markup either way.
  *
  * Sizing: every length here is in `em` of `.tv-scale` (see `globals.css`), so
  * the table is one 1920x1080 composition scaled to whatever panel it lands on
@@ -114,6 +119,12 @@ type Props = {
   emptyScore?: string;
   /** Last refresh failed; dim slightly so the room reads it as held, not live. */
   stale?: boolean;
+  /**
+   * `slots` draws `SLOT_COUNT` rank slots stretched to fill the board; `scroll`
+   * draws every entry and scrolls them when they run past the screen. See the
+   * component comment.
+   */
+  layout?: "slots" | "scroll";
 };
 
 const RANK_STYLES = [
@@ -149,14 +160,67 @@ export function ArcadeHighScores({
   columns,
   emptyScore = "--.---",
   stale = false,
+  layout = "slots",
 }: Props) {
   const leader = entries[0];
-  const slots = Array.from({ length: SLOT_COUNT }, (_, i) => entries[i] ?? null);
+  const slots =
+    layout === "slots"
+      ? Array.from({ length: SLOT_COUNT }, (_, i) => entries[i] ?? null)
+      : entries;
   const {
     detail: detailHeading = "Car",
     score: scoreHeading = "Lap",
     gap: gapHeading = "Gap",
   } = columns ?? {};
+
+  // In the slots layout the rows also stretch (`flex-1`) to fill the board;
+  // scrolling rows keep their own height so the list's length is its length.
+  const rows = (
+    <>
+      {slots.map((entry, index) => (
+        <li
+          key={entry?.id ?? `open-${index}`}
+          className={`${COLUMNS} ${ROW_MIN_H} border-b border-edge last:border-b-0 ${
+            layout === "slots" ? "flex-1" : ""
+          } ${entry ? "" : "opacity-30"}`}
+        >
+          <span
+            className={`font-display text-[2.75em]/[1.1] font-black tabular-nums ${
+              entry ? RANK_STYLES[index] ?? "text-muted" : "text-muted"
+            }`}
+          >
+            {String(index + 1).padStart(2, "0")}
+          </span>
+
+          {entry ? (
+            <>
+              <span className="truncate text-[2.5em]/[1.1] font-bold">{entry.name}</span>
+              <span className="text-muted truncate text-[1.5em]/[1.2] uppercase tracking-wide">
+                {entry.detail}
+              </span>
+              <span className="laptime text-right text-[2.5em]/[1.1] font-bold">
+                {scoreText(entry, emptyScore)}
+              </span>
+              <span className="laptime text-muted text-right text-[1.5em]/[1.2]">
+                {gapText(entry, leader, index)}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-muted text-[2.5em]/[1.1] font-bold tracking-[0.3em]">
+                · · · · ·
+              </span>
+              <span />
+              <span className="laptime text-muted text-right text-[2.5em]/[1.1] font-bold">
+                {emptyScore}
+              </span>
+              <span />
+            </>
+          )}
+        </li>
+      ))}
+    </>
+  );
 
   return (
     <section
@@ -189,50 +253,13 @@ export function ArcadeHighScores({
         <span className={`${HEADING} text-right`}>{gapHeading}</span>
       </div>
 
-      <ol className="mt-[0.25em] flex flex-1 flex-col">
-        {slots.map((entry, index) => (
-          <li
-            key={entry?.id ?? `open-${index}`}
-            className={`${COLUMNS} ${ROW_MIN_H} flex-1 border-b border-edge last:border-b-0 ${
-              entry ? "" : "opacity-30"
-            }`}
-          >
-            <span
-              className={`font-display text-[2.75em]/[1.1] font-black tabular-nums ${
-                entry ? RANK_STYLES[index] ?? "text-muted" : "text-muted"
-              }`}
-            >
-              {String(index + 1).padStart(2, "0")}
-            </span>
-
-            {entry ? (
-              <>
-                <span className="truncate text-[2.5em]/[1.1] font-bold">{entry.name}</span>
-                <span className="text-muted truncate text-[1.5em]/[1.2] uppercase tracking-wide">
-                  {entry.detail}
-                </span>
-                <span className="laptime text-right text-[2.5em]/[1.1] font-bold">
-                  {scoreText(entry, emptyScore)}
-                </span>
-                <span className="laptime text-muted text-right text-[1.5em]/[1.2]">
-                  {gapText(entry, leader, index)}
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="text-muted text-[2.5em]/[1.1] font-bold tracking-[0.3em]">
-                  · · · · ·
-                </span>
-                <span />
-                <span className="laptime text-muted text-right text-[2.5em]/[1.1] font-bold">
-                  {emptyScore}
-                </span>
-                <span />
-              </>
-            )}
-          </li>
-        ))}
-      </ol>
+      {layout === "slots" ? (
+        <ol className="mt-[0.25em] flex flex-1 flex-col">{rows}</ol>
+      ) : (
+        <AutoScroll rowCount={slots.length}>
+          <ol className="mt-[0.25em] flex flex-col">{rows}</ol>
+        </AutoScroll>
+      )}
     </section>
   );
 }
