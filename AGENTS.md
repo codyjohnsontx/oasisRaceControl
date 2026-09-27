@@ -236,10 +236,11 @@ map, no package), a line scanner for the session-info YAML, and `LapDetector`,
 a pure state machine over telemetry ticks. Detection rules and every skip
 reason are documented on `LapDetector` and pinned by
 `OasisRigAgent.Tests/Iracing/LapDetectorTests.cs`; change the rule and its
-test together. Those tick sequences were written from the SDK's documented
-behaviour, not recorded from a sim, so `OasisRigAgent.exe --diagnose` (reads
-and prints, posts nothing) is the first check on any rig and the only
-real-iRacing evidence until someone records a session.
+test together. Lap detection is verified against real iRacing on the owner's
+rig with `OasisRigAgent.exe --diagnose` (reads and prints, posts nothing) on
+2026-09-26 - the garage-exit resync test replays that log - but most trap
+sequences are still hand-built from the SDK's documented behaviour, and a rig
+posting to the hosted app is not yet verified. Run `--diagnose` first on any rig.
 
 The featured combo matches lap strings exactly, so the agent prints the
 `TrackDisplayName` / `TrackConfigName` / `CarScreenName` it posts on every lap

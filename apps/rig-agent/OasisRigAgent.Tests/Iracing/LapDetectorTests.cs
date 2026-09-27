@@ -6,10 +6,11 @@ namespace OasisRigAgent.Tests.Iracing;
 
 /// <summary>
 /// Each test feeds the detector a hand-built sequence of ticks for one of the
-/// traps named on <see cref="LapDetector"/>. None of these sequences was
-/// recorded from a real sim; they encode what the iRacing SDK documents and
-/// what other readers of it rely on, which is exactly why the diagnostic mode
-/// exists as the first real-iRacing check.
+/// traps named on <see cref="LapDetector"/>. Lap detection is verified against
+/// real iRacing on the owner's rig with the diagnostic mode (2026-09-26, test
+/// drive, FIA F4 at COTA Grand Prix), and the resync tests replay that log; the
+/// other sequences encode what the iRacing SDK documents and what other readers
+/// of it rely on.
 /// </summary>
 public sealed class LapDetectorTests
 {

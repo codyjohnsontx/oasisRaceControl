@@ -59,7 +59,7 @@ Built and verified end-to-end against the live backend:
   sim's shared memory on the rig PC and posts each completed lap with the
   track, layout and car exactly as iRacing names them. See
   [iRacing telemetry](#iracing-telemetry) below, including what has and has
-  not been tested against the real sim.
+  not been verified against the real sim.
 
 The current host is a **console app** (runs on macOS/Linux/Windows, so it can be
 tested anywhere; the iRacing source itself only reads on Windows). A tray-icon
@@ -119,13 +119,16 @@ tick sequences):
   once a second and the status line says `sim idle`.
 - Pause needs nothing: no line is crossed and the lap time is the sim's own.
 
-**What has NOT been tested against real iRacing.** Every tick sequence in
-`OasisRigAgent.Tests/Iracing/LapDetectorTests.cs` was written from the SDK's
-documented behaviour, not recorded from a sim: the tick order of
-`LapCompleted` versus `LapLastLapTime`, the value iRacing publishes for an out
-lap, the exact spelling of the session-info keys and whether it quotes values,
-and the encoding of the session string are all assumptions until the
-diagnostic below has been run on a rig. Run it before trusting the wall.
+**What has and has not been verified against real iRacing.** Lap detection
+is verified on the owner's rig with the diagnostic below (2026-09-26, test
+drive, FIA F4 at COTA Grand Prix): it connected, read the session strings
+`"Circuit of the Americas"` / `"Grand Prix"` / `"FIA F4"`, timed each lap, and
+exposed the garage-exit counter drop that is now a resync (its tests replay
+that log). The other trap sequences in
+`OasisRigAgent.Tests/Iracing/LapDetectorTests.cs` - pit lane, tow, replay,
+session change - are still written from the SDK's documented behaviour. **A
+rig posting laps to the hosted app is not yet verified**; run the diagnostic
+on every rig before trusting the wall.
 
 ### Diagnostic mode - run this first on a rig PC
 
@@ -337,7 +340,8 @@ settles it and the outbox drains. Only laps the backend did **not** store (an
 error, or a status this agent is too old to recognise) stay queued, because the
 outbox holds the only durable copy. See the event model in `docs/plan.md`.
 
-The iRacing source has been run on macOS only as far as it can be: the parser
-and detector against synthetic shared-memory blocks and tick sequences, and the
-whole agent against a local backend with the simulated source. Its first run
-against the real sim is the diagnostic above.
+On macOS the iRacing source runs only as far as it can: the parser and
+detector against synthetic shared-memory blocks and tick sequences, and the
+whole agent against a local backend with the simulated source. Against the real
+sim, lap detection is verified on the owner's rig with the diagnostic above;
+posting to the hosted app from a rig is not yet verified.
