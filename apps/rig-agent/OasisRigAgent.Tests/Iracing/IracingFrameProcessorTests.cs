@@ -157,7 +157,7 @@ public sealed class IracingFrameProcessorTests
     }
 
     [Fact]
-    public void TheIncompleteNoticeIsOncePerConnection()
+    public void TheIncompleteNoticeRepeatsOnlyWhenWhatWasFoundChangesOrTheSimReconnects()
     {
         var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
         var reader = new ByteArrayMemoryReader(fixture.Bytes);
@@ -178,12 +178,50 @@ public sealed class IracingFrameProcessorTests
     }
 
     [Fact]
+    public void TheIncompleteNoticeFollowsSessionInfoPastTheLoadingSnapshot()
+    {
+        // The first read lands mid-load; the full document then arrives but
+        // still names no car for the player - that later state is the one to show.
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        fixture.SetSessionInfo("WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n");
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        var incomplete = new List<string>();
+        _frames.SessionInfoIncomplete += incomplete.Add;
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+
+        fixture.SetSessionInfo(
+            "WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n" +
+            "DriverInfo:\n DriverCarIdx: 7\n Drivers:\n - CarIdx: 0\n   CarScreenName: FIA F4\n");
+        fixture.WriteInt(48, 160);
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+
+        Assert.Equal(2, incomplete.Count);
+        Assert.Contains("drivers listed=0", incomplete[0]);
+        Assert.Contains("DriverCarIdx=7", incomplete[1]);
+        Assert.Contains("drivers listed=1", incomplete[1]);
+    }
+
+    [Fact]
+    public void TheSimLeavingBeforeSessionInfoIsReadIsNotConnectedAndNotAnIncompleteSession()
+    {
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        var reader = new HeaderClearingReader(fixture, headerReadsBeforeClearing: 2);
+        var incomplete = new List<string>();
+        _frames.SessionInfoIncomplete += incomplete.Add;
+
+        Assert.Equal(FrameOutcome.NotConnected, _frames.Process(reader));
+
+        Assert.False(_frames.Connected);
+        Assert.Empty(incomplete);
+    }
+
+    [Fact]
     public void TheSimLeavingBetweenTheHeaderCheckAndTheParseIsNotConnected()
     {
         var fixture = new MemoryFixture()
             .AddVariable("LapCompleted", IracingVariableType.Int, 0, 3)
             .AddVariable("LapLastLapTime", IracingVariableType.Float, 4, 150.0f);
-        var reader = new HeaderClearingReader(fixture);
+        var reader = new HeaderClearingReader(fixture, headerReadsBeforeClearing: 1);
         var missing = new List<IReadOnlyList<string>>();
         _frames.MissingVariables += missing.Add;
 
@@ -195,20 +233,16 @@ public sealed class IracingFrameProcessorTests
         Assert.Empty(_attached);
     }
 
-    /// <summary>Clears the connected bit right after the first header read, the
+    /// <summary>Clears the connected bit after a given number of header reads, the
     /// way the sim does when it leaves a session mid-frame.</summary>
-    private sealed class HeaderClearingReader(MemoryFixture fixture) : IReadOnlyMemoryReader
+    private sealed class HeaderClearingReader(MemoryFixture fixture, int headerReadsBeforeClearing) : IReadOnlyMemoryReader
     {
-        private bool _cleared;
+        private int _headerReads;
         public long Capacity => fixture.Bytes.Length;
         public void Read(long offset, Span<byte> destination)
         {
             fixture.Bytes.AsSpan(checked((int)offset), destination.Length).CopyTo(destination);
-            if (offset == 0 && !_cleared)
-            {
-                _cleared = true;
-                fixture.WriteInt(4, 0);
-            }
+            if (offset == 0 && ++_headerReads == headerReadsBeforeClearing) fixture.WriteInt(4, 0);
         }
     }
 

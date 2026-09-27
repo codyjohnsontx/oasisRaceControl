@@ -125,13 +125,15 @@ public sealed class IracingMemoryParser
             Values: values);
     }
 
-    /// <summary>The session-info region as the header currently places it, or
-    /// null when the sim is not connected or publishes none. Read on its own
+    /// <summary>The session-info region as the header currently places it (empty
+    /// when the sim publishes none), or null when the sim is no longer connected.
+    /// Read on its own
     /// because it is large and changes rarely, so it is not copied every frame.</summary>
     public byte[]? ReadSessionInfo()
     {
         var raw = ReadHeader(_reader);
-        if (!raw.Connected || raw.SessionInfoLength == 0) return null;
+        if (!raw.Connected) return null;
+        if (raw.SessionInfoLength == 0) return [];
         Require(raw.SessionInfoLength is > 0 and <= MaximumSessionInfoBytes, "Session metadata is too large or negative.");
         var bytes = new byte[raw.SessionInfoLength];
         ReadChecked(raw.SessionInfoOffset, bytes);

@@ -37,7 +37,7 @@ public sealed class IracingFrameProcessor
     private int _sessionReadUpdate = int.MinValue;
     private int _sessionReadTick;
     private bool _sessionNamed;
-    private bool _reportedIncomplete;
+    private string? _reportedIncomplete;
     private int _consecutiveMalformed;
     private bool _reportedMissing;
     private bool _reportedAttached;
@@ -55,11 +55,12 @@ public sealed class IracingFrameProcessor
     /// Raised once per distinct reason; the header is null when even that could not be read.</summary>
     public event Action<RawHeader?, string>? HeaderRejected;
     /// <summary>Session info was (re)read and named a different track and car.
-    /// Session info that names none yet is read again on the next frame and
-    /// never replaces a combo already named during this connection.</summary>
+    /// Session info that names none yet is read again once a second of sim time
+    /// and never replaces a combo already named during this connection.</summary>
     public event Action<SessionCombo>? ComboChanged;
     /// <summary>Session info was read but named no track and car for the player
-    /// while none was known yet - once per connection, with what it did find.</summary>
+    /// while none was known yet, with what it did find - raised again only when
+    /// that changes, so the last one shows the state loading settled in.</summary>
     public event Action<string>? SessionInfoIncomplete;
     /// <summary>Watched variables this iRacing build does not publish, once per connection.</summary>
     public event Action<IReadOnlyList<string>>? MissingVariables;
@@ -112,7 +113,11 @@ public sealed class IracingFrameProcessor
             if (parsed.SessionInfoUpdate != _sessionReadUpdate
                 || (!_sessionNamed && parsed.TickCount - _sessionReadTick >= parsed.TickRate))
             {
-                ReadSessionInfo(parsed);
+                if (!ReadSessionInfo(parsed))
+                {
+                    SetConnected(false);
+                    return FrameOutcome.NotConnected;
+                }
             }
 
             if (parsed.TickCount != _lastTick)
@@ -144,21 +149,24 @@ public sealed class IracingFrameProcessor
         }
     }
 
-    private void ReadSessionInfo(ParsedMemorySnapshot parsed)
+    /// <summary>False when the sim left the session before its session info could be read.</summary>
+    private bool ReadSessionInfo(ParsedMemorySnapshot parsed)
     {
         var bytes = _parser!.ReadSessionInfo();
+        if (bytes is null) return false;
         _sessionReadUpdate = parsed.SessionInfoUpdate;
         _sessionReadTick = parsed.TickCount;
-        var yaml = bytes is null ? "" : SessionInfoParser.Decode(bytes);
+        var yaml = SessionInfoParser.Decode(bytes);
         var playerIdx = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
         var combo = SessionInfoParser.Parse(yaml, playerIdx);
         _sessionNamed = combo is not null;
         if (combo is null)
         {
-            if (_detector.Combo is null && !_reportedIncomplete)
+            var found = SessionInfoParser.DescribeFound(yaml, playerIdx);
+            if (_detector.Combo is null && found != _reportedIncomplete)
             {
-                _reportedIncomplete = true;
-                SessionInfoIncomplete?.Invoke(SessionInfoParser.DescribeFound(yaml, playerIdx));
+                _reportedIncomplete = found;
+                SessionInfoIncomplete?.Invoke(found);
             }
         }
         else if (!Equals(combo, _detector.Combo))
@@ -166,6 +174,7 @@ public sealed class IracingFrameProcessor
             _detector.Combo = combo;
             ComboChanged?.Invoke(combo);
         }
+        return true;
     }
 
     /// <summary>The map went away (iRacing closed).</summary>
@@ -193,7 +202,7 @@ public sealed class IracingFrameProcessor
             _lastTick = int.MinValue;
             _sessionReadUpdate = int.MinValue;
             _sessionNamed = false;
-            _reportedIncomplete = false;
+            _reportedIncomplete = null;
             _reportedMissing = false;
             _reportedAttached = false;
         }
