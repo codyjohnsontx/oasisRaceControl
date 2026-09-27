@@ -60,7 +60,7 @@ Console.WriteLine(config.TelemetryMode switch
     TelemetryMode.Simulated => "Telemetry: SIMULATED (emitting fake laps)",
     _ => "Telemetry: none (heartbeat and driver display only)",
 });
-using var quit = new CancellationTokenSource();
+var quit = new CancellationTokenSource();
 
 if (config.RigQrToken is { } qrToken)
 {
