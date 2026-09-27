@@ -322,4 +322,67 @@ public sealed class LapDetectorTests
         Drive(bare with { LapCompleted = 2, LapLastLapTime = 150.0f });
         Assert.Equal(150000, Assert.Single(_decisions).Lap!.LapTimeMs);
     }
+
+    [Fact]
+    public void ACrossingWhileTheDriversCarIsNotOnTrackIsNotALap()
+    {
+        // Spectating or a camera on another car: the sim may not flag a replay,
+        // but the player's own car is not on track when the counter moves.
+        Cruise(Tick(1, 155.0f), 10);
+        Cruise(Tick(1, 155.0f, onTrack: false), 5);
+        _decisions.Clear();
+        Drive(Tick(2, 150.0f, onTrack: false));
+        Cruise(Tick(2, 150.0f, onTrack: false), LapDetector.LapTimeDeadlineTicks + 1);
+        var d = Assert.Single(_decisions);
+        Assert.Null(d.Lap);
+        Assert.Contains("not on track", d.SkipReason);
+    }
+
+    [Fact]
+    public void AReplayShowingLapsOfAnotherCarPostsNothing()
+    {
+        Cruise(Tick(3, 155.0f), 10);
+        // Replay: counter and time channels show the replayed car's values.
+        Cruise(Tick(9, 120.0f, replay: true), 30);
+        Cruise(Tick(12, 118.0f, replay: true), 30);
+        // Back live at the same lap as before: nothing from the replay counted.
+        Cruise(Tick(3, 155.0f), 10);
+        Assert.Empty(_decisions);
+        // The lap that was in progress while the replay ran is tainted and
+        // skipped; the one after it is timed once.
+        Drive(Tick(4, 151.0f));
+        Assert.Contains("replay", Assert.Single(_decisions).SkipReason);
+        _decisions.Clear();
+        Cruise(Tick(4, 151.0f), 10);
+        Drive(Tick(5, 149.5f));
+        Assert.Equal(149500, Assert.Single(_decisions).Lap!.LapTimeMs);
+    }
+
+    [Fact]
+    public void AFullSessionRestartNeverPostsTheOldSessionsLastTimeAndTimesTheNewLaps()
+    {
+        // Session A: a lap of 2:14.906 posted.
+        Cruise(Tick(2, 140.0f), 10);
+        Drive(Tick(3, 134.906f));
+        Assert.Equal(134906, Assert.Single(_decisions).Lap!.LapTimeMs);
+        _decisions.Clear();
+        var resyncs = new List<string>();
+        _detector.Resynced += resyncs.Add;
+
+        // Exit to the menu: the agent's owner calls Reset (disconnect). Then a
+        // brand-new session, fresh car, counter from 0 in the pits, and the
+        // time channel still showing session A's last lap.
+        _detector.Reset();
+        Cruise(Tick(0, 134.906f, pit: true, sessionNum: 0, sessionUnique: 77, carIdx: 4), 10);
+        Drive(Tick(1, 134.906f, sessionUnique: 77, carIdx: 4));                 // out lap
+        Cruise(Tick(1, 134.906f, sessionUnique: 77, carIdx: 4), LapDetector.LapTimeDeadlineTicks + 1);
+        Assert.All(_decisions, d => Assert.Null(d.Lap));
+        _decisions.Clear();
+
+        Drive(Tick(2, 141.250f, sessionUnique: 77, carIdx: 4));                 // first flying lap
+        var posted = Assert.Single(_decisions);
+        Assert.Equal(141250, posted.Lap!.LapTimeMs);
+        Assert.Equal(2, posted.Lap.LapNumber);
+        Assert.DoesNotContain(_decisions, d => d.Lap?.LapTimeMs == 134906);
+    }
 }

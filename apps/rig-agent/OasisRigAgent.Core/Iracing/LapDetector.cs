@@ -116,7 +116,7 @@ public sealed class LapDetector
     private float? _staleLapTime;
 
     private sealed record Pending(int LapCompleted, int Deadline, float? TimeBefore, int? Incidents,
-        bool Pit, bool Incomplete, bool Replay);
+        bool Pit, bool Incomplete, bool Replay, bool OffTrackAtLine);
 
     public LapDetector(Func<DateTimeOffset>? now = null, string? rigTag = null)
     {
@@ -137,6 +137,9 @@ public sealed class LapDetector
     /// stale lap time is kept - the time channel can still show it afterwards.</summary>
     public void Reset()
     {
+        // The time channel can still show the previous session's last lap
+        // after a restart; it must never be read as the new session's first.
+        _staleLapTime = _lastLapTimeSeen ?? _staleLapTime;
         _lastLapCompleted = null;
         _resyncing = false;
         _lastLapTimeSeen = null;
@@ -234,7 +237,10 @@ public sealed class LapDetector
             Incidents: t.PlayerCarMyIncidentCount is int now && _lapStartIncidents is int start ? now - start : null,
             Pit: _pitSeen,
             Incomplete: _incompleteSeen,
-            Replay: _replaySeen);
+            Replay: _replaySeen,
+            // A crossing the player's own car did not make - spectating, a
+            // camera on another car, a replay the sim did not flag - is never a lap.
+            OffTrackAtLine: t.IsOnTrack == false);
         Baseline(lapCompleted, t);
     }
 
@@ -288,6 +294,7 @@ public sealed class LapDetector
     {
         var n = p.LapCompleted;
         if (p.Replay) return new LapDecision(n, null, "a replay was playing during this lap - not timed");
+        if (p.OffTrackAtLine) return new LapDecision(n, null, "the driver's car was not on track when the counter moved (replay or spectating) - not timed");
         if (p.Incomplete) return new LapDecision(n, null, "the car was reset, towed or left the track mid-lap - not timed");
         if (p.Pit) return new LapDecision(n, null, "the lap went through the pit lane (out lap or pit stop) - not timed");
         if (time is float t && t > 0 && t == _staleLapTime)

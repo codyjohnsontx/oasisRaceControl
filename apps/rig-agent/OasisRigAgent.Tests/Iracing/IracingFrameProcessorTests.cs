@@ -289,4 +289,71 @@ public sealed class IracingFrameProcessorTests
         Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
         Assert.Empty(decisions);
     }
+
+    [Fact]
+    public void AFullSessionRestartReReadsTheComboAndNeverPostsTheOldSessionsTime()
+    {
+        var combos = new List<SessionCombo?>();
+        _frames.ComboChanged += combos.Add;
+        var decisions = new List<LapDecision>();
+        _detector.Decided += decisions.Add;
+
+        static string Session(int uniqueId, string car) =>
+            $"WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n TrackConfigName: Grand Prix\nSessionInfo:\n Sessions:\n - SessionNum: 0\nDriverInfo:\n DriverCarIdx: 0\n Drivers:\n - CarIdx: 0\n   CarScreenName: {car}\n   CarID: {uniqueId}\n";
+
+        // Session A in the FIA F4: lap 3 posted at 2:14.906.
+        var fixture = new MemoryFixture()
+            .AddVariable("LapCompleted", IracingVariableType.Int, 0, 2)
+            .AddVariable("LapLastLapTime", IracingVariableType.Float, 4, 140.0f)
+            .AddVariable("SessionUniqueID", IracingVariableType.Int, 8, 11)
+            .AddVariable("PlayerCarIdx", IracingVariableType.Int, 12, 0)
+            .AddVariable("OnPitRoad", IracingVariableType.Bool, 16, false)
+            .SetSessionInfo(Session(11, "FIA F4"));
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+        Assert.Equal("FIA F4", Assert.Single(combos)!.CarScreenName);
+        fixture.WriteInt(48, 101);
+        fixture.WriteInt(MemoryFixture.BufferOffset, 3);
+        fixture.WriteInt(MemoryFixture.BufferOffset + 4, BitConverter.SingleToInt32Bits(134.906f));
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+        Assert.Equal(134906, Assert.Single(decisions).Lap!.LapTimeMs);
+        decisions.Clear();
+
+        // Exit to the menu: connected bit clears.
+        fixture.WriteInt(4, 0);
+        Assert.Equal(FrameOutcome.NotConnected, _frames.Process(reader));
+
+        // A brand-new session in a different car, counter restarted in the pits,
+        // sessionInfoUpdate bumped, and the time channel still showing 134.906.
+        fixture.SetSessionInfo(Session(12, "Porsche 911 GT3 R"));
+        fixture.WriteInt(12, 2);                                            // sessionInfoUpdate
+        fixture.WriteInt(4, 1);
+        fixture.WriteInt(48, 102);
+        fixture.WriteInt(MemoryFixture.BufferOffset, 0);
+        fixture.WriteInt(MemoryFixture.BufferOffset + 8, 12);               // SessionUniqueID
+        fixture.Bytes[MemoryFixture.BufferOffset + 16] = 1;                 // OnPitRoad
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+        Assert.Equal("Porsche 911 GT3 R", combos.Last()!.CarScreenName);
+
+        // Out lap: counter 0 -> 1 with the stale time. Never posted.
+        fixture.WriteInt(48, 103);
+        fixture.WriteInt(MemoryFixture.BufferOffset, 1);
+        fixture.Bytes[MemoryFixture.BufferOffset + 16] = 0;
+        for (var i = 0; i < LapDetector.LapTimeDeadlineTicks + 2; i++)
+        {
+            fixture.WriteInt(48, 104 + i);
+            Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+        }
+        Assert.All(decisions, d => Assert.Null(d.Lap));
+        decisions.Clear();
+
+        // First flying lap of the new session posts once, with the new car.
+        fixture.WriteInt(48, 999);
+        fixture.WriteInt(MemoryFixture.BufferOffset, 2);
+        fixture.WriteInt(MemoryFixture.BufferOffset + 4, BitConverter.SingleToInt32Bits(141.25f));
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+        var posted = Assert.Single(decisions).Lap!;
+        Assert.Equal(141250, posted.LapTimeMs);
+        Assert.Equal("Porsche 911 GT3 R", posted.CarName);
+    }
 }

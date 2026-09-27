@@ -149,6 +149,13 @@ public sealed class AgentServiceTests : IDisposable
 
         private readonly object _storedLock = new();
         private readonly List<string> _stored = new();
+        private readonly Dictionary<string, string?> _storedCompletedAt = new();
+
+        /// <summary>The completedAt each stored lap arrived with, verbatim.</summary>
+        public IReadOnlyDictionary<string, string?> StoredCompletedAt
+        {
+            get { lock (_storedLock) return new Dictionary<string, string?>(_storedCompletedAt); }
+        }
 
         /// <summary>The laps this backend actually stored, in arrival order.</summary>
         public IReadOnlyList<string> StoredLapIds
@@ -197,7 +204,11 @@ public sealed class AgentServiceTests : IDisposable
                     continue;
                 }
                 var eventId = e["eventId"]!.GetValue<string>();
-                lock (_storedLock) _stored.Add(eventId);
+                lock (_storedLock)
+                {
+                    _stored.Add(eventId);
+                    _storedCompletedAt[eventId] = e["completedAt"]?.GetValue<string>();
+                }
                 results.Add(new JsonObject
                 {
                     ["type"] = type,
@@ -488,6 +499,52 @@ public sealed class AgentServiceTests : IDisposable
         Assert.All(
             batch,
             e => Assert.Equal(AssignmentId, e.Payload["rigAssignmentId"]!.GetValue<string>()));
+    }
+
+    /// <summary>The venue wifi drops in the middle of the event, after the rig
+    /// already knows who is in the seat. Laps driven during the outage wait in
+    /// the SQLite outbox, stamped with that stint and carrying the time they
+    /// were driven, and go out unchanged when the link returns - so the backend
+    /// still finds them inside the driver's check-in window.</summary>
+    [Fact]
+    public async Task Laps_driven_during_a_mid_event_outage_are_sent_later_with_their_original_times()
+    {
+        var checkedInAt = DateTimeOffset.Parse("2026-09-27T15:00:00Z");
+        var backend = new StubBackend { ValidatesLapTimes = true };
+        backend.Assign(AssignmentId, checkedInAt);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, telemetry);
+
+        var assigned = WaitForStatus(agent, s => s.Assignment?.Id == AssignmentId);
+        agent.Start();
+        await assigned;
+
+        // The wifi drops. Two laps are driven at 15:10 and 15:12.
+        backend.SetOffline(true);
+        var offline = WaitForStatus(agent, s => s.Connection == ConnectionState.Offline);
+        var lap1At = checkedInAt.AddMinutes(10);
+        var lap2At = checkedInAt.AddMinutes(12);
+        telemetry.Emit("evt-wifi-1", lap1At);
+        telemetry.Emit("evt-wifi-2", lap2At);
+
+        var held = queue.PendingBatch(10);
+        Assert.Equal(2, held.Count);
+        Assert.All(held, e => Assert.Equal(AssignmentId, e.Payload["rigAssignmentId"]!.GetValue<string>()));
+        Assert.Equal(lap1At.ToString("O"), held[0].Payload["completedAt"]!.GetValue<string>());
+        Assert.Equal(lap2At.ToString("O"), held[1].Payload["completedAt"]!.GetValue<string>());
+        await offline;
+
+        // The link returns; the next flush is at most one interval away.
+        var drained = WaitForStatus(agent, s => s.PendingLaps == 0 && s.Connection == ConnectionState.Online, TimeSpan.FromSeconds(30));
+        backend.SetOffline(false);
+        await drained;
+
+        Assert.Equal(new[] { "evt-wifi-1", "evt-wifi-2" }, backend.StoredLapIds);
+        Assert.Equal(lap1At.ToString("O"), backend.StoredCompletedAt["evt-wifi-1"]);
+        Assert.Equal(lap2At.ToString("O"), backend.StoredCompletedAt["evt-wifi-2"]);
     }
 
     /// <summary>The morning boot, which the deferred stamp must not turn back

@@ -97,7 +97,9 @@ tick sequences):
 - Incidents are the change in `PlayerCarMyIncidentCount` across the lap. If
   the sim does not publish that channel the lap is posted with no incident
   count and the backend treats it as clean.
-- Skipped, with the reason logged: no lap time (`LapLastLapTime` at or below
+- Skipped, with the reason logged: a crossing made while the driver's own car
+  was not on track (`IsOnTrack` false - spectating, a camera on another car),
+  no lap time (`LapLastLapTime` at or below
   zero - an out lap or an invalid lap), a lap that touched the pit lane
   (`OnPitRoad`, which also drops the out lap after a stop), a reset, tow or
   trip to the garage mid-lap (`Lap` going down, `EnterExitReset` changing,

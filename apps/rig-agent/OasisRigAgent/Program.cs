@@ -147,9 +147,9 @@ static void Render(AgentStatus s)
 {
     var conn = s.Connection switch
     {
-        ConnectionState.Online => "● online",
-        ConnectionState.Offline => "○ offline",
-        _ => "◌ connecting",
+        ConnectionState.Online => "online",
+        ConnectionState.Offline => "OFFLINE",
+        _ => "connecting",
     };
     // A null assignment the agent has never been able to ask about is not an
     // available rig, and saying so would be a guess in the display too.
