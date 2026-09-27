@@ -152,7 +152,9 @@ static void Render(AgentStatus s)
 /// matches these strings exactly, so they are printed verbatim and quoted.</summary>
 static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
 {
-    source.ConnectionChanged += up => Log(up ? "iRacing connected" : "iRacing not running (waiting; laps resume when it is back)");
+    source.ConnectionChanged += up => Log(up ? "iRacing connected" : "iRacing not running or not in a session (waiting; laps resume when it is back)");
+    source.Attached += header => Log($"iRacing header: {header}");
+    source.HeaderRejected += (header, reason) => Log($"iRacing shared memory not ready: {reason} (header: {header?.ToString() ?? "unreadable"}) - retrying every second");
     source.ComboChanged += combo => Log(combo is null
         ? "session info does not name a track and car yet"
         : $"session: {Describe(combo)}");
@@ -186,6 +188,14 @@ static int Diagnose()
     source.ConnectionChanged += up => Console.WriteLine(up
         ? $"[{Now()}] iRacing CONNECTED"
         : $"[{Now()}] iRacing NOT RUNNING or not in a session - waiting (start the sim or load a session)");
+    source.Attached += header =>
+        Console.WriteLine($"[{Now()}] HEADER {header}");
+    source.HeaderRejected += (header, reason) =>
+    {
+        Console.WriteLine($"[{Now()}] shared memory NOT READY: {reason}");
+        Console.WriteLine($"           raw header: {header?.ToString() ?? "could not be read"}");
+        Console.WriteLine("           (normal while a session loads - retrying every second; if it never clears, send these lines)");
+    };
     source.ComboChanged += combo =>
     {
         if (combo is null)
@@ -216,7 +226,7 @@ static int Diagnose()
             Console.WriteLine($"[{Now()}] LAP {d.LapCompleted}  -> would NOT post: {d.SkipReason}");
         }
     };
-    source.Faulted += ex => Console.WriteLine($"[{Now()}] ERROR telemetry stopped: {ex.GetType().Name}: {ex.Message}");
+    source.Faulted += ex => Console.WriteLine($"[{Now()}] ERROR telemetry stopped: {ex.GetType().Name}: {ex.Message} - restart the program and send this line");
 
     source.Start();
     Console.WriteLine($"[{Now()}] looking for iRacing shared memory…");

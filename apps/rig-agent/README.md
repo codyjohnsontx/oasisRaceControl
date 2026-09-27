@@ -143,9 +143,15 @@ iRacing, join a session, get in the car and drive; it prints:
 
 If it sits on `iRacing NOT RUNNING or not in a session`, the sim is not
 publishing telemetry: check that iRacing is in a session (not the menus) and
-that the agent runs as the same Windows user. A `WARNING this iRacing build
-does not publish: ...` line names channels the detector expected and did not
-find. Press Enter to stop.
+that the agent runs as the same Windows user. `shared memory NOT READY: ...`
+with a `raw header:` line is normal for a few seconds while a session loads -
+iRacing sets the connected bit before it fills in the rest of the header (the
+first real rig showed `tickRate=0` at that moment) - and it clears by itself;
+the reader never stops on it, it retries every second. If it never clears,
+the raw header line is what to send. `HEADER ver=2 status=1 tickRate=60 ...`
+is printed once the block is usable. A `WARNING this iRacing build does not
+publish: ...` line names channels the detector expected and did not find.
+Press Enter to stop.
 
 ### Setting the featured combo from what the rig reports
 

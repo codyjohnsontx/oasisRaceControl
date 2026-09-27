@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using Microsoft.Win32.SafeHandles;
 
 namespace OasisRigAgent.Core.Iracing;
@@ -15,12 +16,14 @@ namespace OasisRigAgent.Core.Iracing;
 /// nothing is ever written to the sim. iRacing not running, or closed and
 /// reopened, is the normal case: the reader retries once a second, reports
 /// <see cref="SimRunning"/> false meanwhile, and resets the detector so laps
-/// from the previous session cannot bleed into the next.
+/// from the previous session cannot bleed into the next. What each read means
+/// is decided by <see cref="IracingFrameProcessor"/>, and no read ever ends
+/// the loop: an unready header is waited out, not faulted.
 ///
 /// Beyond the <see cref="ITelemetrySource"/> contract it exposes what the
-/// diagnostic mode and the agent log print: connection changes, the combo
-/// strings as parsed, every lap decision, and the variables iRacing did not
-/// publish.
+/// diagnostic mode and the agent log print: connection changes, the raw
+/// header on attach and on rejection, the combo strings as parsed, every lap
+/// decision, and the variables iRacing did not publish.
 /// </summary>
 public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
 {
@@ -31,33 +34,43 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
     private const int ErrorInvalidName = 123;
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(1);
 
-    private readonly LapDetector _detector;
+    private readonly IracingFrameProcessor _frames;
     private readonly CancellationTokenSource _stop = new();
     private Thread? _thread;
-    private volatile bool _connected;
 
     public IracingTelemetrySource(LapDetector? detector = null)
     {
-        _detector = detector ?? new LapDetector();
-        _detector.Decided += decision =>
+        var lapDetector = detector ?? new LapDetector();
+        lapDetector.Decided += decision =>
         {
             LapDecided?.Invoke(decision);
             if (decision.Lap is not null) LapCompleted?.Invoke(decision.Lap);
         };
+        _frames = new IracingFrameProcessor(lapDetector);
+        _frames.ConnectionChanged += up => ConnectionChanged?.Invoke(up);
+        _frames.Attached += header => Attached?.Invoke(header);
+        _frames.HeaderRejected += (header, reason) => HeaderRejected?.Invoke(header, reason);
+        _frames.ComboChanged += combo => ComboChanged?.Invoke(combo);
+        _frames.MissingVariables += names => MissingVariables?.Invoke(names);
     }
 
-    public bool SimRunning => _connected;
+    public bool SimRunning => _frames.Connected;
     public event Action<LapCompleted>? LapCompleted;
 
     /// <summary>iRacing connected (true) or went away (false).</summary>
     public event Action<bool>? ConnectionChanged;
+    /// <summary>The raw header the first time a frame is accepted after attaching.</summary>
+    public event Action<RawHeader>? Attached;
+    /// <summary>A read was rejected and the block is being waited out; once per distinct reason.</summary>
+    public event Action<RawHeader?, string>? HeaderRejected;
     /// <summary>Session info was (re)read and named a track and car - or did not, null.</summary>
     public event Action<SessionCombo?>? ComboChanged;
     /// <summary>Every lap boundary, posted or skipped, with the reason.</summary>
     public event Action<LapDecision>? LapDecided;
     /// <summary>Watched variables this iRacing build does not publish, once per connection.</summary>
     public event Action<IReadOnlyList<string>>? MissingVariables;
-    /// <summary>Something the read loop could not recover from. It stops; the agent keeps running without laps.</summary>
+    /// <summary>Something outside telemetry itself the loop could not recover from
+    /// (the map could be opened but not read at all). It stops; the agent keeps running without laps.</summary>
     public event Action<Exception>? Faulted;
 
     public void Start()
@@ -81,7 +94,7 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
         _stop.Dispose();
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    [SupportedOSPlatform("windows")]
     private void Run()
     {
         while (!_stop.IsCancellationRequested)
@@ -96,12 +109,12 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
             }
             catch (FileNotFoundException)
             {
-                SetConnected(false);
+                _frames.Detach();
                 _stop.Token.WaitHandle.WaitOne(ReconnectDelay);
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode is ErrorFileNotFound or ErrorInvalidName)
             {
-                SetConnected(false);
+                _frames.Detach();
                 _stop.Token.WaitHandle.WaitOne(ReconnectDelay);
             }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested)
@@ -110,77 +123,34 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
             }
             catch (Exception ex)
             {
-                SetConnected(false);
+                _frames.Detach();
                 Faulted?.Invoke(ex);
                 break;
             }
         }
-        SetConnected(false);
+        _frames.Detach();
     }
 
     private void ReadLoop(IReadOnlyMemoryReader reader, EventWaitHandle dataEvent)
     {
-        var parser = new IracingMemoryParser(reader);
-        var lastTick = int.MinValue;
-        var lastSessionUpdate = int.MinValue;
-        var malformedReads = 0;
-        var reportedMissing = false;
-
         while (!_stop.IsCancellationRequested)
         {
             WaitHandle.WaitAny([dataEvent, _stop.Token.WaitHandle], TimeSpan.FromMilliseconds(250));
             if (_stop.IsCancellationRequested) return;
 
-            try
+            switch (_frames.Process(reader))
             {
-                var parsed = parser.Parse(TelemetryTick.VariableNames);
-                malformedReads = 0;
-                SetConnected(parsed.IsConnected);
-                if (!parsed.IsConnected)
-                {
-                    // iRacing is up but not in a session (menus, loading). Laps
-                    // cannot continue across that, so start clean when it returns.
-                    lastSessionUpdate = int.MinValue;
-                    reportedMissing = false;
-                    continue;
-                }
-
-                if (!reportedMissing)
-                {
-                    reportedMissing = true;
-                    var missing = TelemetryTick.VariableNames.Where(n => !parsed.Variables.ContainsKey(n)).Order().ToList();
-                    if (missing.Count > 0) MissingVariables?.Invoke(missing);
-                }
-
-                if (parsed.SessionInfoUpdate != lastSessionUpdate && parsed.SessionInfoBytes is not null)
-                {
-                    lastSessionUpdate = parsed.SessionInfoUpdate;
-                    var yaml = SessionInfoParser.Decode(parsed.SessionInfoBytes);
-                    var playerIdx = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
-                    var combo = SessionInfoParser.Parse(yaml, playerIdx);
-                    if (!Equals(combo, _detector.Combo))
-                    {
-                        _detector.Combo = combo;
-                        ComboChanged?.Invoke(combo);
-                    }
-                }
-
-                if (parsed.TickCount != lastTick)
-                {
-                    lastTick = parsed.TickCount;
-                    _detector.Observe(TelemetryTick.FromValues(parsed.Values));
-                }
-            }
-            catch (MalformedTelemetryException) when (++malformedReads < 3)
-            {
-                // The producer can swap buffers while a frame is being read.
-                // Two retries tolerate that race; a third is a real fault.
-                Thread.Yield();
+                case FrameOutcome.Retry:
+                    Thread.Yield();
+                    break;
+                case FrameOutcome.NotReady:
+                    _stop.Token.WaitHandle.WaitOne(ReconnectDelay);
+                    break;
             }
         }
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    [SupportedOSPlatform("windows")]
     private static EventWaitHandle OpenSynchronizationEvent()
     {
         var handle = NativeMethods.OpenEvent(Synchronize, false, DataEventName);
@@ -191,18 +161,6 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
             throw new Win32Exception(error);
         }
         return new EventWaitHandle(false, EventResetMode.AutoReset) { SafeWaitHandle = handle };
-    }
-
-    private void SetConnected(bool connected)
-    {
-        if (_connected == connected) return;
-        _connected = connected;
-        if (!connected)
-        {
-            _detector.Reset();
-            _detector.Combo = null;
-        }
-        ConnectionChanged?.Invoke(connected);
     }
 
     private sealed class AccessorReader : IReadOnlyMemoryReader, IDisposable

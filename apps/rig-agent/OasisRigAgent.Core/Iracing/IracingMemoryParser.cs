@@ -47,27 +47,69 @@ public sealed class IracingMemoryParser
             throw new MalformedTelemetryException($"Mapped capacity {reader.Capacity} is outside the safe range.");
     }
 
+    /// <summary>The fixed header exactly as the sim wrote it, unvalidated. Small
+    /// enough to read from any block that could be a header at all; a block
+    /// shorter than that is malformed.</summary>
+    public static RawHeader ReadHeader(IReadOnlyMemoryReader reader)
+    {
+        if (reader.Capacity < RawHeader.Size)
+            throw new MalformedTelemetryException($"Mapped capacity {reader.Capacity} is smaller than the {RawHeader.Size}-byte header.");
+        Span<byte> header = stackalloc byte[RawHeader.Size];
+        try
+        {
+            reader.Read(0, header);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            throw new MalformedTelemetryException("The shared-memory header read failed.", ex);
+        }
+        return new RawHeader(
+            Version: ReadInt(header, 0),
+            Status: ReadInt(header, 4),
+            TickRate: ReadInt(header, 8),
+            SessionInfoUpdate: ReadInt(header, 12),
+            SessionInfoLength: ReadInt(header, 16),
+            SessionInfoOffset: ReadInt(header, 20),
+            VariableCount: ReadInt(header, 24),
+            VariableHeaderOffset: ReadInt(header, 28),
+            BufferCount: ReadInt(header, 32),
+            BufferLength: ReadInt(header, 36));
+    }
+
     public ParsedMemorySnapshot Parse(IReadOnlySet<string> watchedVariables)
     {
-        Span<byte> header = stackalloc byte[FixedHeaderSize];
-        ReadChecked(0, header);
+        var raw = ReadHeader(_reader);
 
-        var status = ReadInt(header, 4);
-        var tickRate = ReadInt(header, 8);
-        var sessionInfoUpdate = ReadInt(header, 12);
-        var sessionInfoLength = ReadInt(header, 16);
-        var sessionInfoOffset = ReadInt(header, 20);
-        var variableCount = ReadInt(header, 24);
-        var variableHeaderOffset = ReadInt(header, 28);
-        var bufferCount = ReadInt(header, 32);
-        var bufferLength = ReadInt(header, 36);
+        // A header whose connected bit is clear is not looked at any further:
+        // while iRacing loads a session it fills the block in stages, and the
+        // zeros it holds meanwhile are "not ready", not corruption.
+        if (!raw.Connected)
+        {
+            return new ParsedMemorySnapshot(
+                IsConnected: false,
+                TickCount: 0,
+                TickRate: raw.TickRate,
+                SessionInfoUpdate: raw.SessionInfoUpdate,
+                Variables: new Dictionary<string, TelemetryVariable>(),
+                Values: new Dictionary<string, object?>(),
+                SessionInfoBytes: null);
+        }
 
-        Require(tickRate is >= 1 and <= 1000, "Tick rate is outside 1..1000.");
+        var tickRate = raw.TickRate;
+        var sessionInfoUpdate = raw.SessionInfoUpdate;
+        var sessionInfoLength = raw.SessionInfoLength;
+        var sessionInfoOffset = raw.SessionInfoOffset;
+        var variableCount = raw.VariableCount;
+        var variableHeaderOffset = raw.VariableHeaderOffset;
+        var bufferCount = raw.BufferCount;
+        var bufferLength = raw.BufferLength;
+
+        Require(tickRate is >= 1 and <= 1000, $"Tick rate {tickRate} is outside 1..1000.");
         Require(sessionInfoLength is >= 0 and <= MaximumSessionInfoBytes, "Session metadata is too large or negative.");
         ValidateRange(sessionInfoOffset, sessionInfoLength, "session metadata");
-        Require(variableCount is >= 0 and <= MaximumVariables, "Variable count is outside the safe range.");
-        Require(bufferCount is >= 1 and <= MaximumBuffers, "Buffer count is outside the safe range.");
-        Require(bufferLength > 0, "Buffer length must be positive.");
+        Require(variableCount is >= 1 and <= MaximumVariables, $"Variable count {variableCount} is outside 1..{MaximumVariables}.");
+        Require(bufferCount is >= 1 and <= MaximumBuffers, $"Buffer count {bufferCount} is outside 1..{MaximumBuffers}.");
+        Require(bufferLength > 0, $"Buffer length {bufferLength} must be positive.");
         ValidateRange(FixedHeaderSize, checked(bufferCount * BufferHeaderSize), "buffer headers");
         ValidateRange(variableHeaderOffset, checked(variableCount * VariableHeaderSize), "variable headers");
 
@@ -83,7 +125,7 @@ public sealed class IracingMemoryParser
         }
 
         return new ParsedMemorySnapshot(
-            IsConnected: (status & 1) != 0,
+            IsConnected: true,
             TickCount: tickCount,
             TickRate: tickRate,
             SessionInfoUpdate: sessionInfoUpdate,
@@ -224,6 +266,36 @@ public sealed class IracingMemoryParser
     {
         if (!condition) throw new MalformedTelemetryException(message);
     }
+}
+
+/// <summary>
+/// irsdk_header from the iRacing SDK (irsdk_defines.h), field for field:
+/// <c>int ver; int status; int tickRate; int sessionInfoUpdate; int sessionInfoLen;
+/// int sessionInfoOffset; int numVars; int varHeaderOffset; int numBuf; int bufLen;
+/// int pad1[2];</c> - ten ints at offsets 0..36, then two pad ints, so the
+/// <c>irsdk_varBuf</c> entries (<c>int tickCount; int bufOffset; int pad[2];</c>,
+/// 16 bytes each) start at byte 48. <c>status</c> is the <c>irsdk_StatusField</c>
+/// bit set and <c>irsdk_stConnected</c> is bit 1.
+/// </summary>
+public sealed record RawHeader(
+    int Version,
+    int Status,
+    int TickRate,
+    int SessionInfoUpdate,
+    int SessionInfoLength,
+    int SessionInfoOffset,
+    int VariableCount,
+    int VariableHeaderOffset,
+    int BufferCount,
+    int BufferLength)
+{
+    public const int Size = 40;
+    public bool Connected => (Status & 1) != 0;
+
+    public override string ToString()
+        => $"ver={Version} status={Status} tickRate={TickRate} sessionInfoUpdate={SessionInfoUpdate} "
+         + $"sessionInfoLen={SessionInfoLength} sessionInfoOffset={SessionInfoOffset} numVars={VariableCount} "
+         + $"varHeaderOffset={VariableHeaderOffset} numBuf={BufferCount} bufLen={BufferLength}";
 }
 
 public enum IracingVariableType
