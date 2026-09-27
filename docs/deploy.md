@@ -122,20 +122,26 @@ vars, which override the file):
   "backendBaseUrl": "https://<your-vercel-domain>",
   "rigToken": "<this rig's secret bearer token>",
   "rigNumber": 1,
-  "simulateTelemetry": false
+  "telemetry": "iracing"
 }
 ```
 
 - `backendBaseUrl` must be `https://` (the agent rejects non-HTTPS except
   localhost, since the token rides on every request).
 - Each rig gets its own `rigToken`; the backend scopes the agent to that rig.
-- Auto-start on login via Windows Task Scheduler is the simplest option; a
-  Windows Service is sturdier if you want it.
+- `telemetry: "iracing"` reads laps from the sim's shared memory on that PC;
+  `"simulated"` emits fake laps for testing; `"none"` gives heartbeat and
+  driver display only. Run `OasisRigAgent.exe --diagnose` on a new rig first:
+  it reads without posting and prints the exact track, layout and car strings
+  iRacing uses, which the featured combo must match character for character
+  (`apps/rig-agent/README.md`, iRacing telemetry).
+- The agent must run as the Windows user that runs iRacing (the shared-memory
+  map is per session). Auto-start on login via Windows Task Scheduler is the
+  simplest option; a Windows Service is sturdier if you want it.
 
-Lap detection itself is still stubbed pending the off-site safety gate, supervised
-canary, and iRacing spike — until then run
-with `simulateTelemetry: true` to exercise the full path, or leave it off and
-the agent handles heartbeat + assignment display + the durable outbox.
+If a rig cannot read the sim, staff can post a driver's lap by hand from any
+machine with the rig's token: `npx tsx scripts/manual-lap.ts` in `apps/web`
+(usage in the file header).
 
 ---
 

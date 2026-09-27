@@ -1,10 +1,11 @@
 namespace OasisRigAgent.Core;
 
 /// <summary>
-/// Source of completed-lap events. The real iRacing implementation is built
-/// after the Phase 1 spike freezes which telemetry fields are available
-/// (docs/spike-findings.md). Until then the agent uses NullTelemetrySource
-/// (no laps) or SimulatedTelemetrySource (fake laps, for end-to-end testing).
+/// Source of completed-lap events. Three implementations, chosen by
+/// AgentConfig.TelemetryMode: Iracing.IracingTelemetrySource reads the sim's
+/// shared memory on the rig PC, SimulatedTelemetrySource emits fake laps for
+/// end-to-end testing, and NullTelemetrySource produces none (heartbeat and
+/// driver display only).
 /// </summary>
 public interface ITelemetrySource
 {
@@ -19,8 +20,8 @@ public interface ITelemetrySource
     void Stop();
 }
 
-/// <summary>Real-telemetry placeholder: reports the sim as not running and never
-/// produces laps. Swapped for the iRacing SDK source after the spike.</summary>
+/// <summary>No telemetry: reports the sim as not running and never produces
+/// laps. The agent still heartbeats, shows the driver and drains its outbox.</summary>
 public sealed class NullTelemetrySource : ITelemetrySource
 {
     public bool SimRunning => false;

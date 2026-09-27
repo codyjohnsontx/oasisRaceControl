@@ -1,0 +1,252 @@
+using Xunit;
+using OasisRigAgent.Core;
+using OasisRigAgent.Core.Iracing;
+
+namespace OasisRigAgent.Tests.Iracing;
+
+/// <summary>
+/// Each test feeds the detector a hand-built sequence of ticks for one of the
+/// traps named on <see cref="LapDetector"/>. None of these sequences was
+/// recorded from a real sim; they encode what the iRacing SDK documents and
+/// what other readers of it rely on, which is exactly why the diagnostic mode
+/// exists as the first real-iRacing check.
+/// </summary>
+public sealed class LapDetectorTests
+{
+    private static readonly SessionCombo Cota = new("Circuit of the Americas", "Grand Prix", "FIA F4", 0, "cota gp", 218, 137);
+    private static readonly DateTimeOffset At = new(2026, 9, 27, 15, 0, 0, TimeSpan.Zero);
+
+    private readonly LapDetector _detector = new(() => At, "rig1") { Combo = Cota };
+    private readonly List<LapDecision> _decisions = new();
+
+    public LapDetectorTests() => _detector.Decided += _decisions.Add;
+
+    private static TelemetryTick Tick(int lapCompleted, float lastLapTime, int incidents = 0, bool pit = false,
+        bool onTrack = true, int lap = -1, int surface = 3, int reset = 0, bool replay = false,
+        int sessionNum = 0, int sessionUnique = 1, int carIdx = 0) => new()
+        {
+            LapCompleted = lapCompleted,
+            LapLastLapTime = lastLapTime,
+            Lap = lap < 0 ? lapCompleted + 1 : lap,
+            OnPitRoad = pit,
+            IsOnTrack = onTrack,
+            IsReplayPlaying = replay,
+            PlayerTrackSurface = surface,
+            EnterExitReset = reset,
+            PlayerCarMyIncidentCount = incidents,
+            SessionNum = sessionNum,
+            SessionUniqueId = sessionUnique,
+            PlayerCarIdx = carIdx,
+        };
+
+    private void Drive(params TelemetryTick[] ticks)
+    {
+        foreach (var t in ticks) _detector.Observe(t);
+    }
+
+    private void Cruise(TelemetryTick t, int ticks)
+    {
+        for (var i = 0; i < ticks; i++) _detector.Observe(t);
+    }
+
+    [Fact]
+    public void ACleanLapIsPostedWithTheComboStringsAndTheSimsTime()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(2, 152.340f));
+
+        var d = Assert.Single(_decisions);
+        Assert.Equal(2, d.LapCompleted);
+        Assert.Null(d.SkipReason);
+        var lap = d.Lap!;
+        Assert.Equal("Circuit of the Americas", lap.TrackName);
+        Assert.Equal("Grand Prix", lap.TrackConfig);
+        Assert.Equal("FIA F4", lap.CarName);
+        Assert.Equal(152340, lap.LapTimeMs);
+        Assert.Equal(2, lap.LapNumber);
+        Assert.Equal(0, lap.IncidentDelta);
+        Assert.Equal(At, lap.CompletedAt);
+        Assert.StartsWith("ir-rig1-", lap.EventId);
+    }
+
+    [Fact]
+    public void WaitsForTheLapTimeChannelToCatchUpWithTheCounter()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        // iRacing bumps LapCompleted first; LapLastLapTime still shows the old lap for a few ticks.
+        Cruise(Tick(2, 155.0f), 5);
+        Assert.Empty(_decisions);
+        Drive(Tick(2, 151.9f));
+        Assert.Equal(151900, Assert.Single(_decisions).Lap!.LapTimeMs);
+    }
+
+    [Fact]
+    public void AnIdenticalLapTimeIsTrustedOnceTheDeadlinePasses()
+    {
+        Cruise(Tick(1, 152.0f), 10);
+        Cruise(Tick(2, 152.0f), LapDetector.LapTimeDeadlineTicks + 1);
+        Assert.Equal(152000, Assert.Single(_decisions).Lap!.LapTimeMs);
+    }
+
+    [Fact]
+    public void FirstObservationIsABaselineNotALap()
+    {
+        Cruise(Tick(4, 150.0f), 50);
+        Assert.Empty(_decisions);
+    }
+
+    [Fact]
+    public void OutLapWithNoTimeIsSkipped()
+    {
+        Cruise(Tick(0, -1f), 10);
+        Cruise(Tick(1, -1f), LapDetector.LapTimeDeadlineTicks + 1);
+        var d = Assert.Single(_decisions);
+        Assert.Null(d.Lap);
+        Assert.Contains("no lap time", d.SkipReason);
+    }
+
+    [Fact]
+    public void ALapThroughThePitLaneIsSkippedAndTheNextOneCounts()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        Cruise(Tick(1, 155.0f, pit: true), 10);   // pit stop mid-lap
+        Cruise(Tick(1, 155.0f), 10);              // back out on track
+        Drive(Tick(2, 210.0f));                   // in-lap/out-lap time
+        Cruise(Tick(2, 210.0f), 10);
+        Drive(Tick(3, 152.0f));
+
+        Assert.Equal(2, _decisions.Count);
+        Assert.Contains("pit lane", _decisions[0].SkipReason);
+        Assert.Equal(152000, _decisions[1].Lap!.LapTimeMs);
+    }
+
+    [Fact]
+    public void ResetToPitsMarksTheLapIncomplete()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(1, 155.0f, reset: 1));         // EnterExitReset changed
+        Cruise(Tick(1, 155.0f, reset: 1), 10);
+        Drive(Tick(2, 90.0f));
+        var d = Assert.Single(_decisions);
+        Assert.Null(d.Lap);
+        Assert.Contains("reset", d.SkipReason);
+    }
+
+    [Fact]
+    public void TowLeavingTheWorldMarksTheLapIncomplete()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(1, 155.0f, surface: -1));      // not in world
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(2, 140.0f));
+        Assert.Contains("reset, towed", Assert.Single(_decisions).SkipReason);
+    }
+
+    [Fact]
+    public void GoingToTheGarageMidLapMarksTheLapIncomplete()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(1, 155.0f, onTrack: false));
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(2, 140.0f));
+        Assert.Null(Assert.Single(_decisions).Lap);
+    }
+
+    [Fact]
+    public void LapCounterGoingBackwardsReBaselinesWithoutALap()
+    {
+        Cruise(Tick(5, 155.0f), 10);
+        Cruise(Tick(0, -1f), 10);                 // session restart
+        Assert.Empty(_decisions);
+        Drive(Tick(1, 153.0f));
+        Assert.Equal(153000, Assert.Single(_decisions).Lap!.LapTimeMs);
+    }
+
+    [Fact]
+    public void CounterJumpingByMoreThanOneIsNotTimed()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(4, 151.0f));
+        var d = Assert.Single(_decisions);
+        Assert.Null(d.Lap);
+        Assert.Contains("jumped", d.SkipReason);
+    }
+
+    [Fact]
+    public void ANewSessionResetsEverything()
+    {
+        Cruise(Tick(3, 155.0f), 10);
+        Cruise(Tick(0, -1f, sessionNum: 1), 10);  // practice -> race
+        Drive(Tick(1, 154.0f, sessionNum: 1));
+        Assert.Equal(154000, Assert.Single(_decisions).Lap!.LapTimeMs);
+        _decisions.Clear();
+
+        Cruise(Tick(0, -1f, sessionNum: 1, sessionUnique: 2), 10); // whole new session id
+        Cruise(Tick(0, -1f, sessionNum: 1, sessionUnique: 2, carIdx: 4), 10); // car changed
+        Assert.Empty(_decisions);
+    }
+
+    [Fact]
+    public void ReplayTicksAreIgnoredAndTaintTheLapInProgress()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        Cruise(Tick(7, 100.0f, replay: true), 10); // replay shows other laps
+        Drive(Tick(2, 150.0f));
+        Assert.Contains("replay", Assert.Single(_decisions).SkipReason);
+    }
+
+    [Fact]
+    public void IncidentsAreTheDeltaAcrossTheLap()
+    {
+        Cruise(Tick(1, 155.0f, incidents: 4), 10);
+        Cruise(Tick(1, 155.0f, incidents: 6), 10);
+        Drive(Tick(2, 158.0f, incidents: 6));
+        Assert.Equal(2, Assert.Single(_decisions).Lap!.IncidentDelta);
+    }
+
+    [Fact]
+    public void MissingIncidentChannelLeavesTheLapClean()
+    {
+        var quiet = Tick(1, 155.0f) with { PlayerCarMyIncidentCount = null };
+        Cruise(quiet, 10);
+        Drive(quiet with { LapCompleted = 2, LapLastLapTime = 150.0f });
+        Assert.Null(Assert.Single(_decisions).Lap!.IncidentDelta);
+    }
+
+    [Fact]
+    public void NoComboYetMeansTheLapIsSkippedAndSaysSo()
+    {
+        _detector.Combo = null;
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(2, 150.0f));
+        Assert.Contains("session info", Assert.Single(_decisions).SkipReason);
+    }
+
+    [Fact]
+    public void ThirtyMinuteBoundIsAppliedBeforePosting()
+    {
+        Cruise(Tick(1, 155.0f), 10);
+        Drive(Tick(2, 2000.0f));
+        Assert.Contains("thirty minutes", Assert.Single(_decisions).SkipReason);
+    }
+
+    [Fact]
+    public void ResetForgetsTheBaselineSoIracingRestartingCannotLeakALap()
+    {
+        Cruise(Tick(5, 155.0f), 10);
+        _detector.Reset();
+        Cruise(Tick(6, 150.0f), 10);              // looks like +1, but the baseline is gone
+        Assert.Empty(_decisions);
+        Drive(Tick(7, 149.0f));
+        Assert.Equal(149000, Assert.Single(_decisions).Lap!.LapTimeMs);
+    }
+
+    [Fact]
+    public void ChannelsTheSimDoesNotPublishDoNotCrashIt()
+    {
+        var bare = new TelemetryTick { LapCompleted = 1, LapLastLapTime = 155.0f };
+        Cruise(bare, 10);
+        Drive(bare with { LapCompleted = 2, LapLastLapTime = 150.0f });
+        Assert.Equal(150000, Assert.Single(_decisions).Lap!.LapTimeMs);
+    }
+}

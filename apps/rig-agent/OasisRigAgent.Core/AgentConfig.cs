@@ -13,9 +13,25 @@ public sealed record AgentConfig
     public required string RigToken { get; init; }
     public required int RigNumber { get; init; }
 
-    /// <summary>Skeleton demo aid: drive the SimulatedTelemetrySource instead of
-    /// the (not-yet-built) real iRacing source, so the agent submits laps.</summary>
+    /// <summary>Which telemetry source to run: "iracing" (read the sim's shared
+    /// memory on the rig PC), "simulated" (fake laps for testing), or "none"
+    /// (heartbeat and driver display only). Absent means <see cref="SimulateTelemetry"/>
+    /// decides, which keeps every existing config file meaning what it did.</summary>
+    public string? Telemetry { get; init; }
+
+    /// <summary>Older spelling of <c>"telemetry": "simulated"</c>. Ignored when
+    /// <see cref="Telemetry"/> is set.</summary>
     public bool SimulateTelemetry { get; init; }
+
+    public TelemetryMode TelemetryMode => Telemetry?.Trim().ToLowerInvariant() switch
+    {
+        null or "" => SimulateTelemetry ? TelemetryMode.Simulated : TelemetryMode.None,
+        "none" => TelemetryMode.None,
+        "simulated" => TelemetryMode.Simulated,
+        "iracing" => TelemetryMode.Iracing,
+        _ => throw new InvalidOperationException(
+            $"telemetry must be \"iracing\", \"simulated\" or \"none\" (got \"{Telemetry}\")"),
+    };
 
     /// <summary>Reported on every heartbeat, so the staff dashboard can tell
     /// which rigs stamp laps with their capture-time assignment (0.2 and later)
@@ -45,6 +61,7 @@ public sealed record AgentConfig
             RigToken = Env("OASIS_RIG_TOKEN") ?? config.RigToken,
             RigNumber = int.TryParse(Env("OASIS_RIG_NUMBER"), out var n) ? n : config.RigNumber,
             SimulateTelemetry = ParseSimulateOverride() ?? config.SimulateTelemetry,
+            Telemetry = Env("OASIS_TELEMETRY") ?? config.Telemetry,
         };
     }
 
@@ -77,6 +94,7 @@ public sealed record AgentConfig
             throw new InvalidOperationException("RigToken is not set (agent.config.json or OASIS_RIG_TOKEN)");
         if (RigNumber <= 0)
             throw new InvalidOperationException("RigNumber is not set (agent.config.json or OASIS_RIG_NUMBER)");
+        _ = TelemetryMode; // throws on an unknown value
     }
 
     private static string? Env(string name)
@@ -89,4 +107,11 @@ public sealed record AgentConfig
     {
         PropertyNameCaseInsensitive = true,
     };
+}
+
+public enum TelemetryMode
+{
+    None,
+    Simulated,
+    Iracing,
 }

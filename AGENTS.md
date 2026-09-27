@@ -228,13 +228,34 @@ Nothing enforces that minimum when a password is SET: Oasis creates staff
 accounts and resets their passwords only by SQL, which is how a live account
 came to hold a password the login route would always refuse.
 
+## iRacing lap detection
+
+The agent reads laps from iRacing's shared memory with
+`OasisRigAgent.Core/Iracing/`: the spike recorder's parser ported (read-only
+map, no package), a line scanner for the session-info YAML, and `LapDetector`,
+a pure state machine over telemetry ticks. Detection rules and every skip
+reason are documented on `LapDetector` and pinned by
+`OasisRigAgent.Tests/Iracing/LapDetectorTests.cs`; change the rule and its
+test together. Those tick sequences were written from the SDK's documented
+behaviour, not recorded from a sim, so `OasisRigAgent.exe --diagnose` (reads
+and prints, posts nothing) is the first check on any rig and the only
+real-iRacing evidence until someone records a session.
+
+The featured combo matches lap strings exactly, so the agent prints the
+`TrackDisplayName` / `TrackConfigName` / `CarScreenName` it posts on every lap
+and the diagnostic prints the `featured_combos` SQL to paste; never type those
+names from memory. `apps/web/scripts/manual-lap.ts` posts one lap by hand for
+whoever is checked in on a rig, the fallback when a rig cannot read the sim.
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which
   is not on the default PATH; the exact commands are in
   `apps/rig-agent/README.md` (Run from source). No CI workflow builds the agent
   (`spike-safety.yml` covers `spike/` only), so that local run is the only
-  check it gets.
+  check it gets. The iRacing source only reads on Windows; on macOS
+  `--diagnose` exits 3 and `"telemetry": "iracing"` fails at start-up, so run
+  the agent here with `OASIS_TELEMETRY=simulated`.
 - `apps/web/.env.local` is gitignored and its comments have gone stale before.
   Read `DATABASE_URL` itself before assuming which database (local Docker
   `oasis-pg` on 5433, or Neon) a dev server or migration is pointed at.

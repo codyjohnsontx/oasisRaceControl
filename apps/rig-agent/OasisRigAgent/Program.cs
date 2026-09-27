@@ -1,11 +1,18 @@
 using OasisRigAgent.Core;
+using OasisRigAgent.Core.Iracing;
 
-// Oasis Race Control — Rig Agent (skeleton console host).
+// Oasis Race Control — Rig Agent (console host).
 //
 // Runs the agent against the backend: heartbeat, current-driver display,
-// durable lap queue. Lap DETECTION is stubbed behind ITelemetrySource until the
-// Phase 1 iRacing spike lands — run with SimulateTelemetry to exercise the full
-// path today. The tray/window UI is a later pass that wraps this same Core.
+// durable lap queue, and - with "telemetry": "iracing" - laps read from the
+// sim's shared memory on this PC. The tray/window UI is a later pass that
+// wraps this same Core.
+//
+//   OasisRigAgent.exe              run the agent (needs agent.config.json)
+//   OasisRigAgent.exe --diagnose   read iRacing and print what it sees; posts nothing
+
+if (args.Any(a => a is "--diagnose" or "diagnose" or "--diag" or "diag"))
+    return Diagnose();
 
 // Startup failures (bad config, unwritable outbox db, invalid backend URL, …)
 // all get the same friendly message instead of a raw stack trace.
@@ -14,6 +21,7 @@ AgentConfig config;
 EventQueue queueInit;
 HttpClient httpInit;
 AgentService agentInit;
+ITelemetrySource telemetry;
 try
 {
     config = AgentConfig.Load(configPath);
@@ -22,9 +30,12 @@ try
     queueInit = new EventQueue(Path.Combine(AppContext.BaseDirectory, "outbox.db"));
     httpInit = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
     var client = new BackendClient(httpInit, config.BackendBaseUrl, config.RigToken);
-    ITelemetrySource telemetry = config.SimulateTelemetry
-        ? new SimulatedTelemetrySource(TimeSpan.FromSeconds(8))
-        : new NullTelemetrySource();
+    telemetry = config.TelemetryMode switch
+    {
+        TelemetryMode.Iracing => AttachTelemetryLog(new IracingTelemetrySource()),
+        TelemetryMode.Simulated => new SimulatedTelemetrySource(TimeSpan.FromSeconds(8)),
+        _ => new NullTelemetrySource(),
+    };
     agentInit = new AgentService(config, client, queueInit, telemetry);
 }
 catch (Exception ex)
@@ -42,9 +53,12 @@ agent.StatusChanged += Render;
 agent.Start();
 
 Console.WriteLine($"Oasis Rig Agent — Rig {config.RigNumber:D2}  ({config.BackendBaseUrl})");
-Console.WriteLine(config.SimulateTelemetry
-    ? "Telemetry: SIMULATED (emitting fake laps)"
-    : "Telemetry: none (real iRacing source lands after the spike)");
+Console.WriteLine(config.TelemetryMode switch
+{
+    TelemetryMode.Iracing => "Telemetry: iRacing shared memory (laps post automatically; each one is logged below with the exact strings sent)",
+    TelemetryMode.Simulated => "Telemetry: SIMULATED (emitting fake laps)",
+    _ => "Telemetry: none (heartbeat and driver display only)",
+});
 Console.WriteLine("Commands:  s = switch driver / sign out   q = quit");
 Console.WriteLine(new string('-', 60));
 
@@ -131,3 +145,92 @@ static void Render(AgentStatus s)
     };
     Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{rejected}{checkout}");
 }
+
+/// <summary>What the normal run prints about the sim, on top of the status
+/// line: connection changes, the combo strings exactly as they will be posted,
+/// and every lap boundary with its verdict. The featured combo on the backend
+/// matches these strings exactly, so they are printed verbatim and quoted.</summary>
+static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
+{
+    source.ConnectionChanged += up => Log(up ? "iRacing connected" : "iRacing not running (waiting; laps resume when it is back)");
+    source.ComboChanged += combo => Log(combo is null
+        ? "session info does not name a track and car yet"
+        : $"session: {Describe(combo)}");
+    source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected");
+    source.LapDecided += d => Log(d.Lap is { } lap
+        ? $"lap {d.LapCompleted} {FormatLap(lap.LapTimeMs)} incidents={(lap.IncidentDelta?.ToString() ?? "n/a")} queued as track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
+        : $"lap {d.LapCompleted} skipped: {d.SkipReason}");
+    source.Faulted += ex => Log($"ERROR telemetry stopped: {ex.Message} - restart the agent");
+    return source;
+
+    static void Log(string message) => Console.WriteLine($"[telemetry {DateTime.Now:HH:mm:ss}] {message}");
+}
+
+/// <summary>Read-only check for a rig PC: is iRacing seen, what does it call the
+/// track, layout and car, and does each lap come through. Posts nothing, needs no
+/// config, writes no outbox. This is the first thing to run on a real rig.</summary>
+static int Diagnose()
+{
+    Console.WriteLine("Oasis Rig Agent — iRacing DIAGNOSTIC (reads only; nothing is posted or saved)");
+    Console.WriteLine("Start iRacing, join a session and get in the car. Drive laps. Press Enter to stop.");
+    Console.WriteLine(new string('-', 72));
+
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.WriteLine("This has to run on the Windows rig PC that runs iRacing.");
+        return 3;
+    }
+
+    using var source = new IracingTelemetrySource();
+    var laps = 0;
+    source.ConnectionChanged += up => Console.WriteLine(up
+        ? $"[{Now()}] iRacing CONNECTED"
+        : $"[{Now()}] iRacing NOT RUNNING or not in a session - waiting (start the sim or load a session)");
+    source.ComboChanged += combo =>
+    {
+        if (combo is null)
+        {
+            Console.WriteLine($"[{Now()}] session info read but it does not name a track and car yet (still loading?)");
+            return;
+        }
+        Console.WriteLine($"[{Now()}] SESSION {Describe(combo)}");
+        Console.WriteLine($"           iRacing ids: TrackName=\"{combo.TrackName}\" TrackID={combo.TrackId} CarID={combo.CarId} PlayerCarIdx={combo.PlayerCarIdx}");
+        Console.WriteLine("           featured-combo SQL for the wall (copy exactly):");
+        Console.WriteLine($"           insert into featured_combos (combo_date, track_name, track_config, car_name, incident_limit)");
+        Console.WriteLine($"           values (venue_today(), {Sql(combo.TrackDisplayName)}, {Sql(combo.TrackConfigName)}, {Sql(combo.CarScreenName)}, 0)");
+        Console.WriteLine("           on conflict (combo_date) do update set track_name = excluded.track_name, track_config = excluded.track_config, car_name = excluded.car_name, incident_limit = excluded.incident_limit;");
+    };
+    source.MissingVariables += names =>
+        Console.WriteLine($"[{Now()}] WARNING this iRacing build does not publish: {string.Join(", ", names)}");
+    source.LapDecided += d =>
+    {
+        if (d.Lap is { } lap)
+        {
+            laps++;
+            Console.WriteLine($"[{Now()}] LAP {d.LapCompleted}  {FormatLap(lap.LapTimeMs)}  incidents={(lap.IncidentDelta?.ToString() ?? "n/a")}  -> would POST"
+                + $"  track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
+                + (lap.IncidentDelta > 0 ? "  (backend stores it but marks it invalid: incidents over the limit)" : ""));
+        }
+        else
+        {
+            Console.WriteLine($"[{Now()}] LAP {d.LapCompleted}  -> would NOT post: {d.SkipReason}");
+        }
+    };
+    source.Faulted += ex => Console.WriteLine($"[{Now()}] ERROR telemetry stopped: {ex.GetType().Name}: {ex.Message}");
+
+    source.Start();
+    Console.WriteLine($"[{Now()}] looking for iRacing shared memory…");
+    Console.ReadLine();
+    source.Stop();
+    Console.WriteLine($"stopped. {laps} lap(s) would have been posted.");
+    return 0;
+
+    static string Now() => DateTime.Now.ToString("HH:mm:ss");
+    static string Sql(string? s) => s is null ? "null" : $"'{s.Replace("'", "''")}'";
+}
+
+static string Describe(SessionCombo c)
+    => $"track=\"{c.TrackDisplayName}\" config=\"{c.TrackConfigName}\" car=\"{c.CarScreenName}\"";
+
+static string FormatLap(int ms)
+    => $"{ms / 60_000}:{ms % 60_000 / 1000:00}.{ms % 1000:000}";

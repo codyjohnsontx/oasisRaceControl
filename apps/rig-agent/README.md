@@ -1,13 +1,12 @@
 # Oasis Rig Agent
 
 The lightweight app that runs on each simulator. It knows the rig's identity,
-shows the current driver, and reliably ships completed laps to the backend even
-across network drops and restarts.
+shows the current driver, reads completed laps out of iRacing, and reliably
+ships them to the backend even across network drops and restarts.
 
-## Status: skeleton
+## Status
 
-Everything **except lap detection** is built and verified end-to-end against the
-live backend:
+Built and verified end-to-end against the live backend:
 
 - ✅ Per-rig config + bearer-token auth
 - ✅ Heartbeat (rig shows online on the staff dashboard)
@@ -56,14 +55,113 @@ live backend:
   rest of the night. Only a refusal that NAMES events quarantines anything; a
   401 from a rotated rig token, a 429, or a proxy's error page names no lap, so
   those still count as unreachable and everything is retried
-- ⏳ **Lap detection** — stubbed behind `ITelemetrySource`. The real iRacing
-  source is built after the Phase 0 safety gate, Phase 1A supervised canary,
-  and Phase 1B telemetry spike freeze the contract (`docs/venue-safety.md` and
-  `docs/spike-findings.md`). `SimulatedTelemetrySource` stands in for testing.
+- ✅ **Lap detection from iRacing** (`"telemetry": "iracing"`) - reads the
+  sim's shared memory on the rig PC and posts each completed lap with the
+  track, layout and car exactly as iRacing names them. See
+  [iRacing telemetry](#iracing-telemetry) below, including what has and has
+  not been tested against the real sim.
 
 The current host is a **console app** (runs on macOS/Linux/Windows, so it can be
-tested anywhere). A tray-icon + status-window Windows shell is a later UI pass
-that wraps the same `OasisRigAgent.Core`.
+tested anywhere; the iRacing source itself only reads on Windows). A tray-icon
++ status-window Windows shell is a later UI pass that wraps the same
+`OasisRigAgent.Core`.
+
+## iRacing telemetry
+
+`OasisRigAgent.Core/Iracing/` is the real telemetry source. It opens iRacing's
+shared-memory map `Local\IRSDKMemMapFileName` **read-only** and its data-ready
+event with `SYNCHRONIZE` only, exactly the way the Phase 1 spike recorder does
+(`spike/OasisSpike`), and never writes to the sim. The parser is the spike's,
+ported rather than replaced by a package: it is repository-owned, has no
+dependencies, treats every header field as untrusted, and already had
+synthetic-buffer tests. The candidate libraries (IRSDKSharper, irsdkSharp,
+iRacingSdkWrapper) are permissively licensed but bring YAML and reflection
+machinery this agent does not need, and none has been run on an Oasis rig
+either, so a dependency would have bought nothing the spike had not proven.
+
+**How a lap is detected** (`LapDetector`, pure and unit-tested with hand-built
+tick sequences):
+
+- `LapCompleted` going up by one is a crossing of the timing line. Its time is
+  `LapLastLapTime` (seconds), which iRacing may publish a few ticks after the
+  counter moves, so the detector waits for that channel to change from the
+  previous lap's value, or for three seconds of ticks to pass, before it trusts
+  it.
+- The track, layout and car are `WeekendInfo.TrackDisplayName`,
+  `WeekendInfo.TrackConfigName` (null when empty, i.e. a single-layout track)
+  and the player's own `CarScreenName` from `DriverInfo.Drivers`, read from the
+  session-info YAML with a line scanner (`SessionInfoParser`). **The backend
+  matches the featured combo by exact string equality** against these, which
+  is why the agent logs them verbatim on every lap and the diagnostic prints
+  them with the SQL to copy.
+- Incidents are the change in `PlayerCarMyIncidentCount` across the lap. If
+  the sim does not publish that channel the lap is posted with no incident
+  count and the backend treats it as clean.
+- Skipped, with the reason logged: no lap time (`LapLastLapTime` at or below
+  zero - an out lap or an invalid lap), a lap that touched the pit lane
+  (`OnPitRoad`, which also drops the out lap after a stop), a reset, tow or
+  trip to the garage mid-lap (`Lap` going down, `EnterExitReset` changing,
+  `PlayerTrackSurface` -1, `IsOnTrack` dropping), a lap during which a replay
+  was playing, a counter jump of more than one (missed ticks), a time over
+  thirty minutes (the backend's bound), and a lap that completes before the
+  session info has named a track and car.
+- A new session (`SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing,
+  or the counter going backwards), iRacing dropping out of a session, or
+  iRacing closing and reopening all re-baseline the detector with no lap
+  emitted. iRacing not running is the normal idle state: the source retries
+  once a second and the status line says `sim idle`.
+- Pause needs nothing: no line is crossed and the lap time is the sim's own.
+
+**What has NOT been tested against real iRacing.** Every tick sequence in
+`OasisRigAgent.Tests/Iracing/LapDetectorTests.cs` was written from the SDK's
+documented behaviour, not recorded from a sim: the tick order of
+`LapCompleted` versus `LapLastLapTime`, the value iRacing publishes for an out
+lap, the exact spelling of the session-info keys and whether it quotes values,
+and the encoding of the session string are all assumptions until the
+diagnostic below has been run on a rig. Run it before trusting the wall.
+
+### Diagnostic mode - run this first on a rig PC
+
+```text
+OasisRigAgent.exe --diagnose
+```
+
+Reads only. Posts nothing, saves nothing, needs no `agent.config.json`. Start
+iRacing, join a session, get in the car and drive; it prints:
+
+```text
+[19:41:02] iRacing CONNECTED
+[19:41:02] SESSION track="Circuit of the Americas" config="Grand Prix" car="FIA F4"
+           iRacing ids: TrackName="cota gp" TrackID=218 CarID=137 PlayerCarIdx=0
+           featured-combo SQL for the wall (copy exactly):
+           insert into featured_combos (combo_date, track_name, track_config, car_name, incident_limit)
+           values (venue_today(), 'Circuit of the Americas', 'Grand Prix', 'FIA F4', 0)
+           on conflict (combo_date) do update set ...;
+[19:44:10] LAP 1  -> would NOT post: iRacing reported no lap time for it (out lap or invalid lap)
+[19:46:45] LAP 2  2:32.340  incidents=0  -> would POST  track="Circuit of the Americas" config="Grand Prix" car="FIA F4"
+```
+
+If it sits on `iRacing NOT RUNNING or not in a session`, the sim is not
+publishing telemetry: check that iRacing is in a session (not the menus) and
+that the agent runs as the same Windows user. A `WARNING this iRacing build
+does not publish: ...` line names channels the detector expected and did not
+find. Press Enter to stop.
+
+### Setting the featured combo from what the rig reports
+
+The wall only ranks laps whose strings equal tonight's `featured_combos` row.
+Paste the `insert ... on conflict` statement the diagnostic printed into the
+database (Neon's SQL editor, or `psql`), replacing `venue_today()` with the
+event's date as `'YYYY-MM-DD'` when setting it the night before. The same
+strings appear on every lap the running agent queues:
+
+```text
+[telemetry 19:46:45] lap 2 2:32.340 incidents=0 queued as track="Circuit of the Americas" config="Grand Prix" car="FIA F4"
+```
+
+A lap whose strings differ from the row is stored but marked invalid
+(`WRONG_TRACK_CONFIGURATION` / `WRONG_CAR`) and does not rank; fix the row, not
+the agent.
 
 ## Un-parking a quarantined lap
 
@@ -131,9 +229,9 @@ parked. They cost one row each and keep the record of what the rig captured.
 ## Projects
 
 ```text
-OasisRigAgent.Core    # cross-platform: config, queue, backend client, orchestrator
-OasisRigAgent         # console host
-OasisRigAgent.Tests   # xUnit (queue reliability + client contract)
+OasisRigAgent.Core    # cross-platform: config, queue, backend client, orchestrator, iRacing source
+OasisRigAgent         # console host (+ --diagnose)
+OasisRigAgent.Tests   # xUnit (queue reliability, client contract, lap detection, session-info parsing)
 ```
 
 ## Configure
@@ -143,10 +241,23 @@ executable, or use env vars (which override the file):
 
 | File key | Env var | Meaning |
 |---|---|---|
-| `backendBaseUrl` | `OASIS_BACKEND_URL` | e.g. `https://oasis-race-control.vercel.app` |
+| `backendBaseUrl` | `OASIS_BACKEND_URL` | e.g. `https://oasis-race-control.vercel.app` (must be `https://`; `http://` only for localhost) |
 | `rigToken` | `OASIS_RIG_TOKEN` | the rig's secret bearer token |
 | `rigNumber` | `OASIS_RIG_NUMBER` | e.g. `1` |
-| `simulateTelemetry` | `OASIS_SIMULATE=1` | emit fake laps (testing only) |
+| `telemetry` | `OASIS_TELEMETRY` | `iracing` (read the sim), `simulated` (fake laps, testing only), `none` (heartbeat and driver display only) |
+| `simulateTelemetry` | `OASIS_SIMULATE=1` | older spelling of `telemetry: "simulated"`; ignored when `telemetry` is set |
+
+Two rigs against the hosted app, tokens rotated on the backend first
+(`openssl rand -hex 32` each; store `encode(digest('<token>','sha256'),'hex')`
+in `rigs.agent_token_hash`):
+
+```json
+{ "backendBaseUrl": "https://oasis-race-control.vercel.app", "rigToken": "<RIG 1 TOKEN>", "rigNumber": 1, "telemetry": "iracing" }
+```
+
+```json
+{ "backendBaseUrl": "https://oasis-race-control.vercel.app", "rigToken": "<RIG 2 TOKEN>", "rigNumber": 2, "telemetry": "iracing" }
+```
 
 ## Run (from source)
 
@@ -155,7 +266,7 @@ export PATH="$HOME/.dotnet:$PATH"
 cd apps/rig-agent
 dotnet test                          # unit tests
 OASIS_BACKEND_URL=https://oasis-race-control.vercel.app \
-OASIS_RIG_TOKEN=dev-rig-1-secret OASIS_RIG_NUMBER=1 OASIS_SIMULATE=1 \
+OASIS_RIG_TOKEN=dev-rig-1-secret OASIS_RIG_NUMBER=1 OASIS_TELEMETRY=simulated \
   dotnet run --project OasisRigAgent -c Release
 ```
 
@@ -169,6 +280,12 @@ dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 # → bin/Release/net8.0/win-x64/publish/OasisRigAgent.exe  (no .NET install needed on the rig)
 ```
 
+Copy `OasisRigAgent.exe` and `e_sqlite3.dll` from that folder to the rig PC,
+put `agent.config.json` beside them, and run the exe (a command prompt in that
+folder, or a shortcut). It must run as the same Windows user that runs iRacing,
+because the shared-memory map is per session. Run `OasisRigAgent.exe --diagnose`
+first on any new rig.
+
 ## Verified
 
 Run end-to-end against the live Vercel + Neon backend: the agent connected,
@@ -176,8 +293,10 @@ polled and displayed the checked-in driver, queued simulated laps, flushed them
 (pending count returned to zero), and the laps appeared on the production
 leaderboard. Queue reliability (idempotency, oldest-first, restart survival),
 capture-time stamping across a checkout, the deferred stamp across an outage and
-restart, the offline switch-driver and its queued checkout, and the backend
-client's result mapping are covered by the xUnit suite (`dotnet test`).
+restart, the offline switch-driver and its queued checkout, the backend
+client's result mapping, the shared-memory parser's bounds checks, the
+session-info scanner, and every lap-detection trap listed above are covered by
+the xUnit suite (`dotnet test`).
 
 The offline switch-driver was also run against a real `next start` backend on a
 throwaway Postgres: with the backend killed mid-session the driver's press left
@@ -204,3 +323,8 @@ assignment this rig has never had - comes back as
 settles it and the outbox drains. Only laps the backend did **not** store (an
 error, or a status this agent is too old to recognise) stay queued, because the
 outbox holds the only durable copy. See the event model in `docs/plan.md`.
+
+The iRacing source has been run on macOS only as far as it can be: the parser
+and detector against synthetic shared-memory blocks and tick sequences, and the
+whole agent against a local backend with the simulated source. Its first run
+against the real sim is the diagnostic above.
