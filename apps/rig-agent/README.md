@@ -316,8 +316,9 @@ says why. A lap driven while nobody is signed in says "lap not counted - sign
 in first": the backend keeps it as an unclaimed lap, and it never ranks.
 
 Both screens open with a warning line for each problem still standing -
-the backend unreachable, iRacing not running or not in a session - so
-clearing the screen never hides one. A status line is printed when the
+the backend unreachable, iRacing not running or not in a session, laps the
+backend refused, a log-out that could not be saved - so clearing the screen
+never hides one. A status line is printed when the
 connection or the sim changes, or laps are waiting or refused, not on every
 poll.
 
