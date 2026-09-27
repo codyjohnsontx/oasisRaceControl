@@ -3,7 +3,7 @@ using OasisRigAgent;
 using OasisRigAgent.Core;
 using OasisRigAgent.Core.Iracing;
 
-// Oasis Race Control — Rig Agent (console host).
+// Oasis Race Control - Rig Agent (console host).
 //
 // Runs the agent against the backend: heartbeat, current-driver display,
 // durable lap queue, and - with "telemetry": "iracing" - laps read from the
@@ -16,7 +16,7 @@ using OasisRigAgent.Core.Iracing;
 if (args.Contains("--diagnose"))
     return Diagnose();
 
-// Startup failures (bad config, unwritable outbox db, invalid backend URL, …)
+// Startup failures (bad config, unwritable outbox db, invalid backend URL, ...)
 // all get the same friendly message instead of a raw stack trace.
 var configPath = Path.Combine(AppContext.BaseDirectory, "agent.config.json");
 AgentConfig config;
@@ -56,7 +56,7 @@ await using var agent = agentInit;
 agent.StatusChanged += config.RigQrToken is null ? Render : OnlyWhenItMatters(Render);
 agent.Start();
 
-Console.WriteLine($"Oasis Rig Agent — Rig {config.RigNumber:D2}  ({config.BackendBaseUrl})");
+Console.WriteLine($"Oasis Rig Agent - Rig {config.RigNumber:D2}  ({config.BackendBaseUrl})");
 Console.WriteLine(config.TelemetryMode switch
 {
     TelemetryMode.Iracing => "Telemetry: iRacing shared memory (laps post automatically; each one is logged below with the exact strings sent)",
@@ -87,7 +87,7 @@ if (config.RigQrToken is { } qrToken)
     AppDomain.CurrentDomain.ProcessExit += (_, _) => SignOutBeforeExit();
     await DriverPrompt.RunAsync(agent, checkIn, config.RigNumber, new SystemPromptConsole(), quit.Token);
     await signOut.Value;
-    Console.WriteLine("Shutting down…");
+    Console.WriteLine("Shutting down...");
     return 0;
 }
 
@@ -108,29 +108,29 @@ _ = Task.Run(async () =>
                 quit.Cancel();
                 break;
             case "s":
-                Console.WriteLine("→ switching driver…");
+                Console.WriteLine("-> switching driver...");
                 Console.WriteLine(await agent.SwitchDriverAsync() switch
                 {
-                    SwitchDriverResult.Ended => "→ session ended.",
-                    SwitchDriverResult.NoActiveSession => "→ no active session.",
+                    SwitchDriverResult.Ended => "-> session ended.",
+                    SwitchDriverResult.NoActiveSession => "-> no active session.",
                     // The seat is empty here, but nothing durable was recorded,
                     // so this is the one case staff have to finish by hand -
                     // either there was no stint to name, or the outbox write
                     // failed and a restart would lose the retry.
                     SwitchDriverResult.EndedNotQueued =>
-                        "→ session ended here. Backend offline and the server may never be told - "
+                        "-> session ended here. Backend offline and the server may never be told - "
                         + "if someone was checked in on this rig, clear it from the staff screen.",
                     // The seat IS empty; only the backend has yet to hear it.
                     // Say so, because until it does, laps on this rig arrive
                     // unclaimed and staff will see them on the dashboard.
                     SwitchDriverResult.EndedPendingSync =>
-                        "→ session ended here. Backend offline - it will be told when the connection returns.",
+                        "-> session ended here. Backend offline - it will be told when the connection returns.",
                     // Every result is named above, so this is only reachable
                     // once a new one is added. It says the one thing true of
                     // all of them - the seat is empty here - rather than
                     // inheriting another arm's promise about what the backend
                     // has been told.
-                    _ => "→ session ended here.",
+                    _ => "-> session ended here.",
                 });
                 break;
         }
@@ -140,7 +140,7 @@ _ = Task.Run(async () =>
 try { await Task.Delay(Timeout.Infinite, quit.Token); }
 catch (OperationCanceledException) { }
 
-Console.WriteLine("Shutting down…");
+Console.WriteLine("Shutting down...");
 return 0;
 
 static void Render(AgentStatus s)
@@ -155,7 +155,7 @@ static void Render(AgentStatus s)
     // available rig, and saying so would be a guess in the display too.
     var driver = s.Assignment is { } a
         ? a.DriverDisplayName
-        : s.AssignmentKnown ? "— available —" : "(checking)";
+        : s.AssignmentKnown ? "- available -" : "(checking)";
     var sim = s.SimRunning ? "sim running" : "sim idle";
     var pending = s.PendingLaps > 0 ? $"  |  {s.PendingLaps} lap(s) queued" : "";
     // Separate from the queued count on purpose: these are not waiting for the
@@ -245,7 +245,7 @@ static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
 /// config, writes no outbox. This is the first thing to run on a real rig.</summary>
 static int Diagnose()
 {
-    Console.WriteLine("Oasis Rig Agent — iRacing DIAGNOSTIC (reads only; nothing is posted or saved)");
+    Console.WriteLine("Oasis Rig Agent - iRacing DIAGNOSTIC (reads only; nothing is posted or saved)");
     Console.WriteLine("Start iRacing, join a session and get in the car. Drive laps. Press Enter to stop.");
     Console.WriteLine(new string('-', 72));
 
@@ -303,7 +303,7 @@ static int Diagnose()
     source.Faulted += ex => Console.WriteLine($"[{Now()}] ERROR telemetry stopped: {ex.GetType().Name}: {ex.Message} - restart the program and send this line");
 
     source.Start();
-    Console.WriteLine($"[{Now()}] looking for iRacing shared memory…");
+    Console.WriteLine($"[{Now()}] looking for iRacing shared memory...");
     Console.ReadLine();
     source.Stop();
     Console.WriteLine($"stopped. {laps} lap(s) would have been posted.");
