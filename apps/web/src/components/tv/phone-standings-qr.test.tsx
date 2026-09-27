@@ -57,10 +57,11 @@ describe("StandingsQr", () => {
     expect(decode(renderToStaticMarkup(<StandingsQr href={href} />))).toBe(href);
   });
 
-  it("tells the room what the code is for", () => {
+  it("draws no caption, but names its target for assistive tech", () => {
     const html = renderToStaticMarkup(<StandingsQr href="https://example.test/leaderboards" />);
-    expect(html).toContain("Full standings");
-    expect(html).toContain("on your phone");
+    // The owner asked for the code alone: a caption crowds a full footer.
+    expect(html).not.toContain("<figcaption");
+    expect(html).toContain('aria-label="Full standings on your phone: https://example.test/leaderboards"');
   });
 });
 

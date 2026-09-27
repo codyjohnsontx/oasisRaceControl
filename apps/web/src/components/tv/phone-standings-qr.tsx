@@ -39,8 +39,10 @@ export function standingsHref(origin: string): string {
 const QUIET_ZONE = 3;
 
 /**
- * The drawing itself: a light card with the code and a short label. Pure, so
- * a test can render it to static markup and decode what it drew.
+ * The drawing itself: a light card with the code and nothing else - the owner
+ * asked for no caption, because a full bottom row of times already leaves the
+ * footer crowded, and a QR code in a corner explains itself. Pure, so a test
+ * can render it to static markup and decode what it drew.
  *
  * Sized in `em` of `.tv-scale`: the square is 10em, which is 89px on the
  * venue's 1272x601 panel and 120px on a 1440x900 laptop - small in the corner,
@@ -53,16 +55,7 @@ export function StandingsQr({ href }: { href: string }) {
     .join("");
 
   return (
-    <figure
-      id="tv-phone-qr"
-      className="flex shrink-0 items-center gap-[0.875em]"
-      aria-label={`Full standings on your phone: ${href}`}
-    >
-      <figcaption className="text-ink/80 text-right text-[1em]/[1.35] font-bold uppercase tracking-[0.2em]">
-        Full standings
-        <br />
-        on your phone
-      </figcaption>
+    <figure id="tv-phone-qr" className="shrink-0" aria-label={`Full standings on your phone: ${href}`}>
       <svg
         viewBox={`0 0 ${qr.size} ${qr.size}`}
         className="h-[10em] w-[10em] rounded-[0.5em] bg-white"
