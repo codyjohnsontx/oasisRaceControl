@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OasisRigAgent.Core\OasisRigAgent.Core.csproj" />
+    <ProjectReference Include="..\OasisRigAgent\OasisRigAgent.csproj" />
   </ItemGroup>
 
 </Project>
