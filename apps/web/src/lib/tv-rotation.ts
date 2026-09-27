@@ -38,14 +38,13 @@ import type { ComponentType } from "react";
 export type TvMode = "rotation" | "event";
 
 /**
- * Reads the mode off the page's `event` search parameter. Present is on -
- * `?event=1` and a bare `?event` both open the event view - and only absent or
- * `0` is the ordinary rotation, so the link on the venue's laptop can't be
- * half-right: if someone typed `event` at all they meant the event board.
+ * Reads the mode off the page's `event` search parameter. Only `?event=1`
+ * opens the event view; anything else - absent, empty, `0`, `false`, any other
+ * value - plays the ordinary rotation.
  */
 export function tvMode(event: string | string[] | undefined): TvMode {
   const value = Array.isArray(event) ? event[0] : event;
-  return value === undefined || value === "0" ? "rotation" : "event";
+  return value === "1" ? "event" : "rotation";
 }
 
 /** One entry in the rotation. */

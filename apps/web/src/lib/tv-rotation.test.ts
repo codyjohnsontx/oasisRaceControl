@@ -6,15 +6,20 @@ describe("tvMode", () => {
     expect(tvMode(undefined)).toBe("rotation");
   });
 
-  it.each(["1", "", "true", "yes", "cota"])("opens the event view for ?event=%j", (value) => {
-    expect(tvMode(value)).toBe("event");
+  it("opens the event view for ?event=1", () => {
+    expect(tvMode("1")).toBe("event");
   });
 
-  it("reads ?event=0 as the rotation, so a link can be switched off in place", () => {
-    expect(tvMode("0")).toBe("rotation");
+  it("plays the rotation for ?event=false", () => {
+    expect(tvMode("false")).toBe("rotation");
+  });
+
+  it.each(["", "0", "true", "yes", "cota"])("plays the rotation for ?event=%j", (value) => {
+    expect(tvMode(value)).toBe("rotation");
   });
 
   it("takes the first value when the parameter is repeated", () => {
     expect(tvMode(["1", "0"])).toBe("event");
+    expect(tvMode(["0", "1"])).toBe("rotation");
   });
 });
