@@ -6,6 +6,7 @@ import type { Board } from "@/lib/leaderboards";
 import type { TvSlide } from "@/lib/tv-rotation";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
+import { PhoneStandingsQr } from "./phone-standings-qr";
 
 /**
  * The `/tv` rotation engine.
@@ -322,6 +323,11 @@ export function TvScreen({ initialBoards }: Props) {
           <p className="font-display text-accent text-glow-subtle text-[1.125em] font-bold uppercase tracking-[0.3em]">
             Oasis Live Timing
           </p>
+          {/* In the footer's flow rather than pinned over the board, so the
+              rows above give it room by construction and it never covers one.
+              It reads the origin after hydration, so the server paint has no
+              code - the footer grows to fit it a moment later. */}
+          <PhoneStandingsQr />
         </div>
       </footer>
     </main>

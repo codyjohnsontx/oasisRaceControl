@@ -1,0 +1,74 @@
+import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import jsQR from "jsqr";
+import { StandingsQr, standingsHref } from "./phone-standings-qr";
+
+/**
+ * The corner code has one job: a phone that scans it must land on the
+ * leaderboard of the site serving the wall. So the test does what the phone
+ * does - it reads the modules back out of the markup the component actually
+ * rendered, rasterises them, and decodes them with an independent decoder
+ * (`jsqr`) - rather than comparing against the encoder's own output, which
+ * would pass with the wrong URL wired in.
+ */
+
+/** Pixels per module when rasterising; the decoder wants a few per module. */
+const SCALE = 4;
+
+/**
+ * Rebuilds the module grid from the single `<path>` the component draws: one
+ * `M{x} {y}h1v1h-1z` square per dark module, on a viewBox `size` modules wide.
+ */
+function modulesOf(html: string): { size: number; dark: Set<string> } {
+  const viewBox = html.match(/viewBox="0 0 (\d+) (\d+)"/);
+  const path = html.match(/<path d="([^"]*)"/);
+  if (!viewBox || !path) throw new Error("no QR path in markup");
+  const size = Number(viewBox[1]);
+  const dark = new Set<string>();
+  for (const m of path[1].matchAll(/M(\d+) (\d+)h1v1h-1z/g)) dark.add(`${m[1]},${m[2]}`);
+  return { size, dark };
+}
+
+/** Decodes the QR in `html` the way a camera would, or null if it cannot. */
+function decode(html: string): string | null {
+  const { size, dark } = modulesOf(html);
+  const px = size * SCALE;
+  const rgba = new Uint8ClampedArray(px * px * 4);
+  for (let y = 0; y < px; y++) {
+    for (let x = 0; x < px; x++) {
+      const v = dark.has(`${Math.floor(x / SCALE)},${Math.floor(y / SCALE)}`) ? 0 : 255;
+      const i = (y * px + x) * 4;
+      rgba[i] = rgba[i + 1] = rgba[i + 2] = v;
+      rgba[i + 3] = 255;
+    }
+  }
+  return jsQR(rgba, px, px)?.data ?? null;
+}
+
+describe("StandingsQr", () => {
+  it("encodes exactly the URL it is given", () => {
+    const href = "https://oasis-race-control.vercel.app/leaderboards";
+    const html = renderToStaticMarkup(<StandingsQr href={href} />);
+    expect(decode(html)).toBe(href);
+  });
+
+  it("encodes a laptop's own origin just the same", () => {
+    const href = "http://192.168.4.20:3000/leaderboards";
+    expect(decode(renderToStaticMarkup(<StandingsQr href={href} />))).toBe(href);
+  });
+
+  it("tells the room what the code is for", () => {
+    const html = renderToStaticMarkup(<StandingsQr href="https://example.test/leaderboards" />);
+    expect(html).toContain("Full standings");
+    expect(html).toContain("on your phone");
+  });
+});
+
+describe("standingsHref", () => {
+  it("appends the leaderboard path to the page's origin", () => {
+    expect(standingsHref("https://oasis-race-control.vercel.app")).toBe(
+      "https://oasis-race-control.vercel.app/leaderboards",
+    );
+    expect(standingsHref("http://localhost:3000/")).toBe("http://localhost:3000/leaderboards");
+  });
+});
