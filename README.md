@@ -1,5 +1,7 @@
 # Oasis Race Control
 
+> **Event test build (2026-09-27):** [Download the rig agent iRacing test mode (OasisRigAgent-diagnose.zip)](https://github.com/codyjohnsontx/oasisRaceControl/releases/download/event-diag-2026-09-27/OasisRigAgent-diagnose.zip). Unzip it, open a command prompt in the `rig-agent-diag` folder, and run `OasisRigAgent.exe --diagnose`. It only reads iRacing and posts nothing.
+
 In-store driver check-in, live timing, lap history, leaderboard, and weekly league platform for **Oasis Sim Racing** — a venue with ~20–25 Windows iRacing simulators.
 
 Customer flow: **scan the rig's QR code → confirm check-in on your phone → drive.** Laps are captured automatically, attributed to the checked-in driver, and shown on the driver's phone, the staff dashboard, and the front-of-store TV leaderboard (**Oasis Live Timing**).
