@@ -171,11 +171,12 @@ body {
    off against the column headings above it. Only while scrolling: a list
    that fits is not clipped and must not have its last row dimmed. */
 .tv-auto-scroll-frame {
+  --tv-scroll-fade: 1.5em;
   mask-image: linear-gradient(
     to bottom,
     transparent,
-    black 1.5em,
-    black calc(100% - 1.5em),
+    black var(--tv-scroll-fade),
+    black calc(100% - var(--tv-scroll-fade)),
     transparent
   );
 }

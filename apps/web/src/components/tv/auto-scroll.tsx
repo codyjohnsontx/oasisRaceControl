@@ -67,6 +67,7 @@ export function AutoScroll({ rowCount, children }: Props) {
   }, []);
 
   const durationMs = Math.round((rowCount * MS_PER_ROW) / (1 - TOP_HOLD_FRACTION));
+  const pass = overflows ? PASS_CLASS : undefined;
 
   return (
     <div
@@ -78,18 +79,31 @@ export function AutoScroll({ rowCount, children }: Props) {
         className={overflows ? "tv-auto-scroll" : undefined}
         style={{ "--tv-scroll-duration": `${durationMs}ms` } as CSSProperties}
       >
-        <div ref={content}>{children}</div>
+        <div className={pass}>
+          <div ref={content} className="flow-root">
+            {children}
+          </div>
+          {overflows && <LoopRule />}
+        </div>
         {overflows && (
-          <>
+          <div aria-hidden="true" className={pass}>
+            <div className="flow-root">{children}</div>
             <LoopRule />
-            <div aria-hidden="true">{children}</div>
-            <LoopRule />
-          </>
+          </div>
         )}
       </div>
     </div>
   );
 }
+
+/**
+ * One pass of the loop: the list and the rule after it, as a single block. It
+ * is `flow-root` so no margin inside it collapses across its edges - the two
+ * passes must be boxes of the same height for `-50%` to land exactly on the
+ * second - and it starts below the frame's top fade, so the leader is fully
+ * lit through the hold.
+ */
+const PASS_CLASS = "flow-root pt-[var(--tv-scroll-fade)]";
 
 /** Marks where one pass of the list ends and the next begins. */
 function LoopRule() {
