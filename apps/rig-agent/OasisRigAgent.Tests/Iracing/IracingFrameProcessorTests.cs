@@ -323,7 +323,7 @@ public sealed class IracingFrameProcessorTests
         fixture.WriteInt(4, 0);
         Assert.Equal(FrameOutcome.NotConnected, _frames.Process(reader));
 
-        // A brand-new session in a different car, counter restarted in the pits,
+        // A brand-new session in a different car, counter restarted on track,
         // sessionInfoUpdate bumped, and the time channel still showing 134.906.
         fixture.SetSessionInfo(Session(12, "Porsche 911 GT3 R"));
         fixture.WriteInt(12, 2);                                            // sessionInfoUpdate
@@ -331,20 +331,20 @@ public sealed class IracingFrameProcessorTests
         fixture.WriteInt(48, 102);
         fixture.WriteInt(MemoryFixture.BufferOffset, 0);
         fixture.WriteInt(MemoryFixture.BufferOffset + 8, 12);               // SessionUniqueID
-        fixture.Bytes[MemoryFixture.BufferOffset + 16] = 1;                 // OnPitRoad
         Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
         Assert.Equal("Porsche 911 GT3 R", combos.Last()!.CarScreenName);
 
-        // Out lap: counter 0 -> 1 with the stale time. Never posted.
+        // First crossing: counter 0 -> 1 off pit road with the stale time. Never posted.
         fixture.WriteInt(48, 103);
         fixture.WriteInt(MemoryFixture.BufferOffset, 1);
-        fixture.Bytes[MemoryFixture.BufferOffset + 16] = 0;
         for (var i = 0; i < LapDetector.LapTimeDeadlineTicks + 2; i++)
         {
             fixture.WriteInt(48, 104 + i);
             Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
         }
-        Assert.All(decisions, d => Assert.Null(d.Lap));
+        var first = Assert.Single(decisions);
+        Assert.Null(first.Lap);
+        Assert.Contains("stale", first.SkipReason);
         decisions.Clear();
 
         // First flying lap of the new session posts once, with the new car.

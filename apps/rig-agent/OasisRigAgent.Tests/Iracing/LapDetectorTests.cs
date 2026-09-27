@@ -327,12 +327,9 @@ public sealed class LapDetectorTests
     public void ACrossingWhileTheDriversCarIsNotOnTrackIsNotALap()
     {
         // Spectating or a camera on another car: the sim may not flag a replay,
-        // but the player's own car is not on track when the counter moves.
-        Cruise(Tick(1, 155.0f), 10);
-        Cruise(Tick(1, 155.0f, onTrack: false), 5);
-        _decisions.Clear();
+        // but the player's own car is not on track at any point of the lap.
+        Cruise(Tick(1, 155.0f, onTrack: false), 10);
         Drive(Tick(2, 150.0f, onTrack: false));
-        Cruise(Tick(2, 150.0f, onTrack: false), LapDetector.LapTimeDeadlineTicks + 1);
         var d = Assert.Single(_decisions);
         Assert.Null(d.Lap);
         Assert.Contains("not on track", d.SkipReason);
@@ -370,13 +367,15 @@ public sealed class LapDetectorTests
         _detector.Resynced += resyncs.Add;
 
         // Exit to the menu: the agent's owner calls Reset (disconnect). Then a
-        // brand-new session, fresh car, counter from 0 in the pits, and the
+        // brand-new session, fresh car, counter from 0 on track, and the
         // time channel still showing session A's last lap.
         _detector.Reset();
-        Cruise(Tick(0, 134.906f, pit: true, sessionNum: 0, sessionUnique: 77, carIdx: 4), 10);
-        Drive(Tick(1, 134.906f, sessionUnique: 77, carIdx: 4));                 // out lap
+        Cruise(Tick(0, 134.906f, sessionNum: 0, sessionUnique: 77, carIdx: 4), 10);
+        Drive(Tick(1, 134.906f, sessionUnique: 77, carIdx: 4));                 // first crossing
         Cruise(Tick(1, 134.906f, sessionUnique: 77, carIdx: 4), LapDetector.LapTimeDeadlineTicks + 1);
-        Assert.All(_decisions, d => Assert.Null(d.Lap));
+        var first = Assert.Single(_decisions);
+        Assert.Null(first.Lap);
+        Assert.Contains("stale", first.SkipReason);
         _decisions.Clear();
 
         Drive(Tick(2, 141.250f, sessionUnique: 77, carIdx: 4));                 // first flying lap
