@@ -6,6 +6,7 @@ import type { Board } from "@/lib/leaderboards";
 import type { TvSlide } from "@/lib/tv-rotation";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
+import { PhoneStandingsQr } from "./phone-standings-qr";
 
 /**
  * The `/tv` rotation engine.
@@ -308,39 +309,49 @@ export function TvScreen({ initialBoards }: Props) {
         </div>
 
         <div className="flex shrink-0 items-center gap-[1.25em]">
-          {/* `stale` covers a board held through a failure; `offline` covers a
-              failure with no board to hold. Either way the feed is down. */}
-          <StatusChip stale={stale || offline} />
+          {/* Pulses the same way the standby card's helmet does: the owner
+              wanted the wall to look alive in the corner too. */}
           <Image
             src="/oasishelmet.png"
             alt=""
             width={49}
             height={60}
             priority
-            className="h-[2.75em] w-auto"
+            className="h-[2.75em] w-auto animate-pulse"
           />
-          <p className="font-display text-accent text-glow-subtle text-[1.125em] font-bold uppercase tracking-[0.3em]">
-            Oasis Live Timing
-          </p>
+          {/* `stale` covers a board held through a failure; `offline` covers a
+              failure with no board to hold. Either way the feed is down. */}
+          <Wordmark stale={stale || offline} />
+          {/* In the footer's flow rather than pinned over the board, so the
+              rows above give it room by construction and it never covers one.
+              It reads the origin after hydration, so the server paint has no
+              code - the footer grows to fit it a moment later. */}
+          <PhoneStandingsQr />
         </div>
       </footer>
     </main>
   );
 }
 
-/** Says out loud whether the numbers on screen are live or held. */
-function StatusChip({ stale }: { stale: boolean }) {
+/**
+ * The wordmark doubles as the feed status, so the footer carries one thing
+ * there rather than a chip beside it: a green dot and "Oasis Live Timing"
+ * while the numbers are live, and the same slot turning to a pulsing orange
+ * dot and "Reconnecting" while they are held. Saying the word matters - an
+ * unattended wall must tell the room out loud when its numbers are not live.
+ */
+function Wordmark({ stale }: { stale: boolean }) {
   return (
-    <span
-      className={`flex items-center gap-[0.625em] rounded-full border px-[1em] py-[0.375em] text-[1em] font-bold uppercase tracking-[0.2em] ${
-        stale ? "border-sunset/50 text-sunset" : "border-valid/40 text-valid"
+    <p
+      className={`font-display flex items-center gap-[0.75em] text-[1.125em] font-bold uppercase tracking-[0.3em] ${
+        stale ? "text-sunset" : "text-accent text-glow-subtle"
       }`}
     >
       <span
-        className={`h-[0.625em] w-[0.625em] rounded-full ${stale ? "bg-sunset animate-pulse" : "bg-valid"}`}
+        className={`h-[0.625em] w-[0.625em] shrink-0 rounded-full ${stale ? "bg-sunset animate-pulse" : "bg-valid"}`}
       />
-      {stale ? "Reconnecting" : "Live"}
-    </span>
+      {stale ? "Reconnecting" : "Oasis Live Timing"}
+    </p>
   );
 }
 

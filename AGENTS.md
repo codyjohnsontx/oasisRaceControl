@@ -28,6 +28,15 @@ the rest, which is how rows came to overlap and the car column to render
 varies are `fr` tracks, and rows carry a `min-h` tied to their own text so they
 can stretch but never collapse.
 
+Every board also carries the phone-standings QR code (`phone-standings-qr.tsx`),
+which opens `/leaderboards` on the page's own origin - nothing configured, so
+it is right on the hosted site, a preview, and a laptop at an off-site event.
+Open `/tv` on the hosted address, or on the laptop's LAN IP in the fallback -
+never `localhost`, because the code encodes the page's own origin.
+It sits in the footer's flow rather than pinned over the board, which is what
+makes it unable to cover a row; `npm run tv:check` screenshots `/tv` and fails
+on any overlap (root README, Integration tests).
+
 A board can also take the wall over rather than take a turn on it, without any
 engine change: renew the contract's `hold()` on every refresh while the takeover
 condition holds. The league board does exactly that while tonight's round is

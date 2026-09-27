@@ -72,9 +72,11 @@ export function Leaderboards({ boards, viewerDriverId }: Props) {
   const leader = rows[0];
 
   return (
-    <main className="flex-1 flex flex-col gap-6 p-6 max-w-3xl w-full mx-auto">
-      <header className="flex items-center justify-between gap-4">
-        <h1 className="font-display gradient-text text-4xl sm:text-5xl font-black tracking-tight">
+    // Below lg the floating Screens button reaches over the header, so the page
+    // starts under it; on a phone the heading also steps down a size to fit.
+    <main className="flex-1 flex flex-col gap-6 p-6 pt-16 lg:pt-6 max-w-3xl w-full mx-auto">
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <h1 className="font-display gradient-text text-3xl sm:text-5xl font-black tracking-tight">
           LEADERBOARDS
         </h1>
         <Link href="/" className="text-muted text-sm underline underline-offset-4">
@@ -140,19 +142,21 @@ export function Leaderboards({ boards, viewerDriverId }: Props) {
                   return (
                     <div
                       key={row.driver_id}
-                      className={`flex items-center gap-4 rounded-xl px-4 py-3 border ${
+                      className={`flex items-center gap-3 sm:gap-4 rounded-xl px-4 py-3 border ${
                         isYou ? "border-accent glow-cyan bg-surface" : "border-edge bg-surface"
                       }`}
                     >
                       <span
-                        className={`font-display w-10 text-2xl font-black ${
+                        className={`font-display w-7 sm:w-10 text-2xl font-black ${
                           index === 0 ? "text-gold text-glow-subtle" : "text-muted"
                         }`}
                       >
                         {index + 1}
                       </span>
+                      {/* The name gets the room on a phone: it wraps rather than
+                          truncating, and the gap stacks under the lap time. */}
                       <div className="flex-1 min-w-0">
-                        <p className="truncate font-bold">
+                        <p className="break-words sm:truncate font-bold">
                           {row.display_name}
                           {isYou && (
                             <span className="ml-2 text-accent text-xs font-bold uppercase tracking-wider">
@@ -162,14 +166,16 @@ export function Leaderboards({ boards, viewerDriverId }: Props) {
                         </p>
                         <p className="text-muted text-xs truncate">{row.car_name}</p>
                       </div>
-                      <span className="laptime text-xl font-bold">
-                        {formatLapTime(row.lap_time_ms)}
-                      </span>
-                      <span className="laptime text-sm text-muted w-24 text-right">
-                        {index === 0 || !leader
-                          ? ""
-                          : formatGap(row.lap_time_ms - leader.lap_time_ms)}
-                      </span>
+                      <div className="flex flex-col items-end sm:flex-row sm:items-center sm:gap-4">
+                        <span className="laptime text-xl font-bold">
+                          {formatLapTime(row.lap_time_ms)}
+                        </span>
+                        <span className="laptime text-sm text-muted sm:w-24 text-right">
+                          {index === 0 || !leader
+                            ? ""
+                            : formatGap(row.lap_time_ms - leader.lap_time_ms)}
+                        </span>
+                      </div>
                     </div>
                   );
                 })}
