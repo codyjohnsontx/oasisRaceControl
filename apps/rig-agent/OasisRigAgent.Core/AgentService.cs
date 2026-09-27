@@ -61,6 +61,12 @@ public sealed class AgentService : IAsyncDisposable
     // assurance, one layer down, as the swallowed press this whole path removes.
     private volatile bool _pendingCheckoutIsDurable;
 
+    // Walk-up mode (the rig is the check-in): the only stint this agent will
+    // stamp a lap with is one its own check-in created in this process. A poll
+    // can end that stint here but never hand over another - not one a previous
+    // run left open, and not a phone check-in either.
+    private readonly bool _ownStintsOnly;
+
     public event Action<AgentStatus>? StatusChanged;
 
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
@@ -69,6 +75,7 @@ public sealed class AgentService : IAsyncDisposable
         _client = client;
         _queue = queue;
         _telemetry = telemetry;
+        _ownStintsOnly = config.RigQrToken is not null;
         // A checkout left undelivered by the previous run of this agent. Read
         // before any loop starts, so the first poll already knows not to adopt
         // the assignment it is about to close.
@@ -101,7 +108,7 @@ public sealed class AgentService : IAsyncDisposable
                 // poll that gets through.
                 lock (_stampLock)
                 {
-                    if (_hasPolled) _queue.Enqueue(lap, _assignment?.Id);
+                    if (_hasPolled || _ownStintsOnly) _queue.Enqueue(lap, _assignment?.Id);
                     else _queue.EnqueueUnresolved(lap);
                 }
                 PublishStatus();
@@ -203,11 +210,29 @@ public sealed class AgentService : IAsyncDisposable
         return result.Ended ? SwitchDriverResult.Ended : SwitchDriverResult.NoActiveSession;
     }
 
-    /// <summary>Ask the backend who is in the seat right now, without waiting
-    /// for the next scheduled poll. The rig-side check-in calls this the moment
-    /// a name is signed in, so a lap driven in the next ten seconds is stamped
-    /// with the new stint rather than the previous answer.</summary>
-    public Task PollAssignmentNowAsync() => RunTick(PollAssignmentTick);
+    /// <summary>Walk-up mode: put the driver this rig just checked in into the
+    /// seat, so the very next lap is stamped with their stint. The generation
+    /// bump drops a poll already in flight, which describes the rig before
+    /// this check-in.</summary>
+    public void SeatCheckedInDriver(DriverCheckIn checkIn)
+    {
+        lock (_stampLock)
+        {
+            Interlocked.Increment(ref _assignmentGeneration);
+            _assignment = new Assignment(checkIn.AssignmentId, checkIn.DriverId, checkIn.DisplayName, DateTimeOffset.UtcNow);
+        }
+        PublishStatus();
+    }
+
+    /// <summary>Walk-up mode, on start: end whatever stint is open on this rig -
+    /// one a previous run of this agent left behind when it was closed without
+    /// a sign-out landing, or a phone check-in. True once the backend has
+    /// answered, whether or not there was anything to end.</summary>
+    public async Task<bool> EmptySeatAsync()
+    {
+        var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(null, ct)));
+        return result.Ok;
+    }
 
     private async Task HeartbeatTick(CancellationToken ct)
         => await RunBackend(async token =>
@@ -238,6 +263,8 @@ public sealed class AgentService : IAsyncDisposable
 
         lock (_stampLock)
         {
+            if (_ownStintsOnly && assignment is not null && assignment.Id != _assignment?.Id) assignment = null;
+
             // Somebody signed out while this was in flight. The answer in hand
             // describes the rig before that, so applying it would resurrect a
             // stint the driver has already ended. Drop it whole - including the

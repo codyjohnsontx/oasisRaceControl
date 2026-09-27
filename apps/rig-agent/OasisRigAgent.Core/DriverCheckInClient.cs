@@ -1,16 +1,17 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 
 namespace OasisRigAgent.Core;
 
-/// <summary>What signing a typed name in on this rig came to.</summary>
+/// <summary>What signing a name and PIN in on this rig came to.</summary>
 public sealed record DriverCheckIn(
-    /// <summary>The name the backend gave the driver - the typed one, or the
-    /// rename it offered when that name was taken ("Mike 47").</summary>
+    /// <summary>The name as the backend stores it.</summary>
     string DisplayName,
-    /// <summary>True when the typed name was taken and the backend's suggestion was used.</summary>
-    bool Renamed,
+    /// <summary>True when the name and PIN logged an existing driver back in;
+    /// false when they created a new one.</summary>
+    bool Returning,
     string DriverId,
     string AssignmentId);
 
@@ -22,29 +23,27 @@ public sealed class CheckInRefusedException : Exception
 
 /// <summary>
 /// Signs a walk-up driver in on this rig from the rig PC itself, using the
-/// backend's existing phone flow as an HTTP client: `POST /api/auth/guest`
-/// with the typed name (which sets the driver session cookie), then
-/// `POST /api/checkin` with the rig's QR token, confirming the takeover of
-/// whoever was checked in before. Nothing on the server changes - the request
-/// shapes are the ones the deployed check-in page sends
-/// (`apps/web/src/components/check-in-flow.tsx`, served at 695e080 and on
-/// main alike).
+/// backend's existing name + PIN routes as an HTTP client: `POST
+/// /api/auth/login` with the typed name and PIN, and when that name and PIN
+/// match nobody, `POST /api/auth/register` to create the driver (either sets
+/// the driver session cookie); then `POST /api/checkin` with the rig's QR
+/// token, confirming the takeover of whoever was checked in before. Nothing
+/// on the server changes - the request shapes are the ones the deployed
+/// sign-in and check-in pages send (served at 695e080 and on main alike).
 ///
-/// Every name gets a fresh cookie jar, so one person's session never leaks
-/// into the next: the rig is the shared phone here, and "Not you? Switch
-/// driver" is the name prompt. A name that signed in but whose check-in then
-/// failed keeps its jar until it checks in or a different name is typed, so
-/// retyping it seats the driver that sign-in created instead of colliding
-/// with it and coming back renamed.
+/// A name and PIN are the driver's across both event days, so a returning
+/// driver's laps accumulate on one leaderboard row. Logging in is repeatable,
+/// so a check-in that fails after the sign-in is retried by typing the same
+/// name and PIN again.
+///
+/// Every check-in gets a fresh cookie jar, so one person's session never
+/// leaks into the next: the rig is the shared phone here.
 /// </summary>
 public sealed class DriverCheckInClient
 {
-    private sealed record SignedIn(string TypedName, HttpClient Http, string DriverId, string DisplayName, bool Renamed);
-
     private readonly Func<HttpMessageHandler> _handlerFactory;
     private readonly Uri _baseUri;
     private readonly string _qrToken;
-    private SignedIn? _signedIn;
 
     public DriverCheckInClient(string baseUrl, string qrToken, Func<HttpMessageHandler>? handlerFactory = null)
     {
@@ -53,43 +52,54 @@ public sealed class DriverCheckInClient
         _handlerFactory = handlerFactory ?? (() => new HttpClientHandler { UseCookies = true, CookieContainer = new CookieContainer() });
     }
 
-    /// <summary>Guest-sign the name in and put that driver in this rig's seat.
-    /// A taken name is retried once with the backend's own suggestion; the
-    /// result says which name stuck. Throws <see cref="CheckInRefusedException"/>
-    /// for every answer the backend gives that is not a check-in, and lets
-    /// transport failures propagate.</summary>
-    public async Task<DriverCheckIn> CheckInAsync(string typedName, CancellationToken ct)
+    /// <summary>The backend's PIN rule: exactly four digits.</summary>
+    public static bool IsPin(string pin) => pin.Length == 4 && pin.All(char.IsAsciiDigit);
+
+    /// <summary>Log the name in with its PIN (or register it when that name and
+    /// PIN match nobody) and put that driver in this rig's seat. Throws
+    /// <see cref="CheckInRefusedException"/> for every answer the backend gives
+    /// that is not a check-in, and lets transport failures propagate.</summary>
+    public async Task<DriverCheckIn> CheckInAsync(string name, string pin, CancellationToken ct)
     {
-        if (_signedIn is not null && !string.Equals(_signedIn.TypedName, typedName, StringComparison.OrdinalIgnoreCase))
+        if (!IsPin(pin)) throw new CheckInRefusedException("the PIN must be exactly 4 digits");
+
+        using var http = new HttpClient(_handlerFactory(), disposeHandler: true)
         {
-            _signedIn.Http.Dispose();
-            _signedIn = null;
+            BaseAddress = _baseUri,
+            Timeout = TimeSpan.FromSeconds(15),
+        };
+        var (driverId, displayName, returning) = await SignIn(http, name, pin, ct);
+        var assignmentId = await CheckIn(http, ct);
+        return new DriverCheckIn(displayName, returning, driverId, assignmentId);
+    }
+
+    private static async Task<(string DriverId, string DisplayName, bool Returning)> SignIn(
+        HttpClient http, string name, string pin, CancellationToken ct)
+    {
+        using (var login = await http.PostAsJsonAsync("api/auth/login", new { displayName = name, pin }, ct))
+        {
+            var body = await ReadJson(login, ct);
+            if (login.IsSuccessStatusCode) return Identify(body, returning: true);
+            if ((int)login.StatusCode == 429)
+                throw new CheckInRefusedException($"the name \"{name}\" is locked after five wrong PINs - try again {LockedUntil(body)}");
+            if (login.StatusCode == HttpStatusCode.BadRequest)
+                throw NameNotAllowed();
+            // 401 is the same answer for an unknown name and a wrong PIN, by
+            // design; registering is what tells the two apart.
+            if (login.StatusCode != HttpStatusCode.Unauthorized)
+                throw new CheckInRefusedException($"the backend could not sign you in (HTTP {(int)login.StatusCode}) - try again");
         }
 
-        if (_signedIn is null)
-        {
-            var http = new HttpClient(_handlerFactory(), disposeHandler: true)
-            {
-                BaseAddress = _baseUri,
-                Timeout = TimeSpan.FromSeconds(15),
-            };
-            try
-            {
-                var (driverId, displayName, renamed) = await SignInAsGuest(http, typedName, ct);
-                _signedIn = new SignedIn(typedName, http, driverId, displayName, renamed);
-            }
-            catch
-            {
-                http.Dispose();
-                throw;
-            }
-        }
-
-        var signedIn = _signedIn;
-        var assignmentId = await CheckIn(signedIn.Http, ct);
-        signedIn.Http.Dispose();
-        _signedIn = null;
-        return new DriverCheckIn(signedIn.DisplayName, signedIn.Renamed, signedIn.DriverId, assignmentId);
+        using var register = await http.PostAsJsonAsync("api/auth/register", new { displayName = name, pin }, ct);
+        var registered = await ReadJson(register, ct);
+        if (register.IsSuccessStatusCode) return Identify(registered, returning: false);
+        if (register.StatusCode == HttpStatusCode.Conflict)
+            throw new CheckInRefusedException($"the name \"{name}\" already exists with a different PIN - type the PIN again, or use a different name");
+        if ((int)register.StatusCode == 429)
+            throw new CheckInRefusedException("too many new names from this network in the last minute - wait a minute and try again");
+        if (register.StatusCode == HttpStatusCode.BadRequest)
+            throw NameNotAllowed();
+        throw new CheckInRefusedException($"the backend could not sign you up (HTTP {(int)register.StatusCode}) - try again");
     }
 
     private async Task<string> CheckIn(HttpClient http, CancellationToken ct)
@@ -108,7 +118,7 @@ public sealed class DriverCheckInClient
         if (res.StatusCode == HttpStatusCode.Forbidden)
             throw new CheckInRefusedException("this driver is not allowed to check in - ask staff");
         if (res.StatusCode == HttpStatusCode.Conflict)
-            throw new CheckInRefusedException("someone else checked in at the same moment - type your name again");
+            throw new CheckInRefusedException("someone else checked in at the same moment - type your name and PIN again");
         if ((int)res.StatusCode == 429)
             throw new CheckInRefusedException("too many check-ins from this network in the last minute - wait a moment and try again");
         if (!res.IsSuccessStatusCode)
@@ -121,49 +131,22 @@ public sealed class DriverCheckInClient
         return assignmentId;
     }
 
-    private static async Task<(string DriverId, string DisplayName, bool Renamed)> SignInAsGuest(
-        HttpClient http, string typedName, CancellationToken ct)
+    private static (string DriverId, string DisplayName, bool Returning) Identify(JsonNode? body, bool returning)
     {
-        var renamed = false;
-        var name = typedName;
-        for (var attempt = 0; attempt < 2; attempt++)
-        {
-            using var res = await http.PostAsJsonAsync("api/auth/guest", new { displayName = name }, ct);
-            var body = await ReadJson(res, ct);
-            if (res.IsSuccessStatusCode)
-            {
-                var driverId = body?["driverId"]?.GetValue<string>();
-                var displayName = body?["displayName"]?.GetValue<string>();
-                if (driverId is null || displayName is null)
-                    throw new CheckInRefusedException("the backend signed the name in but did not say who it is");
-                return (driverId, displayName, renamed);
-            }
-
-            var error = body?["error"]?.GetValue<string>();
-            if (res.StatusCode == HttpStatusCode.Conflict && error == "name_taken")
-            {
-                // Somebody already has that name tonight. Take the rename the
-                // backend offers ("Mike 47"), once; a second collision is not
-                // something to keep guessing at.
-                var suggestion = body?["suggestion"]?.GetValue<string>();
-                if (attempt == 0 && !string.IsNullOrWhiteSpace(suggestion))
-                {
-                    name = suggestion;
-                    renamed = true;
-                    continue;
-                }
-                throw new CheckInRefusedException($"the name \"{typedName}\" is already taken - try another");
-            }
-            if ((int)res.StatusCode == 429)
-                throw new CheckInRefusedException("too many sign-ins from this network in the last minute - wait a moment and try again");
-            if (res.StatusCode == HttpStatusCode.BadRequest)
-                throw new CheckInRefusedException(renamed
-                    ? $"the name \"{typedName}\" is already taken - try another"
-                    : "that name is not allowed: 2 to 24 letters, numbers, spaces or . _ ' -");
-            throw new CheckInRefusedException($"the backend could not sign the name in (HTTP {(int)res.StatusCode}) - try again");
-        }
-        throw new CheckInRefusedException($"the name \"{typedName}\" is already taken - try another");
+        var driverId = body?["driverId"]?.GetValue<string>();
+        var displayName = body?["displayName"]?.GetValue<string>();
+        if (driverId is null || displayName is null)
+            throw new CheckInRefusedException("the backend signed the name in but did not say who it is");
+        return (driverId, displayName, returning);
     }
+
+    private static CheckInRefusedException NameNotAllowed() =>
+        new("that name is not allowed: 2 to 24 letters, numbers, spaces or . _ ' -");
+
+    private static string LockedUntil(JsonNode? body) =>
+        DateTimeOffset.TryParse(body?["lockedUntil"]?.GetValue<string>(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var until)
+            ? $"after {until.ToLocalTime():HH:mm}"
+            : "in 15 minutes";
 
     private static async Task<JsonNode?> ReadJson(HttpResponseMessage res, CancellationToken ct)
     {

@@ -292,7 +292,9 @@ next person."
 ```text
 Type your name and press Enter:
 Mike
-Driving as Mike.
+Type your 4-digit PIN and press Enter (new here? pick one and remember it):
+4821
+Signed up as Mike. Use the same name and PIN next time, on either rig, either day.
 Laps post automatically. Press Enter when you are done.
 [telemetry 20:05:11] lap 2 2:17.217 incidents=0 queued as track="Circuit of the Americas" config="Grand Prix" car="FIA F4"
 [Rig 01]  ● online  |  driver: Mike  |  sim running
@@ -302,24 +304,40 @@ Thanks Mike, you are signed out.
 Type your name and press Enter:
 ```
 
-How it works, with nothing new on the server: the name is signed in through
-the backend's own guest check-in (`POST /api/auth/guest`, then
-`POST /api/checkin` with this rig's QR token and the takeover confirmed), the
-same two requests the phone page sends, so it runs against the deployed app
-as it is. The agent then polls the assignment at once, so the next lap is
-stamped with the new stint. Enter signs the driver out through the agent's
-existing switch-driver (durable: a sign-out the backend cannot be told about
-now is delivered later, and until then this rig's laps carry no owner). Closing
-the window (Ctrl+C, the close button, a shutdown) signs out on a best-effort
-basis; if that never lands, the next name's check-in takes the seat over and
-ends the old stint anyway.
+A name and a 4-digit PIN are the driver's for the whole event: the same name
+and PIN on either rig, on either day, come back to the same driver, so every
+attempt at a fast time lands on one leaderboard row. The PIN is typed in the
+open; it keeps one person's laps apart from another's, it is not a password.
 
-- A name already taken tonight gets the backend's rename ("Mike 47") and the
-  console says so. An empty name asks again. If the sign-in went through but
-  the check-in did not, typing the same name again seats that same driver
-  rather than a renamed one.
-- The backend allows ten sign-ins a minute per network address; the two event
-  rigs share one, which is plenty.
+How it works, with nothing new on the server: the name and PIN are logged in
+through the backend's own driver sign-in (`POST /api/auth/login`), and when
+they match nobody a new driver is registered with them
+(`POST /api/auth/register`); then `POST /api/checkin` with this rig's QR token
+and the takeover confirmed - the same requests the phone pages send, so it
+runs against the deployed app as it is. The next lap is stamped with the new
+stint at once. Enter signs the driver out through the agent's existing
+switch-driver (durable: a sign-out the backend cannot be told about now is
+delivered later, and until then this rig's laps carry no owner).
+
+Closing the program signs the driver out too, by every way it can close:
+Ctrl+C, the window's close button, a Windows shutdown, or its input ending.
+The sign-out is recorded in the outbox first and the agent then waits up to
+three seconds for the backend to take it. And every start empties the seat
+before it asks for a name: it ends whatever is open on this rig - a stint
+whose sign-out never landed, or a phone check-in - and in walk-up mode the
+agent only ever stamps a lap with a stint its own check-in created, so a lap
+driven before anyone signs in on this run is nobody's, never the last
+driver's.
+
+- A new name registers with the PIN typed. A name that already exists with a
+  different PIN is refused: type the PIN again, or pick a different name.
+  Names are unique across everyone the app has ever stored, not only this
+  event's drivers.
+- Five wrong PINs lock that name for 15 minutes; the console says until when.
+- The PIN is exactly 4 digits; anything else asks for it again. An empty name
+  asks again.
+- The backend allows ten new names a minute per network address; the two
+  event rigs share one, which is plenty.
 - Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.
 - A rig whose QR token is not registered says so at the first name and asks
   again; fix `rigQrToken`.

@@ -251,13 +251,17 @@ the fallback when a rig cannot read the sim.
 
 ## Walk-up check-in on the rig
 
-With `rigQrToken` in its config the agent signs a typed name in through the
-backend's existing guest + check-in routes as an HTTP client with a cookie jar
-(`OasisRigAgent.Core/DriverCheckInClient.cs`), so it works against whatever
-web commit is deployed without a server change - verify request shapes
-against the served commit, not only main. Sign-out reuses the agent's durable
-switch-driver; a takeover by the next name ends a stint whose checkout never
-landed. The loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
+With `rigQrToken` in its config the agent signs a typed name and 4-digit PIN
+in through the backend's existing login, register and check-in routes as an
+HTTP client with a cookie jar (`OasisRigAgent.Core/DriverCheckInClient.cs`),
+so a returning driver keeps one row and it works against whatever web commit
+is deployed without a server change - verify request shapes against the
+served commit, not only main. In this mode the agent stamps laps only with a
+stint its own check-in created in this process (`AgentService`), and every
+start ends whatever is open on the rig before the name prompt; do not let the
+poll adopt a stint again, or a restart credits the departed driver. Every
+exit path in `Program.cs` runs the durable switch-driver and waits for it. The
+loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
 test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
 `OASIS_TEST_BACKEND_URL`).
 

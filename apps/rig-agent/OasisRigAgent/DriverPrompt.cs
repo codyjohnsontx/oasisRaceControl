@@ -3,24 +3,32 @@ using OasisRigAgent.Core;
 namespace OasisRigAgent;
 
 /// <summary>
-/// The walk-up loop on the rig PC: ask for a name, sign that person in on this
-/// rig, let them drive while laps post under their name, and when they press
-/// Enter sign them out and ask for the next name. The owner's words: "the user
-/// types their name and then as they make laps it assigns it accordingly. When
-/// they are done, they just exit out the program and then it waits for the next
-/// person."
+/// The walk-up loop on the rig PC: ask for a name and a 4-digit PIN, sign that
+/// person in on this rig, let them drive while laps post under their name, and
+/// when they press Enter sign them out and ask for the next name. The owner's
+/// words: "the user types their name and then as they make laps it assigns it
+/// accordingly. When they are done, they just exit out the program and then it
+/// waits for the next person." The same name and PIN bring a returning driver
+/// back to their own leaderboard row, on either rig, on both event days.
 ///
-/// Sign-in goes through the backend's existing guest and check-in routes
-/// (<see cref="DriverCheckInClient"/>); sign-out is the agent's own
+/// Sign-in goes through the backend's existing login, register and check-in
+/// routes (<see cref="DriverCheckInClient"/>); sign-out is the agent's own
 /// switch-driver, which ends the stint locally at once and delivers the
-/// checkout durably. Closing the window signs out on a best-effort basis; if
-/// that delivery never lands, the next name's check-in takes the seat over
-/// and ends the old stint anyway.
+/// checkout durably. Closing the program signs out too (see
+/// <see cref="SignOutOnExitAsync"/>), and the next start empties the seat
+/// before it asks for a name, so a stint whose sign-out never landed is ended
+/// then and never credited with anyone else's laps.
 /// </summary>
 internal static class DriverPrompt
 {
+    private const int EmptySeatAttempts = 5;
+    private static readonly TimeSpan EmptySeatRetryGap = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ExitSignOutLimit = TimeSpan.FromSeconds(3);
+
     public static async Task RunAsync(AgentService agent, DriverCheckInClient checkIn, CancellationToken quit)
     {
+        if (!await EmptySeatAsync(agent, quit)) return;
+
         while (!quit.IsCancellationRequested)
         {
             Console.WriteLine();
@@ -30,10 +38,13 @@ internal static class DriverPrompt
             var name = typed.Trim();
             if (name.Length == 0) continue;
 
+            var pin = await ReadPinAsync(quit);
+            if (pin is null) return;
+
             DriverCheckIn session;
             try
             {
-                session = await checkIn.CheckInAsync(name, quit);
+                session = await checkIn.CheckInAsync(name, pin, quit);
             }
             catch (CheckInRefusedException ex)
             {
@@ -50,13 +61,11 @@ internal static class DriverPrompt
                 continue;
             }
 
-            // The poll loop would learn about this stint within ten seconds; a
-            // lap driven before then must not be stamped with the old answer.
-            await agent.PollAssignmentNowAsync();
+            agent.SeatCheckedInDriver(session);
 
-            Console.WriteLine(session.Renamed
-                ? $"\"{name}\" was taken tonight, so you are driving as {session.DisplayName}."
-                : $"Driving as {session.DisplayName}.");
+            Console.WriteLine(session.Returning
+                ? $"Welcome back {session.DisplayName}."
+                : $"Signed up as {session.DisplayName}. Use the same name and PIN next time, on either rig, either day.");
             Console.WriteLine("Laps post automatically. Press Enter when you are done.");
 
             var done = await ReadLineAsync(quit);
@@ -71,20 +80,54 @@ internal static class DriverPrompt
         }
     }
 
-    /// <summary>Best-effort sign-out when the program is closing (Ctrl+C, the
-    /// window's close button, a console shutdown): end whatever stint is open
-    /// here, bounded so a backend that does not answer cannot hold the window
-    /// open. The stint ends locally regardless, and a delivery that never lands
-    /// is finished by the next name's takeover.</summary>
+    /// <summary>Sign-out when the program is closing (Enter at end of input,
+    /// Ctrl+C, the window's close button, a shutdown). The switch-driver writes
+    /// its durable tombstone before it touches the network, and the checkout
+    /// call is then waited for up to three seconds so a backend that does not
+    /// answer cannot hold the window open. Whatever does not land is ended by
+    /// the next start's empty seat.</summary>
     public static async Task SignOutOnExitAsync(AgentService agent)
     {
         try
         {
-            await agent.SwitchDriverAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await agent.SwitchDriverAsync().WaitAsync(ExitSignOutLimit);
         }
         catch (Exception)
         {
-            // Nothing more can be done on the way out; the takeover covers it.
+            // Nothing more can be done on the way out; the next start covers it.
+        }
+    }
+
+    /// <summary>End whatever is open on this rig before the first name is
+    /// asked for, retrying a few times while the backend does not answer. Once
+    /// the prompt has to show it shows anyway: this agent never stamps a lap
+    /// with a stint it did not create, and the first check-in takes the seat
+    /// over. False only when the agent is quitting.</summary>
+    private static async Task<bool> EmptySeatAsync(AgentService agent, CancellationToken quit)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            if (await agent.EmptySeatAsync()) return true;
+            if (attempt == EmptySeatAttempts)
+            {
+                Console.WriteLine("Could not reach the backend to clear this rig's seat; the first check-in will take it over.");
+                return true;
+            }
+            try { await Task.Delay(EmptySeatRetryGap, quit); }
+            catch (OperationCanceledException) { return false; }
+        }
+    }
+
+    private static async Task<string?> ReadPinAsync(CancellationToken quit)
+    {
+        while (true)
+        {
+            Console.WriteLine("Type your 4-digit PIN and press Enter (new here? pick one and remember it):");
+            var typed = await ReadLineAsync(quit);
+            if (typed is null) return null;
+            var pin = typed.Trim();
+            if (DriverCheckInClient.IsPin(pin)) return pin;
+            Console.WriteLine("The PIN is exactly 4 digits.");
         }
     }
 

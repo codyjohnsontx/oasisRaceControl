@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using OasisRigAgent;
 using OasisRigAgent.Core;
 using OasisRigAgent.Core.Iracing;
@@ -64,16 +65,26 @@ var quit = new CancellationTokenSource();
 
 if (config.RigQrToken is { } qrToken)
 {
-    // Walk-up mode: the rig itself is the check-in. Closing the window or
-    // Ctrl+C signs the current driver out on a best-effort basis; a sign-out
-    // that cannot be delivered is finished by the next name's takeover.
-    Console.WriteLine("Walk-up mode: type a name to start driving, press Enter when done.");
+    // Walk-up mode: the rig itself is the check-in. Every way out - input
+    // ending, Ctrl+C, the window's close button (SIGHUP; CTRL_CLOSE_EVENT on
+    // Windows), a shutdown (SIGTERM; CTRL_SHUTDOWN_EVENT) and the runtime's own
+    // exit - runs the same sign-out once, and the signal handlers wait for it,
+    // because Windows ends the process as soon as a close handler returns.
+    Console.WriteLine("Walk-up mode: type your name and a 4-digit PIN to start driving, press Enter when done.");
     Console.WriteLine(new string('-', 60));
     var checkIn = new DriverCheckInClient(config.BackendBaseUrl, qrToken);
+    var signOut = new Lazy<Task>(() => DriverPrompt.SignOutOnExitAsync(agent));
+    void SignOutBeforeExit()
+    {
+        quit.Cancel();
+        signOut.Value.GetAwaiter().GetResult();
+    }
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
-    AppDomain.CurrentDomain.ProcessExit += (_, _) => quit.Cancel();
+    using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => { context.Cancel = true; SignOutBeforeExit(); });
+    using var onShutdown = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; SignOutBeforeExit(); });
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => SignOutBeforeExit();
     await DriverPrompt.RunAsync(agent, checkIn, quit.Token);
-    await DriverPrompt.SignOutOnExitAsync(agent);
+    await signOut.Value;
     Console.WriteLine("Shutting down…");
     return 0;
 }

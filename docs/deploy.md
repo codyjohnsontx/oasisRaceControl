@@ -127,9 +127,12 @@ vars, which override the file):
 }
 ```
 
-- `rigQrToken` turns on walk-up mode: the rig asks for a name, signs that
-  person in through the app's own guest check-in, posts their laps, and signs
-  them out when they press Enter (`apps/rig-agent/README.md`, Walk-up mode).
+- `rigQrToken` turns on walk-up mode: the rig asks for a name and a 4-digit
+  PIN, logs that driver in (or registers them) through the app's own sign-in
+  and check-in, posts their laps, and signs them out when they press Enter or
+  close the program. The same name and PIN bring a returning driver back to
+  their own row on either rig, both days; five wrong PINs lock the name for 15
+  minutes (`apps/rig-agent/README.md`, Walk-up mode).
   Leave it out to keep the staff console.
 - `backendBaseUrl` must be `https://` (the agent rejects non-HTTPS except
   localhost, since the token rides on every request).

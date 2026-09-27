@@ -6,8 +6,9 @@ using OasisRigAgent.Core;
 namespace OasisRigAgent.Tests;
 
 /// <summary>
-/// The walk-up loop against a real backend: name in, a lap credited to that
-/// name, done, next name - the sequence the owner described. It runs only
+/// The walk-up loop against a real backend: name and PIN in, a lap credited to
+/// that driver, done, the same name and PIN back to the same driver, next
+/// name - the sequence the owner described. It runs only
 /// when OASIS_TEST_BACKEND_URL names a local backend seeded with the demo data
 /// (rig token dev-rig-1-secret, QR token demo-rig-1), because it creates
 /// drivers and assignments there. Run it against the SERVED commit of the web
@@ -39,20 +40,55 @@ public sealed class NameLoopIntegrationTests
         using var http = new HttpClient();
         var backend = new BackendClient(http, baseUrl, RigToken);
 
-        // Person one types their name: the rig's seat is theirs.
-        var first = await checkIn.CheckInAsync($"Loop A {tag}", CancellationToken.None);
-        Assert.False(first.Renamed);
+        // Person one types a new name and picks a PIN: registered, and the
+        // rig's seat is theirs.
+        var first = await checkIn.CheckInAsync($"Loop A {tag}", "4821", CancellationToken.None);
+        Assert.False(first.Returning);
         var seat = (await backend.GetAssignmentAsync(CancellationToken.None)).Assignment;
         Assert.NotNull(seat);
         Assert.Equal(first.AssignmentId, seat!.Id);
         Assert.Equal($"Loop A {tag}", seat.DriverDisplayName);
+        await AssertLapCredited(backend, first.AssignmentId, $"loop-{tag}-1");
 
-        // A lap stamped with that stint is accepted and credited to them.
+        // Done: the stint ends.
+        Assert.True(await backend.CheckoutAsync(first.AssignmentId, CancellationToken.None));
+        Assert.Null((await backend.GetAssignmentAsync(CancellationToken.None)).Assignment);
+
+        // They come back for another go: the same name and PIN log the SAME
+        // driver back in, so their laps stay on one leaderboard row.
+        var again = await checkIn.CheckInAsync($"Loop A {tag}", "4821", CancellationToken.None);
+        Assert.True(again.Returning);
+        Assert.Equal(first.DriverId, again.DriverId);
+        Assert.NotEqual(first.AssignmentId, again.AssignmentId);
+        await AssertLapCredited(backend, again.AssignmentId, $"loop-{tag}-2");
+
+        // Somebody else typing that name with the wrong PIN is refused, and the
+        // seat stays with the driver who is in it.
+        var wrong = await Assert.ThrowsAsync<CheckInRefusedException>(
+            () => checkIn.CheckInAsync($"Loop A {tag}", "0000", CancellationToken.None));
+        Assert.Contains("different PIN", wrong.Message);
+        Assert.Equal(again.AssignmentId, (await backend.GetAssignmentAsync(CancellationToken.None)).Assignment!.Id);
+
+        // A different name registers separately, and the takeover is confirmed
+        // automatically, so the seat moves without a sign-out in between.
+        var next = await checkIn.CheckInAsync($"Loop B {tag}", "4821", CancellationToken.None);
+        Assert.False(next.Returning);
+        Assert.NotEqual(first.DriverId, next.DriverId);
+        seat = (await backend.GetAssignmentAsync(CancellationToken.None)).Assignment;
+        Assert.Equal(next.AssignmentId, seat!.Id);
+        Assert.Equal($"Loop B {tag}", seat.DriverDisplayName);
+        Assert.False(await backend.CheckoutAsync(again.AssignmentId, CancellationToken.None)); // already taken over
+        Assert.True(await backend.CheckoutAsync(next.AssignmentId, CancellationToken.None));
+    }
+
+    /// <summary>A lap stamped with the stint is accepted and credited.</summary>
+    private static async Task AssertLapCredited(BackendClient backend, string assignmentId, string eventId)
+    {
         var lap = new JsonObject
         {
             ["type"] = "LAP_COMPLETED",
-            ["eventId"] = $"loop-{tag}-1",
-            ["rigAssignmentId"] = first.AssignmentId,
+            ["eventId"] = eventId,
+            ["rigAssignmentId"] = assignmentId,
             ["trackName"] = "Circuit of the Americas",
             ["trackConfig"] = "Grand Prix",
             ["carName"] = "FIA F4",
@@ -61,27 +97,8 @@ public sealed class NameLoopIntegrationTests
             ["incidentDelta"] = 0,
             ["completedAt"] = DateTimeOffset.UtcNow.ToString("O"),
         };
-        var outcome = await backend.SendLapsAsync([new QueuedEvent($"loop-{tag}-1", lap)], CancellationToken.None);
-        Assert.Equal([$"loop-{tag}-1"], outcome.Settled);
+        var outcome = await backend.SendLapsAsync([new QueuedEvent(eventId, lap)], CancellationToken.None);
+        Assert.Equal([eventId], outcome.Settled);
         Assert.Empty(outcome.Rejected);
-
-        // Done: the stint ends, and the same name typed again is a new person
-        // tonight, so the backend renames them rather than reusing the row.
-        Assert.True(await backend.CheckoutAsync(first.AssignmentId, CancellationToken.None));
-        Assert.Null((await backend.GetAssignmentAsync(CancellationToken.None)).Assignment);
-
-        var again = await checkIn.CheckInAsync($"Loop A {tag}", CancellationToken.None);
-        Assert.True(again.Renamed);
-        Assert.StartsWith($"Loop A {tag} ", again.DisplayName);
-        Assert.NotEqual(first.DriverId, again.DriverId);
-
-        // Next name without a sign-out in between: the takeover is confirmed
-        // automatically and the seat moves.
-        var next = await checkIn.CheckInAsync($"Loop B {tag}", CancellationToken.None);
-        seat = (await backend.GetAssignmentAsync(CancellationToken.None)).Assignment;
-        Assert.Equal(next.AssignmentId, seat!.Id);
-        Assert.Equal($"Loop B {tag}", seat.DriverDisplayName);
-        Assert.False(await backend.CheckoutAsync(again.AssignmentId, CancellationToken.None)); // already taken over
-        Assert.True(await backend.CheckoutAsync(next.AssignmentId, CancellationToken.None));
     }
 }

@@ -40,10 +40,11 @@ public sealed record AgentConfig
     public string AgentVersion { get; init; } = "rig-agent/0.3-event";
 
     /// <summary>This rig's check-in QR token (the slug in its /r/&lt;token&gt; URL).
-    /// When set, the console runs the walk-up loop: it asks for a name, signs
-    /// that person in on this rig through the backend's own guest check-in,
-    /// posts their laps, and signs them out when they press Enter. Absent, the
-    /// agent keeps the staff-style s/q console.</summary>
+    /// When set, the console runs the walk-up loop: it asks for a name and a
+    /// 4-digit PIN, signs that driver in on this rig through the backend's own
+    /// login, register and check-in routes, posts their laps, and signs them
+    /// out when they press Enter or close the program. Absent, the agent keeps
+    /// the staff-style s/q console.</summary>
     public string? RigQrToken { get; init; }
 
     public static AgentConfig Load(string path)

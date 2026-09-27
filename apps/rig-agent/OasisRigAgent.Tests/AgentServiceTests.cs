@@ -302,6 +302,75 @@ public sealed class AgentServiceTests : IDisposable
                 .Payload["rigAssignmentId"]);
     }
 
+    private static AgentConfig WalkUpConfig() => Config() with { RigQrToken = "qr-rig-1" };
+
+    private const string DepartedAssignmentId = "7c2e4a10-5b3d-4e8f-a1c2-0d9e8f7a6b5c";
+
+    /// <summary>The crash-and-restart case in walk-up mode. The last driver
+    /// closed the program and their sign-out never landed, so the backend still
+    /// has their stint open when the agent starts again. The agent must not
+    /// adopt it off the poll - a lap driven now is nobody's - and starting up
+    /// ends it, so it cannot collect laps later either.</summary>
+    [Fact]
+    public async Task Walk_up_start_ends_the_stint_a_previous_process_left_open_and_never_stamps_it()
+    {
+        var backend = new StubBackend();
+        backend.Assign(DepartedAssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(WalkUpConfig(), client, queue, telemetry);
+
+        var polled = WaitForStatus(agent, s => s.AssignmentKnown);
+        agent.Start();
+        await polled;
+
+        telemetry.Emit("evt-before-anyone-signs-in");
+
+        Assert.True(await agent.EmptySeatAsync());
+        Assert.Equal(new string?[] { null }, backend.Checkouts);
+        Assert.Null(backend.OpenAssignmentId);
+
+        telemetry.Emit("evt-after-the-seat-is-emptied");
+
+        var batch = queue.PendingBatch(10);
+        Assert.Equal(2, batch.Count);
+        Assert.All(batch, e =>
+        {
+            Assert.True(e.Payload.AsObject().ContainsKey("rigAssignmentId"));
+            Assert.Null(e.Payload["rigAssignmentId"]);
+        });
+    }
+
+    /// <summary>The ordinary walk-up path: the stint the rig's own check-in
+    /// created stamps the next lap at once, without waiting for a poll, and the
+    /// driver pressing Enter ends it.</summary>
+    [Fact]
+    public async Task Walk_up_stamps_the_stint_its_own_check_in_created()
+    {
+        var backend = new StubBackend();
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(WalkUpConfig(), client, queue, telemetry);
+        agent.Start();
+
+        backend.Assign(AssignmentId);
+        agent.SeatCheckedInDriver(new DriverCheckIn("Mike", true, "d1", AssignmentId));
+        telemetry.Emit("evt-mike");
+
+        Assert.Equal(SwitchDriverResult.Ended, await agent.SwitchDriverAsync());
+        telemetry.Emit("evt-after-mike");
+
+        var queued = queue.PendingBatch(10);
+        Assert.Equal(AssignmentId,
+            queued.Single(e => e.EventId == "evt-mike").Payload["rigAssignmentId"]!.GetValue<string>());
+        Assert.Null(queued.Single(e => e.EventId == "evt-after-mike").Payload["rigAssignmentId"]);
+        Assert.Equal(new string?[] { AssignmentId }, backend.Checkouts);
+    }
+
     /// <summary>A sign-out that happens while an assignment poll is in flight
     /// must win. The poll was answered from the rig's state BEFORE the sign-out,
     /// so applying it would reinstate a stint the driver has ended and stamp
