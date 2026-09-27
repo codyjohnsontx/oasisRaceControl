@@ -310,10 +310,16 @@ Type your 4-digit PIN and press Enter (new here? pick one and remember it):
 
 **Driving.** The signed-in name and one instruction. Enter is the log-out
 button: it logs the driver out and clears back to the sign-in screen, which
-thanks them. Below it the driver sees each lap and whether it counts, and
-problems they can report: iRacing not running, the backend offline, laps
-waiting to send. The status line appears only when one of those changes, not
-on every poll.
+thanks them. Below it the driver sees each lap: queued as soon as it is
+read, and posted once the backend has it. A lap not timed (pit lane, reset)
+says why. A lap driven while nobody is signed in says "lap not counted - sign
+in first": the backend keeps it as an unclaimed lap, and it never ranks.
+
+Both screens open with a warning line for each problem still standing -
+the backend unreachable, iRacing not running or not in a session - so
+clearing the screen never hides one. A status line is printed when the
+connection or the sim changes, or laps are waiting or refused, not on every
+poll.
 
 ```text
 ============================================================
@@ -323,7 +329,8 @@ Welcome back. Your laps post automatically.
 
 Press Enter to log out.
 
-[20:05:11] Lap 2  2:17.217  incidents 0  - recorded
+[20:05:11] Lap 2  2:17.217  incidents 0 - queued
+[20:05:13] Lap 2  2:17.217  incidents 0 - posted
 [20:07:30] Lap 3 not counted: the lap went through the pit lane (out lap or pit stop) - not timed
 ```
 

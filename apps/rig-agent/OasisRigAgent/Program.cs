@@ -198,17 +198,20 @@ static Action<AgentStatus> OnlyWhenItMatters(Action<AgentStatus> render)
     };
 }
 
-/// <summary>What walk-up mode prints about the sim below the DRIVING screen:
-/// each lap and whether it counts, and the problems a driver can see and
-/// report - iRacing not running, lap reading stopped. The exact combo strings
+/// <summary>What walk-up mode prints about the sim below the screen: a lap
+/// that was not timed and why, and the problems a driver can see and report -
+/// iRacing not running, lap reading stopped. A timed lap is the prompt's to
+/// print, because only it knows whether the lap was queued for a driver and
+/// when the backend took it. The exact combo strings
 /// are for staff and live in --diagnose and the staff console.</summary>
 static IracingTelemetrySource AttachDriverLog(IracingTelemetrySource source)
 {
     source.ConnectionChanged += up => Log(up ? "iRacing connected." : "iRacing is not running or not in a session - laps resume when it is back.");
     source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected. Tell staff.");
-    source.LapDecided += d => Log(d.Lap is { } lap
-        ? $"Lap {d.LapCompleted}  {FormatLap(lap.LapTimeMs)}  incidents {(lap.IncidentDelta?.ToString() ?? "n/a")}  - recorded"
-        : $"Lap {d.LapCompleted} not counted: {d.SkipReason}");
+    source.LapDecided += d =>
+    {
+        if (d.Lap is null) Log($"Lap {d.LapCompleted} not counted: {d.SkipReason}");
+    };
     source.Faulted += ex => Log($"ERROR lap reading stopped: {ex.Message} - tell staff to restart the program.");
     return source;
 
@@ -228,7 +231,7 @@ static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
     source.SessionInfoIncomplete += found => Log($"session info does not name a track and car yet (found: {found})");
     source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected");
     source.LapDecided += d => Log(d.Lap is { } lap
-        ? $"lap {d.LapCompleted} {FormatLap(lap.LapTimeMs)} incidents={(lap.IncidentDelta?.ToString() ?? "n/a")} queued as track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
+        ? $"lap {d.LapCompleted} {LapTime.Format(lap.LapTimeMs)} incidents={(lap.IncidentDelta?.ToString() ?? "n/a")} queued as track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
         : $"lap {d.LapCompleted} skipped: {d.SkipReason}");
     source.LapCounterResynced += message => Log(message);
     source.Faulted += ex => Log($"ERROR telemetry stopped: {ex.Message} - restart the agent");
@@ -287,7 +290,7 @@ static int Diagnose()
         if (d.Lap is { } lap)
         {
             laps++;
-            Console.WriteLine($"[{Now()}] LAP {d.LapCompleted}  {FormatLap(lap.LapTimeMs)}  incidents={(lap.IncidentDelta?.ToString() ?? "n/a")}  -> would POST"
+            Console.WriteLine($"[{Now()}] LAP {d.LapCompleted}  {LapTime.Format(lap.LapTimeMs)}  incidents={(lap.IncidentDelta?.ToString() ?? "n/a")}  -> would POST"
                 + $"  track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
                 + (lap.IncidentDelta > 0 ? "  (backend stores it but marks it invalid: incidents over the limit)" : ""));
         }
@@ -313,5 +316,3 @@ static int Diagnose()
 static string Describe(SessionCombo c)
     => $"track=\"{c.TrackDisplayName}\" config=\"{c.TrackConfigName}\" car=\"{c.CarScreenName}\"";
 
-static string FormatLap(int ms)
-    => $"{ms / 60_000}:{ms % 60_000 / 1000:00}.{ms % 1000:000}";

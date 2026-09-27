@@ -69,6 +69,14 @@ public sealed class AgentService : IAsyncDisposable
 
     public event Action<AgentStatus>? StatusChanged;
 
+    /// <summary>A lap was queued with the stint it was stamped with (null:
+    /// nobody was in the seat, so the backend will store it unclaimed). Not
+    /// raised for a lap held unresolved until the first poll.</summary>
+    public event Action<LapCompleted, string?>? LapQueued;
+
+    /// <summary>The backend has these queued events now, by event id.</summary>
+    public event Action<IReadOnlyList<string>>? LapsPosted;
+
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
     {
         _config = config;
@@ -106,11 +114,19 @@ public sealed class AgentService : IAsyncDisposable
                 // would assert the rig was empty, permanently unattributing laps
                 // that have a driver. Those laps wait unresolved for the first
                 // poll that gets through.
+                string? stamp = null;
+                var stamped = false;
                 lock (_stampLock)
                 {
-                    if (_hasPolled || _ownStintsOnly) _queue.Enqueue(lap, _assignment?.Id);
+                    if (_hasPolled || _ownStintsOnly)
+                    {
+                        stamp = _assignment?.Id;
+                        _queue.Enqueue(lap, stamp);
+                        stamped = true;
+                    }
                     else _queue.EnqueueUnresolved(lap);
                 }
+                if (stamped) LapQueued?.Invoke(lap, stamp);
                 PublishStatus();
             }
             catch (Exception ex)
@@ -361,6 +377,7 @@ public sealed class AgentService : IAsyncDisposable
         {
             _queue.Remove(outcome.Settled);
             PublishStatus();
+            LapsPosted?.Invoke(outcome.Settled);
         }
     }
 
@@ -452,9 +469,14 @@ public sealed class AgentService : IAsyncDisposable
         PublishStatus();
     }
 
-    private void PublishStatus()
+    private void PublishStatus() => StatusChanged?.Invoke(CurrentStatus());
+
+    /// <summary>What the agent knows right now - the same snapshot
+    /// <see cref="StatusChanged"/> publishes, for a screen that has just been
+    /// redrawn.</summary>
+    public AgentStatus CurrentStatus()
     {
-        StatusChanged?.Invoke(new AgentStatus
+        return new AgentStatus
         {
             RigNumber = _config.RigNumber,
             Connection = _connection,
@@ -470,7 +492,7 @@ public sealed class AgentService : IAsyncDisposable
             Checkout = _pendingCheckout is null
                 ? CheckoutDelivery.None
                 : _pendingCheckoutIsDurable ? CheckoutDelivery.Queued : CheckoutDelivery.NotQueued,
-        });
+        };
     }
 
     public async ValueTask DisposeAsync()

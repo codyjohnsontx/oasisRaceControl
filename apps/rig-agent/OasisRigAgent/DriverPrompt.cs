@@ -40,8 +40,11 @@ internal sealed class SystemPromptConsole : IPromptConsole
 /// a 4-digit PIN; the PIN shows as it is typed, and the screen is cleared the
 /// moment Enter is pressed so it is gone before the next person sits down.
 /// DRIVING shows only the signed-in name and "Press Enter to log out", with the
-/// driver's laps and any problem printed below it; Enter logs them out and
-/// clears back to SIGN IN. The owner's words: "the user types their name and
+/// driver's laps printed below it - queued, then posted once the backend has
+/// them; Enter logs them out and clears back to SIGN IN. A lap driven while
+/// nobody is signed in says it did not count. Every screen opens with a
+/// warning line for each problem still standing (backend offline, iRacing not
+/// running), so clearing the screen never hides one. The owner's words: "the user types their name and
 /// then as they make laps it assigns it accordingly. When they are done, they
 /// just exit out the program and then it waits for the next person." The same
 /// name and PIN bring a returning driver back to their own leaderboard row, on
@@ -65,11 +68,52 @@ internal static class DriverPrompt
     public static async Task RunAsync(
         AgentService agent, DriverCheckInClient checkIn, int rigNumber, IPromptConsole screen, CancellationToken quit)
     {
+        var waiting = new Dictionary<string, string>();
+        void OnQueued(LapCompleted lap, string? stamp)
+        {
+            var label = $"Lap {lap.LapNumber?.ToString() ?? "-"}  {LapTime.Format(lap.LapTimeMs)}  incidents {lap.IncidentDelta?.ToString() ?? "n/a"}";
+            if (stamp is null)
+            {
+                Log(screen, $"{label} - lap not counted - sign in first");
+                return;
+            }
+            lock (waiting) waiting[lap.EventId] = label;
+            Log(screen, $"{label} - queued");
+        }
+        void OnPosted(IReadOnlyList<string> eventIds)
+        {
+            foreach (var eventId in eventIds)
+            {
+                string? label;
+                lock (waiting)
+                {
+                    if (!waiting.Remove(eventId, out label)) continue;
+                }
+                Log(screen, $"{label} - posted");
+            }
+        }
+
+        agent.LapQueued += OnQueued;
+        agent.LapsPosted += OnPosted;
+        try
+        {
+            await RunScreensAsync(agent, checkIn, rigNumber, screen, quit);
+        }
+        finally
+        {
+            agent.LapQueued -= OnQueued;
+            agent.LapsPosted -= OnPosted;
+        }
+    }
+
+    private static async Task RunScreensAsync(
+        AgentService agent, DriverCheckInClient checkIn, int rigNumber, IPromptConsole screen, CancellationToken quit)
+    {
         var notice = await EmptySeatAsync(agent, quit);
 
         while (!quit.IsCancellationRequested)
         {
-            ShowSignIn(screen, rigNumber, notice, name: null);
+            ShowSignIn(screen, agent, rigNumber, notice, name: null);
             screen.WriteLine("Type your name and press Enter:");
             var typed = await screen.ReadLineAsync(quit);
             if (typed is null) return;
@@ -77,7 +121,7 @@ internal static class DriverPrompt
             notice = null;
             if (name.Length == 0) continue;
 
-            var pin = await ReadPinAsync(screen, rigNumber, name, quit);
+            var pin = await ReadPinAsync(screen, agent, rigNumber, name, quit);
             if (pin is null) return;
             screen.Clear();
             screen.WriteLine($"Signing in {name}...");
@@ -103,7 +147,7 @@ internal static class DriverPrompt
             }
 
             agent.SeatCheckedInDriver(session);
-            ShowDriving(screen, rigNumber, session);
+            ShowDriving(screen, agent, rigNumber, session);
 
             var done = await screen.ReadLineAsync(quit);
             var result = await agent.SwitchDriverAsync();
@@ -139,12 +183,35 @@ internal static class DriverPrompt
         }
     }
 
-    private static void ShowSignIn(IPromptConsole screen, int rigNumber, string? notice, string? name)
+    /// <summary>One line for each problem standing right now that the person at
+    /// the rig can see the effect of, or should tell staff about.</summary>
+    internal static IEnumerable<string> Warnings(AgentStatus status)
+    {
+        if (status.Connection == ConnectionState.Offline)
+            yield return "WARNING: the backend cannot be reached - laps are kept on this rig and sent when it is back.";
+        if (!status.SimRunning)
+            yield return "WARNING: iRacing is not running or not in a session - no laps are being read.";
+        if (status.RejectedLaps > 0)
+            yield return $"WARNING: {status.RejectedLaps} lap(s) were refused by the backend - tell staff.";
+        if (status.Checkout == CheckoutDelivery.NotQueued)
+            yield return "WARNING: a log-out was not saved - staff must clear this rig on the staff screen.";
+    }
+
+    private static void Log(IPromptConsole screen, string message) =>
+        screen.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
+
+    private static void ShowBanner(IPromptConsole screen, AgentService agent, string title)
     {
         screen.Clear();
         screen.WriteLine(Rule);
-        screen.WriteLine($"  OASIS RACE CONTROL - RIG {rigNumber:D2} - SIGN IN");
+        screen.WriteLine(title);
         screen.WriteLine(Rule);
+        foreach (var warning in Warnings(agent.CurrentStatus())) screen.WriteLine(warning);
+    }
+
+    private static void ShowSignIn(IPromptConsole screen, AgentService agent, int rigNumber, string? notice, string? name)
+    {
+        ShowBanner(screen, agent, $"  OASIS RACE CONTROL - RIG {rigNumber:D2} - SIGN IN");
         if (notice is not null)
         {
             screen.WriteLine();
@@ -154,12 +221,9 @@ internal static class DriverPrompt
         if (name is not null) screen.WriteLine($"Name: {name}");
     }
 
-    private static void ShowDriving(IPromptConsole screen, int rigNumber, DriverCheckIn session)
+    private static void ShowDriving(IPromptConsole screen, AgentService agent, int rigNumber, DriverCheckIn session)
     {
-        screen.Clear();
-        screen.WriteLine(Rule);
-        screen.WriteLine($"  RIG {rigNumber:D2} - DRIVING: {session.DisplayName}");
-        screen.WriteLine(Rule);
+        ShowBanner(screen, agent, $"  RIG {rigNumber:D2} - DRIVING: {session.DisplayName}");
         screen.WriteLine(session.Returning
             ? "Welcome back. Your laps post automatically."
             : "You are signed up. Your laps post automatically. Use the same name and PIN next time, on either rig, either day.");
@@ -187,12 +251,12 @@ internal static class DriverPrompt
 
     /// <summary>Ask for the PIN until it is four digits. A wrong one is cleared
     /// off the screen before asking again, the name staying in view.</summary>
-    private static async Task<string?> ReadPinAsync(IPromptConsole screen, int rigNumber, string name, CancellationToken quit)
+    private static async Task<string?> ReadPinAsync(IPromptConsole screen, AgentService agent, int rigNumber, string name, CancellationToken quit)
     {
         string? notice = null;
         while (true)
         {
-            if (notice is not null) ShowSignIn(screen, rigNumber, notice, name);
+            if (notice is not null) ShowSignIn(screen, agent, rigNumber, notice, name);
             screen.WriteLine("Type your 4-digit PIN and press Enter (new here? pick one and remember it):");
             var typed = await screen.ReadLineAsync(quit);
             if (typed is null) return null;
