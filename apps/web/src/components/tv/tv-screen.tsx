@@ -309,13 +309,15 @@ export function TvScreen({ initialBoards }: Props) {
         </div>
 
         <div className="flex shrink-0 items-center gap-[1.25em]">
+          {/* Pulses the same way the standby card's helmet does: the owner
+              wanted the wall to look alive in the corner too. */}
           <Image
             src="/oasishelmet.png"
             alt=""
             width={49}
             height={60}
             priority
-            className="h-[2.75em] w-auto"
+            className="h-[2.75em] w-auto animate-pulse"
           />
           {/* `stale` covers a board held through a failure; `offline` covers a
               failure with no board to hold. Either way the feed is down. */}
