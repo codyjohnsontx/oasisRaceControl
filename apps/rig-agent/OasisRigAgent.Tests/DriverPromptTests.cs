@@ -65,6 +65,7 @@ public sealed class DriverPromptTests : IDisposable
         public readonly List<string?> Checkouts = new();
         public readonly List<string> Calls = new();
         public volatile bool CheckoutUnreachable;
+        public volatile bool RefuseLaps;
         public int AssignmentPolls;
         private volatile string? _open;
         private int _stints;
@@ -84,6 +85,8 @@ public sealed class DriverPromptTests : IDisposable
                 "/api/auth/register" => (HttpStatusCode.Conflict, """{"error":"name_taken"}"""),
                 "/api/checkin" => CheckIn(),
                 "/api/agent/checkout" => Checkout(body?["assignmentId"]?.GetValue<string>()),
+                "/api/agent/events" when RefuseLaps && body?["events"]?.AsArray().Any(e => e?["type"]?.GetValue<string>() == "LAP_COMPLETED") == true =>
+                    (HttpStatusCode.BadRequest, """{"error":"invalid_input","detail":[{"code":"too_big","path":["events",0,"lapTimeMs"],"message":"Too big"}]}"""),
                 "/api/agent/assignment" => (HttpStatusCode.OK, _open is null
                     ? """{"assignment":null}"""
                     : """{"assignment":{"id":""" + $"\"{_open}\"" + ""","startedAt":"2026-09-27T17:00:00.000Z","driver":{"id":"d-mike","displayName":"Mike"}}}"""),
@@ -373,6 +376,47 @@ public sealed class DriverPromptTests : IDisposable
         var postedAt = t.FindIndex(l => l.EndsWith("Lap 2  2:17.217  incidents 0 - posted"));
         Assert.True(queuedAt >= 0 && postedAt > queuedAt, string.Join(" | ", t));
         Assert.DoesNotContain(t, l => l.StartsWith("WARNING: iRacing"));
+    }
+
+    /// <summary>A lap the backend refuses brings up a warning, which redraws
+    /// the driving screen; the line saying which lap and why is still on it
+    /// afterwards, not erased by that redraw.</summary>
+    [Fact]
+    public async Task ARefusedLapsNoticeSurvivesTheRedrawItsWarningCauses()
+    {
+        const string refused = "WARNING: 1 lap(s) were refused by the backend - tell staff.";
+        var backend = new Backend { RefuseLaps = true };
+        var telemetry = new HandTelemetry();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, telemetry);
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
+
+        RecordingConsole screen = null!;
+        var driving = new List<string>();
+        screen = new RecordingConsole("Mike", "4321", "")
+        {
+            BeforeTyping = async line =>
+            {
+                if (line != "") return;
+                telemetry.Emit("evt-refused", lapNumber: 4);
+                var deadline = DateTime.UtcNow.AddSeconds(20);
+                while (!(driving = screen.ScreenBefore(screen.Transcript.Count)).Contains(refused))
+                {
+                    if (DateTime.UtcNow > deadline) throw new TimeoutException("the refusal was never shown");
+                    await Task.Delay(50);
+                }
+            },
+        };
+        var walkUp = new WalkUpScreen(screen, agent);
+        agent.Notice += walkUp.Log;
+
+        await DriverPrompt.RunAsync(agent, checkIn, 1, walkUp, CancellationToken.None);
+
+        Assert.Contains("  RIG 01 - DRIVING: Mike", driving);
+        Assert.Contains(driving, l => l.Contains("the backend will not accept lap evt-refused"));
     }
 
     /// <summary>Mike logs out while the backend cannot be told, then signs

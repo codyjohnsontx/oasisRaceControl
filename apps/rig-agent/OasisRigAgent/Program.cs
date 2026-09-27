@@ -59,6 +59,7 @@ WalkUpScreen? walkUp = null;
 if (config.RigQrToken is null)
 {
     agent.StatusChanged += s => Console.WriteLine(StatusLine(s));
+    agent.Notice += Console.Error.WriteLine;
 }
 else
 {
@@ -66,6 +67,7 @@ else
     walkUp = screen;
     if (telemetry is IracingTelemetrySource iracing) AttachDriverLog(iracing, screen);
     agent.StatusChanged += OnlyWhenItMatters(s => screen.Log(StatusLine(s)));
+    agent.Notice += screen.Log;
 }
 agent.Start();
 

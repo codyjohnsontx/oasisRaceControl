@@ -79,6 +79,11 @@ public sealed class AgentService : IAsyncDisposable
     /// <summary>The backend has these queued events now, by event id.</summary>
     public event Action<IReadOnlyList<string>>? LapsPosted;
 
+    /// <summary>Something went wrong that the person at the rig or staff
+    /// should read - a lap the backend refused, the outbox failing - as one
+    /// line for whichever console the host shows.</summary>
+    public event Action<string>? Notice;
+
     public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
     {
         _config = config;
@@ -133,7 +138,7 @@ public sealed class AgentService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[agent] failed to queue lap {lap.EventId}: {ex.Message}");
+                Notice?.Invoke($"[agent] failed to queue lap {lap.EventId}: {ex.Message}");
             }
         };
         _telemetry.Start();
@@ -202,7 +207,7 @@ public sealed class AgentService : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine(
+                    Notice?.Invoke(
                         $"[agent] failed to record queued sign-out {ending}: {ex.Message}");
                 }
                 _pendingCheckout = ending;
@@ -370,7 +375,7 @@ public sealed class AgentService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine(
+                Notice?.Invoke(
                     $"[agent] failed to forget delivered sign-out {assignmentId}: {ex.Message}");
             }
             if (_pendingCheckout == assignmentId)
@@ -417,7 +422,7 @@ public sealed class AgentService : IAsyncDisposable
     private void Quarantine(IReadOnlyList<RejectedEvent> rejected)
     {
         foreach (var lap in _queue.Reject(rejected))
-            Console.Error.WriteLine(
+            Notice?.Invoke(
                 $"[agent] the backend will not accept lap {lap.EventId} ({lap.Reason}). "
                 + "It is kept in the outbox and will not be sent again; the rest of the "
                 + "queue is now free to flush.");
@@ -477,7 +482,7 @@ public sealed class AgentService : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[agent] tick failed: {ex.Message}");
+            Notice?.Invoke($"[agent] tick failed: {ex.Message}");
             return true;
         }
     }
