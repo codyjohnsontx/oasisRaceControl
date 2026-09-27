@@ -182,6 +182,82 @@ public sealed class DriverPromptTests : IDisposable
         lock (backend.Checkouts) Assert.Equal(new string?[] { null, MikeAssignmentId }, backend.Checkouts);
     }
 
+
+    /// <summary>Telemetry whose sim state the test flips, as iRacing does when
+    /// a session loads or the driver exits to the menu.</summary>
+    private sealed class SwitchableTelemetry : ITelemetrySource
+    {
+        public volatile bool Running;
+        public bool SimRunning => Running;
+        public event Action<LapCompleted>? LapCompleted;
+        public void Start() { }
+        public void Stop() { _ = LapCompleted; }
+    }
+
+    /// <summary>The first real rig showed "iRacing is not running" above laps
+    /// that were being read and posted: the warning was drawn once, when the
+    /// screen was, and nothing took it down. The screen now follows the agent's
+    /// status - the warning goes the moment iRacing connects and comes back
+    /// only when it actually disconnects - without losing the lap lines.</summary>
+    [Fact]
+    public async Task TheNotRunningWarningLeavesWhenIracingConnectsAndReturnsWhenItDisconnects()
+    {
+        const string noSim = "WARNING: iRacing is not running or not in a session - no laps are being read.";
+        var backend = new Backend();
+        var telemetry = new SwitchableTelemetry();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, telemetry);
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
+
+        RecordingConsole screen = null!;
+        List<string> LatestScreen() => screen.ScreenBefore(screen.Transcript.Count);
+        async Task WaitForScreen(Func<List<string>, bool> ready, string what)
+        {
+            for (var i = 0; i < 100; i++)
+            {
+                if (ready(LatestScreen())) return;
+                await Task.Delay(50);
+            }
+            Assert.Fail($"the screen never showed: {what}\n" + string.Join("\n", LatestScreen()));
+        }
+
+        var drivingWithWarning = new List<string>();
+        var drivingConnected = new List<string>();
+        var drivingDisconnected = new List<string>();
+        screen = new RecordingConsole("Mike", "4321", "")
+        {
+            BeforeTyping = async line =>
+            {
+                if (line != "") return;
+                // Signed in with the sim not running: the driving screen warns.
+                await WaitForScreen(l => l.Contains("  RIG 01 - DRIVING: Mike"), "the driving screen");
+                drivingWithWarning = LatestScreen();
+
+                // iRacing connects: the warning must leave without a key press,
+                // and the driving screen stays.
+                telemetry.Running = true;
+                await WaitForScreen(l => l.Contains("  RIG 01 - DRIVING: Mike") && !l.Contains(noSim), "the driving screen without the warning");
+                drivingConnected = LatestScreen();
+
+                // iRacing exits to the menu: the warning returns.
+                telemetry.Running = false;
+                await WaitForScreen(l => l.Contains("  RIG 01 - DRIVING: Mike") && l.Contains(noSim), "the warning back");
+                drivingDisconnected = LatestScreen();
+            },
+        };
+
+        await DriverPrompt.RunAsync(agent, checkIn, 1, screen, CancellationToken.None);
+
+        Assert.Contains(noSim, drivingWithWarning);
+        Assert.DoesNotContain(noSim, drivingConnected);
+        Assert.Contains("Press Enter to log out.", drivingConnected);
+        Assert.Contains(noSim, drivingDisconnected);
+        Assert.Contains("Press Enter to log out.", drivingDisconnected);
+    }
+
     /// <summary>Telemetry the test drives by hand, with iRacing in a session.</summary>
     private sealed class HandTelemetry : ITelemetrySource
     {

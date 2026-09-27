@@ -11,7 +11,9 @@ public sealed class AgentService : IAsyncDisposable
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FlushInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SimStateInterval = TimeSpan.FromSeconds(1);
     private const int FlushBatchSize = 50;
+    private bool _publishedSimRunning;
 
     private readonly AgentConfig _config;
     private readonly BackendClient _client;
@@ -139,6 +141,11 @@ public sealed class AgentService : IAsyncDisposable
         _loops.Add(RunLoop(HeartbeatInterval, HeartbeatTick, runImmediately: true));
         _loops.Add(RunLoop(PollInterval, PollAssignmentTick, runImmediately: true));
         _loops.Add(RunLoop(FlushInterval, FlushQueueTick, runImmediately: true));
+        // The sim's state is not an event the telemetry contract carries, and
+        // the walk-up screen shows a warning while iRacing is not in a session
+        // - one that has to go away the moment it is. A once-a-second check
+        // publishes the change; nothing else republishes on the sim's account.
+        _loops.Add(RunLoop(SimStateInterval, SimStateTick, runImmediately: false));
         PublishStatus();
     }
 
@@ -248,6 +255,13 @@ public sealed class AgentService : IAsyncDisposable
     {
         var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(null, ct)));
         return result.Ok;
+    }
+
+    private Task SimStateTick(CancellationToken ct)
+    {
+        var running = _telemetry.SimRunning;
+        if (running != _publishedSimRunning) PublishStatus();
+        return Task.CompletedTask;
     }
 
     private async Task HeartbeatTick(CancellationToken ct)
@@ -475,7 +489,12 @@ public sealed class AgentService : IAsyncDisposable
         PublishStatus();
     }
 
-    private void PublishStatus() => StatusChanged?.Invoke(CurrentStatus());
+    private void PublishStatus()
+    {
+        var status = CurrentStatus();
+        _publishedSimRunning = status.SimRunning;
+        StatusChanged?.Invoke(status);
+    }
 
     /// <summary>What the agent knows right now - the same snapshot
     /// <see cref="StatusChanged"/> publishes, for a screen that has just been

@@ -66,8 +66,9 @@ internal static class DriverPrompt
     private static readonly string Rule = new('=', 60);
 
     public static async Task RunAsync(
-        AgentService agent, DriverCheckInClient checkIn, int rigNumber, IPromptConsole screen, CancellationToken quit)
+        AgentService agent, DriverCheckInClient checkIn, int rigNumber, IPromptConsole console, CancellationToken quit)
     {
+        var screen = new WalkUpScreen(console, agent);
         var waiting = new Dictionary<string, string>();
         void OnQueued(LapCompleted lap, string? stamp)
         {
@@ -103,28 +104,27 @@ internal static class DriverPrompt
         {
             agent.LapQueued -= OnQueued;
             agent.LapsPosted -= OnPosted;
+            screen.Detach();
         }
     }
 
     private static async Task RunScreensAsync(
-        AgentService agent, DriverCheckInClient checkIn, int rigNumber, IPromptConsole screen, CancellationToken quit)
+        AgentService agent, DriverCheckInClient checkIn, int rigNumber, WalkUpScreen screen, CancellationToken quit)
     {
         var notice = await EmptySeatAsync(agent, quit);
 
         while (!quit.IsCancellationRequested)
         {
-            ShowSignIn(screen, agent, rigNumber, notice, name: null);
-            screen.WriteLine("Type your name and press Enter:");
+            ShowSignIn(screen, rigNumber, notice, name: null, prompt: "Type your name and press Enter:");
             var typed = await screen.ReadLineAsync(quit);
             if (typed is null) return;
             var name = typed.Trim();
             notice = null;
             if (name.Length == 0) continue;
 
-            var pin = await ReadPinAsync(screen, agent, rigNumber, name, quit);
+            var pin = await ReadPinAsync(screen, rigNumber, name, quit);
             if (pin is null) return;
-            screen.Clear();
-            screen.WriteLine($"Signing in {name}...");
+            screen.Transition($"Signing in {name}...");
 
             if (!await agent.SettlePendingCheckoutAsync())
             {
@@ -153,7 +153,7 @@ internal static class DriverPrompt
             }
 
             agent.SeatCheckedInDriver(session);
-            ShowDriving(screen, agent, rigNumber, session);
+            ShowDriving(screen, rigNumber, session);
 
             var done = await screen.ReadLineAsync(quit);
             var result = await agent.SwitchDriverAsync();
@@ -165,7 +165,7 @@ internal static class DriverPrompt
             };
             if (done is null)
             {
-                screen.WriteLine(notice);
+                screen.Transition(notice);
                 return;
             }
         }
@@ -203,39 +203,44 @@ internal static class DriverPrompt
             yield return "WARNING: a log-out was not saved - staff must clear this rig on the staff screen.";
     }
 
-    private static void Log(IPromptConsole screen, string message) =>
-        screen.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
+    private static void Log(WalkUpScreen screen, string message) => screen.Log(message);
 
-    private static void ShowBanner(IPromptConsole screen, AgentService agent, string title)
+    private static void Banner(IPromptConsole console, IReadOnlyList<string> warnings, string title)
     {
-        screen.Clear();
-        screen.WriteLine(Rule);
-        screen.WriteLine(title);
-        screen.WriteLine(Rule);
-        foreach (var warning in Warnings(agent.CurrentStatus())) screen.WriteLine(warning);
+        console.WriteLine(Rule);
+        console.WriteLine(title);
+        console.WriteLine(Rule);
+        foreach (var warning in warnings) console.WriteLine(warning);
     }
 
-    private static void ShowSignIn(IPromptConsole screen, AgentService agent, int rigNumber, string? notice, string? name)
+    private static void ShowSignIn(WalkUpScreen screen, int rigNumber, string? notice, string? name, string prompt)
     {
-        ShowBanner(screen, agent, $"  OASIS RACE CONTROL - RIG {rigNumber:D2} - SIGN IN");
-        if (notice is not null)
+        screen.Show((console, warnings) =>
         {
-            screen.WriteLine();
-            screen.WriteLine(notice);
-        }
-        screen.WriteLine();
-        if (name is not null) screen.WriteLine($"Name: {name}");
+            Banner(console, warnings, $"  OASIS RACE CONTROL - RIG {rigNumber:D2} - SIGN IN");
+            if (notice is not null)
+            {
+                console.WriteLine();
+                console.WriteLine(notice);
+            }
+            console.WriteLine();
+            if (name is not null) console.WriteLine($"Name: {name}");
+            console.WriteLine(prompt);
+        });
     }
 
-    private static void ShowDriving(IPromptConsole screen, AgentService agent, int rigNumber, DriverCheckIn session)
+    private static void ShowDriving(WalkUpScreen screen, int rigNumber, DriverCheckIn session)
     {
-        ShowBanner(screen, agent, $"  RIG {rigNumber:D2} - DRIVING: {session.DisplayName}");
-        screen.WriteLine(session.Returning
-            ? "Welcome back. Your laps post automatically."
-            : "You are signed up. Your laps post automatically. Use the same name and PIN next time, on either rig, either day.");
-        screen.WriteLine();
-        screen.WriteLine("Press Enter to log out.");
-        screen.WriteLine();
+        screen.Show((console, warnings) =>
+        {
+            Banner(console, warnings, $"  RIG {rigNumber:D2} - DRIVING: {session.DisplayName}");
+            console.WriteLine(session.Returning
+                ? "Welcome back. Your laps post automatically."
+                : "You are signed up. Your laps post automatically. Use the same name and PIN next time, on either rig, either day.");
+            console.WriteLine();
+            console.WriteLine("Press Enter to log out.");
+            console.WriteLine();
+        });
     }
 
     /// <summary>End whatever is open on this rig before the first name is
@@ -257,18 +262,118 @@ internal static class DriverPrompt
 
     /// <summary>Ask for the PIN until it is four digits. A wrong one is cleared
     /// off the screen before asking again, the name staying in view.</summary>
-    private static async Task<string?> ReadPinAsync(IPromptConsole screen, AgentService agent, int rigNumber, string name, CancellationToken quit)
+    private static async Task<string?> ReadPinAsync(WalkUpScreen screen, int rigNumber, string name, CancellationToken quit)
     {
+        const string prompt = "Type your 4-digit PIN and press Enter (new here? pick one and remember it):";
         string? notice = null;
         while (true)
         {
-            if (notice is not null) ShowSignIn(screen, agent, rigNumber, notice, name);
-            screen.WriteLine("Type your 4-digit PIN and press Enter (new here? pick one and remember it):");
+            if (notice is not null) ShowSignIn(screen, rigNumber, notice, name, prompt);
+            else screen.Append(prompt);
             var typed = await screen.ReadLineAsync(quit);
             if (typed is null) return null;
             var pin = typed.Trim();
             if (DriverCheckInClient.IsPin(pin)) return pin;
             notice = "The PIN is exactly 4 digits.";
+        }
+    }
+}
+
+/// <summary>
+/// The console as one screen at a time. A screen is a drawing (banner with the
+/// warnings standing at that moment, then its own lines) plus the log lines
+/// added since it was shown. When the agent's status changes the set of
+/// warnings, the screen is drawn again from scratch with the current set and
+/// its log lines re-printed - so a warning that no longer applies is gone the
+/// moment it stops applying, and one that starts applying appears without
+/// waiting for the next screen. The first real rig showed "iRacing is not
+/// running" above laps that were being read and posted; this is what removes
+/// it.
+/// </summary>
+internal sealed class WalkUpScreen
+{
+    private const int KeptLogLines = 30;
+    private readonly IPromptConsole _console;
+    private readonly AgentService _agent;
+    private readonly object _lock = new();
+    private readonly List<string> _log = new();
+    private Action<IPromptConsole, IReadOnlyList<string>>? _body;
+    private List<string> _shownWarnings = new();
+    private readonly List<string> _appended = new();
+
+    public WalkUpScreen(IPromptConsole console, AgentService agent)
+    {
+        _console = console;
+        _agent = agent;
+        _agent.StatusChanged += OnStatus;
+    }
+
+    public void Detach() => _agent.StatusChanged -= OnStatus;
+
+    public Task<string?> ReadLineAsync(CancellationToken quit) => _console.ReadLineAsync(quit);
+
+    /// <summary>Replace what is on screen with this drawing.</summary>
+    public void Show(Action<IPromptConsole, IReadOnlyList<string>> body)
+    {
+        lock (_lock)
+        {
+            _body = body;
+            _log.Clear();
+            _appended.Clear();
+            Draw();
+        }
+    }
+
+    /// <summary>A prompt line that belongs to the current screen (re-printed on a redraw).</summary>
+    public void Append(string line)
+    {
+        lock (_lock)
+        {
+            _appended.Add(line);
+            _console.WriteLine(line);
+        }
+    }
+
+    /// <summary>A one-line transitional message with no screen behind it.</summary>
+    public void Transition(string message)
+    {
+        lock (_lock)
+        {
+            _body = null;
+            _log.Clear();
+            _appended.Clear();
+            _console.Clear();
+            _console.WriteLine(message);
+        }
+    }
+
+    public void Log(string message)
+    {
+        var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        lock (_lock)
+        {
+            _log.Add(line);
+            if (_log.Count > KeptLogLines) _log.RemoveAt(0);
+            _console.WriteLine(line);
+        }
+    }
+
+    private void Draw()
+    {
+        _console.Clear();
+        _shownWarnings = DriverPrompt.Warnings(_agent.CurrentStatus()).ToList();
+        _body?.Invoke(_console, _shownWarnings);
+        foreach (var line in _appended) _console.WriteLine(line);
+        foreach (var line in _log) _console.WriteLine(line);
+    }
+
+    private void OnStatus(AgentStatus status)
+    {
+        lock (_lock)
+        {
+            if (_body is null) return;
+            if (DriverPrompt.Warnings(status).SequenceEqual(_shownWarnings)) return;
+            Draw();
         }
     }
 }
