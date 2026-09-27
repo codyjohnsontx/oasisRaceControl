@@ -315,7 +315,9 @@ basis; if that never lands, the next name's check-in takes the seat over and
 ends the old stint anyway.
 
 - A name already taken tonight gets the backend's rename ("Mike 47") and the
-  console says so. An empty name asks again.
+  console says so. An empty name asks again. If the sign-in went through but
+  the check-in did not, typing the same name again seats that same driver
+  rather than a renamed one.
 - The backend allows ten sign-ins a minute per network address; the two event
   rigs share one, which is plenty.
 - Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.

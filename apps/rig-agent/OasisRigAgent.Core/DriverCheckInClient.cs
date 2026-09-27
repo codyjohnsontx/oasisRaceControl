@@ -30,15 +30,21 @@ public sealed class CheckInRefusedException : Exception
 /// (`apps/web/src/components/check-in-flow.tsx`, served at 695e080 and on
 /// main alike).
 ///
-/// Every check-in gets a fresh cookie jar, so one person's session never
-/// leaks into the next: the rig is the shared phone here, and "Not you?
-/// Switch driver" is the name prompt.
+/// Every name gets a fresh cookie jar, so one person's session never leaks
+/// into the next: the rig is the shared phone here, and "Not you? Switch
+/// driver" is the name prompt. A name that signed in but whose check-in then
+/// failed keeps its jar until it checks in or a different name is typed, so
+/// retyping it seats the driver that sign-in created instead of colliding
+/// with it and coming back renamed.
 /// </summary>
 public sealed class DriverCheckInClient
 {
+    private sealed record SignedIn(string TypedName, HttpClient Http, string DriverId, string DisplayName, bool Renamed);
+
     private readonly Func<HttpMessageHandler> _handlerFactory;
     private readonly Uri _baseUri;
     private readonly string _qrToken;
+    private SignedIn? _signedIn;
 
     public DriverCheckInClient(string baseUrl, string qrToken, Func<HttpMessageHandler>? handlerFactory = null)
     {
@@ -50,17 +56,44 @@ public sealed class DriverCheckInClient
     /// <summary>Guest-sign the name in and put that driver in this rig's seat.
     /// A taken name is retried once with the backend's own suggestion; the
     /// result says which name stuck. Throws <see cref="CheckInRefusedException"/>
-    /// for answers a person can act on, and lets transport failures propagate.</summary>
+    /// for every answer the backend gives that is not a check-in, and lets
+    /// transport failures propagate.</summary>
     public async Task<DriverCheckIn> CheckInAsync(string typedName, CancellationToken ct)
     {
-        using var http = new HttpClient(_handlerFactory(), disposeHandler: true)
+        if (_signedIn is not null && !string.Equals(_signedIn.TypedName, typedName, StringComparison.OrdinalIgnoreCase))
         {
-            BaseAddress = _baseUri,
-            Timeout = TimeSpan.FromSeconds(15),
-        };
+            _signedIn.Http.Dispose();
+            _signedIn = null;
+        }
 
-        var (driverId, displayName, renamed) = await SignInAsGuest(http, typedName, ct);
+        if (_signedIn is null)
+        {
+            var http = new HttpClient(_handlerFactory(), disposeHandler: true)
+            {
+                BaseAddress = _baseUri,
+                Timeout = TimeSpan.FromSeconds(15),
+            };
+            try
+            {
+                var (driverId, displayName, renamed) = await SignInAsGuest(http, typedName, ct);
+                _signedIn = new SignedIn(typedName, http, driverId, displayName, renamed);
+            }
+            catch
+            {
+                http.Dispose();
+                throw;
+            }
+        }
 
+        var signedIn = _signedIn;
+        var assignmentId = await CheckIn(signedIn.Http, ct);
+        signedIn.Http.Dispose();
+        _signedIn = null;
+        return new DriverCheckIn(signedIn.DisplayName, signedIn.Renamed, signedIn.DriverId, assignmentId);
+    }
+
+    private async Task<string> CheckIn(HttpClient http, CancellationToken ct)
+    {
         using var res = await http.PostAsJsonAsync("api/checkin", new
         {
             qrToken = _qrToken,
@@ -72,16 +105,20 @@ public sealed class DriverCheckInClient
             throw new CheckInRefusedException("this rig's QR token is not registered on the backend - check rigQrToken in agent.config.json");
         if (res.StatusCode == HttpStatusCode.Unauthorized)
             throw new CheckInRefusedException("the backend did not keep the sign-in session (is backendBaseUrl https?)");
+        if (res.StatusCode == HttpStatusCode.Forbidden)
+            throw new CheckInRefusedException("this driver is not allowed to check in - ask staff");
+        if (res.StatusCode == HttpStatusCode.Conflict)
+            throw new CheckInRefusedException("someone else checked in at the same moment - type your name again");
         if ((int)res.StatusCode == 429)
             throw new CheckInRefusedException("too many check-ins from this network in the last minute - wait a moment and try again");
-        res.EnsureSuccessStatusCode();
+        if (!res.IsSuccessStatusCode)
+            throw new CheckInRefusedException($"the backend could not check you in (HTTP {(int)res.StatusCode}) - try again");
 
         var status = body?["status"]?.GetValue<string>();
         var assignmentId = body?["assignmentId"]?.GetValue<string>();
         if (status is not ("checked_in" or "already_checked_in") || assignmentId is null)
             throw new CheckInRefusedException($"check-in did not complete (backend said {status ?? "nothing"})");
-
-        return new DriverCheckIn(displayName, renamed, driverId, assignmentId);
+        return assignmentId;
     }
 
     private static async Task<(string DriverId, string DisplayName, bool Renamed)> SignInAsGuest(
@@ -115,15 +152,17 @@ public sealed class DriverCheckInClient
                     renamed = true;
                     continue;
                 }
-                throw new CheckInRefusedException($"the name \"{name}\" is already taken - try another");
+                throw new CheckInRefusedException($"the name \"{typedName}\" is already taken - try another");
             }
             if ((int)res.StatusCode == 429)
                 throw new CheckInRefusedException("too many sign-ins from this network in the last minute - wait a moment and try again");
             if (res.StatusCode == HttpStatusCode.BadRequest)
-                throw new CheckInRefusedException("that name is not allowed: 2 to 24 letters, numbers, spaces or . _ ' -");
-            res.EnsureSuccessStatusCode();
+                throw new CheckInRefusedException(renamed
+                    ? $"the name \"{typedName}\" is already taken - try another"
+                    : "that name is not allowed: 2 to 24 letters, numbers, spaces or . _ ' -");
+            throw new CheckInRefusedException($"the backend could not sign the name in (HTTP {(int)res.StatusCode}) - try again");
         }
-        throw new CheckInRefusedException($"the name \"{name}\" is already taken - try another");
+        throw new CheckInRefusedException($"the name \"{typedName}\" is already taken - try another");
     }
 
     private static async Task<JsonNode?> ReadJson(HttpResponseMessage res, CancellationToken ct)

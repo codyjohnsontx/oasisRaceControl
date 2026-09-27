@@ -125,6 +125,10 @@ public sealed class DriverCheckInClientTests
     [InlineData("/api/checkin", 404, "QR token")]
     [InlineData("/api/checkin", 401, "did not keep the sign-in")]
     [InlineData("/api/checkin", 429, "too many check-ins")]
+    [InlineData("/api/checkin", 409, "same moment")]
+    [InlineData("/api/checkin", 403, "not allowed to check in")]
+    [InlineData("/api/checkin", 500, "HTTP 500")]
+    [InlineData("/api/auth/guest", 500, "HTTP 500")]
     public async Task RefusalsBecomeSentencesForThePersonAtTheRig(string failingPath, int status, string expected)
     {
         var (client, backend) = Build();
@@ -157,6 +161,63 @@ public sealed class DriverCheckInClientTests
         await client.CheckInAsync("First", CancellationToken.None);
         await client.CheckInAsync("Second", CancellationToken.None);
         // The second sign-in carries no cookie from the first person.
+        Assert.Null(backend.Requests[2].Cookie);
+    }
+
+    [Fact]
+    public async Task ARenameTheBackendThenRejectsIsReportedAsTakenNotAsABadName()
+    {
+        var typed = "Twentytwo Characters X";
+        var (client, backend) = Build();
+        backend.Answer = (path, body) => body?["displayName"]?.GetValue<string>() == typed
+            ? (HttpStatusCode.Conflict, $$"""{"error":"name_taken","suggestion":"{{typed}} 47"}""", null)
+            : (HttpStatusCode.BadRequest, """{"error":"invalid_body"}""", null);
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync(typed, CancellationToken.None));
+        Assert.Contains($"\"{typed}\" is already taken", ex.Message);
+    }
+
+    [Fact]
+    public async Task RetypingANameWhoseCheckInFailedSeatsTheDriverThatSignInCreated()
+    {
+        var backend = new ScriptedBackend();
+        var client = new DriverCheckInClient("https://rig.test", "qr-rig-1",
+            () => new CookieForwardingHandler(backend, new CookieContainer()));
+        var checkIns = 0;
+        backend.Answer = (path, _) => path switch
+        {
+            "/api/auth/guest" when backend.Requests.Count(r => r.Path == "/api/auth/guest") == 1 =>
+                (HttpStatusCode.OK, """{"driverId":"d-1","displayName":"Mike"}""", "oasis_driver=jwt-mike; Path=/"),
+            "/api/auth/guest" => (HttpStatusCode.Conflict, """{"error":"name_taken","suggestion":"Mike 47"}""", null),
+            "/api/checkin" when ++checkIns == 1 => (HttpStatusCode.Conflict, """{"error":"conflict_retry"}""", null),
+            _ => (HttpStatusCode.OK, """{"status":"checked_in","assignmentId":"a-1"}""", null),
+        };
+
+        await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", CancellationToken.None));
+        var result = await client.CheckInAsync("Mike", CancellationToken.None);
+
+        Assert.Equal(new DriverCheckIn("Mike", false, "d-1", "a-1"), result);
+        Assert.Equal(new[] { "/api/auth/guest", "/api/checkin", "/api/checkin" }, backend.Requests.Select(r => r.Path));
+        Assert.Equal("oasis_driver=jwt-mike", backend.Requests[2].Cookie);
+    }
+
+    [Fact]
+    public async Task ADifferentNameAfterAFailedCheckInStartsFromAnEmptyCookieJar()
+    {
+        var backend = new ScriptedBackend();
+        var client = new DriverCheckInClient("https://rig.test", "qr-rig-1",
+            () => new CookieForwardingHandler(backend, new CookieContainer()));
+        var checkIns = 0;
+        backend.Answer = (path, body) => path == "/api/auth/guest"
+            ? (HttpStatusCode.OK, $$"""{"driverId":"d","displayName":"{{body?["displayName"]}}"}""", "oasis_driver=first; Path=/")
+            : ++checkIns == 1
+                ? (HttpStatusCode.InternalServerError, """{"error":"server_error"}""", null)
+                : (HttpStatusCode.OK, """{"status":"checked_in","assignmentId":"a"}""", null);
+
+        await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("First", CancellationToken.None));
+        var result = await client.CheckInAsync("Second", CancellationToken.None);
+
+        Assert.Equal("Second", result.DisplayName);
+        Assert.Equal("/api/auth/guest", backend.Requests[2].Path);
         Assert.Null(backend.Requests[2].Cookie);
     }
 }
