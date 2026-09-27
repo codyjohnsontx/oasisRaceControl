@@ -122,10 +122,15 @@ vars, which override the file):
   "backendBaseUrl": "https://<your-vercel-domain>",
   "rigToken": "<this rig's secret bearer token>",
   "rigNumber": 1,
+  "rigQrToken": "<this rig's /r/<token> slug>",
   "telemetry": "iracing"
 }
 ```
 
+- `rigQrToken` turns on walk-up mode: the rig asks for a name, signs that
+  person in through the app's own guest check-in, posts their laps, and signs
+  them out when they press Enter (`apps/rig-agent/README.md`, Walk-up mode).
+  Leave it out to keep the staff console.
 - `backendBaseUrl` must be `https://` (the agent rejects non-HTTPS except
   localhost, since the token rides on every request).
 - Each rig gets its own `rigToken`; the backend scopes the agent to that rig.

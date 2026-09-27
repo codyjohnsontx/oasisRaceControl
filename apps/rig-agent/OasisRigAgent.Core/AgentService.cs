@@ -203,6 +203,12 @@ public sealed class AgentService : IAsyncDisposable
         return result.Ended ? SwitchDriverResult.Ended : SwitchDriverResult.NoActiveSession;
     }
 
+    /// <summary>Ask the backend who is in the seat right now, without waiting
+    /// for the next scheduled poll. The rig-side check-in calls this the moment
+    /// a name is signed in, so a lap driven in the next ten seconds is stamped
+    /// with the new stint rather than the previous answer.</summary>
+    public Task PollAssignmentNowAsync() => RunTick(PollAssignmentTick);
+
     private async Task HeartbeatTick(CancellationToken ct)
         => await RunBackend(async token =>
         {

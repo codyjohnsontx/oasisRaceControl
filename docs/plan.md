@@ -6,9 +6,9 @@ Oasis Sim Racing is a physical venue with ~20–25 Windows iRacing simulators. C
 
 This plan follows a completed product-discovery round with the owner. It covers the MVP only; payment/booking integration, native apps, ratings, and multi-venue SaaS are explicitly deferred.
 
-**Venue-safety gate:** no executable from this project may run on an Oasis computer until Phase 0 is complete. A build, passing unit tests, or a valid signature is not venue authorization. The exact signed artifact must pass the off-site Windows 11 evidence gate and project-owner safety sign-off first.
+**Venue-safety gate: lifted by the project owner on 2026-09-26** ("disregard that rule we are past that. We need this to run"). The Phase 0 guidance in [`docs/venue-safety.md`](venue-safety.md) stays as recommendations (read-only access to iRacing, no elevation, no writes to the sim) and as the checklist for a signed venue release; it no longer blocks running this project's software on Oasis computers.
 
-**Recorded exception (2026-09-27 off-site event only):** the project owner ran the rig agent read-only (OasisRigAgent.exe --diagnose) on the 2 off-site event rig computers on 2026-09-26 and authorized the agent (telemetry iracing) to run on those 2 event computers for the 2026-09-27 event only. Phase 0 still blocks any executable from this project on the store computers (the in-store fleet), and nothing else in the gate changes. The exception is owned by [`docs/venue-safety.md`](venue-safety.md#exception-2026-09-27-off-site-event-rigs).
+**Recorded:** on 2026-09-26 the project owner ran the rig agent read-only (`OasisRigAgent.exe --diagnose`) on the 2 off-site event rig computers and decided the agent (telemetry iracing) runs on them for the 2026-09-27 event. See [`docs/venue-safety.md`](venue-safety.md#what-ran-on-oasis-computers-and-when).
 
 ## Confirmed decisions (from discovery)
 

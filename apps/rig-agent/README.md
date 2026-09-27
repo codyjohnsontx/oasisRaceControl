@@ -263,6 +263,7 @@ executable, or use env vars (which override the file):
 | `rigToken` | `OASIS_RIG_TOKEN` | the rig's secret bearer token |
 | `rigNumber` | `OASIS_RIG_NUMBER` | e.g. `1` |
 | `telemetry` | `OASIS_TELEMETRY` | `iracing` (read the sim), `simulated` (fake laps, testing only), `none` (heartbeat and driver display only) |
+| `rigQrToken` | `OASIS_RIG_QR_TOKEN` | this rig's check-in slug (the `/r/<token>` on its QR code). Set it to run [walk-up mode](#walk-up-mode-the-rig-is-the-check-in); leave it out for the staff console |
 | `simulateTelemetry` | `OASIS_SIMULATE=1` | older spelling of `telemetry: "simulated"`; ignored when `telemetry` is set |
 
 Two rigs against the hosted app, tokens rotated on the backend first
@@ -270,12 +271,56 @@ Two rigs against the hosted app, tokens rotated on the backend first
 in `rigs.agent_token_hash`):
 
 ```json
-{ "backendBaseUrl": "https://oasis-race-control.vercel.app", "rigToken": "<RIG 1 TOKEN>", "rigNumber": 1, "telemetry": "iracing" }
+{ "backendBaseUrl": "https://oasis-race-control.vercel.app", "rigToken": "<RIG 1 TOKEN>", "rigNumber": 1, "rigQrToken": "demo-rig-1", "telemetry": "iracing" }
 ```
 
 ```json
-{ "backendBaseUrl": "https://oasis-race-control.vercel.app", "rigToken": "<RIG 2 TOKEN>", "rigNumber": 2, "telemetry": "iracing" }
+{ "backendBaseUrl": "https://oasis-race-control.vercel.app", "rigToken": "<RIG 2 TOKEN>", "rigNumber": 2, "rigQrToken": "demo-rig-2", "telemetry": "iracing" }
 ```
+
+`rigQrToken` is the slug in the rig's `/r/<token>` check-in URL
+(`rig_qr_tokens.token`); the seed's are `demo-rig-1` and `demo-rig-2`. If new
+slugs were inserted for the event, use those.
+
+## Walk-up mode: the rig is the check-in
+
+With `rigQrToken` set, the console runs the loop the owner asked for: "the
+user types their name and then as they make laps it assigns it accordingly.
+When they are done, they just exit out the program and then it waits for the
+next person."
+
+```text
+Type your name and press Enter:
+Mike
+Driving as Mike.
+Laps post automatically. Press Enter when you are done.
+[telemetry 20:05:11] lap 2 2:17.217 incidents=0 queued as track="Circuit of the Americas" config="Grand Prix" car="FIA F4"
+[Rig 01]  ● online  |  driver: Mike  |  sim running
+
+Thanks Mike, you are signed out.
+
+Type your name and press Enter:
+```
+
+How it works, with nothing new on the server: the name is signed in through
+the backend's own guest check-in (`POST /api/auth/guest`, then
+`POST /api/checkin` with this rig's QR token and the takeover confirmed), the
+same two requests the phone page sends, so it runs against the deployed app
+as it is. The agent then polls the assignment at once, so the next lap is
+stamped with the new stint. Enter signs the driver out through the agent's
+existing switch-driver (durable: a sign-out the backend cannot be told about
+now is delivered later, and until then this rig's laps carry no owner). Closing
+the window (Ctrl+C, the close button, a shutdown) signs out on a best-effort
+basis; if that never lands, the next name's check-in takes the seat over and
+ends the old stint anyway.
+
+- A name already taken tonight gets the backend's rename ("Mike 47") and the
+  console says so. An empty name asks again.
+- The backend allows ten sign-ins a minute per network address; the two event
+  rigs share one, which is plenty.
+- Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.
+- A rig whose QR token is not registered says so at the first name and asks
+  again; fix `rigQrToken`.
 
 ## Run (from source)
 
@@ -304,10 +349,11 @@ folder, or a shortcut). It must run as the same Windows user that runs iRacing,
 because the shared-memory map is per session. Run `OasisRigAgent.exe --diagnose`
 first on any new rig.
 
-Only the 2 off-site event computers are authorized to run the agent, and only
-for the 2026-09-27 event; the Phase 0 venue-safety gate still blocks it on the
-store computers. See the
-[exception note](../../docs/venue-safety.md#exception-2026-09-27-off-site-event-rigs).
+The project owner lifted the Phase 0 venue-safety gate for this project's
+software on Oasis computers on 2026-09-26 ("disregard that rule we are past
+that. We need this to run"); its guidance - read-only access to iRacing, no
+elevation, no writes to the sim - stays as recommendations this agent follows.
+See [docs/venue-safety.md](../../docs/venue-safety.md).
 
 ## Verified
 

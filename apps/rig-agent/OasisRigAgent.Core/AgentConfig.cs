@@ -37,7 +37,14 @@ public sealed record AgentConfig
     /// which rigs stamp laps with their capture-time assignment (0.2 and later)
     /// and which are still on an agent whose laps the backend can only store
     /// unattributed, where they are kept but can never rank.</summary>
-    public string AgentVersion { get; init; } = "rig-agent/0.2-skeleton";
+    public string AgentVersion { get; init; } = "rig-agent/0.3-event";
+
+    /// <summary>This rig's check-in QR token (the slug in its /r/&lt;token&gt; URL).
+    /// When set, the console runs the walk-up loop: it asks for a name, signs
+    /// that person in on this rig through the backend's own guest check-in,
+    /// posts their laps, and signs them out when they press Enter. Absent, the
+    /// agent keeps the staff-style s/q console.</summary>
+    public string? RigQrToken { get; init; }
 
     public static AgentConfig Load(string path)
     {
@@ -62,6 +69,7 @@ public sealed record AgentConfig
             RigNumber = int.TryParse(Env("OASIS_RIG_NUMBER"), out var n) ? n : config.RigNumber,
             SimulateTelemetry = ParseSimulateOverride() ?? config.SimulateTelemetry,
             Telemetry = Env("OASIS_TELEMETRY") ?? config.Telemetry,
+            RigQrToken = Env("OASIS_RIG_QR_TOKEN") ?? config.RigQrToken,
         };
     }
 

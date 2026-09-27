@@ -249,6 +249,18 @@ names from memory. `apps/web/scripts/manual-lap.ts` posts one lap by hand for
 whoever is checked in on a rig, in the featured combo it reads from the app -
 the fallback when a rig cannot read the sim.
 
+## Walk-up check-in on the rig
+
+With `rigQrToken` in its config the agent signs a typed name in through the
+backend's existing guest + check-in routes as an HTTP client with a cookie jar
+(`OasisRigAgent.Core/DriverCheckInClient.cs`), so it works against whatever
+web commit is deployed without a server change - verify request shapes
+against the served commit, not only main. Sign-out reuses the agent's durable
+switch-driver; a takeover by the next name ends a stint whose checkout never
+landed. The loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
+test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
+`OASIS_TEST_BACKEND_URL`).
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which

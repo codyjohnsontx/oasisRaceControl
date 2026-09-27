@@ -1,3 +1,4 @@
+using OasisRigAgent;
 using OasisRigAgent.Core;
 using OasisRigAgent.Core.Iracing;
 
@@ -59,10 +60,27 @@ Console.WriteLine(config.TelemetryMode switch
     TelemetryMode.Simulated => "Telemetry: SIMULATED (emitting fake laps)",
     _ => "Telemetry: none (heartbeat and driver display only)",
 });
+using var quit = new CancellationTokenSource();
+
+if (config.RigQrToken is { } qrToken)
+{
+    // Walk-up mode: the rig itself is the check-in. Closing the window or
+    // Ctrl+C signs the current driver out on a best-effort basis; a sign-out
+    // that cannot be delivered is finished by the next name's takeover.
+    Console.WriteLine("Walk-up mode: type a name to start driving, press Enter when done.");
+    Console.WriteLine(new string('-', 60));
+    var checkIn = new DriverCheckInClient(config.BackendBaseUrl, qrToken);
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => quit.Cancel();
+    await DriverPrompt.RunAsync(agent, checkIn, quit.Token);
+    await DriverPrompt.SignOutOnExitAsync(agent);
+    Console.WriteLine("Shutting down…");
+    return 0;
+}
+
 Console.WriteLine("Commands:  s = switch driver / sign out   q = quit");
 Console.WriteLine(new string('-', 60));
 
-using var quit = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
 
 _ = Task.Run(async () =>
