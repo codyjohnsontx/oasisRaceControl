@@ -8,6 +8,8 @@ This plan follows a completed product-discovery round with the owner. It covers 
 
 **Venue-safety gate:** no executable from this project may run on an Oasis computer until Phase 0 is complete. A build, passing unit tests, or a valid signature is not venue authorization. The exact signed artifact must pass the off-site Windows 11 evidence gate and project-owner safety sign-off first.
 
+**Recorded exception (2026-09-27 off-site event only):** the project owner ran the rig agent read-only (OasisRigAgent.exe --diagnose) on the 2 off-site event rig computers on 2026-09-26 and authorized the agent (telemetry iracing) to run on those 2 event computers for the 2026-09-27 event only. Phase 0 still blocks any executable from this project on the store computers (the in-store fleet), and nothing else in the gate changes. The exception is owned by [`docs/venue-safety.md`](venue-safety.md#exception-2026-09-27-off-site-event-rigs).
+
 ## Confirmed decisions (from discovery)
 
 | Area | Decision |

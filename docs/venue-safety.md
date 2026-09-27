@@ -4,6 +4,14 @@ Status: **IN PROGRESS — NO OASIS EXECUTION AUTHORIZED**
 
 This gate protects equipment that Oasis owns and depends on. A passing build, a valid signature, or confidence in the source is not enough. The exact signed bytes must have complete off-site evidence and project-owner safety sign-off before the supervised canary in `spike-checklist.md`.
 
+## Exception: 2026-09-27 off-site event rigs
+
+A narrowly scoped, dated exception recorded by the project owner. It does not weaken or waive anything else in this gate.
+
+- On 2026-09-26 the project owner personally ran the rig agent read-only (OasisRigAgent.exe --diagnose) on the 2 rig computers Oasis is taking to the off-site event.
+- The project owner authorized the rig agent, with telemetry set to iracing, to run on those 2 event computers for the 2026-09-27 off-site event only.
+- Phase 0 still blocks running any executable from this project on the store computers (the in-store fleet). Nothing else in this gate changes.
+
 ## Threat model
 
 The recorder consumes untrusted, concurrently changing shared memory on a computer we do not own. Relevant failure classes are excessive access rights, simulator control messages, malformed offsets, disk exhaustion, runaway resource use, unintended network activity, persistent installation/state, child processes, security prompts, opaque dependencies, artifact substitution, and sensitive session metadata loss.

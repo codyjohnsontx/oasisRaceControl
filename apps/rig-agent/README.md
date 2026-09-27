@@ -304,6 +304,11 @@ folder, or a shortcut). It must run as the same Windows user that runs iRacing,
 because the shared-memory map is per session. Run `OasisRigAgent.exe --diagnose`
 first on any new rig.
 
+Only the 2 off-site event computers are authorized to run the agent, and only
+for the 2026-09-27 event; the Phase 0 venue-safety gate still blocks it on the
+store computers. See the
+[exception note](../../docs/venue-safety.md#exception-2026-09-27-off-site-event-rigs).
+
 ## Verified
 
 Run end-to-end against the live Vercel + Neon backend: the agent connected,
