@@ -336,8 +336,10 @@ driver's.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
 - The PIN is exactly 4 digits; anything else asks for it again. An empty name
   asks again.
-- The backend allows ten new names a minute per network address; the two
-  event rigs share one, which is plenty.
+- The backend allows about ten sign-in attempts a minute per network
+  address, and the two event rigs share one. Every new name counts, and so
+  does every wrong PIN (a login that fails is followed by a registration
+  attempt), so a run of wrong PINs on either rig can make both wait a minute.
 - Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.
 - A rig whose QR token is not registered says so at the first name and asks
   again; fix `rigQrToken`.

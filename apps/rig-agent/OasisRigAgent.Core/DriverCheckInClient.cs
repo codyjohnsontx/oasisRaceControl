@@ -96,7 +96,7 @@ public sealed class DriverCheckInClient
         if (register.StatusCode == HttpStatusCode.Conflict)
             throw new CheckInRefusedException($"the name \"{name}\" already exists with a different PIN - type the PIN again, or use a different name");
         if ((int)register.StatusCode == 429)
-            throw new CheckInRefusedException("too many new names from this network in the last minute - wait a minute and try again");
+            throw new CheckInRefusedException("too many sign-in attempts from this network in the last minute, across both rigs - wait a minute and try again");
         if (register.StatusCode == HttpStatusCode.BadRequest)
             throw NameNotAllowed();
         throw new CheckInRefusedException($"the backend could not sign you up (HTTP {(int)register.StatusCode}) - try again");

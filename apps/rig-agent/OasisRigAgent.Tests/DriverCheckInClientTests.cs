@@ -145,7 +145,7 @@ public sealed class DriverCheckInClientTests
     }
 
     [Fact]
-    public async Task ARateLimitedRegistrationSaysWaitAMinute()
+    public async Task ARateLimitedRegistrationIsWordedAsTheSharedSignInLimit()
     {
         var (client, backend) = Build();
         backend.Answer = (path, _) => path == "/api/auth/login"
@@ -154,6 +154,7 @@ public sealed class DriverCheckInClientTests
 
         var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", "1234", CancellationToken.None));
 
+        Assert.Contains("too many sign-in attempts from this network", ex.Message);
         Assert.Contains("wait a minute", ex.Message);
     }
 
