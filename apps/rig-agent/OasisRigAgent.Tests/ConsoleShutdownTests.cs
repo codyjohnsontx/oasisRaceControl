@@ -52,7 +52,7 @@ public sealed class ConsoleShutdownTests
         await agent.StandardInput.WriteLineAsync("Mike");
         await agent.StandardInput.WriteLineAsync("1234");
         await agent.StandardInput.FlushAsync();
-        await WaitUntil(() => output.ToString().Contains("Press Enter when you are done"));
+        await WaitUntil(() => output.ToString().Contains("Press Enter to log out"));
 
         if (signal is null) agent.StandardInput.Close();
         else Process.Start("kill", $"-{signal} {agent.Id}")!.WaitForExit();

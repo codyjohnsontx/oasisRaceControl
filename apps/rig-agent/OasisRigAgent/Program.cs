@@ -34,7 +34,9 @@ try
     var client = new BackendClient(httpInit, config.BackendBaseUrl, config.RigToken);
     telemetry = config.TelemetryMode switch
     {
-        TelemetryMode.Iracing => AttachTelemetryLog(new IracingTelemetrySource()),
+        TelemetryMode.Iracing => config.RigQrToken is null
+            ? AttachTelemetryLog(new IracingTelemetrySource())
+            : AttachDriverLog(new IracingTelemetrySource()),
         TelemetryMode.Simulated => new SimulatedTelemetrySource(TimeSpan.FromSeconds(8)),
         _ => new NullTelemetrySource(),
     };
@@ -51,7 +53,7 @@ using var queue = queueInit;
 using var http = httpInit;
 await using var agent = agentInit;
 
-agent.StatusChanged += Render;
+agent.StatusChanged += config.RigQrToken is null ? Render : OnlyWhenItMatters(Render);
 agent.Start();
 
 Console.WriteLine($"Oasis Rig Agent — Rig {config.RigNumber:D2}  ({config.BackendBaseUrl})");
@@ -70,7 +72,7 @@ if (config.RigQrToken is { } qrToken)
     // Windows), a shutdown (SIGTERM; CTRL_SHUTDOWN_EVENT) and the runtime's own
     // exit - runs the same sign-out once, and the signal handlers wait for it,
     // because Windows ends the process as soon as a close handler returns.
-    Console.WriteLine("Walk-up mode: type your name and a 4-digit PIN to start driving, press Enter when done.");
+    Console.WriteLine("Walk-up mode: type your name and a 4-digit PIN to start driving, press Enter to log out.");
     Console.WriteLine(new string('-', 60));
     var checkIn = new DriverCheckInClient(config.BackendBaseUrl, qrToken);
     var signOut = new Lazy<Task>(() => DriverPrompt.SignOutOnExitAsync(agent));
@@ -83,7 +85,7 @@ if (config.RigQrToken is { } qrToken)
     using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => { context.Cancel = true; SignOutBeforeExit(); });
     using var onShutdown = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; SignOutBeforeExit(); });
     AppDomain.CurrentDomain.ProcessExit += (_, _) => SignOutBeforeExit();
-    await DriverPrompt.RunAsync(agent, checkIn, quit.Token);
+    await DriverPrompt.RunAsync(agent, checkIn, config.RigNumber, new SystemPromptConsole(), quit.Token);
     await signOut.Value;
     Console.WriteLine("Shutting down…");
     return 0;
@@ -173,6 +175,44 @@ static void Render(AgentStatus s)
         _ => "",
     };
     Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{rejected}{checkout}");
+}
+
+/// <summary>Walk-up mode's status line: printed when something the person at
+/// the rig or staff would act on changes - the connection, whether the sim is
+/// running, laps waiting while offline, laps the backend refused, a sign-out
+/// still owed - rather than on every poll.</summary>
+static Action<AgentStatus> OnlyWhenItMatters(Action<AgentStatus> render)
+{
+    object? last = null;
+    var gate = new object();
+    return s =>
+    {
+        object key = (s.Connection, s.SimRunning,
+            s.Connection == ConnectionState.Online ? 0 : s.PendingLaps, s.RejectedLaps, s.Checkout);
+        lock (gate)
+        {
+            if (Equals(key, last)) return;
+            last = key;
+        }
+        render(s);
+    };
+}
+
+/// <summary>What walk-up mode prints about the sim below the DRIVING screen:
+/// each lap and whether it counts, and the problems a driver can see and
+/// report - iRacing not running, lap reading stopped. The exact combo strings
+/// are for staff and live in --diagnose and the staff console.</summary>
+static IracingTelemetrySource AttachDriverLog(IracingTelemetrySource source)
+{
+    source.ConnectionChanged += up => Log(up ? "iRacing connected." : "iRacing is not running or not in a session - laps resume when it is back.");
+    source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected. Tell staff.");
+    source.LapDecided += d => Log(d.Lap is { } lap
+        ? $"Lap {d.LapCompleted}  {FormatLap(lap.LapTimeMs)}  incidents {(lap.IncidentDelta?.ToString() ?? "n/a")}  - recorded"
+        : $"Lap {d.LapCompleted} not counted: {d.SkipReason}");
+    source.Faulted += ex => Log($"ERROR lap reading stopped: {ex.Message} - tell staff to restart the program.");
+    return source;
+
+    static void Log(string message) => Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
 }
 
 /// <summary>What the normal run prints about the sim, on top of the status

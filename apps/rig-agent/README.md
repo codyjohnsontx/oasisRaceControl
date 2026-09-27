@@ -289,25 +289,47 @@ user types their name and then as they make laps it assigns it accordingly.
 When they are done, they just exit out the program and then it waits for the
 next person."
 
+The console is two screens, and it is cleared whenever it moves between
+them.
+
+**Sign in.** A name, then a 4-digit PIN. The PIN shows as it is typed (the
+rig keyboards are hard to type on blind), and the screen is cleared the moment
+Enter is pressed, so it is gone before the next person sits down. A refused
+sign-in comes back to this screen with the reason.
+
 ```text
+============================================================
+  OASIS RACE CONTROL - RIG 01 - SIGN IN
+============================================================
+
 Type your name and press Enter:
 Mike
 Type your 4-digit PIN and press Enter (new here? pick one and remember it):
 4821
-Signed up as Mike. Use the same name and PIN next time, on either rig, either day.
-Laps post automatically. Press Enter when you are done.
-[telemetry 20:05:11] lap 2 2:17.217 incidents=0 queued as track="Circuit of the Americas" config="Grand Prix" car="FIA F4"
-[Rig 01]  ● online  |  driver: Mike  |  sim running
+```
 
-Thanks Mike, you are signed out.
+**Driving.** The signed-in name and one instruction. Enter is the log-out
+button: it logs the driver out and clears back to the sign-in screen, which
+thanks them. Below it the driver sees each lap and whether it counts, and
+problems they can report: iRacing not running, the backend offline, laps
+waiting to send. The status line appears only when one of those changes, not
+on every poll.
 
-Type your name and press Enter:
+```text
+============================================================
+  RIG 01 - DRIVING: Mike
+============================================================
+Welcome back. Your laps post automatically.
+
+Press Enter to log out.
+
+[20:05:11] Lap 2  2:17.217  incidents 0  - recorded
+[20:07:30] Lap 3 not counted: the lap went through the pit lane (out lap or pit stop) - not timed
 ```
 
 A name and a 4-digit PIN are the driver's for the whole event: the same name
 and PIN on either rig, on either day, come back to the same driver, so every
-attempt at a fast time lands on one leaderboard row. The PIN is typed in the
-open; it keeps one person's laps apart from another's, it is not a password.
+attempt at a fast time lands on one leaderboard row.
 
 How it works, with nothing new on the server: the name and PIN are logged in
 through the backend's own driver sign-in (`POST /api/auth/login`), and when
@@ -315,7 +337,7 @@ they match nobody a new driver is registered with them
 (`POST /api/auth/register`); then `POST /api/checkin` with this rig's QR token
 and the takeover confirmed - the same requests the phone pages send, so it
 runs against the deployed app as it is. The next lap is stamped with the new
-stint at once. Enter signs the driver out through the agent's existing
+stint at once. Logging out goes through the agent's existing
 switch-driver (durable: a sign-out the backend cannot be told about now is
 delivered later, and until then this rig's laps carry no owner).
 
