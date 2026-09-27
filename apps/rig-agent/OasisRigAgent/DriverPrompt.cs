@@ -66,9 +66,8 @@ internal static class DriverPrompt
     private static readonly string Rule = new('=', 60);
 
     public static async Task RunAsync(
-        AgentService agent, DriverCheckInClient checkIn, int rigNumber, IPromptConsole console, CancellationToken quit)
+        AgentService agent, DriverCheckInClient checkIn, int rigNumber, WalkUpScreen screen, CancellationToken quit)
     {
-        var screen = new WalkUpScreen(console, agent);
         var waiting = new Dictionary<string, string>();
         void OnQueued(LapCompleted lap, string? stamp)
         {
@@ -104,7 +103,6 @@ internal static class DriverPrompt
         {
             agent.LapQueued -= OnQueued;
             agent.LapsPosted -= OnPosted;
-            screen.Detach();
         }
     }
 
@@ -215,7 +213,7 @@ internal static class DriverPrompt
 
     private static void ShowSignIn(WalkUpScreen screen, int rigNumber, string? notice, string? name, string prompt)
     {
-        screen.Show((console, warnings) =>
+        screen.Show(typedOn: true, body: (console, warnings) =>
         {
             Banner(console, warnings, $"  OASIS RACE CONTROL - RIG {rigNumber:D2} - SIGN IN");
             if (notice is not null)
@@ -231,7 +229,7 @@ internal static class DriverPrompt
 
     private static void ShowDriving(WalkUpScreen screen, int rigNumber, DriverCheckIn session)
     {
-        screen.Show((console, warnings) =>
+        screen.Show(typedOn: false, body: (console, warnings) =>
         {
             Banner(console, warnings, $"  RIG {rigNumber:D2} - DRIVING: {session.DisplayName}");
             console.WriteLine(session.Returning
@@ -283,12 +281,16 @@ internal static class DriverPrompt
 /// The console as one screen at a time. A screen is a drawing (banner with the
 /// warnings standing at that moment, then its own lines) plus the log lines
 /// added since it was shown. When the agent's status changes the set of
-/// warnings, the screen is drawn again from scratch with the current set and
-/// its log lines re-printed - so a warning that no longer applies is gone the
-/// moment it stops applying, and one that starts applying appears without
-/// waiting for the next screen. The first real rig showed "iRacing is not
-/// running" above laps that were being read and posted; this is what removes
-/// it.
+/// warnings, the DRIVING screen is drawn again from scratch with the current
+/// set and its log lines re-printed - so a warning that no longer applies is
+/// gone the moment it stops applying, and one that starts applying appears
+/// without waiting for the next screen. The first real rig showed "iRacing is
+/// not running" above laps that were being read and posted; this is what
+/// removes it. A SIGN IN screen is never cleared while it is up, because a
+/// name or PIN may be half typed and clearing hides it from the person typing
+/// while the console still holds it; a warning that starts applying there is
+/// printed below the prompt instead. Everything walk-up mode prints goes
+/// through <see cref="Log"/> or <see cref="Standing"/>, so a redraw keeps it.
 /// </summary>
 internal sealed class WalkUpScreen
 {
@@ -297,7 +299,9 @@ internal sealed class WalkUpScreen
     private readonly AgentService _agent;
     private readonly object _lock = new();
     private readonly List<string> _log = new();
+    private readonly List<string> _standing = new();
     private Action<IPromptConsole, IReadOnlyList<string>>? _body;
+    private bool _typedOn;
     private List<string> _shownWarnings = new();
     private readonly List<string> _appended = new();
 
@@ -308,19 +312,19 @@ internal sealed class WalkUpScreen
         _agent.StatusChanged += OnStatus;
     }
 
-    public void Detach() => _agent.StatusChanged -= OnStatus;
-
     public Task<string?> ReadLineAsync(CancellationToken quit) => _console.ReadLineAsync(quit);
 
-    /// <summary>Replace what is on screen with this drawing.</summary>
-    public void Show(Action<IPromptConsole, IReadOnlyList<string>> body)
+    /// <summary>Replace what is on screen with this drawing. A screen that is
+    /// <paramref name="typedOn"/> is not redrawn until the next one is shown.</summary>
+    public void Show(Action<IPromptConsole, IReadOnlyList<string>> body, bool typedOn)
     {
         lock (_lock)
         {
             _body = body;
+            _typedOn = typedOn;
             _log.Clear();
             _appended.Clear();
-            Draw();
+            Draw(Warnings(_agent.CurrentStatus()));
         }
     }
 
@@ -358,22 +362,44 @@ internal sealed class WalkUpScreen
         }
     }
 
-    private void Draw()
+    /// <summary>A problem that stands until the program is restarted - lap
+    /// reading stopped, an iRacing build missing what laps are read from - shown
+    /// under the banner of every screen from now on.</summary>
+    public void Standing(string warning)
+    {
+        lock (_lock)
+        {
+            if (_standing.Contains(warning)) return;
+            _standing.Add(warning);
+            Refresh(Warnings(_agent.CurrentStatus()));
+        }
+    }
+
+    private List<string> Warnings(AgentStatus status) => _standing.Concat(DriverPrompt.Warnings(status)).ToList();
+
+    private void Draw(List<string> warnings)
     {
         _console.Clear();
-        _shownWarnings = DriverPrompt.Warnings(_agent.CurrentStatus()).ToList();
-        _body?.Invoke(_console, _shownWarnings);
+        _shownWarnings = warnings;
+        _body?.Invoke(_console, warnings);
         foreach (var line in _appended) _console.WriteLine(line);
         foreach (var line in _log) _console.WriteLine(line);
     }
 
+    private void Refresh(List<string> warnings)
+    {
+        if (_body is null || warnings.SequenceEqual(_shownWarnings)) return;
+        if (!_typedOn)
+        {
+            Draw(warnings);
+            return;
+        }
+        foreach (var warning in warnings.Except(_shownWarnings)) _console.WriteLine(warning);
+        _shownWarnings = warnings;
+    }
+
     private void OnStatus(AgentStatus status)
     {
-        lock (_lock)
-        {
-            if (_body is null) return;
-            if (DriverPrompt.Warnings(status).SequenceEqual(_shownWarnings)) return;
-            Draw();
-        }
+        lock (_lock) Refresh(Warnings(status));
     }
 }

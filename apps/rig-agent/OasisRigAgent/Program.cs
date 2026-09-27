@@ -36,7 +36,7 @@ try
     {
         TelemetryMode.Iracing => config.RigQrToken is null
             ? AttachTelemetryLog(new IracingTelemetrySource())
-            : AttachDriverLog(new IracingTelemetrySource()),
+            : new IracingTelemetrySource(),
         TelemetryMode.Simulated => new SimulatedTelemetrySource(TimeSpan.FromSeconds(8)),
         _ => new NullTelemetrySource(),
     };
@@ -53,7 +53,20 @@ using var queue = queueInit;
 using var http = httpInit;
 await using var agent = agentInit;
 
-agent.StatusChanged += config.RigQrToken is null ? Render : OnlyWhenItMatters(Render);
+// Walk-up mode's screen exists before the agent starts, so nothing the sim or
+// the agent reports in the first moments is printed where a redraw erases it.
+WalkUpScreen? walkUp = null;
+if (config.RigQrToken is null)
+{
+    agent.StatusChanged += s => Console.WriteLine(StatusLine(s));
+}
+else
+{
+    var screen = new WalkUpScreen(new SystemPromptConsole(), agent);
+    walkUp = screen;
+    if (telemetry is IracingTelemetrySource iracing) AttachDriverLog(iracing, screen);
+    agent.StatusChanged += OnlyWhenItMatters(s => screen.Log(StatusLine(s)));
+}
 agent.Start();
 
 Console.WriteLine($"Oasis Rig Agent - Rig {config.RigNumber:D2}  ({config.BackendBaseUrl})");
@@ -65,7 +78,7 @@ Console.WriteLine(config.TelemetryMode switch
 });
 var quit = new CancellationTokenSource();
 
-if (config.RigQrToken is { } qrToken)
+if (walkUp is not null && config.RigQrToken is { } qrToken)
 {
     // Walk-up mode: the rig itself is the check-in. Every way out - input
     // ending, Ctrl+C, the window's close button (SIGHUP; CTRL_CLOSE_EVENT on
@@ -85,7 +98,7 @@ if (config.RigQrToken is { } qrToken)
     using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => { context.Cancel = true; SignOutBeforeExit(); });
     using var onShutdown = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; SignOutBeforeExit(); });
     AppDomain.CurrentDomain.ProcessExit += (_, _) => SignOutBeforeExit();
-    await DriverPrompt.RunAsync(agent, checkIn, config.RigNumber, new SystemPromptConsole(), quit.Token);
+    await DriverPrompt.RunAsync(agent, checkIn, config.RigNumber, walkUp, quit.Token);
     await signOut.Value;
     Console.WriteLine("Shutting down...");
     return 0;
@@ -143,7 +156,7 @@ catch (OperationCanceledException) { }
 Console.WriteLine("Shutting down...");
 return 0;
 
-static void Render(AgentStatus s)
+static string StatusLine(AgentStatus s)
 {
     var conn = s.Connection switch
     {
@@ -174,7 +187,7 @@ static void Render(AgentStatus s)
         CheckoutDelivery.NotQueued => "  |  sign-out NOT saved - clear this rig from the staff screen",
         _ => "",
     };
-    Console.WriteLine($"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{rejected}{checkout}");
+    return $"[Rig {s.RigNumber:D2}]  {conn}  |  driver: {driver}  |  {sim}{pending}{rejected}{checkout}";
 }
 
 /// <summary>Walk-up mode's status line: printed when something the person at
@@ -198,24 +211,22 @@ static Action<AgentStatus> OnlyWhenItMatters(Action<AgentStatus> render)
     };
 }
 
-/// <summary>What walk-up mode prints about the sim below the screen: a lap
-/// that was not timed and why, and the problems a driver can see and report -
-/// iRacing not running, lap reading stopped. A timed lap is the prompt's to
+/// <summary>What walk-up mode prints about the sim on the screen: a lap that
+/// was not timed and why, and the problems a driver can see and report -
+/// iRacing not running, lap reading stopped. The two that last until a restart
+/// stand under the banner of every screen. A timed lap is the prompt's to
 /// print, because only it knows whether the lap was queued for a driver and
 /// when the backend took it. The exact combo strings
 /// are for staff and live in --diagnose and the staff console.</summary>
-static IracingTelemetrySource AttachDriverLog(IracingTelemetrySource source)
+static void AttachDriverLog(IracingTelemetrySource source, WalkUpScreen screen)
 {
-    source.ConnectionChanged += up => Log(up ? "iRacing connected." : "iRacing is not running or not in a session - laps resume when it is back.");
-    source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected. Tell staff.");
+    source.ConnectionChanged += up => screen.Log(up ? "iRacing connected." : "iRacing is not running or not in a session - laps resume when it is back.");
+    source.MissingVariables += names => screen.Standing($"WARNING: this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected. Tell staff.");
     source.LapDecided += d =>
     {
-        if (d.Lap is null) Log($"Lap {d.LapCompleted} not counted: {d.SkipReason}");
+        if (d.Lap is null) screen.Log($"Lap {d.LapCompleted} not counted: {d.SkipReason}");
     };
-    source.Faulted += ex => Log($"ERROR lap reading stopped: {ex.Message} - tell staff to restart the program.");
-    return source;
-
-    static void Log(string message) => Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
+    source.Faulted += ex => screen.Standing($"ERROR: lap reading stopped: {ex.Message} - tell staff to restart the program.");
 }
 
 /// <summary>What the normal run prints about the sim, on top of the status

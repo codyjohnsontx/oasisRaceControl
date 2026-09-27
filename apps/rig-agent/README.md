@@ -321,8 +321,11 @@ in first": the backend keeps it as an unclaimed lap, and it never ranks.
 
 Both screens open with a warning line for each problem still standing -
 the backend unreachable, iRacing not running or not in a session, laps the
-backend refused, a log-out that could not be saved - so clearing the screen
-never hides one. A status line is printed when the
+backend refused, a log-out that could not be saved, lap reading stopped -
+so clearing the screen never hides one. The driving screen redraws itself when
+that set changes. The sign-in screen does not, because clearing it would hide a
+half-typed name or PIN; a new warning is printed below the prompt instead. A
+status line is printed when the
 connection or the sim changes, or laps are waiting or refused, not on every
 poll.
 

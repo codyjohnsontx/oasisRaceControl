@@ -139,7 +139,7 @@ public sealed class DriverPromptTests : IDisposable
         var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-2", () => backend);
         var screen = new RecordingConsole("Mike", "12", "1234", "Mike", "4321", "");
 
-        await DriverPrompt.RunAsync(agent, checkIn, 2, screen, CancellationToken.None);
+        await DriverPrompt.RunAsync(agent, checkIn, 2, new WalkUpScreen(screen, agent), CancellationToken.None);
 
         var t = screen.Transcript;
 
@@ -198,7 +198,8 @@ public sealed class DriverPromptTests : IDisposable
     /// that were being read and posted: the warning was drawn once, when the
     /// screen was, and nothing took it down. The screen now follows the agent's
     /// status - the warning goes the moment iRacing connects and comes back
-    /// only when it actually disconnects - without losing the lap lines.</summary>
+    /// only when it actually disconnects - without losing a skipped lap's line
+    /// or a lasting fault.</summary>
     [Fact]
     public async Task TheNotRunningWarningLeavesWhenIracingConnectsAndReturnsWhenItDisconnects()
     {
@@ -212,7 +213,9 @@ public sealed class DriverPromptTests : IDisposable
         agent.Start();
         var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
 
+        const string fault = "ERROR: lap reading stopped: the map closed - tell staff to restart the program.";
         RecordingConsole screen = null!;
+        WalkUpScreen walkUp = null!;
         List<string> LatestScreen() => screen.ScreenBefore(screen.Transcript.Count);
         async Task WaitForScreen(Func<List<string>, bool> ready, string what)
         {
@@ -235,6 +238,8 @@ public sealed class DriverPromptTests : IDisposable
                 // Signed in with the sim not running: the driving screen warns.
                 await WaitForScreen(l => l.Contains("  RIG 01 - DRIVING: Mike"), "the driving screen");
                 drivingWithWarning = LatestScreen();
+                walkUp.Log("Lap 3 not counted: pit lane");
+                walkUp.Standing(fault);
 
                 // iRacing connects: the warning must leave without a key press,
                 // and the driving screen stays.
@@ -249,13 +254,61 @@ public sealed class DriverPromptTests : IDisposable
             },
         };
 
-        await DriverPrompt.RunAsync(agent, checkIn, 1, screen, CancellationToken.None);
+        walkUp = new WalkUpScreen(screen, agent);
+        await DriverPrompt.RunAsync(agent, checkIn, 1, walkUp, CancellationToken.None);
 
         Assert.Contains(noSim, drivingWithWarning);
         Assert.DoesNotContain(noSim, drivingConnected);
         Assert.Contains("Press Enter to log out.", drivingConnected);
+        Assert.Contains(fault, drivingConnected);
+        Assert.Contains(drivingConnected, l => l.EndsWith("Lap 3 not counted: pit lane"));
+        Assert.Contains(fault, drivingDisconnected);
+        Assert.Contains(drivingDisconnected, l => l.EndsWith("Lap 3 not counted: pit lane"));
         Assert.Contains(noSim, drivingDisconnected);
         Assert.Contains("Press Enter to log out.", drivingDisconnected);
+    }
+
+    /// <summary>A half-typed name must stay in view: the console still holds
+    /// what was typed, so clearing the sign-in screen under it made the driver
+    /// retype and sign in as "MiMike". A warning that starts applying while the
+    /// sign-in screen is up is printed below the prompt instead.</summary>
+    [Fact]
+    public async Task ASignInScreenIsNotClearedUnderAHalfTypedName()
+    {
+        const string noSim = "WARNING: iRacing is not running or not in a session - no laps are being read.";
+        var backend = new Backend();
+        var telemetry = new SwitchableTelemetry { Running = true };
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, telemetry);
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
+
+        RecordingConsole screen = null!;
+        screen = new RecordingConsole("Mike")
+        {
+            BeforeTyping = async _ =>
+            {
+                // iRacing leaves its session while the name is being typed.
+                telemetry.Running = false;
+                var deadline = DateTime.UtcNow.AddSeconds(10);
+                while (!screen.Transcript.Contains(noSim))
+                {
+                    if (DateTime.UtcNow > deadline) throw new TimeoutException("the warning was never shown");
+                    await Task.Delay(50);
+                }
+            },
+        };
+
+        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
+
+        var t = screen.Transcript;
+        var prompt = t.IndexOf("Type your name and press Enter:");
+        var typed = t.IndexOf("typed:Mike");
+        var whileTyping = t.GetRange(prompt + 1, typed - prompt - 1);
+        Assert.DoesNotContain("<clear>", whileTyping);
+        Assert.Contains(noSim, whileTyping);
     }
 
     /// <summary>Telemetry the test drives by hand, with iRacing in a session.</summary>
@@ -311,7 +364,7 @@ public sealed class DriverPromptTests : IDisposable
             },
         };
 
-        await DriverPrompt.RunAsync(agent, checkIn, 1, screen, CancellationToken.None);
+        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
 
         var t = screen.Transcript;
         Assert.Contains(t, l => l.EndsWith("Lap 1  2:17.217  incidents 0 - lap not counted - sign in first"));
@@ -370,7 +423,7 @@ public sealed class DriverPromptTests : IDisposable
             },
         };
 
-        await DriverPrompt.RunAsync(agent, checkIn, 1, screen, CancellationToken.None);
+        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
 
         var t = screen.Transcript;
         Assert.Contains("Thanks Mike, logged out here; the backend will be told when the connection returns.", t);
