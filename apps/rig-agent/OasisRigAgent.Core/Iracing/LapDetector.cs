@@ -80,12 +80,12 @@ public sealed record LapDecision(
 ///   - Session change: `SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing
 ///     re-baselines with no lap emitted.
 ///   - Counter going down (exit to the garage, reset, tow, session restart): a
-///     resync, not a lap and not a jump. A rise of more than one straight after
-///     it - iRacing briefly restoring the old count, seen on a real rig - quietly
-///     re-baselines and raises <see cref="Resynced"/>; a rise of one is a lap
-///     like any other. The `LapLastLapTime` shown at the drop is remembered as
-///     stale, across <see cref="Reset"/> too, and a lap still showing it is
-///     skipped rather than posting that time twice.
+///     resync, not a lap and not a jump. The next rise of any size - iRacing
+///     briefly restoring the old count, seen on a real rig, or the out lap after
+///     a garage exit or reset, which is never timed - quietly re-baselines with
+///     no decision and raises <see cref="Resynced"/>. The `LapLastLapTime` shown
+///     at the drop is remembered as stale, across <see cref="Reset"/> too, and a
+///     later lap still showing it is skipped rather than posting that time twice.
 ///   - Counter jump of more than one (ticks missed): re-baselined, skipped.
 ///   - Pause: nothing crosses the line, so nothing happens; the lap time comes
 ///     from the sim's own clock, which pauses too.
@@ -199,10 +199,9 @@ public sealed class LapDetector
             return;
         }
 
-        var resync = _resyncing;
-        _resyncing = false;
-        if (resync && lapCompleted - _lastLapCompleted > 1)
+        if (_resyncing)
         {
+            _resyncing = false;
             _pending = null;
             Resynced?.Invoke($"lap counter resynced {_lastLapCompleted} -> {lapCompleted}");
             Baseline(lapCompleted, t);

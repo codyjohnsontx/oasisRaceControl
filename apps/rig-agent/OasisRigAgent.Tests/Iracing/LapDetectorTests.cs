@@ -159,8 +159,24 @@ public sealed class LapDetectorTests
         Cruise(Tick(5, 155.0f), 10);
         Cruise(Tick(0, -1f), 10);                 // session restart
         Assert.Empty(_decisions);
-        Drive(Tick(1, 153.0f));
-        Assert.Equal(153000, Assert.Single(_decisions).Lap!.LapTimeMs);
+        Cruise(Tick(1, 153.0f), LapDetector.LapTimeDeadlineTicks + 10); // first crossing after the drop: the out lap
+        Assert.Empty(_decisions);
+        Drive(Tick(2, 152.0f));
+        Assert.Equal(152000, Assert.Single(_decisions).Lap!.LapTimeMs);
+    }
+
+    [Fact]
+    public void OutLapOnlyThenGarageExitIsAQuietResync()
+    {
+        // 1 -> 0 -> 1: the same transient as the real log, one lap in.
+        var resynced = new List<string>();
+        _detector.Resynced += resynced.Add;
+        Cruise(Tick(1, 134.906f), 10);
+        Drive(Tick(0, 134.906f, onTrack: false, surface: -1));
+        Cruise(Tick(1, 134.906f), LapDetector.LapTimeDeadlineTicks + 10);
+
+        Assert.Empty(_decisions);
+        Assert.Equal("lap counter resynced 0 -> 1", Assert.Single(resynced));
     }
 
     [Fact]
@@ -180,12 +196,12 @@ public sealed class LapDetectorTests
         // Back in the car: out of the pits, the counter restarts from zero.
         Cruise(Tick(0, 134.906f, pit: true), 10);
         Cruise(Tick(1, 134.906f), LapDetector.LapTimeDeadlineTicks + 10);
-        Assert.All(_decisions, d => Assert.Null(d.Lap));
+        Assert.Empty(_decisions);
+        Assert.Equal("lap counter resynced 0 -> 1", resynced[^1]);
 
         Drive(Tick(2, 135.5f));
-        var posted = Assert.Single(_decisions, d => d.Lap is not null);
-        Assert.Equal(135500, posted.Lap!.LapTimeMs);
-        Assert.Single(resynced);
+        Assert.Equal(135500, Assert.Single(_decisions).Lap!.LapTimeMs);
+        Assert.Equal(2, resynced.Count);
     }
 
     [Fact]

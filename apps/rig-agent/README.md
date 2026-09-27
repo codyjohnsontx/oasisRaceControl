@@ -107,11 +107,13 @@ tick sequences):
   session info has named a track and car, and a lap still showing the lap time
   that was on screen when the counter last went down (stale).
 - `LapCompleted` going DOWN (exit to the garage, reset, tow, session restart)
-  is a resync, not a lap and not a jump: a rise of more than one straight
-  after it - iRacing briefly putting the old count back, seen on a real rig -
-  quietly re-baselines, and the log prints one `lap counter resynced` line. A
-  rise of one is a lap like any other, and the stale-time rule above keeps it
-  from re-posting the lap time shown before the drop.
+  is a resync, not a lap and not a jump: the next rise of any size - iRacing
+  briefly putting the old count back, seen on a real rig, or the out lap after
+  a garage exit or reset, which is never timed - quietly re-baselines with no
+  lap line, and the log prints one `lap counter resynced` line. The first
+  crossing after a drop is therefore never timed; the one after it is, and the
+  stale-time rule above keeps it from re-posting the lap time shown before the
+  drop.
 - A new session (`SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing),
   iRacing dropping out of a session, or
   iRacing closing and reopening all re-baseline the detector with no lap
