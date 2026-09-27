@@ -119,7 +119,9 @@ tick sequences):
 - A new session (`SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing),
   iRacing dropping out of a session, or
   iRacing closing and reopening all re-baseline the detector with no lap
-  emitted. iRacing not running is the normal idle state: the source retries
+  emitted, and the last lap time shown before it counts as stale, so a new
+  session still displaying the old one's last lap does not post it. iRacing
+  not running is the normal idle state: the source retries
   once a second and the status line says `sim idle`.
 - Pause needs nothing: no line is crossed and the lap time is the sim's own.
 

@@ -77,6 +77,9 @@ public sealed record LapDecision(
 ///     mid-lap - the next crossing is skipped as incomplete.
 ///   - Replay: ticks while `IsReplayPlaying` is true are ignored and the lap in
 ///     progress is marked incomplete.
+///   - Not the player's crossing: `IsOnTrack` false on the tick the counter
+///     moves (spectating, a camera on another car, a replay the sim did not
+///     flag) - skipped.
 ///   - Session change: `SessionNum`, `SessionUniqueID` or `PlayerCarIdx` changing
 ///     re-baselines with no lap emitted.
 ///   - Counter going down (exit to the garage, reset, tow, session restart): a
@@ -92,7 +95,9 @@ public sealed record LapDecision(
 ///   - Incidents: the change in `PlayerCarMyIncidentCount` across the lap;
 ///     null when the channel is absent, and the backend then treats the lap as
 ///     clean.
-///   - Disconnect / restart of iRacing: the owner calls <see cref="Reset"/>.
+///   - Disconnect / restart of iRacing: the owner calls <see cref="Reset"/>,
+///     which also marks the last `LapLastLapTime` seen as stale, so a new
+///     session still showing the old session's last lap does not post it.
 /// </summary>
 public sealed class LapDetector
 {
@@ -134,7 +139,8 @@ public sealed class LapDetector
     public event Action<string>? Resynced;
 
     /// <summary>Forget everything: iRacing went away, or is starting over. The
-    /// stale lap time is kept - the time channel can still show it afterwards.</summary>
+    /// last lap time seen becomes the stale one (or the stale one is kept) -
+    /// the time channel can still show it afterwards.</summary>
     public void Reset()
     {
         // The time channel can still show the previous session's last lap
