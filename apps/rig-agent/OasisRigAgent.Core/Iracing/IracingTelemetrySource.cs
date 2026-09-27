@@ -63,8 +63,8 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
     public event Action<RawHeader>? Attached;
     /// <summary>A read was rejected and the block is being waited out; once per distinct reason.</summary>
     public event Action<RawHeader?, string>? HeaderRejected;
-    /// <summary>Session info was (re)read and named a track and car - or did not, null.</summary>
-    public event Action<SessionCombo?>? ComboChanged;
+    /// <summary>Session info was (re)read and named a different track and car.</summary>
+    public event Action<SessionCombo>? ComboChanged;
     /// <summary>Every lap boundary, posted or skipped, with the reason.</summary>
     public event Action<LapDecision>? LapDecided;
     /// <summary>Watched variables this iRacing build does not publish, once per connection.</summary>

@@ -51,8 +51,10 @@ public sealed class IracingFrameProcessor
     /// <summary>A read was rejected and the block is being treated as not ready.
     /// Raised once per distinct reason; the header is null when even that could not be read.</summary>
     public event Action<RawHeader?, string>? HeaderRejected;
-    /// <summary>Session info was (re)read and named a track and car - or did not, null.</summary>
-    public event Action<SessionCombo?>? ComboChanged;
+    /// <summary>Session info was (re)read and named a different track and car.
+    /// Session info that names none yet is read again on the next frame and
+    /// never replaces a combo already named during this connection.</summary>
+    public event Action<SessionCombo>? ComboChanged;
     /// <summary>Watched variables this iRacing build does not publish, once per connection.</summary>
     public event Action<IReadOnlyList<string>>? MissingVariables;
 
@@ -96,14 +98,16 @@ public sealed class IracingFrameProcessor
 
             if (parsed.SessionInfoUpdate != _lastSessionUpdate && parsed.SessionInfoBytes is not null)
             {
-                _lastSessionUpdate = parsed.SessionInfoUpdate;
                 var yaml = SessionInfoParser.Decode(parsed.SessionInfoBytes);
                 var playerIdx = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
-                var combo = SessionInfoParser.Parse(yaml, playerIdx);
-                if (!Equals(combo, _detector.Combo))
+                if (SessionInfoParser.Parse(yaml, playerIdx) is { } combo)
                 {
-                    _detector.Combo = combo;
-                    ComboChanged?.Invoke(combo);
+                    _lastSessionUpdate = parsed.SessionInfoUpdate;
+                    if (!Equals(combo, _detector.Combo))
+                    {
+                        _detector.Combo = combo;
+                        ComboChanged?.Invoke(combo);
+                    }
                 }
             }
 

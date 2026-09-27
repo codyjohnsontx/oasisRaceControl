@@ -155,9 +155,7 @@ static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
     source.ConnectionChanged += up => Log(up ? "iRacing connected" : "iRacing not running or not in a session (waiting; laps resume when it is back)");
     source.Attached += header => Log($"iRacing header: {header}");
     source.HeaderRejected += (header, reason) => Log($"iRacing shared memory not ready: {reason} (header: {header?.ToString() ?? "unreadable"}) - retrying every second");
-    source.ComboChanged += combo => Log(combo is null
-        ? "session info does not name a track and car yet"
-        : $"session: {Describe(combo)}");
+    source.ComboChanged += combo => Log($"session: {Describe(combo)}");
     source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected");
     source.LapDecided += d => Log(d.Lap is { } lap
         ? $"lap {d.LapCompleted} {FormatLap(lap.LapTimeMs)} incidents={(lap.IncidentDelta?.ToString() ?? "n/a")} queued as track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
@@ -198,11 +196,6 @@ static int Diagnose()
     };
     source.ComboChanged += combo =>
     {
-        if (combo is null)
-        {
-            Console.WriteLine($"[{Now()}] session info read but it does not name a track and car yet (still loading?)");
-            return;
-        }
         Console.WriteLine($"[{Now()}] SESSION {Describe(combo)}");
         Console.WriteLine($"           iRacing ids: TrackName=\"{combo.TrackName}\" TrackID={combo.TrackId} CarID={combo.CarId} PlayerCarIdx={combo.PlayerCarIdx}");
         Console.WriteLine("           featured-combo SQL for the wall (copy exactly):");

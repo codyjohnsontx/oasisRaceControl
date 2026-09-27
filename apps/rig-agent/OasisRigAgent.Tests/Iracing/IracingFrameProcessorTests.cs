@@ -121,6 +121,53 @@ public sealed class IracingFrameProcessorTests
         Assert.Contains("smaller than the 40-byte header", reason);
     }
 
+    private const string CotaSessionInfo =
+        "WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n TrackConfigName: Grand Prix\n" +
+        "DriverInfo:\n DriverCarIdx: 0\n Drivers:\n - CarIdx: 0\n   CarScreenName: FIA F4\n";
+
+    [Fact]
+    public void SessionInfoThatNamesNoComboYetIsReadAgainWithoutWaitingForTheNextUpdate()
+    {
+        // iRacing publishes session info in pieces while loading: the first read
+        // at an update can find the track but no car yet.
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        fixture.WriteInt(12, 2);
+        fixture.SetSessionInfo("WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n");
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        var combos = new List<SessionCombo>();
+        _frames.ComboChanged += combos.Add;
+
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+        Assert.Null(_detector.Combo);
+
+        fixture.SetSessionInfo(CotaSessionInfo); // same update number, now complete
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+
+        Assert.Equal("FIA F4", _detector.Combo?.CarScreenName);
+        Assert.Equal("FIA F4", Assert.Single(combos).CarScreenName);
+    }
+
+    [Fact]
+    public void ATornSessionInfoReadNeverWipesTheComboAlreadyNamed()
+    {
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        fixture.SetSessionInfo(CotaSessionInfo);
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        var combos = new List<SessionCombo>();
+        _frames.ComboChanged += combos.Add;
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+        var named = _detector.Combo;
+        Assert.NotNull(named);
+
+        fixture.WriteInt(12, 2);
+        fixture.SetSessionInfo("WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n");
+        fixture.WriteInt(48, 101);
+        Assert.Equal(FrameOutcome.Frame, _frames.Process(reader));
+
+        Assert.Equal(named, _detector.Combo);
+        Assert.Single(combos);
+    }
+
     [Fact]
     public void DisconnectResetsTheDetectorSoTheNextSessionStartsClean()
     {
