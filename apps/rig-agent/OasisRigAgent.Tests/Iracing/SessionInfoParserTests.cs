@@ -96,4 +96,24 @@ public sealed class SessionInfoParserTests
         Assert.Equal("Nürburgring", SessionInfoParser.Decode(Encoding.UTF8.GetBytes("Nürburgring")));
         Assert.Equal("Nürburgring", SessionInfoParser.Decode(Encoding.Latin1.GetBytes("Nürburgring")));
     }
+
+    [Fact]
+    public void DecodeStopsAtTheNulTerminator()
+    {
+        // The region is sized for the largest document; what follows the
+        // terminator is padding or the tail of an older, longer one.
+        var bytes = Encoding.UTF8.GetBytes("WeekendInfo:\n TrackDisplayName: X\n\0 TrackDisplayName: stale\n\0\0\0");
+        Assert.Equal("WeekendInfo:\n TrackDisplayName: X\n", SessionInfoParser.Decode(bytes));
+    }
+
+    [Fact]
+    public void DescribeFoundSaysHowFarTheScannerGot()
+    {
+        var found = SessionInfoParser.DescribeFound(
+            "WeekendInfo:\n TrackDisplayName: Circuit of the Americas\nDriverInfo:\n DriverCarIdx: 5\n Drivers:\n - CarIdx: 0\n   CarScreenName: Y\n");
+        Assert.Contains("TrackDisplayName=\"Circuit of the Americas\"", found);
+        Assert.Contains("DriverCarIdx=5", found);
+        Assert.Contains("drivers listed=1", found);
+        Assert.Contains("player's CarScreenName=no entry", found);
+    }
 }

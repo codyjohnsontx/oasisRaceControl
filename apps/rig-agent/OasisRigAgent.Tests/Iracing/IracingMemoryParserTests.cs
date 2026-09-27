@@ -30,7 +30,8 @@ public sealed class IracingMemoryParserTests
         // Channels the sim did not publish read as unknown, never as zero.
         Assert.Null(tick.Lap);
         Assert.Null(tick.IsReplayPlaying);
-        Assert.Contains("Circuit of the Americas", SessionInfoParser.Decode(parsed.SessionInfoBytes!));
+        var sessionInfo = new IracingMemoryParser(new ByteArrayMemoryReader(fixture.Bytes)).ReadSessionInfo();
+        Assert.Contains("Circuit of the Americas", SessionInfoParser.Decode(sessionInfo!));
     }
 
     [Theory]

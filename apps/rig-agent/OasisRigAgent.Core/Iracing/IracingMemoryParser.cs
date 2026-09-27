@@ -91,8 +91,7 @@ public sealed class IracingMemoryParser
                 TickRate: raw.TickRate,
                 SessionInfoUpdate: raw.SessionInfoUpdate,
                 Variables: new Dictionary<string, TelemetryVariable>(),
-                Values: new Dictionary<string, object?>(),
-                SessionInfoBytes: null);
+                Values: new Dictionary<string, object?>());
         }
 
         var tickRate = raw.TickRate;
@@ -117,21 +116,26 @@ public sealed class IracingMemoryParser
         var (tickCount, bufferOffset) = FindLatestBuffer(bufferCount, bufferLength);
         var values = ParseWatchedValues(variables, watchedVariables, bufferOffset);
 
-        byte[]? sessionBytes = null;
-        if (sessionInfoLength > 0)
-        {
-            sessionBytes = new byte[sessionInfoLength];
-            ReadChecked(sessionInfoOffset, sessionBytes);
-        }
-
         return new ParsedMemorySnapshot(
             IsConnected: true,
             TickCount: tickCount,
             TickRate: tickRate,
             SessionInfoUpdate: sessionInfoUpdate,
             Variables: variables,
-            Values: values,
-            SessionInfoBytes: sessionBytes);
+            Values: values);
+    }
+
+    /// <summary>The session-info region as the header currently places it, or
+    /// null when the sim is not connected or publishes none. Read on its own
+    /// because it is large and changes rarely, so it is not copied every frame.</summary>
+    public byte[]? ReadSessionInfo()
+    {
+        var raw = ReadHeader(_reader);
+        if (!raw.Connected || raw.SessionInfoLength == 0) return null;
+        Require(raw.SessionInfoLength is > 0 and <= MaximumSessionInfoBytes, "Session metadata is too large or negative.");
+        var bytes = new byte[raw.SessionInfoLength];
+        ReadChecked(raw.SessionInfoOffset, bytes);
+        return bytes;
     }
 
     private IReadOnlyDictionary<string, TelemetryVariable> ParseVariables(int baseOffset, int count, int bufferLength)
@@ -323,8 +327,7 @@ public sealed record ParsedMemorySnapshot(
     int TickRate,
     int SessionInfoUpdate,
     IReadOnlyDictionary<string, TelemetryVariable> Variables,
-    IReadOnlyDictionary<string, object?> Values,
-    byte[]? SessionInfoBytes);
+    IReadOnlyDictionary<string, object?> Values);
 
 public sealed class MalformedTelemetryException : Exception
 {

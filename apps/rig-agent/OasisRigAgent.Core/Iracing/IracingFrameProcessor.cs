@@ -34,7 +34,10 @@ public sealed class IracingFrameProcessor
     private IReadOnlyMemoryReader? _readerOf;
     private IracingMemoryParser? _parser;
     private int _lastTick = int.MinValue;
-    private int _lastSessionUpdate = int.MinValue;
+    private int _sessionReadUpdate = int.MinValue;
+    private int _sessionReadTick;
+    private bool _sessionNamed;
+    private bool _reportedIncomplete;
     private int _consecutiveMalformed;
     private bool _reportedMissing;
     private bool _reportedAttached;
@@ -55,6 +58,9 @@ public sealed class IracingFrameProcessor
     /// Session info that names none yet is read again on the next frame and
     /// never replaces a combo already named during this connection.</summary>
     public event Action<SessionCombo>? ComboChanged;
+    /// <summary>Session info was read but named no track and car for the player
+    /// while none was known yet - once per connection, with what it did find.</summary>
+    public event Action<string>? SessionInfoIncomplete;
     /// <summary>Watched variables this iRacing build does not publish, once per connection.</summary>
     public event Action<IReadOnlyList<string>>? MissingVariables;
 
@@ -79,6 +85,11 @@ public sealed class IracingFrameProcessor
 
             _parser ??= new IracingMemoryParser(reader);
             var parsed = _parser.Parse(TelemetryTick.VariableNames);
+            if (!parsed.IsConnected)
+            {
+                SetConnected(false);
+                return FrameOutcome.NotConnected;
+            }
             _consecutiveMalformed = 0;
             _lastRejection = null;
 
@@ -96,19 +107,12 @@ public sealed class IracingFrameProcessor
                 if (missing.Count > 0) MissingVariables?.Invoke(missing);
             }
 
-            if (parsed.SessionInfoUpdate != _lastSessionUpdate && parsed.SessionInfoBytes is not null)
+            // Named sessions are re-read only when iRacing bumps the update
+            // counter; one still unnamed is retried once a second of sim time.
+            if (parsed.SessionInfoUpdate != _sessionReadUpdate
+                || (!_sessionNamed && parsed.TickCount - _sessionReadTick >= parsed.TickRate))
             {
-                var yaml = SessionInfoParser.Decode(parsed.SessionInfoBytes);
-                var playerIdx = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
-                if (SessionInfoParser.Parse(yaml, playerIdx) is { } combo)
-                {
-                    _lastSessionUpdate = parsed.SessionInfoUpdate;
-                    if (!Equals(combo, _detector.Combo))
-                    {
-                        _detector.Combo = combo;
-                        ComboChanged?.Invoke(combo);
-                    }
-                }
+                ReadSessionInfo(parsed);
             }
 
             if (parsed.TickCount != _lastTick)
@@ -140,6 +144,30 @@ public sealed class IracingFrameProcessor
         }
     }
 
+    private void ReadSessionInfo(ParsedMemorySnapshot parsed)
+    {
+        var bytes = _parser!.ReadSessionInfo();
+        _sessionReadUpdate = parsed.SessionInfoUpdate;
+        _sessionReadTick = parsed.TickCount;
+        var yaml = bytes is null ? "" : SessionInfoParser.Decode(bytes);
+        var playerIdx = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
+        var combo = SessionInfoParser.Parse(yaml, playerIdx);
+        _sessionNamed = combo is not null;
+        if (combo is null)
+        {
+            if (_detector.Combo is null && !_reportedIncomplete)
+            {
+                _reportedIncomplete = true;
+                SessionInfoIncomplete?.Invoke(SessionInfoParser.DescribeFound(yaml, playerIdx));
+            }
+        }
+        else if (!Equals(combo, _detector.Combo))
+        {
+            _detector.Combo = combo;
+            ComboChanged?.Invoke(combo);
+        }
+    }
+
     /// <summary>The map went away (iRacing closed).</summary>
     public void Detach()
     {
@@ -163,7 +191,9 @@ public sealed class IracingFrameProcessor
             _detector.Reset();
             _detector.Combo = null;
             _lastTick = int.MinValue;
-            _lastSessionUpdate = int.MinValue;
+            _sessionReadUpdate = int.MinValue;
+            _sessionNamed = false;
+            _reportedIncomplete = false;
             _reportedMissing = false;
             _reportedAttached = false;
         }

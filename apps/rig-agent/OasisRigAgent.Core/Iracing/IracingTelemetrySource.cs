@@ -51,6 +51,7 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
         _frames.Attached += header => Attached?.Invoke(header);
         _frames.HeaderRejected += (header, reason) => HeaderRejected?.Invoke(header, reason);
         _frames.ComboChanged += combo => ComboChanged?.Invoke(combo);
+        _frames.SessionInfoIncomplete += found => SessionInfoIncomplete?.Invoke(found);
         _frames.MissingVariables += names => MissingVariables?.Invoke(names);
     }
 
@@ -65,6 +66,8 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
     public event Action<RawHeader?, string>? HeaderRejected;
     /// <summary>Session info was (re)read and named a different track and car.</summary>
     public event Action<SessionCombo>? ComboChanged;
+    /// <summary>Session info named no track and car yet; once per connection, with what it did find.</summary>
+    public event Action<string>? SessionInfoIncomplete;
     /// <summary>Every lap boundary, posted or skipped, with the reason.</summary>
     public event Action<LapDecision>? LapDecided;
     /// <summary>Watched variables this iRacing build does not publish, once per connection.</summary>

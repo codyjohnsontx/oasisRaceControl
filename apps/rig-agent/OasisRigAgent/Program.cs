@@ -156,6 +156,7 @@ static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
     source.Attached += header => Log($"iRacing header: {header}");
     source.HeaderRejected += (header, reason) => Log($"iRacing shared memory not ready: {reason} (header: {header?.ToString() ?? "unreadable"}) - retrying every second");
     source.ComboChanged += combo => Log($"session: {Describe(combo)}");
+    source.SessionInfoIncomplete += found => Log($"session info does not name a track and car yet (found: {found})");
     source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected");
     source.LapDecided += d => Log(d.Lap is { } lap
         ? $"lap {d.LapCompleted} {FormatLap(lap.LapTimeMs)} incidents={(lap.IncidentDelta?.ToString() ?? "n/a")} queued as track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
@@ -202,6 +203,12 @@ static int Diagnose()
         Console.WriteLine($"           insert into featured_combos (combo_date, track_name, track_config, car_name, incident_limit)");
         Console.WriteLine($"           values (venue_today(), {Sql(combo.TrackDisplayName)}, {Sql(combo.TrackConfigName)}, {Sql(combo.CarScreenName)}, 0)");
         Console.WriteLine("           on conflict (combo_date) do update set track_name = excluded.track_name, track_config = excluded.track_config, car_name = excluded.car_name, incident_limit = excluded.incident_limit;");
+    };
+    source.SessionInfoIncomplete += found =>
+    {
+        Console.WriteLine($"[{Now()}] session info read but it does not name a track and car yet (still loading?)");
+        Console.WriteLine($"           found: {found}");
+        Console.WriteLine("           (if SESSION never follows once you are in the car, send these lines)");
     };
     source.MissingVariables += names =>
         Console.WriteLine($"[{Now()}] WARNING this iRacing build does not publish: {string.Join(", ", names)}");

@@ -35,8 +35,13 @@ public static class SessionInfoParser
 {
     private static readonly Regex KeyValue = new(@"^\s*(-\s*)?([A-Za-z0-9_]+):\s*(.*?)\s*$", RegexOptions.Compiled);
 
-    public static string Decode(byte[] bytes)
+    /// <summary>The session string up to its NUL terminator; the region after it
+    /// is padding or the tail of an older, longer document.</summary>
+    public static string Decode(ReadOnlySpan<byte> bytes)
     {
+        var end = bytes.IndexOf((byte)0);
+        if (end >= 0) bytes = bytes[..end];
+
         // iRacing writes the session string in the sim's own encoding, which is
         // UTF-8 for current builds and Latin-1 for some older ones. Try strict
         // UTF-8 first and fall back rather than mangle an accented track name.
@@ -55,6 +60,15 @@ public static class SessionInfoParser
     /// <paramref name="telemetryPlayerCarIdx"/> is used when `DriverInfo.DriverCarIdx`
     /// is absent.</summary>
     public static SessionCombo? Parse(string yaml, int? telemetryPlayerCarIdx = null)
+        => Scan(yaml, telemetryPlayerCarIdx).Combo;
+
+    /// <summary>What the scanner did find, for a document <see cref="Parse"/> could
+    /// not name a combo from - so a real session string this scanner does not
+    /// match shows where it fell short.</summary>
+    public static string DescribeFound(string yaml, int? telemetryPlayerCarIdx = null)
+        => Scan(yaml, telemetryPlayerCarIdx).Found;
+
+    private static (SessionCombo? Combo, string Found) Scan(string yaml, int? telemetryPlayerCarIdx)
     {
         string? trackDisplayName = null, trackConfigName = null, trackName = null;
         int? trackId = null, driverCarIdx = null;
@@ -106,18 +120,24 @@ public static class SessionInfoParser
         }
 
         var playerIdx = driverCarIdx ?? telemetryPlayerCarIdx;
-        if (string.IsNullOrWhiteSpace(trackDisplayName) || playerIdx is null) return null;
-        if (!cars.TryGetValue(playerIdx.Value, out var car) || string.IsNullOrWhiteSpace(car.ScreenName)) return null;
+        var hasCar = cars.TryGetValue(playerIdx ?? -1, out var car);
+        var found = $"TrackDisplayName={Quote(trackDisplayName)} TrackConfigName={Quote(trackConfigName)} "
+                  + $"DriverCarIdx={driverCarIdx?.ToString() ?? "none"} telemetry PlayerCarIdx={telemetryPlayerCarIdx?.ToString() ?? "none"} "
+                  + $"drivers listed={cars.Count} player's CarScreenName={(hasCar ? Quote(car.ScreenName) : "no entry")}";
+        if (string.IsNullOrWhiteSpace(trackDisplayName) || playerIdx is null) return (null, found);
+        if (!hasCar || string.IsNullOrWhiteSpace(car.ScreenName)) return (null, found);
 
-        return new SessionCombo(
+        return (new SessionCombo(
             trackDisplayName,
             string.IsNullOrWhiteSpace(trackConfigName) ? null : trackConfigName,
             car.ScreenName,
             playerIdx.Value,
             trackName,
             trackId,
-            car.CarId);
+            car.CarId), found);
     }
+
+    private static string Quote(string? value) => value is null ? "none" : $"\"{value}\"";
 
     private static string Unquote(string value)
     {
