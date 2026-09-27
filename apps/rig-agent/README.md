@@ -349,7 +349,10 @@ and the takeover confirmed - the same requests the phone pages send, so it
 runs against the deployed app as it is. The next lap is stamped with the new
 stint at once. Logging out goes through the agent's existing
 switch-driver (durable: a sign-out the backend cannot be told about now is
-delivered later, and until then this rig's laps carry no owner).
+delivered later, and until then this rig's laps carry no owner). A sign-in
+delivers any such sign-out first and waits for the backend to take it, so the
+same driver signing straight back in gets a fresh stint rather than the one
+being closed.
 
 Closing the program signs the driver out too, by every way it can close:
 Ctrl+C, the window's close button, a Windows shutdown, or its input ending.

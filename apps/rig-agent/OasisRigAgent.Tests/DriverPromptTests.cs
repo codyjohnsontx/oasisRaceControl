@@ -57,17 +57,26 @@ public sealed class DriverPromptTests : IDisposable
     }
 
     /// <summary>The deployed routes this flow reaches: Mike's PIN is 4321, so
-    /// any other PIN fails login and then finds the name taken.</summary>
+    /// any other PIN fails login and then finds the name taken. A check-in
+    /// while Mike's stint is still open answers with that same stint, as
+    /// check_in_driver does; otherwise it opens a new one.</summary>
     private sealed class Backend : HttpMessageHandler
     {
         public readonly List<string?> Checkouts = new();
+        public readonly List<string> Calls = new();
+        public volatile bool CheckoutUnreachable;
+        public int AssignmentPolls;
         private volatile string? _open;
+        private int _stints;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/agent/checkout" && CheckoutUnreachable) throw new HttpRequestException("venue wifi is down");
+            if (path == "/api/agent/assignment") Interlocked.Increment(ref AssignmentPolls);
             var text = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
             var body = string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
-            var (status, answer) = request.RequestUri!.AbsolutePath switch
+            var (status, answer) = path switch
             {
                 "/api/auth/login" when body?["pin"]?.GetValue<string>() == "4321" =>
                     (HttpStatusCode.OK, """{"driverId":"d-mike","displayName":"Mike"}"""),
@@ -80,6 +89,7 @@ public sealed class DriverPromptTests : IDisposable
                     : """{"assignment":{"id":""" + $"\"{_open}\"" + ""","startedAt":"2026-09-27T17:00:00.000Z","driver":{"id":"d-mike","displayName":"Mike"}}}"""),
                 _ => (HttpStatusCode.OK, Accept(body)),
             };
+            lock (Calls) Calls.Add($"{path} {answer}");
             return new HttpResponseMessage(status) { Content = new StringContent(answer, Encoding.UTF8, "application/json") };
         }
 
@@ -102,8 +112,10 @@ public sealed class DriverPromptTests : IDisposable
 
         private (HttpStatusCode, string) CheckIn()
         {
-            _open = MikeAssignmentId;
-            return (HttpStatusCode.OK, $$"""{"status":"checked_in","assignmentId":"{{MikeAssignmentId}}"}""");
+            if (_open is { } open)
+                return (HttpStatusCode.OK, $$"""{"status":"already_checked_in","assignmentId":"{{open}}"}""");
+            _open = Interlocked.Increment(ref _stints) == 1 ? MikeAssignmentId : Guid.NewGuid().ToString();
+            return (HttpStatusCode.OK, $$"""{"status":"checked_in","assignmentId":"{{_open}}"}""");
         }
 
         private (HttpStatusCode, string) Checkout(string? assignmentId)
@@ -232,6 +244,73 @@ public sealed class DriverPromptTests : IDisposable
         var postedAt = t.FindIndex(l => l.EndsWith("Lap 2  2:17.217  incidents 0 - posted"));
         Assert.True(queuedAt >= 0 && postedAt > queuedAt, string.Join(" | ", t));
         Assert.DoesNotContain(t, l => l.StartsWith("WARNING: iRacing"));
+    }
+
+    /// <summary>Mike logs out while the backend cannot be told, then signs
+    /// straight back in once it can, before any poll has delivered that
+    /// sign-out. The sign-out lands first, so he gets a fresh stint and keeps
+    /// it: the next poll does not end it under him and his laps still count.</summary>
+    [Fact]
+    public async Task SigningBackInWhileALogOutIsOwedGetsAFreshStintThatThePollKeeps()
+    {
+        var backend = new Backend();
+        var telemetry = new HandTelemetry();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, telemetry);
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
+
+        RecordingConsole screen = null!;
+        var presses = 0;
+        string? seatedAfterPoll = null;
+        screen = new RecordingConsole("Mike", "4321", "", "Mike", "4321", "")
+        {
+            BeforeTyping = async line =>
+            {
+                if (line == "Mike" && presses == 1) backend.CheckoutUnreachable = false;
+                if (line != "") return;
+                if (++presses == 1)
+                {
+                    backend.CheckoutUnreachable = true;
+                    return;
+                }
+                var polls = Volatile.Read(ref backend.AssignmentPolls);
+                var deadline = DateTime.UtcNow.AddSeconds(20);
+                while (Volatile.Read(ref backend.AssignmentPolls) == polls)
+                {
+                    if (DateTime.UtcNow > deadline) throw new TimeoutException("no assignment poll");
+                    await Task.Delay(50);
+                }
+                await Task.Delay(300);
+                seatedAfterPoll = agent.CurrentStatus().Assignment?.Id;
+                telemetry.Emit("evt-mike-again", lapNumber: 5);
+                while (!screen.Transcript.Any(l => l.Contains("Lap 5")))
+                {
+                    if (DateTime.UtcNow > deadline) throw new TimeoutException("lap 5 was never shown");
+                    await Task.Delay(50);
+                }
+            },
+        };
+
+        await DriverPrompt.RunAsync(agent, checkIn, 1, screen, CancellationToken.None);
+
+        var t = screen.Transcript;
+        Assert.Contains("Thanks Mike, logged out here; the backend will be told when the connection returns.", t);
+
+        List<string> calls;
+        lock (backend.Calls) calls = backend.Calls.ToList();
+        var checkIns = calls.Where(c => c.StartsWith("/api/checkin ")).ToList();
+        Assert.Equal(2, checkIns.Count);
+        Assert.Contains("\"checked_in\"", checkIns[1]);
+        var owedDelivered = calls.IndexOf($"/api/agent/checkout {{\"ended\":true}}");
+        Assert.True(owedDelivered >= 0 && owedDelivered < calls.IndexOf(checkIns[1]), string.Join(" | ", calls));
+
+        Assert.NotNull(seatedAfterPoll);
+        Assert.NotEqual(MikeAssignmentId, seatedAfterPoll);
+        Assert.Contains(t, l => l.EndsWith("Lap 5  2:17.217  incidents 0 - queued"));
+        Assert.DoesNotContain(t, l => l.Contains("Lap 5") && l.Contains("not counted"));
     }
 
     public void Dispose()

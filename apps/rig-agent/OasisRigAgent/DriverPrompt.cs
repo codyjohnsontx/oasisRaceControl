@@ -126,6 +126,12 @@ internal static class DriverPrompt
             screen.Clear();
             screen.WriteLine($"Signing in {name}...");
 
+            if (!await agent.SettlePendingCheckoutAsync())
+            {
+                notice = "Could not reach the backend to finish the last log-out. Check the network and try again.";
+                continue;
+            }
+
             DriverCheckIn session;
             try
             {

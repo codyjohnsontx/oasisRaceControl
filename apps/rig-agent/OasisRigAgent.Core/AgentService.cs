@@ -309,7 +309,7 @@ public sealed class AgentService : IAsyncDisposable
 
         // The backend is reachable, so this is the moment a checkout the driver
         // pressed during an outage can finally be delivered.
-        await SettlePendingCheckout();
+        await SettlePendingCheckoutAsync();
     }
 
     /// <summary>Deliver a checkout the backend could not be told about when the
@@ -320,14 +320,20 @@ public sealed class AgentService : IAsyncDisposable
     /// driver, or staff may have cleared the rig, or that driver's own check-in
     /// may have taken the stint over - in every one of those cases the backend
     /// finds nothing to close, answers false, and this stops asking. Only a
-    /// backend that could not be reached at all leaves it queued.</summary>
-    private async Task SettlePendingCheckout()
+    /// backend that could not be reached at all leaves it queued.
+    ///
+    /// Walk-up mode runs it before every check-in: the backend answers a
+    /// check-in on a stint still open for the same driver with that same
+    /// stint, and seating one this rig still owes a sign-out for would have
+    /// the next poll end it under the driver. True once nothing is owed.</summary>
+    public async Task<bool> SettlePendingCheckoutAsync()
     {
         var pending = _pendingCheckout;
-        if (pending is null) return;
+        if (pending is null) return true;
 
         var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(pending, ct)));
         if (result.Ok) ClearPendingCheckout(pending);
+        return result.Ok;
     }
 
     /// <summary>Forget a checkout the backend has now accounted for. Scoped to
