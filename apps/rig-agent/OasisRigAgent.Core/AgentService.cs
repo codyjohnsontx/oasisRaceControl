@@ -1,9 +1,10 @@
 namespace OasisRigAgent.Core;
 
 /// <summary>
-/// Orchestrates the rig agent: queues detected laps, and runs the three
-/// background loops — heartbeat, assignment poll, and queue flush. Exposes a
-/// single StatusChanged event the UI renders. All backend calls funnel through
+/// Orchestrates the rig agent: queues detected laps, and runs the background
+/// loops - heartbeat, assignment poll, queue flush, and the sim-state check.
+/// Exposes a StatusChanged event the UI renders, and a Notice event for
+/// one-line problems the host prints. All backend calls funnel through
 /// RunBackend so one place owns the online/offline state transition.
 /// </summary>
 public sealed class AgentService : IAsyncDisposable
