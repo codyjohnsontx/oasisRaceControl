@@ -74,18 +74,35 @@ const TRACK_BOARD = defineTvBoard<TrackSpec, BoardRow[]>({
   },
 });
 
-/** Both feeds rank a driver's fastest lap in a car, so both map the same way. */
+/**
+ * Both feeds rank a driver's fastest lap in a car, so both map the same way.
+ * Only the tonight feed says how many incidents the shown lap had; a lap with
+ * any is marked. A count the feed does not carry, or does not know (null), is
+ * not marked.
+ */
 const toEntry = (row: {
   driver_id: string;
   display_name: string;
   lap_time_ms: number;
   car_name: string;
+  incident_delta?: number | null;
 }): ArcadeEntry => ({
   id: row.driver_id,
   name: row.display_name,
   detail: row.car_name,
   timeMs: row.lap_time_ms,
+  asterisk: hadOffTrack(row),
 });
+
+/**
+ * The asterisk on a time. Any iRacing incident counts, not only an off-track,
+ * and there is no legend on screen - the owner wanted the mark alone. Only
+ * valid laps reach the feed, and validity is judged once at ingestion against
+ * the featured combo's `incident_limit` of that moment, so this is true only
+ * for a lap whose combo admitted incidents when it arrived - the staff panel
+ * writes 0 by default, so on an ordinary day nothing is marked.
+ */
+const hadOffTrack = (row: { incident_delta?: number | null }) => (row.incident_delta ?? 0) > 0;
 
 /** Counted by `listBoards()` over the whole board, not by the rows on screen -
  *  the board feed is capped at a page of rows and would freeze the number there. */
@@ -107,6 +124,8 @@ type TonightRow = {
   display_name: string;
   lap_time_ms: number;
   car_name: string;
+  /** Incidents on this exact lap; null when the rig did not report a count. */
+  incident_delta: number | null;
 };
 
 type TonightData = {

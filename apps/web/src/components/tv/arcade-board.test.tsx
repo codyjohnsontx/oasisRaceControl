@@ -19,6 +19,7 @@ const entries = (n: number): ArcadeEntry[] =>
   }));
 
 const rowsIn = (html: string) => (html.match(/<li /g) ?? []).length;
+const asterisksIn = (html: string) => (html.match(/data-tv-asterisk/g) ?? []).length;
 const openSlotsIn = (html: string) => (html.match(/· · · · ·/g) ?? []).length;
 
 describe("ArcadeHighScores layouts", () => {
@@ -43,5 +44,20 @@ describe("ArcadeHighScores layouts", () => {
     // Before it is measured against a screen the list is drawn once, unmoving.
     expect(html).not.toContain("tv-auto-scroll\"");
     expect(html).toContain("data-tv-auto-scroll");
+  });
+
+  it("an entry asking for an asterisk gets one after its score, and only that entry", () => {
+    const [clean, marked, unset] = entries(3);
+    const html = renderToStaticMarkup(
+      <ArcadeHighScores
+        eyebrow="e"
+        title="t"
+        entries={[clean, { ...marked, asterisk: true }, { ...unset, asterisk: false }]}
+      />,
+    );
+    expect(asterisksIn(html)).toBe(1);
+    // It follows the marked driver's time, not the clean one before it.
+    expect(html.indexOf("data-tv-asterisk")).toBeGreaterThan(html.indexOf("Driver 2"));
+    expect(html.indexOf("data-tv-asterisk")).toBeLessThan(html.indexOf("Driver 3"));
   });
 });

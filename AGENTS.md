@@ -54,6 +54,46 @@ condition holds. The league board does exactly that while tonight's round is
 open. Bound any such condition by the venue day - nothing closes a round by
 itself, and an unbounded takeover owns the wall until someone notices.
 
+The event view is also the one `/tv` surface that reacts to input: its list is
+a real scroll container the whole time, and the first touch, press or wheel
+converts the animation's current offset into a native scroll position on a
+single copy of the list (`auto-scroll.tsx`), resuming from the leader's hold
+after `IDLE_RESUME_MS` untouched. The frame allows only vertical panning and
+`main` disallows every other touch gesture; the app-wide Screens button lives
+in the root layout, outside `main`, which is why that does not reach it.
+A mouse or pen press-and-drag scrolls it too (`drag-scroll.ts`), because the
+event laptop is a Mac, where an external touch display reports a finger as a
+mouse and nothing pans natively; real touch stays with the browser.
+Verify any change to it with a real gesture, not a synthetic event: `npm run
+tv:scroll-check` against a production build drives a CDP touch swipe, the
+wheel, a mouse drag and a click, and waits out the idle resume after each;
+the same CDP gesture is what proved that a live refresh leaves a held list
+where it is.
+
+The footer's host slot belongs to the event, not the engine. `&host=<name>` on the event
+view draws a bundled host lockup - the host's mark and, when it has one, its
+wordmark as an image in the host's own lettering - where the rotation names
+its board (`apps/web/src/lib/tv-host-logo.ts` is the allowlist; every file
+under `public/host-logos/` must be the host's own official artwork, unaltered,
+with its source URL recorded beside the entry, and tinted for the dark board
+in CSS). Cadillac's is the crest plus its current all-caps wordmark: the owner
+first asked for the cursive script signature, which no official Cadillac or GM
+site serves, and chose the caps wordmark instead.
+
+The tonight board marks a lap that had an incident with an asterisk
+after its time and nothing else: the owner asked for the mark alone, and had
+the footer legend that first shipped with it removed, so do not add one back.
+The incident count behind it is read off `laps` in the tonight feed's own
+query, not from `v_fastest_tonight`, so the view is not redefined for a
+display detail. Only valid laps rank, and validity is decided once, at
+ingestion, against the featured combo's `incident_limit` at that moment
+(`computeValidity`, stored in `laps.is_valid`): an incident lap is marked on
+the board only if the limit admitted it when it arrived, and changing the
+limit afterwards neither ranks nor unmarks laps already stored. The staff
+panel writes 0 by default, so on an ordinary day nothing is marked. The mark
+counts any iRacing incident, not only off-tracks - the owner accepted that on
+2026-09-27, when the event's combo was raised to 999 mid-event.
+
 ## Verifying `/tv` failure behaviour needs a production build
 
 Test feed outages against `npm run build && npm run start` (from `apps/web`; there

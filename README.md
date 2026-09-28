@@ -13,7 +13,7 @@ The Wednesday in-house league. Staff open a round from `/staff` against one trac
 - `/league` — season standings across every round, with each driver's per-round breakdown and a strip of rounds to tap into. Open rounds are included, so the board moves while the night is running.
 - `/league/[roundId]` — one round's full field ranked by fastest valid lap; tap a driver to expand all of their laps. Phone-first, this is the post-race comparison.
 - `/tv` — the front-of-store TV carries a league standings board in its rotation, and while a round is open that board takes the screen over: league night owns the wall, the arcade boards have it the rest of the week. Nobody has to take the kiosk off rotation.
-- `/tv?event=1` - the event view for a laptop at an off-site event: one leaderboard of every driver with a lap today in the featured combo, scrolling through itself, with no rotation to other boards. `/tv` itself is unchanged.
+- `/tv?event=1` - the event view for a laptop at an off-site event: one leaderboard of every driver with a lap today in the featured combo, scrolling through itself, with no rotation to other boards. `/tv` itself is unchanged. It can be scrolled by hand on a touch screen, with a wheel, or by dragging it with the mouse (what a touch display on a Mac sends), and goes back to scrolling itself after twenty seconds untouched. `&host=cadillac` puts the event host's logo lockup, crest and wordmark, in the footer (`apps/web/src/lib/tv-host-logo.ts`). On both it and the wall's Fastest tonight board, a time with an asterisk is a lap that had an incident (any iRacing incident); there is no legend, by the owner's choice. Only valid laps rank, and validity is judged once, when the lap arrives, against the featured combo's `incident_limit` at that moment (`computeValidity`), so an incident lap is on the board only if the limit admitted it then; changing the limit later neither ranks nor removes laps already stored. `/staff` writes 0.
 - `/staff` — open a round against a combo, close it when the night is over, and at the turn of the month end the season and start the next one (named for the month, in one step, refused while a round is still open).
 
 **Opening a round also sets that day's featured combo to the round's combo**, because lap validity is judged against the featured combo when a lap is ingested; closing the round puts the previous combo back. Laps already logged keep the validity they were given.
@@ -132,6 +132,15 @@ the footer - then waits for the rotation to move and checks the next board too.
 `--viewport 1272x601` is the venue wall and the default; pass a laptop size to
 see what an off-site screen shows, and `--url http://localhost:3000/tv?event=1`
 to check the event view (one board, so it does not wait for a second).
+
+`npm run tv:scroll-check` does the same kind of thing for the event view's
+hand scrolling: against `/tv?event=1` it swipes the list with a finger, turns
+the wheel over it, drags it with the mouse (what a touch display on a Mac
+sends) and clicks it, and fails unless each takes the list over, moves it the
+right way (a click moves nothing), and gives it back to the automatic scroll
+twenty seconds after the last interaction - not while a mouse button is still
+held on it. The featured combo needs enough laps today for the list to
+overflow the screen. It takes a little over two minutes.
 
 `npm run leaderboards:check` does the same for the page that code opens: it
 loads `/leaderboards` at 390x844 (`--viewport` for another phone) with long

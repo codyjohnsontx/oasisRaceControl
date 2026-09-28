@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
+import { SLOT_COUNT } from "./arcade-board";
 
 /**
  * The two rotation lists. The event view is one slide - the tonight board
@@ -37,5 +39,51 @@ describe("buildRotation", () => {
         expect(TV_BOARD_TYPES[slide.kind]?.kind).toBe(slide.kind);
       }
     }
+  });
+});
+
+/**
+ * The off-track mark. The tonight feed says how many incidents each shown lap
+ * had; a lap with any gets an asterisk after its time, and nothing else on the
+ * board explains it - the owner wanted the mark alone, no legend.
+ */
+const tonight = TV_BOARD_TYPES.tonight;
+const combo = { track_name: "Spa-Francorchamps", track_config: "Grand Prix Pits", car_name: "Porsche 911 GT3 R" };
+const row = (n: number, incident_delta: number | null) => ({
+  driver_id: `d${n}`,
+  display_name: `Driver ${n}`,
+  lap_time_ms: 130_000 + n * 500,
+  car_name: combo.car_name,
+  incident_delta,
+});
+const asterisksIn = (html: string) => (html.match(/data-tv-asterisk/g) ?? []).length;
+
+describe("tonight board off-track mark", () => {
+  it("marks the lap with an incident, not a clean lap or one with no count", () => {
+    const data = { rows: [row(1, 0), row(2, 2), row(3, null)], combo };
+    const html = renderToStaticMarkup(
+      <tonight.Board spec={{ everyone: true }} data={data} stale={false} hold={() => {}} />,
+    );
+    expect(asterisksIn(html)).toBe(1);
+    const mark = html.indexOf("data-tv-asterisk");
+    expect(mark).toBeGreaterThan(html.indexOf("Driver 2"));
+    expect(mark).toBeLessThan(html.indexOf("Driver 3"));
+  });
+
+  it("marks on the wall's ten slots too, and draws no legend for it", () => {
+    // An incident lap below the rotation's cut is not on screen there; in the
+    // event view, which shows everyone, it is.
+    const rows = Array.from({ length: SLOT_COUNT + 1 }, (_, i) => row(i + 1, i === SLOT_COUNT ? 3 : 0));
+    const slots = renderToStaticMarkup(
+      <tonight.Board spec={{ everyone: false }} data={{ rows, combo }} stale={false} hold={() => {}} />,
+    );
+    expect(asterisksIn(slots)).toBe(0);
+    const everyone = renderToStaticMarkup(
+      <tonight.Board spec={{ everyone: true }} data={{ rows, combo }} stale={false} hold={() => {}} />,
+    );
+    expect(asterisksIn(everyone)).toBe(1);
+    // No visible legend for the mark, on either layout.
+    expect(everyone).not.toContain("* lap");
+    expect(slots).not.toContain("* lap");
   });
 });
