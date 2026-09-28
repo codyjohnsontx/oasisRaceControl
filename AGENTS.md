@@ -280,7 +280,9 @@ served commit, not only main. In this mode the agent stamps laps only with a
 stint its own check-in created in this process (`AgentService`), and every
 start ends whatever is open on the rig before the name prompt; do not let the
 poll adopt a stint again, or a restart credits the departed driver. Every
-exit path in `Program.cs` runs the durable switch-driver and waits for it. The
+exit path in `Program.cs` signs out the seated driver durably and waits for
+it, and sends nothing when nobody is seated (`SignOutSeatedDriverAsync`) - an
+unnamed checkout would close whatever stint is open on the rig. The
 loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
 test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
 `OASIS_TEST_BACKEND_URL`).

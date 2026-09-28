@@ -143,9 +143,13 @@ vars, which override the file):
   it reads without posting and prints the exact track, layout and car strings
   iRacing uses, which the featured combo must match character for character
   (`apps/rig-agent/README.md`, iRacing telemetry).
-- The agent must run as the Windows user that runs iRacing (the shared-memory
-  map is per session). Auto-start on login via Windows Task Scheduler is the
-  simplest option; a Windows Service is sturdier if you want it.
+- The agent must run in the interactive desktop session of the Windows user
+  who runs iRacing: the shared-memory map it reads is session-scoped
+  (`Local\`), and in walk-up mode the driver signs in at its console window.
+  Auto-start it with a Task Scheduler task triggered at that user's logon and
+  set to "Run only when user is logged on". Do not install it as a Windows
+  Service: a service runs in session 0, where it can neither see iRacing's map
+  nor show the sign-in prompt to anyone.
 
 If a rig cannot read the sim, staff can post a driver's lap by hand from any
 machine with the rig's token: `npx tsx scripts/manual-lap.ts --token <rig token>

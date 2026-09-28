@@ -29,7 +29,7 @@ This plan follows a completed product-discovery round with the owner. It covers 
 
 ## Flagged risks & open items
 
-1. **Venue-computer safety (blocking all Oasis execution).** The recorder must be demonstrably read-only, non-elevated, dependency-bounded, offline, resource-capped, signed, hash-verified, VM-rehearsed twice, and signed off by the project owner. Unknowns and warnings block execution; they are not waived at the venue. See `docs/venue-safety.md`.
+1. **Venue-computer safety (blocking a signed venue release; lifted for the owner-approved event build on 2026-09-26).** A signed venue release must be demonstrably read-only, non-elevated, dependency-bounded, offline, resource-capped, signed, hash-verified, VM-rehearsed twice, and signed off by the project owner; unknowns and warnings block that release and are not waived at the venue. The event build the owner approved runs outside this gate. See `docs/venue-safety.md`.
 2. **iRacing telemetry ground truth (blocking schema freeze).** Lap validity is derived, not given: iRacing exposes a running incident count and track-surface state, not a per-lap valid flag. Phase 1B must prove per-lap incident attribution, session identity across restarts, and reset-to-pits behavior **before the schema is final**.
 3. **No account recovery.** Display-name+PIN means forgotten PIN = staff reset. Mitigate: staff PIN-reset tool in MVP, optional email post-MVP.
 4. **Wrong-driver attribution.** No paid-time signal, so auto-checkout is heuristic (idle timeout + takeover flow + agent's iRacing-closed detection). Tune values during the 3-rig pilot; measure staff-corrections-per-night.
@@ -119,9 +119,9 @@ Per-rig bearer tokens (hashed at rest, staff-rotatable); agents can only write t
 
 ## Roadmap
 
-**Phase 0 — off-site venue safety gate (in progress; blocks all Oasis execution).** Replace broad third-party telemetry access with repository-owned read-only shared-memory code; enforce non-elevated execution, no application network capability, fixed run modes, hard duration/output limits, bounded parsing, fixed output paths, and safe failure behavior. Test valid and hostile synthetic shared-memory data. Build a traceable candidate, Authenticode-sign and timestamp it, verify its SHA-256, scan it, run it twice from clean Windows 11 VM snapshots, and require project-owner safety sign-off on the exact artifact and evidence. Deliverable: a completed `SAFETY-REPORT.md` with no warnings, unknowns, or waivers. Optional peer review is encouraged but not blocking. A signed candidate alone is not approved.
+**Phase 0 — off-site venue safety gate (in progress; blocks a signed venue release, not the owner-approved event build).** Replace broad third-party telemetry access with repository-owned read-only shared-memory code; enforce non-elevated execution, no application network capability, fixed run modes, hard duration/output limits, bounded parsing, fixed output paths, and safe failure behavior. Test valid and hostile synthetic shared-memory data. Build a traceable candidate, Authenticode-sign and timestamp it, verify its SHA-256, scan it, run it twice from clean Windows 11 VM snapshots, and require project-owner safety sign-off on the exact artifact and evidence. Deliverable: a completed `SAFETY-REPORT.md` with no warnings, unknowns, or waivers. Optional peer review is encouraged but not blocking. A signed candidate alone is not approved.
 
-**Phase 1A — supervised Oasis canary (blocked by Phase 0).** Run the exact approved artifact from a controlled USB on one idle rig for 5–10 minutes: two minutes before iRacing starts and five minutes connected. Require no UAC/security prompt, configuration change, performance effect, iRacing disruption, unexpected output, child process, or instability. Stop and inspect before authorizing any telemetry scenarios. Any artifact change returns to Phase 0.
+**Phase 1A — supervised Oasis canary of a signed venue release (blocked by Phase 0).** Run the exact approved artifact from a controlled USB on one idle rig for 5–10 minutes: two minutes before iRacing starts and five minutes connected. Require no UAC/security prompt, configuration change, performance effect, iRacing disruption, unexpected output, child process, or instability. Stop and inspect before authorizing any telemetry scenarios. Any artifact change returns to Phase 0.
 
 **Phase 1B — controlled iRacing telemetry spike (blocked by Phase 1A).** Using the same executable and SHA-256, prove iRacing detect/close, session identity + restarts, track/config/car IDs, lap number + time, per-lap incident delta, off-track/surface signals, reset-to-pits, recorder-restart recovery, duplicate handling, and a lap landing right before exit. Deliverable: findings mapping every desired field to a real SDK field or an explicit unavailable verdict. **Schema is not final until this lands.**
 
@@ -145,7 +145,7 @@ oasisRaceControl/
 
 ## Testing strategy
 
-- **Safety gate:** dependency/capability checks; parser fuzz and corrupt-range tests; read-only shared-memory integration; duration/disk/path limits; clean Windows 11 VM behavior; signature/hash/Defender verification; Process Monitor evidence; project-owner artifact sign-off.
+- **Safety gate (signed venue release):** dependency/capability checks; parser fuzz and corrupt-range tests; read-only shared-memory integration; duration/disk/path limits; clean Windows 11 VM behavior; signature/hash/Defender verification; Process Monitor evidence; project-owner artifact sign-off.
 - **Spike checklist** doubles as the integration truth table for the agent.
 - **Agent:** unit tests around the telemetry-parsing/lap-boundary state machine using recorded telemetry fixtures from the spike (so iRacing isn't needed in CI); queue tests (kill process mid-flush, assert no loss/dupes).
 - **API:** integration tests against a local Postgres — idempotency (same event twice), assignment races (two check-ins), validity rules, takeover semantics, staff audit writes.
@@ -160,7 +160,7 @@ oasisRaceControl/
 
 ## Technical risks to prove in the spike (gate for Phase 2)
 
-0. Venue artifact safety — Phase 0 and the supervised canary must pass before telemetry questions are tested on Oasis equipment.
+0. Venue artifact safety — for a signed venue release, Phase 0 and the supervised canary must pass before telemetry questions are tested on Oasis equipment with it. The owner-approved event build is outside this gate.
 1. Per-lap incident attribution (incident-count delta at lap boundaries) — the 0x rule depends on it.
 2. Stable session identity for idempotency keys across agent restarts and session restarts.
 3. Reliable track/config/car identification from session info.
@@ -169,6 +169,6 @@ oasisRaceControl/
 
 ## Verification (end of Phase 2)
 
-Before this verification is permitted, the exact recorder must complete the Phase 0 evidence report, project-owner sign-off, Phase 1A canary, and Phase 1B findings. None of those gates may be replaced by simulated laps.
+For this verification to count toward a signed venue release, the exact recorder must complete the Phase 0 evidence report, project-owner sign-off, Phase 1A canary, and Phase 1B findings; none of those gates may be replaced by simulated laps. Running the owner-approved event build on Oasis computers does not wait on them.
 
 Run the full loop on one rig: check in as a guest from a phone via the printed QR → agent window shows the name within 2s → drive 3 laps in iRacing (one clean, one with an off-track, one reset mid-lap) → phone shows the clean lap valid, the off-track lap invalid (`INCIDENT_LIMIT_EXCEEDED`), the reset lap absent/`INCOMPLETE_LAP` → `/tv` shows the driver on Fastest Tonight → pull the ethernet, drive 2 laps, replug → both laps appear once with original timestamps → staff invalidates a lap with a reason → it drops off the TV and an audit row exists → idle at the rig past the timeout → assignment closes with `idle_timeout`.
