@@ -154,7 +154,13 @@ internal static class DriverPrompt
             ShowDriving(screen, rigNumber, session);
 
             var done = await screen.ReadLineAsync(quit);
-            var result = await agent.SwitchDriverAsync();
+            // Input ending is the program closing, and a signal handler may
+            // already have run the exit sign-out and emptied the seat; an
+            // unguarded switch here would then send an unnamed checkout and
+            // close whatever stint was opened on the rig since.
+            var result = done is null
+                ? await agent.SignOutSeatedDriverAsync()
+                : await agent.SwitchDriverAsync();
             notice = result switch
             {
                 SwitchDriverResult.Ended or SwitchDriverResult.NoActiveSession => $"Thanks {session.DisplayName}, you are logged out.",
@@ -174,12 +180,14 @@ internal static class DriverPrompt
     /// its durable tombstone before it touches the network, and the checkout
     /// call is then waited for up to three seconds so a backend that does not
     /// answer cannot hold the window open. Whatever does not land is ended by
-    /// the next start's empty seat.</summary>
+    /// the next start's empty seat. Nobody seated - closed from the sign-in
+    /// screen, or after the log-out that input ending already ran - sends
+    /// nothing: there is no stint of this agent's to name.</summary>
     public static async Task SignOutOnExitAsync(AgentService agent)
     {
         try
         {
-            await agent.SwitchDriverAsync().WaitAsync(ExitSignOutLimit);
+            await agent.SignOutSeatedDriverAsync().WaitAsync(ExitSignOutLimit);
         }
         catch (Exception)
         {

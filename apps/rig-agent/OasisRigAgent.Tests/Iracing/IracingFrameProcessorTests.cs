@@ -356,4 +356,123 @@ public sealed class IracingFrameProcessorTests
         Assert.Equal(141250, posted.LapTimeMs);
         Assert.Equal("Porsche 911 GT3 R", posted.CarName);
     }
+
+    [Fact]
+    public void AFrozenTickUnderASetConnectedBitIsNotConnectedAfterTheStallTimeoutUntilItMovesAgain()
+    {
+        // A hung or crashed iRacing leaves the connected bit set and the block readable.
+        var now = 0L;
+        var frames = new IracingFrameProcessor(_detector, () => now);
+        var connection = new List<bool>();
+        frames.ConnectionChanged += connection.Add;
+        var rejected = new List<string>();
+        frames.HeaderRejected += (_, reason) => rejected.Add(reason);
+        _detector.Combo = new SessionCombo("X", null, "Y", 0, null, null, null);
+        var decisions = new List<LapDecision>();
+        _detector.Decided += decisions.Add;
+        var fixture = new MemoryFixture()
+            .AddVariable("LapCompleted", IracingVariableType.Int, 0, 3)
+            .AddVariable("LapLastLapTime", IracingVariableType.Float, 4, 150.0f);
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+
+        var timeout = (long)IracingFrameProcessor.StallTimeout.TotalMilliseconds;
+        now = timeout - 1;
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+        Assert.True(frames.Connected);
+
+        now = timeout;
+        Assert.Equal(FrameOutcome.NotConnected, frames.Process(reader));
+        Assert.False(frames.Connected);
+        now += 5_000;
+        Assert.Equal(FrameOutcome.NotConnected, frames.Process(reader));
+        Assert.Equal(new[] { true, false }, connection);
+        Assert.Contains("has not advanced", Assert.Single(rejected));
+
+        // The sim comes back: the tick moves, and the detector started clean.
+        fixture.WriteInt(48, 101);
+        fixture.WriteInt(MemoryFixture.BufferOffset, 4); // would be +1 without the reset
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+        Assert.Equal(new[] { true, false, true }, connection);
+        Assert.Empty(decisions);
+    }
+
+    [Fact]
+    public void ReturningFromALongSpellOutOfSessionOnTheSameTickIsNotAStall()
+    {
+        var now = 0L;
+        var frames = new IracingFrameProcessor(_detector, () => now);
+        var rejected = new List<string>();
+        frames.HeaderRejected += (_, reason) => rejected.Add(reason);
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+
+        fixture.WriteInt(4, 0); // menus
+        Assert.Equal(FrameOutcome.NotConnected, frames.Process(reader));
+        now += 2 * (long)IracingFrameProcessor.StallTimeout.TotalMilliseconds;
+
+        fixture.WriteInt(4, 1); // back on the frozen tick
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+        Assert.True(frames.Connected);
+        Assert.Empty(rejected);
+    }
+
+    [Fact]
+    public void ATickThatKeepsMovingNeverStalls()
+    {
+        var now = 0L;
+        var frames = new IracingFrameProcessor(_detector, () => now);
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        for (var i = 0; i < 10; i++)
+        {
+            fixture.WriteInt(48, 100 + i);
+            Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+            now += (long)IracingFrameProcessor.StallTimeout.TotalMilliseconds - 1;
+        }
+        Assert.True(frames.Connected);
+    }
+
+    [Fact]
+    public void TheReadLoopReadsOnATimeoutSoAHungSimThatNeverSignalsIsSeenToStall()
+    {
+        // A hung iRacing never sets the data-valid event again: every wait
+        // times out. The stall can only be seen if a timeout still reads.
+        var now = 0L;
+        var frames = new IracingFrameProcessor(_detector, () => now);
+        var connection = new List<bool>();
+        frames.ConnectionChanged += connection.Add;
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        var reader = new CountingReader(new ByteArrayMemoryReader(fixture.Bytes));
+        using var stop = new CancellationTokenSource();
+        var waits = 0;
+        var readsAtStop = -1;
+        var stallAfter = (int)(IracingFrameProcessor.StallTimeout.TotalMilliseconds / 250);
+
+        IracingTelemetrySource.ReadLoop(frames, reader, () =>
+        {
+            now += 250;
+            if (++waits <= stallAfter + 2) return WaitHandle.WaitTimeout;
+            readsAtStop = reader.Reads;
+            stop.Cancel();
+            return 1; // the stop handle
+        }, stop.Token);
+
+        Assert.Equal(new[] { true, false }, connection);
+        Assert.False(frames.Connected);
+        // The stop wake ends the loop without another read.
+        Assert.Equal(readsAtStop, reader.Reads);
+    }
+
+    private sealed class CountingReader(IReadOnlyMemoryReader inner) : IReadOnlyMemoryReader
+    {
+        public int Reads { get; private set; }
+        public long Capacity => inner.Capacity;
+        public void Read(long offset, Span<byte> destination)
+        {
+            Reads++;
+            inner.Read(offset, destination);
+        }
+    }
 }

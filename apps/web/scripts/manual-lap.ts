@@ -12,9 +12,12 @@
  * featured combo exactly as the app at --base holds it, so it is judged
  * against the same strings the wall shows. Refuses when no featured combo is
  * set, and when nobody is checked in on the rig: a lap with no driver would be
- * stored unclaimed and never rank.
+ * stored unclaimed and never rank. Exits non-zero unless the backend reports
+ * the lap stored for that driver (manual-lap-outcome.ts) - HTTP 200 alone is
+ * not that.
  */
 import { randomUUID } from "node:crypto";
+import { manualLapOutcome } from "./manual-lap-outcome";
 
 const arg = (name: string, fallback = ""): string => {
   const i = process.argv.indexOf(`--${name}`);
@@ -82,6 +85,15 @@ async function main() {
     `${res.status} ${assignment.driver.displayName} ${combo.track_name} / ${combo.car_name} ${lapTimeMs} ms -> ${body}`,
   );
   if (!res.ok) process.exit(1);
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    // Reported below as an answer with no result.
+  }
+  const outcome = manualLapOutcome(parsed, assignment.driver.displayName);
+  if (!outcome.ok) throw new Error(outcome.message);
+  console.log(`[manual-lap] ${outcome.message}`);
 }
 
 main().catch((e) => {

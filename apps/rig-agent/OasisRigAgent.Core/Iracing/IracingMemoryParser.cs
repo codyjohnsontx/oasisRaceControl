@@ -39,6 +39,7 @@ public sealed class IracingMemoryParser
 
     private static readonly int[] TypeSizes = [1, 1, 4, 4, 4, 8];
     private readonly IReadOnlyMemoryReader _reader;
+    private byte[] _variableBytes = [];
 
     public IracingMemoryParser(IReadOnlyMemoryReader reader)
     {
@@ -140,15 +141,18 @@ public sealed class IracingMemoryParser
         return bytes;
     }
 
+    /// <summary>The variable table, read in one piece rather than one read per
+    /// header, then parsed and validated from those bytes.</summary>
     private IReadOnlyDictionary<string, TelemetryVariable> ParseVariables(int baseOffset, int count, int bufferLength)
     {
-        var variables = new Dictionary<string, TelemetryVariable>(count, StringComparer.Ordinal);
-        var bytes = new byte[VariableHeaderSize];
+        var length = checked(count * VariableHeaderSize);
+        if (_variableBytes.Length != length) _variableBytes = new byte[length];
+        ReadChecked(baseOffset, _variableBytes);
 
+        var variables = new Dictionary<string, TelemetryVariable>(count, StringComparer.Ordinal);
         for (var index = 0; index < count; index++)
         {
-            var offset = checked(baseOffset + checked(index * VariableHeaderSize));
-            ReadChecked(offset, bytes);
+            var bytes = _variableBytes.AsSpan(index * VariableHeaderSize, VariableHeaderSize);
             var typeNumber = ReadInt(bytes, 0);
             Require(typeNumber is >= 0 and < 6, $"Variable {index} has an unknown type {typeNumber}.");
             var valueOffset = ReadInt(bytes, 4);
@@ -158,7 +162,7 @@ public sealed class IracingMemoryParser
             Require(valueOffset >= 0 && (long)valueOffset + valueSize <= bufferLength,
                 $"Variable {index} points outside its telemetry buffer.");
 
-            var name = ReadFixedString(bytes.AsSpan(16, 32));
+            var name = ReadFixedString(bytes.Slice(16, 32));
             Require(name.Length > 0, $"Variable {index} has an empty name.");
             Require(!variables.ContainsKey(name), $"Variable name '{name}' is duplicated.");
 
@@ -168,8 +172,8 @@ public sealed class IracingMemoryParser
                 elementCount,
                 bytes[12] != 0,
                 name,
-                ReadFixedString(bytes.AsSpan(48, 64)),
-                ReadFixedString(bytes.AsSpan(112, 32))));
+                ReadFixedString(bytes.Slice(48, 64)),
+                ReadFixedString(bytes.Slice(112, 32))));
         }
 
         return variables;

@@ -120,4 +120,27 @@ public sealed class IracingMemoryParserTests
         Assert.Equal(101, parsed.TickCount);
         Assert.Equal(9, parsed.Values["LapCompleted"]);
     }
+
+    [Fact]
+    public void AMappedViewReadsTheSameBlockAsTheByteArrayFixture()
+    {
+        var fixture = new MemoryFixture()
+            .AddVariable("LapCompleted", IracingVariableType.Int, 0, 3)
+            .AddVariable("LapLastLapTime", IracingVariableType.Float, 4, 152.34f)
+            .SetSessionInfo("WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n");
+        using var map = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateNew(null, fixture.Bytes.Length);
+        using (var writer = map.CreateViewAccessor())
+            writer.WriteArray(0, fixture.Bytes, 0, fixture.Bytes.Length);
+        using var view = map.CreateViewAccessor(0, 0, System.IO.MemoryMappedFiles.MemoryMappedFileAccess.Read);
+        var reader = new MappedViewReader(view);
+
+        var parser = new IracingMemoryParser(reader);
+        var parsed = parser.Parse(TelemetryTick.VariableNames);
+
+        Assert.Equal(3, parsed.Values["LapCompleted"]);
+        Assert.Equal(152.34f, parsed.Values["LapLastLapTime"]);
+        Assert.Contains("Circuit of the Americas", SessionInfoParser.Decode(parser.ReadSessionInfo()!));
+        // A read running past the view is refused, not truncated.
+        Assert.Throws<ArgumentException>(() => reader.Read(reader.Capacity - 4, new byte[8]));
+    }
 }

@@ -66,7 +66,9 @@ public sealed class SessionInfoParserTests
     [Fact]
     public void FallsBackToTelemetryCarIdxWhenDriverCarIdxIsMissing()
     {
-        var yaml = Cota.Replace(" DriverCarIdx: 2\n", "");
+        // No line ending in the search: a Windows checkout gives the fixture CRLF.
+        var yaml = Cota.Replace(" DriverCarIdx: 2", "");
+        Assert.DoesNotContain("DriverCarIdx", yaml);
         Assert.Equal("Porsche 911 GT3 R", SessionInfoParser.Parse(yaml, telemetryPlayerCarIdx: 3)!.CarScreenName);
         Assert.Null(SessionInfoParser.Parse(yaml));
     }

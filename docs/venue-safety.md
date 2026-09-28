@@ -2,7 +2,9 @@
 
 Status: **GATE LIFTED BY THE PROJECT OWNER ON 2026-09-26.** The owner's words, deciding that the rig agent runs on Oasis computers for the 2026-09-27 off-site event: "disregard that rule we are past that. We need this to run". Running this project's software on Oasis computers no longer waits on this gate. Everything below stays as recorded guidance - read-only access to iRacing, no elevation, no writes to the sim, bounded resources - and as the checklist for a signed venue release when one is wanted; none of it is deleted, and none of it blocks the event build.
 
-This gate protects equipment that Oasis owns and depends on. A passing build, a valid signature, or confidence in the source is not enough. The exact signed bytes must have complete off-site evidence and project-owner safety sign-off before the supervised canary in `spike-checklist.md`.
+**Two things, kept apart.** The *event build* is the rig agent the owner approved to run on Oasis computers for the 2026-09-27 event; this gate does not apply to it. A *signed venue release* is the artifact this document describes - signed, hashed, VM-rehearsed and signed off - and every requirement, sign-off and "blocks" below is about that artifact only. Where a sentence below says an artifact may not run, or that the gate remains in progress, read it as "may not be called a signed venue release", not as a stop on the event build.
+
+This gate protects equipment that Oasis owns and depends on. For a signed venue release, a passing build, a valid signature, or confidence in the source is not enough: the exact signed bytes must have complete off-site evidence and project-owner safety sign-off before the supervised canary in `spike-checklist.md`.
 
 ## What ran on Oasis computers, and when
 
@@ -31,7 +33,7 @@ The gate does not claim that Windows creates no execution records. Windows may c
 - Fixed generated output names beneath `spike-logs/<UTC run id>/` only.
 - Raw session data is never transmitted and is handled as sensitive.
 
-Stable process exit codes are `0` clean stop, `2` invalid arguments, `3` unsupported platform, `10` elevated execution refused, `11` duplicate instance, `12` output failure, `13` malformed shared memory, `14` log limit, and `15` internal/source failure. A nonzero code never authorizes retrying or changing the venue computer; return to off-site diagnosis.
+Stable process exit codes are `0` clean stop, `2` invalid arguments, `3` unsupported platform, `10` elevated execution refused, `11` duplicate instance, `12` output failure, `13` malformed shared memory, `14` log limit, and `15` internal/source failure. For a signed venue release candidate, a nonzero code never authorizes retrying or changing the venue computer; return to off-site diagnosis.
 
 The self-contained executable includes Microsoft's .NET runtime. That runtime can contain unused framework implementations and import names—including networking or window-message support—even though the OasisSpike application assembly has no reference to or call path for them. Therefore a raw string/import search of the bundled runtime is not accepted as proof by itself: CI checks the application source/assembly boundary, and both VM rehearsals must independently demonstrate that `OasisSpike.exe` owns no network connection, child process, or control-message behavior.
 
@@ -98,7 +100,7 @@ Repository code cannot create or truthfully complete these controls:
 
 The automated portion of a rehearsal can be started with `spike/scripts/Invoke-VmRehearsal.ps1`, passing the signed-candidate directory, expected hash, expected Azure Trusted Signing subject from the release evidence, and the separately downloaded test-only synthetic publisher. The publisher must remain outside the signed venue package. Process Monitor, SmartScreen, Defender, snapshot-repeat, cleanup, and project-owner sign-off remain manual mandatory checks.
 
-Until all five are done, Phase 0 remains in progress.
+Until all five are done, no artifact is a signed venue release and Phase 0 remains in progress for it; the event build is outside this gate (see the top of this document).
 
 The `venue-release` environment must provide `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_ARTIFACT_SIGNING_ENDPOINT`, `AZURE_ARTIFACT_SIGNING_ACCOUNT`, and `AZURE_ARTIFACT_SIGNING_PROFILE`. Authentication uses GitHub OIDC; do not create or store a client secret or signing private key in the repository. Restrict the environment to `spike-v*` tags.
 
@@ -108,4 +110,4 @@ Raw `sessioninfo-NNN.yaml` may contain account or driver identifiers. Keep the U
 
 ## Phase transition
 
-Phase 0 completes only when every evidence item passes with no warning, unknown, or waiver and the project owner signs off on the exact SHA-256. Phase 1A is then limited to the supervised canary. Any executable-byte change invalidates the VM evidence and sign-off and returns the work to Phase 0.
+This section governs the signed venue release only. Phase 0 completes only when every evidence item passes with no warning, unknown, or waiver and the project owner signs off on the exact SHA-256. Phase 1A is then limited to the supervised canary. Any executable-byte change invalidates the VM evidence and sign-off and returns the work to Phase 0.
