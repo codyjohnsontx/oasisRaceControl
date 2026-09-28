@@ -32,7 +32,7 @@ export async function GET(request: Request) {
       // board spans combos and the car is the only thing telling them apart.
       //
       // incident_delta is the shown lap's own incident count, so the wall can
-      // mark a time that had an off-track. The view does not carry it, and the
+      // mark a time whose lap had an incident. The view does not carry it, and the
       // view is not redefined for a display detail (the hosted database is
       // migrated by hand), so it is read back off `laps` here by the columns
       // that identify the exact lap the view picked: the driver, the time, the

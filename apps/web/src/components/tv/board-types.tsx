@@ -78,7 +78,7 @@ const TRACK_BOARD = defineTvBoard<TrackSpec, BoardRow[]>({
  * Both feeds rank a driver's fastest lap in a car, so both map the same way.
  * Only the tonight feed says how many incidents the shown lap had; a lap with
  * any is marked. A count the feed does not carry, or does not know (null), is
- * not an off-track.
+ * not marked.
  */
 const toEntry = (row: {
   driver_id: string;

@@ -74,7 +74,9 @@ under `public/host-logos/` must be the host's own official artwork, unaltered,
 with its source URL recorded beside the entry, and tinted for the dark board
 in CSS). Cadillac's is the crest plus its current all-caps wordmark: the owner
 first asked for the cursive script signature, which no official Cadillac or GM
-site serves, and chose the caps wordmark instead. The tonight board marks a lap that had an incident with an asterisk
+site serves, and chose the caps wordmark instead.
+
+The tonight board marks a lap that had an incident with an asterisk
 after its time and nothing else: the owner asked for the mark alone, and had
 the footer legend that first shipped with it removed, so do not add one back.
 The incident count behind it is read off `laps` in the tonight feed's own
