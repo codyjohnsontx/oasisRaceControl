@@ -97,6 +97,14 @@ export function AutoScroll({ rowCount, children }: Props) {
   const handover = useRef(0);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touches = useRef(0);
+  /**
+   * The row count the loop was keyed on when the list was taken over. Held
+   * under the same key, so the takeover re-renders the rows rather than
+   * remounting them: the press that takes over lands on a row before its
+   * `touchstart` is dispatched, and a row detached in between takes that touch
+   * and its lift out of the frame, so a finger resting there would go uncounted.
+   */
+  const [heldKey, setHeldKey] = useState(rowCount);
 
   useEffect(() => {
     const frameEl = frame.current;
@@ -152,8 +160,9 @@ export function AutoScroll({ rowCount, children }: Props) {
     const passHeight = (moverEl.firstElementChild as HTMLElement).offsetHeight;
     handover.current =
       offset > passHeight - frameEl.clientHeight / 2 ? Math.max(0, offset - passHeight) : offset;
+    setHeldKey(rowCount);
     setHeld(true);
-  }, [overflows]);
+  }, [overflows, rowCount]);
 
   const onPointerDown = () => {
     takeOver();
@@ -207,9 +216,11 @@ export function AutoScroll({ rowCount, children }: Props) {
       <div
         ref={mover}
         // Keyed on the row count while animating, so a new driver restarts the
-        // loop (see above); on one constant while held, so a new driver then
-        // changes the rows in place and the frame's scroll position stands.
-        key={held ? "held" : rowCount}
+        // loop (see above); on the count it had at the takeover while held, so
+        // taking over keeps the touched rows in the document (see `heldKey`) and
+        // a new driver then changes the rows in place and the frame's scroll
+        // position stands.
+        key={held ? heldKey : rowCount}
         className={animating ? "tv-auto-scroll" : undefined}
         style={{ "--tv-scroll-duration": `${durationMs}ms` } as CSSProperties}
       >
@@ -217,10 +228,11 @@ export function AutoScroll({ rowCount, children }: Props) {
           <div ref={content} className="flow-root">
             {children}
           </div>
-          {animating && <LoopRule />}
+          {overflows && <LoopRule hidden={held} />}
         </div>
-        {animating && (
-          <div aria-hidden="true" className={pass}>
+        {/* Hidden rather than removed while held, for the same reason as `heldKey`: the press may land on this copy. */}
+        {overflows && (
+          <div aria-hidden="true" hidden={held} className={pass}>
             <div className="flow-root">{children}</div>
             <LoopRule />
           </div>
@@ -242,6 +254,6 @@ const PASS_CLASS = "flow-root pt-[var(--tv-scroll-fade)]";
 const HELD_PASS_CLASS = "pb-[var(--tv-scroll-fade)]";
 
 /** Marks where one pass of the list ends and the next begins. */
-function LoopRule() {
-  return <div className="gradient-rule my-[1.25em] h-[0.25em] rounded-full opacity-60" />;
+function LoopRule({ hidden }: { hidden?: boolean }) {
+  return <div hidden={hidden} className="gradient-rule my-[1.25em] h-[0.25em] rounded-full opacity-60" />;
 }
