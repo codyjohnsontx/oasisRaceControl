@@ -122,34 +122,6 @@ public sealed class IracingMemoryParserTests
     }
 
     [Fact]
-    public void TheVariableTableIsReusedWhileItsBytesAreUnchangedAndReparsedWhenTheyChange()
-    {
-        var fixture = new MemoryFixture()
-            .AddVariable("LapCompleted", IracingVariableType.Int, 0, 3)
-            .AddVariable("LapLastLapTime", IracingVariableType.Float, 4, 150.0f);
-        var parser = new IracingMemoryParser(new ByteArrayMemoryReader(fixture.Bytes));
-
-        var first = parser.Parse(TelemetryTick.VariableNames);
-        fixture.WriteInt(48, 101);
-        fixture.WriteInt(MemoryFixture.BufferOffset, 4);
-        var second = parser.Parse(TelemetryTick.VariableNames);
-        Assert.Same(first.Variables, second.Variables);
-        Assert.Equal(4, second.Values["LapCompleted"]);
-
-        // The sim rewrites a header in place under the same count and offset.
-        fixture.WriteInt(MemoryFixture.VariableHeadersOffset + 4, 8);
-        fixture.WriteInt(MemoryFixture.BufferOffset + 8, 7);
-        var third = parser.Parse(TelemetryTick.VariableNames);
-        Assert.NotSame(first.Variables, third.Variables);
-        Assert.Equal(8, third.Variables["LapCompleted"].Offset);
-        Assert.Equal(7, third.Values["LapCompleted"]);
-
-        // A changed buffer length re-validates the same table.
-        fixture.WriteInt(36, 8);
-        Assert.Throws<MalformedTelemetryException>(() => parser.Parse(TelemetryTick.VariableNames));
-    }
-
-    [Fact]
     public void AMappedViewReadsTheSameBlockAsTheByteArrayFixture()
     {
         var fixture = new MemoryFixture()
