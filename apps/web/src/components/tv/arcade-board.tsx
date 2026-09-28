@@ -209,13 +209,17 @@ export function ArcadeHighScores({
               <span className="laptime relative text-right text-[2.5em]/[1.1] font-bold">
                 {scoreText(entry, emptyScore)}
                 {entry.asterisk && (
-                  <span
-                    data-tv-asterisk
-                    className="text-accent absolute top-0 left-full ml-[0.1em]"
-                    aria-label="lap with an incident"
-                  >
-                    *
-                  </span>
+                  <>
+                    <span
+                      data-tv-asterisk
+                      aria-hidden="true"
+                      className="text-accent absolute top-0 left-full ml-[0.1em]"
+                    >
+                      *
+                    </span>
+                    {/* The mark's meaning, for a screen reader: there is no legend on screen. */}
+                    <span className="sr-only">lap with an incident</span>
+                  </>
                 )}
               </span>
               <span className="laptime text-muted text-right text-[1.5em]/[1.2]">

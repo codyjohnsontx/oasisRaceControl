@@ -72,6 +72,14 @@ const TOP_HOLD_FRACTION = 0.08;
  * was told twenty seconds.
  */
 export const IDLE_RESUME_MS = 20_000;
+/**
+ * How long a finger the frame believes is still down defers the resume, with
+ * no touch event at all, before that belief is treated as a lift it never saw.
+ * A finger resting on the glass sends nothing, so it cannot be told from a
+ * `touchend` that went to a row the list had just replaced - and the second
+ * must not park the board on one screen for the rest of the night.
+ */
+const STALE_TOUCH_MS = 60_000;
 
 type Props = {
   /** Rows in `children`, which set the loop's duration. */
@@ -97,6 +105,8 @@ export function AutoScroll({ rowCount, children }: Props) {
   const handover = useRef(0);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touches = useRef(0);
+  /** When the frame last heard from a touch, to age `touches` (see `STALE_TOUCH_MS`). */
+  const lastTouchAt = useRef(0);
   /**
    * The row count the loop was keyed on when the list was taken over. Held
    * under the same key, so the takeover re-renders the rows rather than
@@ -145,14 +155,21 @@ export function AutoScroll({ rowCount, children }: Props) {
 
   const armIdle = useCallback(() => {
     if (idleTimer.current) clearTimeout(idleTimer.current);
-    idleTimer.current = setTimeout(() => {
+    const resumeIfIdle = () => {
       idleTimer.current = null;
       // A finger still resting on the list is not idle, whatever the clock
-      // says; its lift arms the timer again.
-      if (touches.current !== 0) return;
+      // says, so the timer defers itself while a touch is down. But a touch
+      // the frame has heard nothing from for `STALE_TOUCH_MS` is one whose
+      // lift it missed, and the list is given back.
+      if (touches.current !== 0 && Date.now() - lastTouchAt.current < STALE_TOUCH_MS) {
+        idleTimer.current = setTimeout(resumeIfIdle, IDLE_RESUME_MS);
+        return;
+      }
+      touches.current = 0;
       heldRef.current = false;
       setHeld(false);
-    }, IDLE_RESUME_MS);
+    };
+    idleTimer.current = setTimeout(resumeIfIdle, IDLE_RESUME_MS);
   }, []);
 
   const takeOver = useCallback(() => {
@@ -178,11 +195,19 @@ export function AutoScroll({ rowCount, children }: Props) {
   };
   const onTouchStart = (event: TouchEvent) => {
     touches.current = event.touches.length;
-    if (idleTimer.current) clearTimeout(idleTimer.current);
+    lastTouchAt.current = Date.now();
     takeOver();
+    // Armed, not cleared: the timer defers itself while the finger is fresh
+    // (`armIdle`), and a lift the frame never hears about then still ends in
+    // a resume rather than in no timer at all.
+    armIdle();
+  };
+  const onTouchMove = () => {
+    lastTouchAt.current = Date.now();
   };
   const onTouchEnd = (event: TouchEvent) => {
     touches.current = event.touches.length;
+    lastTouchAt.current = Date.now();
     if (touches.current === 0) armIdle();
   };
   const onWheel = (event: WheelEvent) => {
@@ -223,6 +248,7 @@ export function AutoScroll({ rowCount, children }: Props) {
       className={`relative min-h-0 flex-1 touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain ${overflows ? "tv-auto-scroll-frame" : ""}`}
       onPointerDown={onPointerDown}
       onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
       onWheel={onWheel}

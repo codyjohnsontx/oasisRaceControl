@@ -81,12 +81,14 @@ after its time and nothing else: the owner asked for the mark alone, and had
 the footer legend that first shipped with it removed, so do not add one back.
 The incident count behind it is read off `laps` in the tonight feed's own
 query, not from `v_fastest_tonight`, so the view is not redefined for a
-display detail. Only valid laps rank, so the asterisk appears only when the
-day's featured combo has `incident_limit` above 0, which admits incident laps;
-the staff panel still writes 0 by default, so on an ordinary day nothing is
-marked. The mark counts any iRacing incident, not only off-tracks - the owner
-accepted that on 2026-09-27, when the event's combo was raised to 999
-mid-event.
+display detail. Only valid laps rank, and validity is decided once, at
+ingestion, against the featured combo's `incident_limit` at that moment
+(`computeValidity`, stored in `laps.is_valid`): an incident lap is marked on
+the board only if the limit admitted it when it arrived, and changing the
+limit afterwards neither ranks nor unmarks laps already stored. The staff
+panel writes 0 by default, so on an ordinary day nothing is marked. The mark
+counts any iRacing incident, not only off-tracks - the owner accepted that on
+2026-09-27, when the event's combo was raised to 999 mid-event.
 
 ## Verifying `/tv` failure behaviour needs a production build
 

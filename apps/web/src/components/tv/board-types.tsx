@@ -97,8 +97,10 @@ const toEntry = (row: {
 /**
  * The asterisk on a time. Any iRacing incident counts, not only an off-track,
  * and there is no legend on screen - the owner wanted the mark alone. Only
- * valid laps reach the feed, so this is true only on a day whose featured
- * combo has `incident_limit` above 0 - the staff panel writes 0 by default.
+ * valid laps reach the feed, and validity is judged once at ingestion against
+ * the featured combo's `incident_limit` of that moment, so this is true only
+ * for a lap whose combo admitted incidents when it arrived - the staff panel
+ * writes 0 by default, so on an ordinary day nothing is marked.
  */
 const hadOffTrack = (row: { incident_delta?: number | null }) => (row.incident_delta ?? 0) > 0;
 

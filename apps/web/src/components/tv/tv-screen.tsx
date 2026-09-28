@@ -28,8 +28,9 @@ import { PhoneStandingsQr } from "./phone-standings-qr";
  *    board comes back on its own the moment data returns.
  *  - Nothing here reacts to input, except the event view's list, which a hand
  *    on a touch screen can take over for a while (`auto-scroll.tsx`). The
- *    board disallows every other touch gesture, so a tap on a projected screen
- *    cannot zoom or flash-select it; the app-wide Screens button is outside it.
+ *    board disallows every touch gesture but that vertical pan, so a tap on a
+ *    projected screen cannot zoom or flash-select it; the app-wide Screens
+ *    button is outside it.
  */
 
 type Props = {
@@ -286,7 +287,16 @@ export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
   const position = view ? view.index : -1;
 
   return (
-    <main className="tv-scale relative flex h-dvh touch-none flex-col overflow-hidden p-[2.5em] select-none">
+    <main
+      // Touch gestures are locked out on the wall, where nothing is meant to
+      // move: no pinch, no double-tap zoom, no pan. The event view's list is
+      // panned by hand, and a browser honours the list's `touch-action` only
+      // if no ancestor forbids that gesture, so there the lock keeps zoom out
+      // but lets vertical panning through (`tv-screen.test.tsx` pins both).
+      className={`tv-scale relative flex h-dvh ${
+        mode === "event" ? "touch-pan-y" : "touch-none"
+      } flex-col overflow-hidden p-[2.5em] select-none`}
+    >
       {/* Fills over one slide's hold, so the room can see the rotation coming.
           Keyed on the advance counter rather than the slide, so a rotation with
           one playable board still restarts the fill every pass. The event view
