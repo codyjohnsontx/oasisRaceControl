@@ -46,8 +46,8 @@ import {
  * `IDLE_RESUME_MS` after the last touch, wheel or scroll (a finger still on the
  * glass counts as touching), it goes back to the top and the animation starts
  * again from the leader's hold. A live refresh during the hand-over changes the
- * rows in place and leaves the scroll position alone; a new driver does not
- * restart anything until the board is back on its own.
+ * rows in place and leaves the scroll position and the idle clock alone; a new
+ * driver does not restart anything until the board is back on its own.
  *
  * Content that fits is drawn once and left alone: the rows are measured
  * against the box, and a fresh `ResizeObserver` reading on either flips the
@@ -105,6 +105,13 @@ export function AutoScroll({ rowCount, children }: Props) {
    * and its lift out of the frame, so a finger resting there would go uncounted.
    */
   const [heldKey, setHeldKey] = useState(rowCount);
+  /**
+   * The list's height as the scroll handler last saw it. A new driver above
+   * the rows on screen grows the list, and the browser's scroll anchoring moves
+   * the frame to keep the same rows in view - a scroll nobody made, which must
+   * not push the idle clock.
+   */
+  const listHeight = useRef(0);
 
   useEffect(() => {
     const frameEl = frame.current;
@@ -160,6 +167,7 @@ export function AutoScroll({ rowCount, children }: Props) {
     const passHeight = (moverEl.firstElementChild as HTMLElement).offsetHeight;
     handover.current =
       offset > passHeight - frameEl.clientHeight / 2 ? Math.max(0, offset - passHeight) : offset;
+    listHeight.current = (content.current as HTMLElement).offsetHeight;
     setHeldKey(rowCount);
     setHeld(true);
   }, [overflows, rowCount]);
@@ -184,7 +192,14 @@ export function AutoScroll({ rowCount, children }: Props) {
   };
   const onScroll = () => {
     const frameEl = frame.current;
-    if (!frameEl) return;
+    const contentEl = content.current;
+    if (!frameEl || !contentEl) return;
+    const height = contentEl.offsetHeight;
+    const resized = height !== listHeight.current;
+    listHeight.current = height;
+    // With no finger down, a scroll that comes with the list changing height is
+    // the browser keeping the rows in place across a refresh (see `listHeight`).
+    if (heldRef.current && resized && touches.current === 0) return;
     // Going back to the top on resume also scrolls, at 0, and must not count
     // as somebody taking the list back; any other scroll the handlers above
     // did not see (a keyboard, an assistive device) does.
