@@ -398,6 +398,27 @@ public sealed class IracingFrameProcessorTests
     }
 
     [Fact]
+    public void ReturningFromALongSpellOutOfSessionOnTheSameTickIsNotAStall()
+    {
+        var now = 0L;
+        var frames = new IracingFrameProcessor(_detector, () => now);
+        var rejected = new List<string>();
+        frames.HeaderRejected += (_, reason) => rejected.Add(reason);
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+
+        fixture.WriteInt(4, 0); // menus
+        Assert.Equal(FrameOutcome.NotConnected, frames.Process(reader));
+        now += 2 * (long)IracingFrameProcessor.StallTimeout.TotalMilliseconds;
+
+        fixture.WriteInt(4, 1); // back on the frozen tick
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+        Assert.True(frames.Connected);
+        Assert.Empty(rejected);
+    }
+
+    [Fact]
     public void ATickThatKeepsMovingNeverStalls()
     {
         var now = 0L;

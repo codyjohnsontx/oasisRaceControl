@@ -99,6 +99,7 @@ public sealed class IracingFrameProcessor
             {
                 // Menus, loading, or the sim on its way out. Laps cannot
                 // continue across this, so start clean when it comes back.
+                _progressTick = null;
                 SetConnected(false);
                 return FrameOutcome.NotConnected;
             }
@@ -107,6 +108,7 @@ public sealed class IracingFrameProcessor
             var parsed = _parser.Parse(TelemetryTick.VariableNames);
             if (!parsed.IsConnected)
             {
+                _progressTick = null;
                 SetConnected(false);
                 return FrameOutcome.NotConnected;
             }
@@ -169,6 +171,7 @@ public sealed class IracingFrameProcessor
             // itself, so it is reported and waited out, never fatal.
             _consecutiveMalformed = 0;
             _parser = null;
+            _progressTick = null;
             SetConnected(false);
             if (ex.Message != _lastRejection)
             {
@@ -180,8 +183,9 @@ public sealed class IracingFrameProcessor
     }
 
     /// <summary>True once the tick count has stood still for <see cref="StallTimeout"/>.
-    /// Tracked apart from the connection so that going not-connected does not
-    /// make the frozen tick look new again.</summary>
+    /// Tracked apart from the connection so that the stall's own going
+    /// not-connected does not make the frozen tick look new again; only a block
+    /// that is out of session or unusable starts the clock over.</summary>
     private bool Stalled(int tick)
     {
         var now = _nowMs();
