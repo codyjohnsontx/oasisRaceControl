@@ -11,13 +11,16 @@ describe("manualLapOutcome", () => {
     });
   });
 
-  it("fails a lap stored unclaimed, naming the attribution problem", () => {
-    // The driver signed out between the assignment poll and the post: HTTP 200,
-    // lap stored, credited to nobody.
+  it("fails a lap stored unclaimed, pointing at this machine's clock", () => {
+    // completedAt fell outside the stint's window plus its clock-skew grace:
+    // HTTP 200, lap stored, credited to nobody. Re-checking the driver in would
+    // not change that; a wrong clock on this machine is what does it.
     const outcome = manualLapOutcome(answer("accepted_unattributed"), "Mike");
     expect(outcome.ok).toBe(false);
     expect(outcome.message).toMatch(/NOT credited to Mike/);
     expect(outcome.message).toMatch(/unclaimed/);
+    expect(outcome.message).toMatch(/clock/);
+    expect(outcome.message).not.toMatch(/check the driver in again/i);
   });
 
   it.each(["accepted_invalid", "duplicate", "error"])("fails a %s result", (status) => {

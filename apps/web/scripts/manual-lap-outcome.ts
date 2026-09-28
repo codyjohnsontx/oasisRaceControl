@@ -5,10 +5,12 @@
  * test (the same split as soak.ts and its accounting modules).
  *
  * HTTP 200 is not success: the route stores a lap it cannot attribute rather
- * than refusing it. A driver who signs out between the assignment poll and the
- * post leaves the stamped stint closed before the lap's `completedAt`, so the
- * lap lands unclaimed - on the books, crediting nobody. Only `accepted` is the
- * lap the operator asked for.
+ * than refusing it. The lap's `completedAt` is this machine's clock, and the
+ * route credits the stamped stint only when that falls inside the stint's
+ * window give or take its clock-skew grace - so a driver signing out between
+ * the poll and the post is still credited, and what lands the lap unclaimed
+ * (on the books, crediting nobody) is this machine's clock being further off
+ * than that grace. Only `accepted` is the lap the operator asked for.
  */
 
 export type ManualLapOutcome = { ok: boolean; message: string };
@@ -27,9 +29,9 @@ export function manualLapOutcome(body: unknown, driverName: string): ManualLapOu
       return {
         ok: false,
         message:
-          `NOT credited to ${driverName}: their check-in on this rig ended before the lap arrived, ` +
+          `NOT credited to ${driverName}: the lap fell outside their check-in window on this rig, ` +
           "so it was stored unclaimed (it shows under Unclaimed laps on /staff). " +
-          "Check the driver in again and re-run.",
+          "The lap's time comes from this machine's clock - check it is correct before re-running.",
       };
     case "accepted_invalid":
       return {
