@@ -8,7 +8,9 @@
  * Runs against a live server in the system's Google Chrome through
  * `playwright-core` - no browser download, and nothing in `npm test` needs a
  * server. The viewport defaults to the venue wall's 1272x601; pass a laptop
- * size to see what the owner's screen shows.
+ * size to see what the owner's screen shows. Point `--url` at `/tv?event=1`
+ * to check the event view: it has one board, so the wait for a second is
+ * skipped on its own.
  *
  * Usage (server already running, see README):
  *   npx tsx scripts/tv-corner-check.ts [--url http://localhost:3000/tv]
@@ -33,13 +35,37 @@ const boards = Number(arg("boards", "2"));
 const overlaps = (a: Box, b: Box) =>
   a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 
-/** Every on-screen box the corner must keep clear of, with a name for the report. */
+/**
+ * Every on-screen box the corner must keep clear of, with a name for the
+ * report. Boxes are what is visible, not what is laid out: the event view's
+ * rows scroll inside a clipped frame, so a row that is currently below the
+ * fold is clipped to that frame (to nothing, if it is wholly out of view) -
+ * otherwise every hidden row would "overlap" the footer under it.
+ */
 async function neighbours(page: Page): Promise<Array<{ name: string; box: Box }>> {
   const named: Array<{ name: string; box: Box }> = [];
   const add = async (selector: string, label: (i: number) => string) => {
-    const handles = await page.locator(selector).all();
-    for (const [i, h] of handles.entries()) {
-      const box = await h.boundingBox();
+    // One anonymous function with no nested named ones: this runs inside the
+    // page, where the `__name` helper tsx wraps named functions in does not
+    // exist.
+    const boxes = await page.evaluate((sel: string) => {
+      const out: Array<{ x: number; y: number; width: number; height: number } | null> = [];
+      for (const el of Array.from(document.querySelectorAll(sel))) {
+        let rect: DOMRect | null = el.getBoundingClientRect();
+        for (let a = el.parentElement; rect && a; a = a.parentElement) {
+          if (getComputedStyle(a).overflow === "visible") continue;
+          const c = a.getBoundingClientRect();
+          const x = Math.max(rect.left, c.left);
+          const y = Math.max(rect.top, c.top);
+          const right = Math.min(rect.right, c.right);
+          const bottom = Math.min(rect.bottom, c.bottom);
+          rect = right <= x || bottom <= y ? null : new DOMRect(x, y, right - x, bottom - y);
+        }
+        out.push(rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null);
+      }
+      return out;
+    }, selector);
+    for (const [i, box] of boxes.entries()) {
       if (box && box.width > 0 && box.height > 0) named.push({ name: label(i), box });
     }
   };

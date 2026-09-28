@@ -13,6 +13,7 @@ The Wednesday in-house league. Staff open a round from `/staff` against one trac
 - `/league` — season standings across every round, with each driver's per-round breakdown and a strip of rounds to tap into. Open rounds are included, so the board moves while the night is running.
 - `/league/[roundId]` — one round's full field ranked by fastest valid lap; tap a driver to expand all of their laps. Phone-first, this is the post-race comparison.
 - `/tv` — the front-of-store TV carries a league standings board in its rotation, and while a round is open that board takes the screen over: league night owns the wall, the arcade boards have it the rest of the week. Nobody has to take the kiosk off rotation.
+- `/tv?event=1` - the event view for a laptop at an off-site event: one leaderboard of every driver with a lap today in the featured combo, scrolling through itself, with no rotation to other boards. `/tv` itself is unchanged.
 - `/staff` — open a round against a combo, close it when the night is over, and at the turn of the month end the season and start the next one (named for the month, in one step, refused while a round is still open).
 
 **Opening a round also sets that day's featured combo to the round's combo**, because lap validity is judged against the featured combo when a lap is ingested; closing the round puts the previous combo back. Laps already logged keep the validity they were given.
@@ -129,7 +130,8 @@ running server) opens `/tv` in the machine's own Google Chrome through
 the corner is clipped or overlaps a board row, the board header, or the rest of
 the footer - then waits for the rotation to move and checks the next board too.
 `--viewport 1272x601` is the venue wall and the default; pass a laptop size to
-see what an off-site screen shows.
+see what an off-site screen shows, and `--url http://localhost:3000/tv?event=1`
+to check the event view (one board, so it does not wait for a second).
 
 `npm run leaderboards:check` does the same for the page that code opens: it
 loads `/leaderboards` at 390x844 (`--viewport` for another phone) with long

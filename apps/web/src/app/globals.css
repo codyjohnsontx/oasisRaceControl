@@ -153,3 +153,40 @@ body {
     transform: scaleX(1);
   }
 }
+
+/* /tv event view: a list taller than its box scrolls itself. The content is
+   drawn twice, so sliding up by half is exactly one copy and the loop is
+   seamless; the hold at the top is the 8% keyframe stop, which a keyframe
+   selector cannot read from a custom property, so the component
+   (`components/tv/auto-scroll.tsx`, TOP_HOLD_FRACTION) repeats that one
+   number and stretches the duration it sets here to match.
+   Not switched off under prefers-reduced-motion: see that component. */
+.tv-auto-scroll {
+  animation: tv-auto-scroll var(--tv-scroll-duration, 40s) linear infinite;
+  will-change: transform;
+}
+
+/* The frame the rows scroll inside fades them in at the top and out at the
+   bottom, so a row half across the edge reads as passing rather than as cut
+   off against the column headings above it. Only while scrolling: a list
+   that fits is not clipped and must not have its last row dimmed. */
+.tv-auto-scroll-frame {
+  --tv-scroll-fade: 1.5em;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black var(--tv-scroll-fade),
+    black calc(100% - var(--tv-scroll-fade)),
+    transparent
+  );
+}
+
+@keyframes tv-auto-scroll {
+  0%,
+  8% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-50%);
+  }
+}

@@ -17,6 +17,17 @@ contract and the rules the engine guarantees are documented in
 Board data comes from the same public APIs `/leaderboards` and `/league` use, so
 the wall and the phone agree by construction.
 
+`/tv?event=1` is the event view for a laptop at an off-site event: one board,
+every driver with a lap today in the featured combo, scrolling on its own
+(`auto-scroll.tsx`), no rotation. It is a second rotation *list* (`TvMode` in
+`tv-rotation.ts`, chosen by `buildRotation`), not a second engine or a second
+board type - the tonight board plays it with `everyone: true`, asking the
+tonight feed for its `TONIGHT_FEED_MAX_ROWS` ceiling. It exists because at an
+off-site event the venue rotation shows the same laps under three headings:
+a league slide with no season, which is counted in the footer but never
+plays, then "Fastest tonight" and "All-time best laps", identical when every
+lap the database holds was driven today. Plain `/tv` is unchanged by it.
+
 Sizing is one composition, not per-element pixels. The wall renders at
 **1272x601** - not 1080p - so `/tv` is written entirely in `em` of the
 `.tv-scale` root in `globals.css`, where `1em` is one rem of a 1920x1080 design

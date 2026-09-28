@@ -25,8 +25,27 @@ import type { ComponentType } from "react";
  *   - add it to `TV_BOARD_TYPES`
  *   - emit its slides from `buildRotation()`
  *
+ * `/tv` plays one of two rotation lists, chosen by `TvMode`. The default is the
+ * venue's: league, tonight, then every track. `/tv?event=1` is the event view
+ * an off-site event puts on a laptop: one slide - today's featured combo with
+ * every driver on it - and nothing to cycle to, so the same engine simply
+ * refreshes that board forever. It is a second list, not a second engine.
+ *
  * This module is import-safe from client components (types only, no DB).
  */
+
+/** Which rotation list `/tv` plays; see the module comment. */
+export type TvMode = "rotation" | "event";
+
+/**
+ * Reads the mode off the page's `event` search parameter. Only `?event=1`
+ * opens the event view; anything else - absent, empty, `0`, `false`, any other
+ * value - plays the ordinary rotation.
+ */
+export function tvMode(event: string | string[] | undefined): TvMode {
+  const value = Array.isArray(event) ? event[0] : event;
+  return value === "1" ? "event" : "rotation";
+}
 
 /** One entry in the rotation. */
 export type TvSlide = {

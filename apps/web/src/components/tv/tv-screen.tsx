@@ -3,7 +3,7 @@
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import type { Board } from "@/lib/leaderboards";
-import type { TvSlide } from "@/lib/tv-rotation";
+import type { TvMode, TvSlide } from "@/lib/tv-rotation";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
 import { PhoneStandingsQr } from "./phone-standings-qr";
@@ -31,6 +31,13 @@ import { PhoneStandingsQr } from "./phone-standings-qr";
 type Props = {
   /** Server-rendered rotation seed, so the first paint already has a board. */
   initialBoards: Board[];
+  /**
+   * Which rotation list to play (`lib/tv-rotation.ts`). The event view is a
+   * one-slide list, so the engine below runs it unchanged - the only things
+   * that know the mode here are the list builder, the re-read of which boards
+   * exist (there is nothing to re-read), and the footer's board counter.
+   */
+  mode: TvMode;
 };
 
 /** How long each board holds the screen. Long enough to read ten rows, short
@@ -63,8 +70,8 @@ type View = {
   advanceId: number;
 };
 
-export function TvScreen({ initialBoards }: Props) {
-  const [slides, setSlides] = useState<TvSlide[]>(() => buildRotation(initialBoards));
+export function TvScreen({ initialBoards, mode }: Props) {
+  const [slides, setSlides] = useState<TvSlide[]>(() => buildRotation(initialBoards, mode));
   const [view, setView] = useState<View | null>(null);
   const [stale, setStale] = useState(false);
   const [offline, setOffline] = useState(false);
@@ -81,7 +88,7 @@ export function TvScreen({ initialBoards }: Props) {
     const teardown = new AbortController();
     let cancelled = false;
 
-    let rotation = buildRotation(initialBoards);
+    let rotation = buildRotation(initialBoards, mode);
     let current: View | null = null;
     let index = -1;
     let holdUntil = 0;
@@ -89,8 +96,15 @@ export function TvScreen({ initialBoards }: Props) {
     let nextRefreshAt = Number.POSITIVE_INFINITY;
     // An empty seed means either the server-side list failed or the venue has no
     // boards yet. Re-read it on the first tick instead of standing by for a full
-    // refresh interval on a wall that has months of records behind it.
-    let nextRotationAt = initialBoards.length > 0 ? Date.now() + ROTATION_REFRESH_MS : 0;
+    // refresh interval on a wall that has months of records behind it. The
+    // event view's list does not depend on which boards exist, so it is never
+    // re-read.
+    let nextRotationAt =
+      mode === "event"
+        ? Number.POSITIVE_INFINITY
+        : initialBoards.length > 0
+          ? Date.now() + ROTATION_REFRESH_MS
+          : 0;
     let advanceId = 0;
     let ticking = false;
 
@@ -193,7 +207,7 @@ export function TvScreen({ initialBoards }: Props) {
         if (!Array.isArray(payload.boards)) throw new Error("malformed boards response");
         if (cancelled) return;
 
-        rotation = buildRotation(payload.boards as Board[]);
+        rotation = buildRotation(payload.boards as Board[], mode);
         setSlides(rotation);
         const activeKey = current?.slide.key;
         index = activeKey ? rotation.findIndex((s) => s.key === activeKey) : -1;
@@ -255,7 +269,7 @@ export function TvScreen({ initialBoards }: Props) {
       holdRef.current = () => {};
       wakeRef.current = () => {};
     };
-  }, [initialBoards]);
+  }, [initialBoards, mode]);
 
   const definition = view ? TV_BOARD_TYPES[view.slide.kind] : undefined;
   // -1 until the next advance whenever the board on screen has dropped out of a
@@ -266,9 +280,10 @@ export function TvScreen({ initialBoards }: Props) {
     <main className="tv-scale relative flex h-dvh flex-col overflow-hidden p-[2.5em] select-none">
       {/* Fills over one slide's hold, so the room can see the rotation coming.
           Keyed on the advance counter rather than the slide, so a rotation with
-          one playable board still restarts the fill every pass. */}
+          one playable board still restarts the fill every pass. The event view
+          has nothing coming, so it shows no timer. */}
       <div className="absolute inset-x-0 top-0 h-[0.375em] overflow-hidden">
-        {view && (
+        {view && mode === "rotation" && (
           <div
             key={view.advanceId}
             className="tv-slide-progress gradient-rule h-full origin-left"
@@ -298,7 +313,13 @@ export function TvScreen({ initialBoards }: Props) {
             </div>
           )}
           <p className="text-ink/80 min-w-0 truncate text-[1.25em] font-bold uppercase tracking-[0.2em]">
-            {position >= 0 ? (
+            {mode === "event" ? (
+              view ? (
+                "Every driver today"
+              ) : (
+                "Standing by · Every driver today"
+              )
+            ) : position >= 0 ? (
               `Board ${position + 1} of ${slides.length}`
             ) : view ? (
               `Top ${SLOT_COUNT} per board`
