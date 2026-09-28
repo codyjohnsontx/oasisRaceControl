@@ -322,18 +322,34 @@ export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
             </div>
           )}
           {/* The event view's board is the only board, so this corner names
-              the event's host instead - or, with no host in the link, nothing. */}
+              the event's host instead - or, with no host in the link, nothing.
+              Mark and wordmark are one lockup: the wordmark is the host's own
+              lettering, so it is an image at a height chosen against the mark,
+              not a caption in the board's type. */}
           {mode === "event" ? (
             hostLogo && (
-              <Image
-                src={hostLogo.src}
-                alt={hostLogo.alt}
-                width={hostLogo.width}
-                height={hostLogo.height}
-                priority
-                unoptimized
-                className="h-[4.25em] w-auto invert"
-              />
+              <div className="flex shrink-0 items-center gap-[0.75em]">
+                <Image
+                  src={hostLogo.mark.src}
+                  alt={hostLogo.alt}
+                  width={hostLogo.mark.width}
+                  height={hostLogo.mark.height}
+                  priority
+                  unoptimized
+                  className="h-[4.25em] w-auto invert"
+                />
+                {hostLogo.wordmark && (
+                  <Image
+                    src={hostLogo.wordmark.src}
+                    alt=""
+                    width={hostLogo.wordmark.width}
+                    height={hostLogo.wordmark.height}
+                    priority
+                    unoptimized
+                    className="h-[3.5em] w-auto invert"
+                  />
+                )}
+              </div>
             )
           ) : (
             <p className="text-ink/80 min-w-0 truncate text-[1.25em] font-bold uppercase tracking-[0.2em]">

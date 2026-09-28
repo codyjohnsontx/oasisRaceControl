@@ -2,12 +2,11 @@ import { describe, expect, it } from "vitest";
 import { tvHostLogo } from "./tv-host-logo";
 
 describe("tvHostLogo", () => {
-  it("names a bundled host's official file and its own aspect ratio", () => {
+  it("names a bundled host's official files and their own aspect ratios", () => {
     expect(tvHostLogo("cadillac")).toEqual({
-      src: "/host-logos/cadillac.svg",
+      mark: { src: "/host-logos/cadillac.svg", width: 82, height: 32 },
       alt: "Cadillac",
-      width: 82,
-      height: 32,
+      wordmark: { src: "/host-logos/cadillac-wordmark.svg", width: 380.04962, height: 79.12886 },
     });
   });
 
