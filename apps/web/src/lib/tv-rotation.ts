@@ -94,15 +94,6 @@ export type TvBoardDefinition<TSpec, TData> = {
    */
   hasContent: (data: TData) => boolean;
   Board: ComponentType<TvBoardProps<TSpec, TData>>;
-  /**
-   * A legend for a mark the board puts on its rows - "* lap with an off-track"
-   * - which the engine draws in the footer, beside the wall's own marks, while
-   * this board is up. Null (or no function) draws nothing. It gets the spec as
-   * well as the data because the board decides which rows are on screen: the
-   * legend must appear only when a marked row is, not because one exists
-   * somewhere below the cut.
-   */
-  footnote?: (spec: TSpec, data: TData) => string | null;
 };
 
 /**

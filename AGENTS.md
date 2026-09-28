@@ -66,22 +66,22 @@ Playwright CDP `Input.synthesizeScrollGesture` with `gestureSourceType:
 "touch"` against a production build is what proved the hand-over, the idle
 resume and that a live refresh leaves a held list where it is.
 
-Two footer slots belong to boards, not the engine. `&host=<name>` on the event
+The footer's host slot belongs to the event, not the engine. `&host=<name>` on the event
 view draws a bundled host logo where the rotation names its board
 (`apps/web/src/lib/tv-host-logo.ts` is the allowlist; the file under
 `public/host-logos/` must be the host's own official artwork, unaltered, with
 its source URL recorded beside the entry, and tinted for the dark board in
-CSS). A board that marks its rows - the tonight board's asterisk on a lap with
-an off-track - explains the mark through the contract's optional `footnote`,
-which the engine draws only while that board is up and only when the board
-says a marked row is on screen. The incident count behind it is read off
-`laps` in the tonight feed's own query, not from `v_fastest_tonight`, so the
-view is not redefined for a display detail. Only valid laps rank, so the
-asterisk and its legend appear only when the day's featured combo has
-`incident_limit` above 0, which admits incident laps; the staff panel still
-writes 0 by default, so on an ordinary day nothing is marked. The mark counts
-any iRacing incident, not only off-tracks - the owner accepted that on
-2026-09-27, when the event's combo was raised to 999 mid-event.
+CSS). The tonight board marks a lap that had an incident with an asterisk
+after its time and nothing else: the owner asked for the mark alone, and had
+the footer legend that first shipped with it removed, so do not add one back.
+The incident count behind it is read off `laps` in the tonight feed's own
+query, not from `v_fastest_tonight`, so the view is not redefined for a
+display detail. Only valid laps rank, so the asterisk appears only when the
+day's featured combo has `incident_limit` above 0, which admits incident laps;
+the staff panel still writes 0 by default, so on an ordinary day nothing is
+marked. The mark counts any iRacing incident, not only off-tracks - the owner
+accepted that on 2026-09-27, when the event's combo was raised to 999
+mid-event.
 
 ## Verifying `/tv` failure behaviour needs a production build
 

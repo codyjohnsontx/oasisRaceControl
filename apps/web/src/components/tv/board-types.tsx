@@ -95,14 +95,12 @@ const toEntry = (row: {
 });
 
 /**
- * Any iRacing incident counts, not only an off-track. Only valid laps reach the
- * feed, so this is true only on a day whose featured combo has `incident_limit`
- * above 0 - the staff panel writes 0 by default.
+ * The asterisk on a time. Any iRacing incident counts, not only an off-track,
+ * and there is no legend on screen - the owner wanted the mark alone. Only
+ * valid laps reach the feed, so this is true only on a day whose featured
+ * combo has `incident_limit` above 0 - the staff panel writes 0 by default.
  */
 const hadOffTrack = (row: { incident_delta?: number | null }) => (row.incident_delta ?? 0) > 0;
-
-/** The tonight board's legend for the mark, worded for the room. */
-export const OFF_TRACK_FOOTNOTE = "* lap with an off-track";
 
 /** Counted by `listBoards()` over the whole board, not by the rows on screen -
  *  the board feed is capped at a page of rows and would freeze the number there. */
@@ -127,10 +125,6 @@ type TonightRow = {
   /** Incidents on this exact lap; null when the rig did not report a count. */
   incident_delta: number | null;
 };
-
-/** The rows the tonight board draws: everyone in the event view, the slots otherwise. */
-const shownTonight = (spec: TonightSpec, data: TonightData) =>
-  spec.everyone ? data.rows : data.rows.slice(0, SLOT_COUNT);
 
 type TonightData = {
   rows: TonightRow[];
@@ -170,7 +164,6 @@ const TONIGHT_BOARD = defineTvBoard<TonightSpec, TonightData>({
   // rather than putting an empty board on the wall.
   hasContent: (data) => data.rows.length > 0,
   Board: TonightBoard,
-  footnote: (spec, data) => (shownTonight(spec, data).some(hadOffTrack) ? OFF_TRACK_FOOTNOTE : null),
 });
 
 function TonightBoard({ spec, data, stale, hold }: TvBoardProps<TonightSpec, TonightData>) {
@@ -190,7 +183,7 @@ function TonightBoard({ spec, data, stale, hold }: TvBoardProps<TonightSpec, Ton
         ]
           .filter(Boolean)
           .join(" · ")}
-        entries={shownTonight(spec, data).map(toEntry)}
+        entries={(spec.everyone ? data.rows : data.rows.slice(0, SLOT_COUNT)).map(toEntry)}
         layout={spec.everyone ? "scroll" : "slots"}
         stale={stale}
       />

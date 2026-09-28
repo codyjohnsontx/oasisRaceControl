@@ -281,7 +281,6 @@ export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
   }, [initialBoards, mode]);
 
   const definition = view ? TV_BOARD_TYPES[view.slide.kind] : undefined;
-  const footnote = definition && view ? definition.footnote?.(view.slide.spec, view.data) : null;
   // -1 until the next advance whenever the board on screen has dropped out of a
   // freshly re-read rotation: it is still worth showing, it just has no position.
   const position = view ? view.index : -1;
@@ -343,15 +342,6 @@ export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
                 : view
                   ? `Top ${SLOT_COUNT} per board`
                   : `Standing by · Top ${SLOT_COUNT} per board`}
-            </p>
-          )}
-          {/* The board's legend for a mark on its rows, only while one is up. */}
-          {footnote && (
-            <p
-              data-tv-footnote
-              className="text-muted min-w-0 shrink-0 truncate text-[1.125em] font-bold tracking-[0.1em]"
-            >
-              {footnote}
             </p>
           )}
         </div>

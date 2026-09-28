@@ -97,12 +97,11 @@ export type ArcadeEntry = {
    *  the table works the gap to the leader out itself. */
   gap?: string;
   /**
-   * Puts an asterisk after the score. What it means is the board's to say, in
-   * a footnote the engine draws in the footer (`footnote` in
-   * `lib/tv-rotation.ts`); the tonight board uses it for a lap with an
-   * off-track. It hangs in the gutter after the score column rather than
-   * inside it, so a marked time stays aligned with the clean ones above and
-   * below it.
+   * Puts an asterisk after the score, with no legend anywhere on the board -
+   * the tonight board uses it for a lap that had an incident, and the room is
+   * expected to read it as a footnote mark. It hangs in the gutter after the
+   * score column rather than inside it, so a marked time stays aligned with
+   * the clean ones above and below it.
    */
   asterisk?: boolean;
 };
@@ -213,7 +212,7 @@ export function ArcadeHighScores({
                   <span
                     data-tv-asterisk
                     className="text-accent absolute top-0 left-full ml-[0.1em]"
-                    aria-label="lap with an off-track"
+                    aria-label="lap with an incident"
                   >
                     *
                   </span>
