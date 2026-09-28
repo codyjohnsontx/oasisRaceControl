@@ -164,7 +164,11 @@ with a `raw header:` line is normal for a few seconds while a session loads -
 iRacing sets the connected bit before it fills in the rest of the header (the
 first real rig showed `tickRate=0` at that moment) - and it clears by itself;
 the reader never stops on it, it retries every second. If it never clears,
-the raw header line is what to send. `HEADER ver=2 status=1 tickRate=60 ...`
+the raw header line is what to send. The one `NOT READY` reason that is not
+a session loading is `tickCount N has not advanced in 30s`: the connected bit
+is still set but iRacing has stopped updating the block, which is a hung or
+crashed sim - it clears when the tick count moves again, so restart iRacing if
+it does not. `HEADER ver=2 status=1 tickRate=60 ...`
 is printed once the block is usable. A `WARNING this iRacing build does not
 publish: ...` line names channels the detector expected and did not find.
 Press Enter to stop.
