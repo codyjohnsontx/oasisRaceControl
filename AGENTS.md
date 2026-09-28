@@ -76,7 +76,12 @@ an off-track - explains the mark through the contract's optional `footnote`,
 which the engine draws only while that board is up and only when the board
 says a marked row is on screen. The incident count behind it is read off
 `laps` in the tonight feed's own query, not from `v_fastest_tonight`, so the
-view is not redefined for a display detail.
+view is not redefined for a display detail. Only valid laps rank, so the
+asterisk and its legend appear only when the day's featured combo has
+`incident_limit` above 0, which admits incident laps; the staff panel still
+writes 0 by default, so on an ordinary day nothing is marked. The mark counts
+any iRacing incident, not only off-tracks - the owner accepted that on
+2026-09-27, when the event's combo was raised to 999 mid-event.
 
 ## Verifying `/tv` failure behaviour needs a production build
 

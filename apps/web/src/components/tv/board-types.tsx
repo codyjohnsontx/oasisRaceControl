@@ -94,6 +94,11 @@ const toEntry = (row: {
   asterisk: hadOffTrack(row),
 });
 
+/**
+ * Any iRacing incident counts, not only an off-track. Only valid laps reach the
+ * feed, so this is true only on a day whose featured combo has `incident_limit`
+ * above 0 - the staff panel writes 0 by default.
+ */
 const hadOffTrack = (row: { incident_delta?: number | null }) => (row.incident_delta ?? 0) > 0;
 
 /** The tonight board's legend for the mark, worded for the room. */
