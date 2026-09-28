@@ -33,6 +33,7 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
     private const int ErrorFileNotFound = 2;
     private const int ErrorInvalidName = 123;
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan DataWait = TimeSpan.FromMilliseconds(250);
 
     private readonly IracingFrameProcessor _frames;
     private readonly CancellationTokenSource _stop = new();
@@ -137,20 +138,35 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
         _frames.Detach();
     }
 
-    private void ReadLoop(IReadOnlyMemoryReader reader, EventWaitHandle dataEvent)
-    {
-        while (!_stop.IsCancellationRequested)
-        {
-            WaitHandle.WaitAny([dataEvent, _stop.Token.WaitHandle], TimeSpan.FromMilliseconds(250));
-            if (_stop.IsCancellationRequested) return;
+    private void ReadLoop(IReadOnlyMemoryReader reader, EventWaitHandle dataEvent) =>
+        ReadLoop(_frames, reader,
+            () => WaitHandle.WaitAny([dataEvent, _stop.Token.WaitHandle], DataWait),
+            _stop.Token);
 
-            switch (_frames.Process(reader))
+    /// <summary>The read loop with the wait injected, so tests can drive it
+    /// without Windows. <paramref name="waitForData"/> returns what
+    /// <see cref="WaitHandle.WaitAny(WaitHandle[], TimeSpan)"/> does: the index
+    /// of the signalled handle or <see cref="WaitHandle.WaitTimeout"/>.
+    ///
+    /// A timeout is read like a signal, and that is load-bearing: a hung
+    /// iRacing never signals again, so a loop that read only on the event
+    /// would never let <see cref="IracingFrameProcessor"/> see the tick stand
+    /// still, and the sim would show as running forever. Only a stop ends it.</summary>
+    public static void ReadLoop(
+        IracingFrameProcessor frames, IReadOnlyMemoryReader reader, Func<int> waitForData, CancellationToken stop)
+    {
+        while (!stop.IsCancellationRequested)
+        {
+            waitForData();
+            if (stop.IsCancellationRequested) return;
+
+            switch (frames.Process(reader))
             {
                 case FrameOutcome.Retry:
                     Thread.Yield();
                     break;
                 case FrameOutcome.NotReady:
-                    _stop.Token.WaitHandle.WaitOne(ReconnectDelay);
+                    stop.WaitHandle.WaitOne(ReconnectDelay);
                     break;
             }
         }

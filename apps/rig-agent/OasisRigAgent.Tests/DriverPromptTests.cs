@@ -29,13 +29,22 @@ public sealed class DriverPromptTests : IDisposable
         /// does on the current screen before pressing Enter.</summary>
         public Func<string, Task>? BeforeTyping { get; init; }
 
+        /// <summary>Runs once, when input first runs out - whatever happens
+        /// while the program is closing, before the prompt loop resumes.</summary>
+        public Func<Task>? OnInputEnded { get; init; }
+        private int _inputEnded;
+
         public RecordingConsole(params string[] typed) => _typed = new Queue<string>(typed);
 
         public List<string> Transcript { get { lock (_transcript) return _transcript.ToList(); } }
 
         public async Task<string?> ReadLineAsync(CancellationToken quit)
         {
-            if (!_typed.TryDequeue(out var line)) return null;
+            if (!_typed.TryDequeue(out var line))
+            {
+                if (OnInputEnded is { } ended && Interlocked.Exchange(ref _inputEnded, 1) == 0) await ended();
+                return null;
+            }
             if (BeforeTyping is { } before) await before(line);
             Add($"typed:{line}");
             return line;
@@ -509,6 +518,39 @@ public sealed class DriverPromptTests : IDisposable
         agent.SeatCheckedInDriver(seated);
         await DriverPrompt.SignOutOnExitAsync(agent);
         lock (backend.Checkouts) Assert.Equal(new string?[] { null, MikeAssignmentId, seated.AssignmentId }, backend.Checkouts);
+    }
+
+    [Fact]
+    public async Task ASignalSignOutThenTheCancelledPromptNeverClosesANewerStint()
+    {
+        // Window closed while Mike drives: the signal handler signs him out and
+        // cancels the prompt, and before the prompt loop resumes, staff or a
+        // phone opens a new stint on the rig. The loop's own sign-out must not
+        // send the unnamed checkout that would close it.
+        var backend = new Backend();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 2, RigQrToken = "qr-rig-2" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-2", () => backend);
+        string? newer = null;
+        var screen = new RecordingConsole("Mike", "4321")
+        {
+            OnInputEnded = async () =>
+            {
+                await DriverPrompt.SignOutOnExitAsync(agent);
+                newer = (await checkIn.CheckInAsync("Mike", "4321", CancellationToken.None)).AssignmentId;
+            },
+        };
+
+        await DriverPrompt.RunAsync(agent, checkIn, 2, new WalkUpScreen(screen, agent), CancellationToken.None);
+
+        Assert.NotNull(newer);
+        Assert.NotEqual(MikeAssignmentId, newer);
+        lock (backend.Checkouts) Assert.Equal(new string?[] { null, MikeAssignmentId }, backend.Checkouts);
+        // The newer stint is still the one open: checking in again rejoins it.
+        Assert.Equal(newer, (await checkIn.CheckInAsync("Mike", "4321", CancellationToken.None)).AssignmentId);
     }
 
     public void Dispose()

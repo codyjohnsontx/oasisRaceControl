@@ -172,4 +172,3 @@ public sealed class IracingMemoryParserTests
         Assert.Throws<ArgumentException>(() => reader.Read(reader.Capacity - 4, new byte[8]));
     }
 }
-

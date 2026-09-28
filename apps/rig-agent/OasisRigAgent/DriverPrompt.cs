@@ -154,7 +154,13 @@ internal static class DriverPrompt
             ShowDriving(screen, rigNumber, session);
 
             var done = await screen.ReadLineAsync(quit);
-            var result = await agent.SwitchDriverAsync();
+            // Input ending is the program closing, and a signal handler may
+            // already have run the exit sign-out and emptied the seat; an
+            // unguarded switch here would then send an unnamed checkout and
+            // close whatever stint was opened on the rig since.
+            var result = done is null
+                ? await agent.SignOutSeatedDriverAsync()
+                : await agent.SwitchDriverAsync();
             notice = result switch
             {
                 SwitchDriverResult.Ended or SwitchDriverResult.NoActiveSession => $"Thanks {session.DisplayName}, you are logged out.",

@@ -433,5 +433,46 @@ public sealed class IracingFrameProcessorTests
         }
         Assert.True(frames.Connected);
     }
-}
 
+    [Fact]
+    public void TheReadLoopReadsOnATimeoutSoAHungSimThatNeverSignalsIsSeenToStall()
+    {
+        // A hung iRacing never sets the data-valid event again: every wait
+        // times out. The stall can only be seen if a timeout still reads.
+        var now = 0L;
+        var frames = new IracingFrameProcessor(_detector, () => now);
+        var connection = new List<bool>();
+        frames.ConnectionChanged += connection.Add;
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        var reader = new CountingReader(new ByteArrayMemoryReader(fixture.Bytes));
+        using var stop = new CancellationTokenSource();
+        var waits = 0;
+        var readsAtStop = -1;
+        var stallAfter = (int)(IracingFrameProcessor.StallTimeout.TotalMilliseconds / 250);
+
+        IracingTelemetrySource.ReadLoop(frames, reader, () =>
+        {
+            now += 250;
+            if (++waits <= stallAfter + 2) return WaitHandle.WaitTimeout;
+            readsAtStop = reader.Reads;
+            stop.Cancel();
+            return 1; // the stop handle
+        }, stop.Token);
+
+        Assert.Equal(new[] { true, false }, connection);
+        Assert.False(frames.Connected);
+        // The stop wake ends the loop without another read.
+        Assert.Equal(readsAtStop, reader.Reads);
+    }
+
+    private sealed class CountingReader(IReadOnlyMemoryReader inner) : IReadOnlyMemoryReader
+    {
+        public int Reads { get; private set; }
+        public long Capacity => inner.Capacity;
+        public void Read(long offset, Span<byte> destination)
+        {
+            Reads++;
+            inner.Read(offset, destination);
+        }
+    }
+}
