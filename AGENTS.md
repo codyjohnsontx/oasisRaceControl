@@ -61,10 +61,14 @@ single copy of the list (`auto-scroll.tsx`), resuming from the leader's hold
 after `IDLE_RESUME_MS` untouched. The frame allows only vertical panning and
 `main` disallows every other touch gesture; the app-wide Screens button lives
 in the root layout, outside `main`, which is why that does not reach it.
-Verify any change to it with a real gesture, not a synthetic event: the
-Playwright CDP `Input.synthesizeScrollGesture` with `gestureSourceType:
-"touch"` against a production build is what proved the hand-over, the idle
-resume and that a live refresh leaves a held list where it is.
+A mouse or pen press-and-drag scrolls it too (`drag-scroll.ts`), because the
+event laptop is a Mac, where an external touch display reports a finger as a
+mouse and nothing pans natively; real touch stays with the browser.
+Verify any change to it with a real gesture, not a synthetic event: `npm run
+tv:scroll-check` against a production build drives a CDP touch swipe, the
+wheel, a mouse drag and a click, and waits out the idle resume after each;
+the same CDP gesture is what proved that a live refresh leaves a held list
+where it is.
 
 The footer's host slot belongs to the event, not the engine. `&host=<name>` on the event
 view draws a bundled host lockup - the host's mark and, when it has one, its

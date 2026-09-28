@@ -2,6 +2,7 @@
 
 import {
   type CSSProperties,
+  type PointerEvent,
   type ReactNode,
   type TouchEvent,
   type WheelEvent,
@@ -11,6 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { dragScrollTop, dragsToScroll } from "./drag-scroll";
 
 /**
  * Scrolls its content on its own when there is more of it than fits, for a
@@ -42,9 +44,12 @@ import {
  * had got to into the frame's own scroll position - the rows do not jump,
  * except across the seam, where the list is taken up at whichever copy fills
  * more of the frame - and drops the second copy, so what is left is the one
- * list, top to bottom.
- * `IDLE_RESUME_MS` after the last touch, wheel or scroll (a finger still on the
- * glass counts as touching), it goes back to the top and the animation starts
+ * list, top to bottom. A touch screen the browser hears as a mouse (an external
+ * display on a Mac) pans nothing natively, so a mouse or pen press-and-drag
+ * moves the frame's scroll position with the pointer (`drag-scroll.ts`).
+ * `IDLE_RESUME_MS` after the last touch, drag, wheel or scroll (a finger still
+ * on the glass, or a button still held on the list, counts as touching), it
+ * goes back to the top and the animation starts
  * again from the leader's hold. A live refresh during the hand-over changes the
  * rows in place and leaves the scroll position and the idle clock alone; a new
  * driver does not restart anything until the board is back on its own.
@@ -73,8 +78,9 @@ const TOP_HOLD_FRACTION = 0.08;
  */
 export const IDLE_RESUME_MS = 20_000;
 /**
- * How long a finger the frame believes is still down defers the resume, with
- * no touch event at all, before that belief is treated as a lift it never saw.
+ * How long a finger or drag the frame believes is still down defers the
+ * resume, with no event from it at all, before that belief is treated as a
+ * lift it never saw.
  * A finger resting on the glass sends nothing, so it cannot be told from a
  * `touchend` that went to a row the list had just replaced - and the second
  * must not park the board on one screen for the rest of the night.
@@ -105,8 +111,10 @@ export function AutoScroll({ rowCount, children }: Props) {
   const handover = useRef(0);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touches = useRef(0);
-  /** When the frame last heard from a touch, to age `touches` (see `STALE_TOUCH_MS`). */
+  /** When the frame last heard from a touch or drag, to age them (see `STALE_TOUCH_MS`). */
   const lastTouchAt = useRef(0);
+  /** The mouse or pen dragging the list, and where it last was. */
+  const drag = useRef<{ pointerId: number; y: number } | null>(null);
   /**
    * The row count the loop was keyed on when the list was taken over. Held
    * under the same key, so the takeover re-renders the rows rather than
@@ -158,14 +166,16 @@ export function AutoScroll({ rowCount, children }: Props) {
     const resumeIfIdle = () => {
       idleTimer.current = null;
       // A finger still resting on the list is not idle, whatever the clock
-      // says, so the timer defers itself while a touch is down. But a touch
-      // the frame has heard nothing from for `STALE_TOUCH_MS` is one whose
+      // says, so the timer defers itself while a touch or drag is down. But
+      // one the frame has heard nothing from for `STALE_TOUCH_MS` is one whose
       // lift it missed, and the list is given back.
-      if (touches.current !== 0 && Date.now() - lastTouchAt.current < STALE_TOUCH_MS) {
+      const down = touches.current !== 0 || drag.current !== null;
+      if (down && Date.now() - lastTouchAt.current < STALE_TOUCH_MS) {
         idleTimer.current = setTimeout(resumeIfIdle, IDLE_RESUME_MS);
         return;
       }
       touches.current = 0;
+      drag.current = null;
       heldRef.current = false;
       setHeld(false);
     };
@@ -189,8 +199,27 @@ export function AutoScroll({ rowCount, children }: Props) {
     setHeld(true);
   }, [overflows, rowCount]);
 
-  const onPointerDown = () => {
+  const onPointerDown = (event: PointerEvent) => {
     takeOver();
+    if (dragsToScroll(event.pointerType, event.button)) {
+      drag.current = { pointerId: event.pointerId, y: event.clientY };
+      lastTouchAt.current = Date.now();
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    armIdle();
+  };
+  const onPointerMove = (event: PointerEvent) => {
+    const frameEl = frame.current;
+    const current = drag.current;
+    if (!frameEl || current?.pointerId !== event.pointerId) return;
+    frameEl.scrollTop = dragScrollTop(frameEl.scrollTop, current.y, event.clientY);
+    current.y = event.clientY;
+    lastTouchAt.current = Date.now();
+  };
+  // Fires on release and on cancel alike, once the capture taken on the press goes.
+  const onLostPointerCapture = (event: PointerEvent) => {
+    if (drag.current?.pointerId !== event.pointerId) return;
+    drag.current = null;
     armIdle();
   };
   const onTouchStart = (event: TouchEvent) => {
@@ -247,6 +276,8 @@ export function AutoScroll({ rowCount, children }: Props) {
       data-tv-auto-scroll-held={held ? "" : undefined}
       className={`relative min-h-0 flex-1 touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain ${overflows ? "tv-auto-scroll-frame" : ""}`}
       onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onLostPointerCapture={onLostPointerCapture}
       onTouchStart={onTouchStart}
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}

@@ -133,6 +133,15 @@ the footer - then waits for the rotation to move and checks the next board too.
 see what an off-site screen shows, and `--url http://localhost:3000/tv?event=1`
 to check the event view (one board, so it does not wait for a second).
 
+`npm run tv:scroll-check` does the same kind of thing for the event view's
+hand scrolling: against `/tv?event=1` it swipes the list with a finger, turns
+the wheel over it, drags it with the mouse (what a touch display on a Mac
+sends) and clicks it, and fails unless each takes the list over, moves it the
+right way (a click moves nothing), and gives it back to the automatic scroll
+twenty seconds after the last interaction - not while a mouse button is still
+held on it. The featured combo needs enough laps today for the list to
+overflow the screen. It takes a little over two minutes.
+
 `npm run leaderboards:check` does the same for the page that code opens: it
 loads `/leaderboards` at 390x844 (`--viewport` for another phone) with long
 driver names of its own in place of the board's rows, and fails if any name is
