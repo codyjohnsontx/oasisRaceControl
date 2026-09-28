@@ -4,6 +4,7 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from "re
 import Image from "next/image";
 import type { Board } from "@/lib/leaderboards";
 import type { TvMode, TvSlide } from "@/lib/tv-rotation";
+import type { TvHostLogo } from "@/lib/tv-host-logo";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
 import { PhoneStandingsQr } from "./phone-standings-qr";
@@ -25,7 +26,10 @@ import { PhoneStandingsQr } from "./phone-standings-qr";
  *    the rotation, which is how a display ends up frozen until someone reloads it.
  *  - Failure never stops the loop: the same timers that rotate also retry, so the
  *    board comes back on its own the moment data returns.
- *  - Nothing here reacts to input. There is no input.
+ *  - Nothing here reacts to input, except the event view's list, which a hand
+ *    on a touch screen can take over for a while (`auto-scroll.tsx`). The
+ *    board disallows every other touch gesture, so a tap on a projected screen
+ *    cannot zoom or flash-select it; the app-wide Screens button is outside it.
  */
 
 type Props = {
@@ -38,6 +42,11 @@ type Props = {
    * exist (there is nothing to re-read), and the footer's board counter.
    */
   mode: TvMode;
+  /**
+   * The event's host, drawn in the footer where the rotation names its board
+   * (`lib/tv-host-logo.ts`). Only the event view has one; null draws nothing.
+   */
+  hostLogo: TvHostLogo | null;
 };
 
 /** How long each board holds the screen. Long enough to read ten rows, short
@@ -70,7 +79,7 @@ type View = {
   advanceId: number;
 };
 
-export function TvScreen({ initialBoards, mode }: Props) {
+export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
   const [slides, setSlides] = useState<TvSlide[]>(() => buildRotation(initialBoards, mode));
   const [view, setView] = useState<View | null>(null);
   const [stale, setStale] = useState(false);
@@ -272,12 +281,13 @@ export function TvScreen({ initialBoards, mode }: Props) {
   }, [initialBoards, mode]);
 
   const definition = view ? TV_BOARD_TYPES[view.slide.kind] : undefined;
+  const footnote = definition && view ? definition.footnote?.(view.slide.spec, view.data) : null;
   // -1 until the next advance whenever the board on screen has dropped out of a
   // freshly re-read rotation: it is still worth showing, it just has no position.
   const position = view ? view.index : -1;
 
   return (
-    <main className="tv-scale relative flex h-dvh flex-col overflow-hidden p-[2.5em] select-none">
+    <main className="tv-scale relative flex h-dvh touch-none flex-col overflow-hidden p-[2.5em] select-none">
       {/* Fills over one slide's hold, so the room can see the rotation coming.
           Keyed on the advance counter rather than the slide, so a rotation with
           one playable board still restarts the fill every pass. The event view
@@ -312,21 +322,38 @@ export function TvScreen({ initialBoards, mode }: Props) {
               ))}
             </div>
           )}
-          <p className="text-ink/80 min-w-0 truncate text-[1.25em] font-bold uppercase tracking-[0.2em]">
-            {mode === "event" ? (
-              view ? (
-                "Every driver today"
-              ) : (
-                "Standing by · Every driver today"
-              )
-            ) : position >= 0 ? (
-              `Board ${position + 1} of ${slides.length}`
-            ) : view ? (
-              `Top ${SLOT_COUNT} per board`
-            ) : (
-              `Standing by · Top ${SLOT_COUNT} per board`
-            )}
-          </p>
+          {/* The event view's board is the only board, so this corner names
+              the event's host instead - or, with no host in the link, nothing. */}
+          {mode === "event" ? (
+            hostLogo && (
+              <Image
+                src={hostLogo.src}
+                alt={hostLogo.alt}
+                width={hostLogo.width}
+                height={hostLogo.height}
+                priority
+                unoptimized
+                className="h-[4.25em] w-auto invert"
+              />
+            )
+          ) : (
+            <p className="text-ink/80 min-w-0 truncate text-[1.25em] font-bold uppercase tracking-[0.2em]">
+              {position >= 0
+                ? `Board ${position + 1} of ${slides.length}`
+                : view
+                  ? `Top ${SLOT_COUNT} per board`
+                  : `Standing by · Top ${SLOT_COUNT} per board`}
+            </p>
+          )}
+          {/* The board's legend for a mark on its rows, only while one is up. */}
+          {footnote && (
+            <p
+              data-tv-footnote
+              className="text-muted min-w-0 shrink-0 truncate text-[1.125em] font-bold tracking-[0.1em]"
+            >
+              {footnote}
+            </p>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-[1.25em]">

@@ -169,9 +169,14 @@ body {
 /* The frame the rows scroll inside fades them in at the top and out at the
    bottom, so a row half across the edge reads as passing rather than as cut
    off against the column headings above it. Only while scrolling: a list
-   that fits is not clipped and must not have its last row dimmed. */
+   that fits is not clipped and must not have its last row dimmed.
+   The frame is also a real scroll container, so a hand on a touch screen can
+   take the list over (see that component); its scrollbar is hidden because on
+   a wall the fade already says there is more, and a classic scrollbar coming
+   and going would shift the columns. */
 .tv-auto-scroll-frame {
   --tv-scroll-fade: 1.5em;
+  scrollbar-width: none;
   mask-image: linear-gradient(
     to bottom,
     transparent,
@@ -179,6 +184,10 @@ body {
     black calc(100% - var(--tv-scroll-fade)),
     transparent
   );
+}
+
+.tv-auto-scroll-frame::-webkit-scrollbar {
+  display: none;
 }
 
 @keyframes tv-auto-scroll {

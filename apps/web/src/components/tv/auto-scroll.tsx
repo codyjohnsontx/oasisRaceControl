@@ -1,6 +1,16 @@
 "use client";
 
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  type TouchEvent,
+  type WheelEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 /**
  * Scrolls its content on its own when there is more of it than fits, for a
@@ -24,6 +34,19 @@ import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 
  * duration keeps its elapsed time, so after the page has been up a while it
  * would otherwise land the list at an arbitrary point.
  *
+ * Somebody can also take the list in hand. The event's board may be projected
+ * on a touch screen, so the first touch, press or wheel on the frame stops the
+ * animation and hands the list over: the frame is a real scroll container the
+ * whole time (`overflow-y: auto`, scrollbar hidden), so the browser pans it
+ * natively from the first swipe, and the takeover converts where the animation
+ * had got to into the frame's own scroll position - the rows do not jump - and
+ * drops the second copy, so what is left is the one list, top to bottom.
+ * `IDLE_RESUME_MS` after the last touch, wheel or scroll (a finger still on the
+ * glass counts as touching), it goes back to the top and the animation starts
+ * again from the leader's hold. A live refresh during the hand-over changes the
+ * rows in place and leaves the scroll position alone; a new driver does not
+ * restart anything until the board is back on its own.
+ *
  * Content that fits is drawn once and left alone: the rows are measured
  * against the box, and a fresh `ResizeObserver` reading on either flips the
  * scroll on or off. Deliberately not disabled under `prefers-reduced-motion`:
@@ -41,6 +64,12 @@ const MS_PER_ROW = 1_600;
  * `MS_PER_ROW`.
  */
 const TOP_HOLD_FRACTION = 0.08;
+/**
+ * How long the list stays in someone's hands after they last touched, wheeled
+ * or scrolled it before the automatic scroll resumes from the top. The owner
+ * was told twenty seconds.
+ */
+export const IDLE_RESUME_MS = 20_000;
 
 type Props = {
   /** Rows in `children`, which set the loop's duration. */
@@ -50,8 +79,22 @@ type Props = {
 
 export function AutoScroll({ rowCount, children }: Props) {
   const frame = useRef<HTMLDivElement>(null);
+  const mover = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
+  /** True while someone has the list: no animation, one copy, native scroll. */
+  const [held, setHeld] = useState(false);
+  /** `held` as the handlers read it, so a burst of events takes over once. */
+  const heldRef = useRef(false);
+  /**
+   * Where the rows were on screen at the moment of the takeover, as the scroll
+   * position that shows the same rows once the animation is gone. Read in the
+   * event handler, while the transform is still there to be measured, and
+   * applied after the re-render has removed it.
+   */
+  const handover = useRef(0);
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touches = useRef(0);
 
   useEffect(() => {
     const frameEl = frame.current;
@@ -65,29 +108,113 @@ export function AutoScroll({ rowCount, children }: Props) {
     observer.observe(frameEl);
     observer.observe(contentEl);
     return () => observer.disconnect();
-  }, [rowCount]);
+  }, [rowCount, held]);
+
+  // The scroll position is the frame's, which outlives the re-render that swaps
+  // the animated pair for the single list, so it is set here, once the swap is
+  // in the DOM and before it is painted. Going back the other way starts the
+  // animation from the top, so the frame goes to the top with it.
+  useLayoutEffect(() => {
+    const frameEl = frame.current;
+    if (!frameEl) return;
+    frameEl.scrollTop = held ? handover.current : 0;
+  }, [held]);
+
+  useEffect(() => {
+    return () => {
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+    };
+  }, []);
+
+  const armIdle = useCallback(() => {
+    if (idleTimer.current) clearTimeout(idleTimer.current);
+    idleTimer.current = setTimeout(() => {
+      idleTimer.current = null;
+      // A finger still resting on the list is not idle, whatever the clock
+      // says; its lift arms the timer again.
+      if (touches.current !== 0) return;
+      heldRef.current = false;
+      setHeld(false);
+    }, IDLE_RESUME_MS);
+  }, []);
+
+  const takeOver = useCallback(() => {
+    const frameEl = frame.current;
+    const moverEl = mover.current;
+    if (!frameEl || !moverEl || heldRef.current || !overflows) return;
+    heldRef.current = true;
+    // The rows' visual offset is whatever the animation has translated plus
+    // whatever the browser has already scrolled natively - both are in the
+    // rectangles, neither has to be parsed out of a transform matrix.
+    handover.current = frameEl.getBoundingClientRect().top - moverEl.getBoundingClientRect().top;
+    setHeld(true);
+  }, [overflows]);
+
+  const onPointerDown = () => {
+    takeOver();
+    armIdle();
+  };
+  const onTouchStart = (event: TouchEvent) => {
+    touches.current = event.touches.length;
+    if (idleTimer.current) clearTimeout(idleTimer.current);
+    takeOver();
+  };
+  const onTouchEnd = (event: TouchEvent) => {
+    touches.current = event.touches.length;
+    if (touches.current === 0) armIdle();
+  };
+  const onWheel = (event: WheelEvent) => {
+    if (event.deltaY === 0) return;
+    takeOver();
+    armIdle();
+  };
+  const onScroll = () => {
+    const frameEl = frame.current;
+    if (!frameEl) return;
+    // Going back to the top on resume also scrolls, at 0, and must not count
+    // as somebody taking the list back; any other scroll the handlers above
+    // did not see (a keyboard, an assistive device) does.
+    if (!heldRef.current && frameEl.scrollTop === 0) return;
+    takeOver();
+    // Momentum after a flick keeps scrolling with no finger down: each step
+    // pushes the idle clock, so the resume counts from where the list came to
+    // rest.
+    armIdle();
+  };
 
   const durationMs = Math.round((rowCount * MS_PER_ROW) / (1 - TOP_HOLD_FRACTION));
-  const pass = overflows ? PASS_CLASS : undefined;
+  const animating = overflows && !held;
+  const pass = overflows ? (held ? `${PASS_CLASS} ${HELD_PASS_CLASS}` : PASS_CLASS) : undefined;
 
   return (
     <div
       ref={frame}
       data-tv-auto-scroll
-      className={`relative min-h-0 flex-1 overflow-hidden ${overflows ? "tv-auto-scroll-frame" : ""}`}
+      data-tv-auto-scroll-held={held ? "" : undefined}
+      className={`relative min-h-0 flex-1 touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain ${overflows ? "tv-auto-scroll-frame" : ""}`}
+      onPointerDown={onPointerDown}
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+      onWheel={onWheel}
+      onScroll={onScroll}
     >
       <div
-        key={rowCount}
-        className={overflows ? "tv-auto-scroll" : undefined}
+        ref={mover}
+        // Keyed on the row count while animating, so a new driver restarts the
+        // loop (see above); on one constant while held, so a new driver then
+        // changes the rows in place and the frame's scroll position stands.
+        key={held ? "held" : rowCount}
+        className={animating ? "tv-auto-scroll" : undefined}
         style={{ "--tv-scroll-duration": `${durationMs}ms` } as CSSProperties}
       >
         <div className={pass}>
           <div ref={content} className="flow-root">
             {children}
           </div>
-          {overflows && <LoopRule />}
+          {animating && <LoopRule />}
         </div>
-        {overflows && (
+        {animating && (
           <div aria-hidden="true" className={pass}>
             <div className="flow-root">{children}</div>
             <LoopRule />
@@ -106,6 +233,8 @@ export function AutoScroll({ rowCount, children }: Props) {
  * lit through the hold.
  */
 const PASS_CLASS = "flow-root pt-[var(--tv-scroll-fade)]";
+/** The one list in someone's hands ends below the bottom fade, so its last row is fully lit too. */
+const HELD_PASS_CLASS = "pb-[var(--tv-scroll-fade)]";
 
 /** Marks where one pass of the list ends and the next begins. */
 function LoopRule() {

@@ -54,6 +54,30 @@ condition holds. The league board does exactly that while tonight's round is
 open. Bound any such condition by the venue day - nothing closes a round by
 itself, and an unbounded takeover owns the wall until someone notices.
 
+The event view is also the one `/tv` surface that reacts to input: its list is
+a real scroll container the whole time, and the first touch, press or wheel
+converts the animation's current offset into a native scroll position on a
+single copy of the list (`auto-scroll.tsx`), resuming from the leader's hold
+after `IDLE_RESUME_MS` untouched. The frame allows only vertical panning and
+`main` disallows every other touch gesture; the app-wide Screens button lives
+in the root layout, outside `main`, which is why that does not reach it.
+Verify any change to it with a real gesture, not a synthetic event: the
+Playwright CDP `Input.synthesizeScrollGesture` with `gestureSourceType:
+"touch"` against a production build is what proved the hand-over, the idle
+resume and that a live refresh leaves a held list where it is.
+
+Two footer slots belong to boards, not the engine. `&host=<name>` on the event
+view draws a bundled host logo where the rotation names its board
+(`apps/web/src/lib/tv-host-logo.ts` is the allowlist; the file under
+`public/host-logos/` must be the host's own official artwork, unaltered, with
+its source URL recorded beside the entry, and tinted for the dark board in
+CSS). A board that marks its rows - the tonight board's asterisk on a lap with
+an off-track - explains the mark through the contract's optional `footnote`,
+which the engine draws only while that board is up and only when the board
+says a marked row is on screen. The incident count behind it is read off
+`laps` in the tonight feed's own query, not from `v_fastest_tonight`, so the
+view is not redefined for a display detail.
+
 ## Verifying `/tv` failure behaviour needs a production build
 
 Test feed outages against `npm run build && npm run start` (from `apps/web`; there

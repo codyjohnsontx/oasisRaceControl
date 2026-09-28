@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { TV_BOARD_TYPES, buildRotation } from "./board-types";
+import { renderToStaticMarkup } from "react-dom/server";
+import { OFF_TRACK_FOOTNOTE, TV_BOARD_TYPES, buildRotation } from "./board-types";
+import { SLOT_COUNT } from "./arcade-board";
 
 /**
  * The two rotation lists. The event view is one slide - the tonight board
@@ -37,5 +39,52 @@ describe("buildRotation", () => {
         expect(TV_BOARD_TYPES[slide.kind]?.kind).toBe(slide.kind);
       }
     }
+  });
+});
+
+/**
+ * The off-track mark. The tonight feed says how many incidents each shown lap
+ * had; a lap with any gets an asterisk after its time, and the footer legend
+ * explaining it appears only while a marked lap is actually on the screen.
+ */
+const tonight = TV_BOARD_TYPES.tonight;
+const combo = { track_name: "Spa-Francorchamps", track_config: "Grand Prix Pits", car_name: "Porsche 911 GT3 R" };
+const row = (n: number, incident_delta: number | null) => ({
+  driver_id: `d${n}`,
+  display_name: `Driver ${n}`,
+  lap_time_ms: 130_000 + n * 500,
+  car_name: combo.car_name,
+  incident_delta,
+});
+const asterisksIn = (html: string) => (html.match(/data-tv-asterisk/g) ?? []).length;
+
+describe("tonight board off-track mark", () => {
+  it("marks the lap with an incident, not a clean lap or one with no count", () => {
+    const data = { rows: [row(1, 0), row(2, 2), row(3, null)], combo };
+    const html = renderToStaticMarkup(
+      <tonight.Board spec={{ everyone: true }} data={data} stale={false} hold={() => {}} />,
+    );
+    expect(asterisksIn(html)).toBe(1);
+    const mark = html.indexOf("data-tv-asterisk");
+    expect(mark).toBeGreaterThan(html.indexOf("Driver 2"));
+    expect(mark).toBeLessThan(html.indexOf("Driver 3"));
+  });
+
+  it("shows the legend only when a marked lap is on screen", () => {
+    expect(tonight.footnote).toBeDefined();
+    const footnote = tonight.footnote!;
+    const clean = { rows: [row(1, 0), row(2, null)], combo };
+    expect(footnote({ everyone: true }, clean)).toBeNull();
+    expect(footnote({ everyone: false }, clean)).toBeNull();
+
+    const marked = { rows: [row(1, 0), row(2, 1)], combo };
+    expect(footnote({ everyone: true }, marked)).toBe(OFF_TRACK_FOOTNOTE);
+    expect(footnote({ everyone: false }, marked)).toBe(OFF_TRACK_FOOTNOTE);
+
+    // The rotation draws ten slots: an incident lap below the cut is not on
+    // screen there, but the event view shows everyone, so it is there.
+    const rows = Array.from({ length: SLOT_COUNT + 1 }, (_, i) => row(i + 1, i === SLOT_COUNT ? 3 : 0));
+    expect(footnote({ everyone: false }, { rows, combo })).toBeNull();
+    expect(footnote({ everyone: true }, { rows, combo })).toBe(OFF_TRACK_FOOTNOTE);
   });
 });

@@ -1,5 +1,6 @@
 import { listBoards } from "@/lib/leaderboards-queries";
 import { tvMode } from "@/lib/tv-rotation";
+import { tvHostLogo } from "@/lib/tv-host-logo";
 import { TvScreen } from "@/components/tv/tv-screen";
 
 /**
@@ -11,6 +12,8 @@ import { TvScreen } from "@/components/tv/tv-screen";
  * with a lap today in the featured combo, scrolling on its own - for a laptop
  * at an off-site event, where the venue's rotation would show the same laps
  * under three headings (`buildRotation` in `components/tv/board-types.tsx`).
+ * `&host=cadillac` puts the event host's logo in the footer
+ * (`lib/tv-host-logo.ts`); the list can also be scrolled by hand there.
  *
  * The rotation list is seeded here so the first paint already has a board; the
  * client re-reads it periodically as new tracks get driven.
@@ -22,7 +25,9 @@ type Props = {
 };
 
 export default async function TvPage({ searchParams }: Props) {
-  const mode = tvMode((await searchParams).event);
+  const params = await searchParams;
+  const mode = tvMode(params.event);
+  const hostLogo = mode === "event" ? tvHostLogo(params.host) : null;
 
   // A database hiccup at render time must not blank the wall - the client
   // fetches its own rotation list anyway, so an empty seed self-corrects. The
@@ -37,5 +42,5 @@ export default async function TvPage({ searchParams }: Props) {
     }
   }
 
-  return <TvScreen initialBoards={boards} mode={mode} />;
+  return <TvScreen initialBoards={boards} mode={mode} hostLogo={hostLogo} />;
 }

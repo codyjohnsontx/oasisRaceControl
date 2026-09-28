@@ -74,18 +74,30 @@ const TRACK_BOARD = defineTvBoard<TrackSpec, BoardRow[]>({
   },
 });
 
-/** Both feeds rank a driver's fastest lap in a car, so both map the same way. */
+/**
+ * Both feeds rank a driver's fastest lap in a car, so both map the same way.
+ * Only the tonight feed says how many incidents the shown lap had; a lap with
+ * any is marked. A count the feed does not carry, or does not know (null), is
+ * not an off-track.
+ */
 const toEntry = (row: {
   driver_id: string;
   display_name: string;
   lap_time_ms: number;
   car_name: string;
+  incident_delta?: number | null;
 }): ArcadeEntry => ({
   id: row.driver_id,
   name: row.display_name,
   detail: row.car_name,
   timeMs: row.lap_time_ms,
+  asterisk: hadOffTrack(row),
 });
+
+const hadOffTrack = (row: { incident_delta?: number | null }) => (row.incident_delta ?? 0) > 0;
+
+/** The tonight board's legend for the mark, worded for the room. */
+export const OFF_TRACK_FOOTNOTE = "* lap with an off-track";
 
 /** Counted by `listBoards()` over the whole board, not by the rows on screen -
  *  the board feed is capped at a page of rows and would freeze the number there. */
@@ -107,7 +119,13 @@ type TonightRow = {
   display_name: string;
   lap_time_ms: number;
   car_name: string;
+  /** Incidents on this exact lap; null when the rig did not report a count. */
+  incident_delta: number | null;
 };
+
+/** The rows the tonight board draws: everyone in the event view, the slots otherwise. */
+const shownTonight = (spec: TonightSpec, data: TonightData) =>
+  spec.everyone ? data.rows : data.rows.slice(0, SLOT_COUNT);
 
 type TonightData = {
   rows: TonightRow[];
@@ -147,6 +165,7 @@ const TONIGHT_BOARD = defineTvBoard<TonightSpec, TonightData>({
   // rather than putting an empty board on the wall.
   hasContent: (data) => data.rows.length > 0,
   Board: TonightBoard,
+  footnote: (spec, data) => (shownTonight(spec, data).some(hadOffTrack) ? OFF_TRACK_FOOTNOTE : null),
 });
 
 function TonightBoard({ spec, data, stale, hold }: TvBoardProps<TonightSpec, TonightData>) {
@@ -166,7 +185,7 @@ function TonightBoard({ spec, data, stale, hold }: TvBoardProps<TonightSpec, Ton
         ]
           .filter(Boolean)
           .join(" · ")}
-        entries={(spec.everyone ? data.rows : data.rows.slice(0, SLOT_COUNT)).map(toEntry)}
+        entries={shownTonight(spec, data).map(toEntry)}
         layout={spec.everyone ? "scroll" : "slots"}
         stale={stale}
       />

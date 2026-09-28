@@ -96,6 +96,15 @@ export type ArcadeEntry = {
   /** Preformatted gap, for the same reason. Lap-time boards leave it unset and
    *  the table works the gap to the leader out itself. */
   gap?: string;
+  /**
+   * Puts an asterisk after the score. What it means is the board's to say, in
+   * a footnote the engine draws in the footer (`footnote` in
+   * `lib/tv-rotation.ts`); the tonight board uses it for a lap with an
+   * off-track. It hangs in the gutter after the score column rather than
+   * inside it, so a marked time stays aligned with the clean ones above and
+   * below it.
+   */
+  asterisk?: boolean;
 };
 
 type Props = {
@@ -198,8 +207,17 @@ export function ArcadeHighScores({
               <span className="text-muted truncate text-[1.5em]/[1.2] uppercase tracking-wide">
                 {entry.detail}
               </span>
-              <span className="laptime text-right text-[2.5em]/[1.1] font-bold">
+              <span className="laptime relative text-right text-[2.5em]/[1.1] font-bold">
                 {scoreText(entry, emptyScore)}
+                {entry.asterisk && (
+                  <span
+                    data-tv-asterisk
+                    className="text-accent absolute top-0 left-full ml-[0.1em]"
+                    aria-label="lap with an off-track"
+                  >
+                    *
+                  </span>
+                )}
               </span>
               <span className="laptime text-muted text-right text-[1.5em]/[1.2]">
                 {gapText(entry, leader, index)}
