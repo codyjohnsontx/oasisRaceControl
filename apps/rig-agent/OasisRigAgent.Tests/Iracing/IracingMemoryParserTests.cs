@@ -120,4 +120,56 @@ public sealed class IracingMemoryParserTests
         Assert.Equal(101, parsed.TickCount);
         Assert.Equal(9, parsed.Values["LapCompleted"]);
     }
+
+    [Fact]
+    public void TheVariableTableIsReusedWhileItsBytesAreUnchangedAndReparsedWhenTheyChange()
+    {
+        var fixture = new MemoryFixture()
+            .AddVariable("LapCompleted", IracingVariableType.Int, 0, 3)
+            .AddVariable("LapLastLapTime", IracingVariableType.Float, 4, 150.0f);
+        var parser = new IracingMemoryParser(new ByteArrayMemoryReader(fixture.Bytes));
+
+        var first = parser.Parse(TelemetryTick.VariableNames);
+        fixture.WriteInt(48, 101);
+        fixture.WriteInt(MemoryFixture.BufferOffset, 4);
+        var second = parser.Parse(TelemetryTick.VariableNames);
+        Assert.Same(first.Variables, second.Variables);
+        Assert.Equal(4, second.Values["LapCompleted"]);
+
+        // The sim rewrites a header in place under the same count and offset.
+        fixture.WriteInt(MemoryFixture.VariableHeadersOffset + 4, 8);
+        fixture.WriteInt(MemoryFixture.BufferOffset + 8, 7);
+        var third = parser.Parse(TelemetryTick.VariableNames);
+        Assert.NotSame(first.Variables, third.Variables);
+        Assert.Equal(8, third.Variables["LapCompleted"].Offset);
+        Assert.Equal(7, third.Values["LapCompleted"]);
+
+        // A changed buffer length re-validates the same table.
+        fixture.WriteInt(36, 8);
+        Assert.Throws<MalformedTelemetryException>(() => parser.Parse(TelemetryTick.VariableNames));
+    }
+
+    [Fact]
+    public void AMappedViewReadsTheSameBlockAsTheByteArrayFixture()
+    {
+        var fixture = new MemoryFixture()
+            .AddVariable("LapCompleted", IracingVariableType.Int, 0, 3)
+            .AddVariable("LapLastLapTime", IracingVariableType.Float, 4, 152.34f)
+            .SetSessionInfo("WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n");
+        using var map = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateNew(null, fixture.Bytes.Length);
+        using (var writer = map.CreateViewAccessor())
+            writer.WriteArray(0, fixture.Bytes, 0, fixture.Bytes.Length);
+        using var view = map.CreateViewAccessor(0, 0, System.IO.MemoryMappedFiles.MemoryMappedFileAccess.Read);
+        var reader = new MappedViewReader(view);
+
+        var parser = new IracingMemoryParser(reader);
+        var parsed = parser.Parse(TelemetryTick.VariableNames);
+
+        Assert.Equal(3, parsed.Values["LapCompleted"]);
+        Assert.Equal(152.34f, parsed.Values["LapLastLapTime"]);
+        Assert.Contains("Circuit of the Americas", SessionInfoParser.Decode(parser.ReadSessionInfo()!));
+        // A read running past the view is refused, not truncated.
+        Assert.Throws<ArgumentException>(() => reader.Read(reader.Capacity - 4, new byte[8]));
+    }
 }
+

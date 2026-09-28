@@ -27,10 +27,24 @@ public enum FrameOutcome
 /// The rule this class exists to enforce: <b>no read ever stops the loop</b>.
 /// A header that is unready or implausible is "not connected yet", reported
 /// once per distinct reason, and read again.
+///
+/// The connected bit alone cannot say the sim is still there: a hung or
+/// crashed iRacing leaves it set and the block readable. So, as the iRacing
+/// SDK's own connection check does, a block whose tick count has not moved
+/// for <see cref="StallTimeout"/> is treated as not connected until it moves.
 /// </summary>
 public sealed class IracingFrameProcessor
 {
+    /// <summary>How long the tick count may stand still under a set connected
+    /// bit before the sim counts as gone. The SDK's own connection check
+    /// (irsdk_isConnected in irsdk_utils.cpp) calls a block with no new tick
+    /// for 30 seconds disconnected, so this is the SDK's figure, not a tuning knob.</summary>
+    public static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(30);
+
     private readonly LapDetector _detector;
+    private readonly Func<long> _nowMs;
+    private int? _progressTick;
+    private long _progressAtMs;
     private IReadOnlyMemoryReader? _readerOf;
     private IracingMemoryParser? _parser;
     private int _lastTick = int.MinValue;
@@ -43,7 +57,12 @@ public sealed class IracingFrameProcessor
     private bool _reportedAttached;
     private string? _lastRejection;
 
-    public IracingFrameProcessor(LapDetector detector) => _detector = detector;
+    /// <param name="nowMs">A monotonic millisecond clock; defaults to <see cref="Environment.TickCount64"/>.</param>
+    public IracingFrameProcessor(LapDetector detector, Func<long>? nowMs = null)
+    {
+        _detector = detector;
+        _nowMs = nowMs ?? (() => Environment.TickCount64);
+    }
 
     public bool Connected { get; private set; }
 
@@ -89,6 +108,17 @@ public sealed class IracingFrameProcessor
             if (!parsed.IsConnected)
             {
                 SetConnected(false);
+                return FrameOutcome.NotConnected;
+            }
+            if (Stalled(parsed.TickCount))
+            {
+                SetConnected(false);
+                var reason = $"tickCount {parsed.TickCount} has not advanced in {StallTimeout.TotalSeconds:0}s: iRacing stopped updating the block.";
+                if (reason != _lastRejection)
+                {
+                    _lastRejection = reason;
+                    HeaderRejected?.Invoke(header, reason);
+                }
                 return FrameOutcome.NotConnected;
             }
             _consecutiveMalformed = 0;
@@ -149,6 +179,21 @@ public sealed class IracingFrameProcessor
         }
     }
 
+    /// <summary>True once the tick count has stood still for <see cref="StallTimeout"/>.
+    /// Tracked apart from the connection so that going not-connected does not
+    /// make the frozen tick look new again.</summary>
+    private bool Stalled(int tick)
+    {
+        var now = _nowMs();
+        if (tick != _progressTick)
+        {
+            _progressTick = tick;
+            _progressAtMs = now;
+            return false;
+        }
+        return now - _progressAtMs >= (long)StallTimeout.TotalMilliseconds;
+    }
+
     /// <summary>False when the sim left the session before its session info could be read.</summary>
     private bool ReadSessionInfo(ParsedMemorySnapshot parsed)
     {
@@ -182,6 +227,7 @@ public sealed class IracingFrameProcessor
     {
         _parser = null;
         _readerOf = null;
+        _progressTick = null;
         SetConnected(false);
     }
 

@@ -109,7 +109,7 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
             {
                 using var map = MemoryMappedFile.OpenExisting(MemoryMapName, MemoryMappedFileRights.Read);
                 using var view = map.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
-                using var reader = new AccessorReader(view);
+                var reader = new MappedViewReader(view);
                 using var dataEvent = OpenSynchronizationEvent();
                 ReadLoop(reader, dataEvent);
             }
@@ -167,28 +167,6 @@ public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
             throw new Win32Exception(error);
         }
         return new EventWaitHandle(false, EventResetMode.AutoReset) { SafeWaitHandle = handle };
-    }
-
-    private sealed class AccessorReader : IReadOnlyMemoryReader, IDisposable
-    {
-        private readonly MemoryMappedViewAccessor _accessor;
-        public AccessorReader(MemoryMappedViewAccessor accessor) => _accessor = accessor;
-        public long Capacity => _accessor.Capacity;
-
-        public void Read(long offset, Span<byte> destination)
-        {
-            if (destination.Length > 1024)
-            {
-                var buffer = new byte[destination.Length];
-                _accessor.ReadArray(offset, buffer, 0, buffer.Length);
-                buffer.CopyTo(destination);
-                return;
-            }
-            for (var index = 0; index < destination.Length; index++)
-                destination[index] = _accessor.ReadByte(offset + index);
-        }
-
-        public void Dispose() { }
     }
 
     private static class NativeMethods

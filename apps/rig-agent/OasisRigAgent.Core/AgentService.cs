@@ -172,13 +172,26 @@ public sealed class AgentService : IAsyncDisposable
     /// cannot name a stint to close, where there is nothing to queue and the
     /// result says so rather than promising a delivery that will never
     /// happen.</summary>
-    public async Task<SwitchDriverResult> SwitchDriverAsync()
+    public Task<SwitchDriverResult> SwitchDriverAsync() => SwitchDriverAsync(onlyIfSeated: false);
+
+    /// <summary>The switch-driver, but only when this agent has a driver in the
+    /// seat; otherwise nothing, not even a call. For the way out of the
+    /// program, where nobody asked for a checkout: with no stint to name, the
+    /// checkout would mean "close whatever is open on this rig", which can be a
+    /// stint staff or a phone opened since, or race the log-out that just
+    /// ended the seat. Decided under the same lock that clears the seat, so a
+    /// log-out between the check and the switch cannot turn it into that
+    /// unqualified checkout.</summary>
+    public Task<SwitchDriverResult> SignOutSeatedDriverAsync() => SwitchDriverAsync(onlyIfSeated: true);
+
+    private async Task<SwitchDriverResult> SwitchDriverAsync(bool onlyIfSeated)
     {
         string? ending;
         bool owedToBackend;
         lock (_stampLock)
         {
             ending = _assignment?.Id;
+            if (onlyIfSeated && ending is null) return SwitchDriverResult.NoActiveSession;
             // Bumped inside the same lock that clears the assignment, so a poll
             // already in flight cannot answer with the stint that just ended.
             Interlocked.Increment(ref _assignmentGeneration);

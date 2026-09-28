@@ -486,6 +486,31 @@ public sealed class DriverPromptTests : IDisposable
         Assert.DoesNotContain(t, l => l.Contains("Lap 5") && l.Contains("not counted"));
     }
 
+    [Fact]
+    public async Task ClosingTheProgramSignsOutOnlyADriverStillSeated()
+    {
+        var backend = new Backend();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 2, RigQrToken = "qr-rig-2" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-2", () => backend);
+
+        // Mike logs out, then the window is closed from the sign-in screen. A
+        // stint opened on the rig since (staff, a phone) must survive the close.
+        await DriverPrompt.RunAsync(agent, checkIn, 2, new WalkUpScreen(new RecordingConsole("Mike", "4321", ""), agent), CancellationToken.None);
+        await checkIn.CheckInAsync("Mike", "4321", CancellationToken.None);
+        await DriverPrompt.SignOutOnExitAsync(agent);
+        lock (backend.Checkouts) Assert.Equal(new string?[] { null, MikeAssignmentId }, backend.Checkouts);
+
+        // Closed while driving: the seated driver's own stint is ended, by name.
+        var seated = await checkIn.CheckInAsync("Mike", "4321", CancellationToken.None);
+        agent.SeatCheckedInDriver(seated);
+        await DriverPrompt.SignOutOnExitAsync(agent);
+        lock (backend.Checkouts) Assert.Equal(new string?[] { null, MikeAssignmentId, seated.AssignmentId }, backend.Checkouts);
+    }
+
     public void Dispose()
     {
         foreach (var file in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(_dbPath) + "*"))
