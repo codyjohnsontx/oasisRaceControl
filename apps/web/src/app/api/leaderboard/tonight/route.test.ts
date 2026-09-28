@@ -5,9 +5,8 @@ import { TONIGHT_FEED_DEFAULT_ROWS, TONIGHT_FEED_MAX_ROWS } from "@/lib/leaderbo
  * The feed's row cap, without a database: the default when nobody asks, the
  * ceiling the event view of `/tv` asks for, and a refusal for anything past it.
  * The SQL itself is exercised against a real database by the integration suite
- * and by every wall that has ever polled this route. The one thing pinned
- * about it here is that it reads the shown lap's incident count off `laps`,
- * because the view does not carry it and the wall marks a time on it.
+ * (`route.integration.test.ts`, which pins which lap's incident count comes
+ * back) and by every wall that has ever polled this route.
  */
 
 const query = vi.fn(async (): Promise<unknown[]> => []);
@@ -52,7 +51,7 @@ describe("GET /api/leaderboard/tonight", () => {
     },
   );
 
-  it("carries each shown lap's incident count, read off laps rather than the view", async () => {
+  it("passes each row's incident count through to the wall", async () => {
     query.mockResolvedValueOnce([
       { driver_id: "a", display_name: "A", lap_time_ms: 1, car_name: "c", incident_delta: 2 },
       { driver_id: "b", display_name: "B", lap_time_ms: 2, car_name: "c", incident_delta: null },
@@ -60,8 +59,5 @@ describe("GET /api/leaderboard/tonight", () => {
     const res = await get();
     const body = await res.json();
     expect(body.rows.map((r: { incident_delta: number | null }) => r.incident_delta)).toEqual([2, null]);
-    const sql = (query.mock.calls[0] as unknown[])[0] as string;
-    expect(sql).toMatch(/from v_fastest_tonight/);
-    expect(sql).toMatch(/lateral[\s\S]*from laps[\s\S]*incident_delta/);
   });
 });

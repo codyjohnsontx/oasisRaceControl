@@ -39,8 +39,10 @@ import {
  * animation and hands the list over: the frame is a real scroll container the
  * whole time (`overflow-y: auto`, scrollbar hidden), so the browser pans it
  * natively from the first swipe, and the takeover converts where the animation
- * had got to into the frame's own scroll position - the rows do not jump - and
- * drops the second copy, so what is left is the one list, top to bottom.
+ * had got to into the frame's own scroll position - the rows do not jump,
+ * except across the seam, where the list is taken up at whichever copy fills
+ * more of the frame - and drops the second copy, so what is left is the one
+ * list, top to bottom.
  * `IDLE_RESUME_MS` after the last touch, wheel or scroll (a finger still on the
  * glass counts as touching), it goes back to the top and the animation starts
  * again from the leader's hold. A live refresh during the hand-over changes the
@@ -146,7 +148,10 @@ export function AutoScroll({ rowCount, children }: Props) {
     // The rows' visual offset is whatever the animation has translated plus
     // whatever the browser has already scrolled natively - both are in the
     // rectangles, neither has to be parsed out of a transform matrix.
-    handover.current = frameEl.getBoundingClientRect().top - moverEl.getBoundingClientRect().top;
+    const offset = frameEl.getBoundingClientRect().top - moverEl.getBoundingClientRect().top;
+    const passHeight = (moverEl.firstElementChild as HTMLElement).offsetHeight;
+    handover.current =
+      offset > passHeight - frameEl.clientHeight / 2 ? Math.max(0, offset - passHeight) : offset;
     setHeld(true);
   }, [overflows]);
 
