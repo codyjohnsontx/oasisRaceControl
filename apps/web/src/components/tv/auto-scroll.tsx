@@ -19,9 +19,10 @@ import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 
  * fixed period: every row crosses the screen at the same speed however many
  * there are. The duration is set from the row count alone, which is what
  * keeps a live refresh from disturbing the scroll - a new lap time changes the
- * text, not the animation, and a new driver only lengthens the loop, which the
- * browser re-times in place rather than restarting (proven on the laptop size
- * with laps landing mid-scroll when this shipped).
+ * text, not the animation. A new driver changes the loop's length, and that
+ * restarts the scroll from the leader's hold: a running animation handed a new
+ * duration keeps its elapsed time, so after the page has been up a while it
+ * would otherwise land the list at an arbitrary point.
  *
  * Content that fits is drawn once and left alone: the rows are measured
  * against the box, and a fresh `ResizeObserver` reading on either flips the
@@ -64,7 +65,7 @@ export function AutoScroll({ rowCount, children }: Props) {
     observer.observe(frameEl);
     observer.observe(contentEl);
     return () => observer.disconnect();
-  }, []);
+  }, [rowCount]);
 
   const durationMs = Math.round((rowCount * MS_PER_ROW) / (1 - TOP_HOLD_FRACTION));
   const pass = overflows ? PASS_CLASS : undefined;
@@ -76,6 +77,7 @@ export function AutoScroll({ rowCount, children }: Props) {
       className={`relative min-h-0 flex-1 overflow-hidden ${overflows ? "tv-auto-scroll-frame" : ""}`}
     >
       <div
+        key={rowCount}
         className={overflows ? "tv-auto-scroll" : undefined}
         style={{ "--tv-scroll-duration": `${durationMs}ms` } as CSSProperties}
       >
