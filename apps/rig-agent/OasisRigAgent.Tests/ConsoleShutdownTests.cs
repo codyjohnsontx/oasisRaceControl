@@ -49,6 +49,7 @@ public sealed class ConsoleShutdownTests
         using var backend = new FakeBackend(openAssignmentId: DepartedAssignmentId);
         using var agent = StartAgent(backend.BaseUrl, out var output);
 
+        await agent.StandardInput.WriteLineAsync("y");
         await agent.StandardInput.WriteLineAsync("Mike");
         await agent.StandardInput.WriteLineAsync("1234");
         await agent.StandardInput.FlushAsync();

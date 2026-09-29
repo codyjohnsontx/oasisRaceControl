@@ -23,25 +23,27 @@ public sealed class CheckInRefusedException : Exception
 
 /// <summary>
 /// Signs a walk-up driver in on this rig from the rig PC itself, using the
-/// backend's existing name + PIN routes as an HTTP client: `POST
-/// /api/auth/login` with the typed name and PIN, `POST /api/auth/register` to
-/// create a driver (either sets the driver session cookie), then `POST
-/// /api/checkin` with the rig's QR token, confirming the takeover of whoever
-/// was checked in before. Nothing on the server changes - the request shapes
-/// are the ones the deployed sign-in and check-in pages send (served at
-/// 695e080 and on main alike).
+/// backend's existing name + PIN routes as an HTTP client. A returning driver
+/// is `POST /api/auth/login`; a new one is `POST /api/auth/register`, sent only
+/// once the rig has had the PIN typed twice. Either sets the driver session
+/// cookie, and is followed by `POST /api/checkin` with the rig's QR token,
+/// confirming the takeover of whoever was checked in before. Nothing on the
+/// server changes - the request shapes are the ones the deployed sign-in and
+/// check-in pages send (served at 695e080 and on main alike).
 ///
-/// The steps are separate so the rig's prompt decides between them (when a
-/// sign-up is offered, when a PIN has been confirmed, when to stop): see
-/// SignInState in DriverPrompt.cs.
+/// The rig asks which the driver is ("Raced here before?") rather than
+/// guessing from a failed login, so a wrong PIN is never mistaken for a new
+/// name; see SignInState in DriverPrompt.cs.
 ///
 /// A name and PIN are the driver's across both event days, so a returning
 /// driver's laps accumulate on one leaderboard row. Logging in is repeatable,
 /// so a check-in that fails after the sign-in is retried by typing the same
 /// name and PIN again.
 ///
-/// Every sign-in gets a fresh cookie jar, so one person's session never
-/// leaks into the next: the rig is the shared phone here.
+/// Every check-in gets a fresh cookie jar, so one person's session never
+/// leaks into the next: the rig is the shared phone here. Every answer that is
+/// neither a check-in nor the one expected "no" throws
+/// <see cref="CheckInRefusedException"/>; transport failures propagate.
 /// </summary>
 public sealed class DriverCheckInClient
 {
@@ -59,83 +61,55 @@ public sealed class DriverCheckInClient
     /// <summary>The backend's PIN rule: exactly four digits.</summary>
     public static bool IsPin(string pin) => pin.Length == 4 && pin.All(char.IsAsciiDigit);
 
-    /// <summary>One person's sign-in, with its own cookie jar.</summary>
-    public DriverSignIn StartSignIn() => new(new HttpClient(_handlerFactory(), disposeHandler: true)
-    {
-        BaseAddress = _baseUri,
-        Timeout = TimeSpan.FromSeconds(15),
-    }, _qrToken);
-}
-
-/// <summary>
-/// The backend steps of one sign-in. <see cref="LogInAsync"/> or
-/// <see cref="RegisterAsync"/> answering true leaves the session cookie in
-/// this sign-in's jar, and <see cref="CheckInAsync"/> then seats that driver.
-/// Every answer that is neither a sign-in nor the one expected "no" throws
-/// <see cref="CheckInRefusedException"/>; transport failures propagate.
-/// </summary>
-public sealed class DriverSignIn : IDisposable
-{
-    private readonly HttpClient _http;
-    private readonly string _qrToken;
-    private (string DriverId, string DisplayName, bool Returning)? _driver;
-
-    internal DriverSignIn(HttpClient http, string qrToken)
-    {
-        _http = http;
-        _qrToken = qrToken;
-    }
-
-    /// <summary>True when the name and PIN logged a driver in; false when they
-    /// matched nobody (401). That is the same answer, by design, for an unknown
-    /// name, a wrong PIN, and a name no PIN can sign in (a guest's, a banned
-    /// driver's): registering is what tells a taken name apart.</summary>
-    public async Task<bool> LogInAsync(string name, string pin, CancellationToken ct)
+    /// <summary>Log a returning driver in and seat them. Null when the name and
+    /// PIN match nobody (401) - the same answer, by design, for a wrong PIN, an
+    /// unknown name, and a name no PIN signs in (a guest's, a banned
+    /// driver's).</summary>
+    public async Task<DriverCheckIn?> CheckInReturningAsync(string name, string pin, CancellationToken ct)
     {
         RequirePin(pin);
-        using var login = await _http.PostAsJsonAsync("api/auth/login", new { displayName = name, pin }, ct);
+        using var http = NewHttpClient();
+        using var login = await http.PostAsJsonAsync("api/auth/login", new { displayName = name, pin }, ct);
         var body = await ReadJson(login, ct);
-        if (login.IsSuccessStatusCode)
-        {
-            _driver = Identify(body, returning: true);
-            return true;
-        }
-        if (login.StatusCode == HttpStatusCode.Unauthorized) return false;
+        if (login.StatusCode == HttpStatusCode.Unauthorized) return null;
         if ((int)login.StatusCode == 429)
             throw new CheckInRefusedException($"the name \"{name}\" is locked after five wrong PINs - try again {LockedUntil(body)}");
         if (login.StatusCode == HttpStatusCode.BadRequest)
             throw NameNotAllowed();
-        throw new CheckInRefusedException($"the backend could not sign you in (HTTP {(int)login.StatusCode}) - try again");
+        if (!login.IsSuccessStatusCode)
+            throw new CheckInRefusedException($"the backend could not sign you in (HTTP {(int)login.StatusCode}) - try again");
+        return await CheckIn(http, Identify(body, returning: true), ct);
     }
 
-    /// <summary>True when a new driver was created with the name and PIN; false
-    /// when the name is already taken (409). The backend does not say how many
-    /// tries a taken name has left, only when it locks (MAX_FAILS in
-    /// driver-auth.ts).</summary>
-    public async Task<bool> RegisterAsync(string name, string pin, CancellationToken ct)
+    /// <summary>Register a new driver and seat them. Null when the name is
+    /// already taken (409). The backend does not say how many tries a taken
+    /// name has left, only when it locks (MAX_FAILS in driver-auth.ts).</summary>
+    public async Task<DriverCheckIn?> CheckInNewAsync(string name, string pin, CancellationToken ct)
     {
         RequirePin(pin);
-        using var register = await _http.PostAsJsonAsync("api/auth/register", new { displayName = name, pin }, ct);
+        using var http = NewHttpClient();
+        using var register = await http.PostAsJsonAsync("api/auth/register", new { displayName = name, pin }, ct);
         var body = await ReadJson(register, ct);
-        if (register.IsSuccessStatusCode)
-        {
-            _driver = Identify(body, returning: false);
-            return true;
-        }
-        if (register.StatusCode == HttpStatusCode.Conflict) return false;
+        if (register.StatusCode == HttpStatusCode.Conflict) return null;
         if ((int)register.StatusCode == 429)
             throw new CheckInRefusedException("too many sign-in attempts from this network in the last minute, across both rigs - wait a minute and try again");
         if (register.StatusCode == HttpStatusCode.BadRequest)
             throw NameNotAllowed();
-        throw new CheckInRefusedException($"the backend could not sign you up (HTTP {(int)register.StatusCode}) - try again");
+        if (!register.IsSuccessStatusCode)
+            throw new CheckInRefusedException($"the backend could not sign you up (HTTP {(int)register.StatusCode}) - try again");
+        return await CheckIn(http, Identify(body, returning: false), ct);
     }
 
-    /// <summary>Put the driver this sign-in logged in or registered in this rig's seat.</summary>
-    public async Task<DriverCheckIn> CheckInAsync(CancellationToken ct)
+    private HttpClient NewHttpClient() => new(_handlerFactory(), disposeHandler: true)
     {
-        var (driverId, displayName, returning) = _driver
-            ?? throw new InvalidOperationException("check-in needs a driver logged in or registered first");
-        using var res = await _http.PostAsJsonAsync("api/checkin", new
+        BaseAddress = _baseUri,
+        Timeout = TimeSpan.FromSeconds(15),
+    };
+
+    private async Task<DriverCheckIn> CheckIn(
+        HttpClient http, (string DriverId, string DisplayName, bool Returning) driver, CancellationToken ct)
+    {
+        using var res = await http.PostAsJsonAsync("api/checkin", new
         {
             qrToken = _qrToken,
             confirmMove = true,
@@ -159,14 +133,12 @@ public sealed class DriverSignIn : IDisposable
         var assignmentId = body?["assignmentId"]?.GetValue<string>();
         if (status is not ("checked_in" or "already_checked_in") || assignmentId is null)
             throw new CheckInRefusedException($"check-in did not complete (backend said {status ?? "nothing"})");
-        return new DriverCheckIn(displayName, returning, driverId, assignmentId);
+        return new DriverCheckIn(driver.DisplayName, driver.Returning, driver.DriverId, assignmentId);
     }
-
-    public void Dispose() => _http.Dispose();
 
     private static void RequirePin(string pin)
     {
-        if (!DriverCheckInClient.IsPin(pin)) throw new CheckInRefusedException("the PIN must be exactly 4 digits");
+        if (!IsPin(pin)) throw new CheckInRefusedException("the PIN must be exactly 4 digits");
     }
 
     private static (string DriverId, string DisplayName, bool Returning) Identify(JsonNode? body, bool returning)

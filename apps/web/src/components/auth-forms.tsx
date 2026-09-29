@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { newPinRefusal } from "@/lib/new-pin";
-
-type Mode = "guest" | "login" | "register";
+import { driverAuthRefusal, type DriverAuthMode as Mode } from "@/lib/driver-auth-refusal";
 
 type Props = {
   /** Called after the driver is signed in (any mode). */
@@ -46,19 +45,7 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
         onSignedIn(String(data.displayName ?? name));
         return;
       }
-      if (data.error === "name_taken") {
-        setMessage(
-          data.suggestion
-            ? `That name is taken — try “${data.suggestion}”`
-            : "That name is taken — pick another",
-        );
-      } else if (data.error === "locked") {
-        setMessage("Too many wrong PINs — ask staff to reset it, or try later");
-      } else if (data.error === "invalid_credentials") {
-        setMessage("Name or PIN didn't match");
-      } else {
-        setMessage("Something went wrong — try again");
-      }
+      setMessage(driverAuthRefusal(mode, data.error, data.suggestion));
     } catch {
       setMessage("Network problem — try again");
     } finally {

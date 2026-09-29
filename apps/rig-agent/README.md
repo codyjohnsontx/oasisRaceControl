@@ -300,19 +300,29 @@ next person."
 The console is two screens, and it is cleared whenever it moves between
 them.
 
-**Sign in.** A name, then a 4-digit PIN. The PIN shows as it is typed (the
-rig keyboards are hard to type on blind), and the screen is cleared the moment
-Enter is pressed, so it is gone before the next person sits down. A refused
-sign-in comes back to this screen with the reason.
+**Sign in.** "Raced here before?" first, then a name and a 4-digit PIN - typed
+twice by a new driver. Each prompt is its own screen. The PIN shows as it is
+typed (the rig keyboards are hard to type on blind), and the screen is cleared
+the moment Enter is pressed, so it is gone before the next person sits down.
+Enter alone at any prompt goes back one step. A refused sign-in comes back to
+the name with the reason.
 
 ```text
 ============================================================
   OASIS RACE CONTROL - RIG 01 - SIGN IN
 ============================================================
 
-Type your name and press Enter:
-Mike
-Type your 4-digit PIN and press Enter (new here? pick one and remember it):
+Raced here before? Type y or n and press Enter:
+y
+```
+
+```text
+============================================================
+  OASIS RACE CONTROL - RIG 01 - SIGN IN
+============================================================
+
+Name: Mike
+Type your 4-digit PIN and press Enter (Enter alone goes back to the name):
 4821
 ```
 
@@ -352,10 +362,11 @@ A name and a 4-digit PIN are the driver's for the whole event: the same name
 and PIN on either rig, on either day, come back to the same driver, so every
 attempt at a fast time lands on one leaderboard row.
 
-How it works, with nothing new on the server: the name and PIN are logged in
-through the backend's own driver sign-in (`POST /api/auth/login`), and when
-they match nobody and the PIN is typed the same a second time, a new driver is
-registered with them (`POST /api/auth/register`); then `POST /api/checkin` with this rig's QR token
+How it works, with nothing new on the server: a returning driver's name and
+PIN are logged in through the backend's own driver sign-in (`POST
+/api/auth/login`), and a new driver's are registered (`POST
+/api/auth/register`) once the PIN has been typed the same twice; then `POST
+/api/checkin` with this rig's QR token
 and the takeover confirmed - the same requests the phone pages send, so it
 runs against the deployed app as it is. The next lap is stamped with the new
 stint at once. Logging out goes through the agent's existing
@@ -377,35 +388,28 @@ agent only ever stamps a lap with a stint its own check-in created, so a lap
 driven before anyone signs in on this run is nobody's, never the last
 driver's.
 
-- A name and PIN that match nobody offer a sign-up: type the same PIN again
-  and only then is the name registered. A returning driver with the right PIN
-  types it once. A second PIN that does not match is asked for again on the
-  rig, without another login; a second mismatch registers nothing and goes
-  back to the name screen. A PIN mistyped at sign-up is one its owner can
-  never sign back in with, which is how a returning driver was locked out of
-  their own name at the 2026-09-28 event.
-- Enter at "New here?" (raced here before) registers nothing and asks for the
-  PIN again.
-- A name that is already registered with a different PIN is refused in those
-  words: if the name is yours, type the PIN again or ask staff; if it is not
-  you, press Enter to pick a different name. The rig no longer offers that name
-  as a new sign-up.
-- A failed login that ends in a taken name or in Enter at "New here?" is a
-  strike; two strikes in one sign-in go back to the name screen, so someone
-  typing a name that is not theirs cannot lock the real driver out from one
-  sign-in. The notice says to ask staff only when the backend has said the
-  name is registered. A PIN that is not 4 digits never reaches the backend and
-  does not count. Names are unique across everyone the app has ever stored, not
-  only this event's drivers. There is no PIN reset on the rig; staff reset a
-  PIN on `/staff`.
+- The rig asks whether the driver has raced here before instead of guessing
+  it from a failed login. That guess is what went wrong at the 2026-09-28
+  event: a returning driver's wrong PIN was tried as a new sign-up and they
+  were told to use a different name.
+- Returning (y): the PIN is asked once, and a wrong one once more. After the
+  second wrong PIN: "That PIN does not match. Ask staff to reset your PIN, or
+  press Enter to try a different name." So one name typed makes at most two
+  failed logins, and someone typing a name that is not theirs cannot lock the
+  real driver out from one sign-in. This path never registers anything. Staff
+  reset a PIN on `/staff`; there is no PIN reset on the rig.
+- New (n): the PIN is typed twice, and two that differ are both asked for
+  again on the rig, without a backend call. A PIN mistyped once at sign-up is
+  one its owner can never sign back in with. A name that is already taken
+  says so, and says to answer y if it is theirs. This path never logs in.
+  Names are unique across everyone the app has ever stored, not only this
+  event's drivers.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
-- The PIN is exactly 4 digits; anything else asks for it again. An empty name
-  asks again.
-- The backend allows about ten sign-in attempts a minute per network
-  address, and the two event rigs share one. Every new name counts, and so
-  does every wrong PIN typed a second time (a PIN that fails login and is then
-  typed again at "New here?" is sent as a registration), so a run of wrong
-  PINs on either rig can make both wait a minute.
+- The PIN is exactly 4 digits; anything else asks for it again and never
+  reaches the backend.
+- The backend allows about ten sign-ups a minute per network address, and the
+  two event rigs share one, so a run of new names (taken ones too) on either
+  rig can make both wait a minute.
 - Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.
 - A rig whose QR token is not registered says so at the first name and asks
   again; fix `rigQrToken`.

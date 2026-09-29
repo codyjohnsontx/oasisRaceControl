@@ -332,18 +332,16 @@ the rig and on the web's sign-up and guest "Save profile" forms
 (`apps/web/src/lib/new-pin.ts`): a PIN mistyped once is one its owner can
 never sign back in with, and only staff can fix it, with Reset PIN on
 `/staff` (2026-09-28). The
-rig cannot tell a new name from a wrong PIN until login answers 401, so it
-offers a sign-up only then. Its sign-in is one small state machine,
-`SignInState` in `DriverPrompt.cs`, over the client's separate login, register
-and check-in steps (`DriverSignIn`); the rules are documented on the enum and
-every sequence is a row of `EverySignInSequenceEndsWhereTheRulesSay`, so change
-a rule and its row together. The load-bearing ones: a confirming PIN that does
-not match is asked again on the rig, with no new login; a register 409 means a
-wrong PIN for a registered name or a name that is someone else's, so the
-wording covers both and promises no count of tries left; every failed login
-ends in a strike or back at the name, and two strikes go back to the name, so
-a stranger cannot lock the real driver out from one sign-in; and only a name
-the backend has said is taken is ever told to ask staff.
+rig asks "Raced here before?" instead of guessing from a failed login - that
+guess is what told chuy to use a different name - and its sign-in is one small
+state machine, `SignInState` in `DriverPrompt.cs`, over the client's separate
+`CheckInReturningAsync` (login only) and `CheckInNewAsync` (register only).
+The rules are documented on the enum and every sequence is a row of
+`EverySignInSequenceEndsWhereTheRulesSay`, so change a rule and its row
+together. The load-bearing ones: the returning path never registers and makes
+at most two failed logins per name typed, so a stranger cannot lock the real
+driver out from one sign-in; the new path never logs in, and compares its two
+PINs on the rig. The website says the same in `driver-auth-refusal.ts`.
 
 ## Local dev
 

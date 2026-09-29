@@ -2,7 +2,6 @@ using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using Xunit;
-using static OasisRigAgent.Tests.TestSignIn;
 using OasisRigAgent.Core;
 
 namespace OasisRigAgent.Tests;
@@ -10,8 +9,8 @@ namespace OasisRigAgent.Tests;
 /// <summary>
 /// The rig-side check-in against a scripted backend that answers the way the
 /// deployed routes do (`api/auth/login`, `api/auth/register` and `api/checkin`
-/// at 695e080 and on main): a name and PIN log a returning driver back in or
-/// register a new one, the cookie that sets must come back on the check-in,
+/// at 695e080 and on main): a returning driver only ever logs in and a new one
+/// only ever registers, the cookie that sets must come back on the check-in,
 /// and every refusal becomes a sentence for the person at the rig.
 /// </summary>
 public sealed class DriverCheckInClientTests
@@ -80,9 +79,7 @@ public sealed class DriverCheckInClientTests
             _ => (HttpStatusCode.NotFound, "{}", null),
         };
 
-        using var signIn = client.StartSignIn();
-        Assert.True(await signIn.LogInAsync("mike", "1234", CancellationToken.None));
-        var result = await signIn.CheckInAsync(CancellationToken.None);
+        var result = await client.CheckInReturningAsync("mike", "1234", CancellationToken.None);
 
         Assert.Equal(new DriverCheckIn("Mike", true, "d-1", "a-1"), result);
         Assert.Equal(new[] { "/api/auth/login", "/api/checkin" }, Paths(backend));
@@ -97,46 +94,46 @@ public sealed class DriverCheckInClientTests
     }
 
     [Fact]
-    public async Task ANameAndPinThatMatchNobodyAreANoThenRegisterANewDriver()
+    public async Task ANewNameRegistersThenChecksInWithoutEverLoggingIn()
     {
         var (client, backend) = Build();
         backend.Answer = (path, _) => path switch
         {
-            "/api/auth/login" => (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}""", null),
             "/api/auth/register" => (HttpStatusCode.OK, """{"driverId":"d-2","displayName":"Mike"}""", Session),
             "/api/checkin" => (HttpStatusCode.OK, CheckedIn, null),
             _ => (HttpStatusCode.NotFound, "{}", null),
         };
 
-        using var signIn = client.StartSignIn();
-        Assert.False(await signIn.LogInAsync("Mike", "1234", CancellationToken.None));
-        Assert.True(await signIn.RegisterAsync("Mike", "1234", CancellationToken.None));
-        var result = await signIn.CheckInAsync(CancellationToken.None);
+        var result = await client.CheckInNewAsync("Mike", "1234", CancellationToken.None);
 
         Assert.Equal(new DriverCheckIn("Mike", false, "d-2", "a-1"), result);
-        Assert.Equal(new[] { "/api/auth/login", "/api/auth/register", "/api/checkin" }, Paths(backend));
-        Assert.Equal("1234", backend.Requests[1].Body?["pin"]?.GetValue<string>());
-        Assert.Equal("oasis_driver=jwt-abc", backend.Requests[2].Cookie);
+        Assert.Equal(new[] { "/api/auth/register", "/api/checkin" }, Paths(backend));
+        Assert.Equal("1234", backend.Requests[0].Body?["pin"]?.GetValue<string>());
+        Assert.Equal("oasis_driver=jwt-abc", backend.Requests[1].Cookie);
     }
 
     [Fact]
-    public async Task ATakenNameIsANoFromRegisterAndSeatsNobody()
+    public async Task AReturningNameWithTheWrongPinSeatsNobodyAndNeverRegisters()
     {
         var (client, backend) = Build();
-        backend.Answer = (path, _) => path switch
-        {
-            "/api/auth/login" => (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}""", null),
-            "/api/auth/register" => (HttpStatusCode.Conflict, """{"error":"name_taken"}""", null),
-            _ => (HttpStatusCode.OK, CheckedIn, null),
-        };
+        backend.Answer = (path, _) => path == "/api/auth/login"
+            ? (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}""", null)
+            : (HttpStatusCode.OK, CheckedIn, null);
 
-        using var signIn = client.StartSignIn();
-        Assert.False(await signIn.LogInAsync("chuy", "9999", CancellationToken.None));
-        Assert.False(await signIn.RegisterAsync("chuy", "9999", CancellationToken.None));
+        Assert.Null(await client.CheckInReturningAsync("chuy", "9999", CancellationToken.None));
+        Assert.Equal(new[] { "/api/auth/login" }, Paths(backend));
+    }
 
-        // Nobody was signed in, so there is nobody to seat.
-        await Assert.ThrowsAsync<InvalidOperationException>(() => signIn.CheckInAsync(CancellationToken.None));
-        Assert.Equal(new[] { "/api/auth/login", "/api/auth/register" }, Paths(backend));
+    [Fact]
+    public async Task ANewNameThatIsTakenSeatsNobodyAndNeverLogsIn()
+    {
+        var (client, backend) = Build();
+        backend.Answer = (path, _) => path == "/api/auth/register"
+            ? (HttpStatusCode.Conflict, """{"error":"name_taken"}""", null)
+            : (HttpStatusCode.OK, CheckedIn, null);
+
+        Assert.Null(await client.CheckInNewAsync("chuy", "9999", CancellationToken.None));
+        Assert.Equal(new[] { "/api/auth/register" }, Paths(backend));
     }
 
     [Fact]
@@ -146,8 +143,7 @@ public sealed class DriverCheckInClientTests
         backend.Answer = (_, _) =>
             (HttpStatusCode.TooManyRequests, """{"error":"locked","lockedUntil":"2026-09-27T18:15:00.000Z"}""", null);
 
-        using var signIn = client.StartSignIn();
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => signIn.LogInAsync("Mike", "1234", CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInReturningAsync("Mike", "1234", CancellationToken.None));
 
         Assert.Contains("locked after five wrong PINs", ex.Message);
         Assert.Contains(DateTimeOffset.Parse("2026-09-27T18:15:00Z").ToLocalTime().ToString("HH:mm"), ex.Message);
@@ -160,8 +156,7 @@ public sealed class DriverCheckInClientTests
         var (client, backend) = Build();
         backend.Answer = (_, _) => (HttpStatusCode.TooManyRequests, """{"error":"rate_limited"}""", null);
 
-        using var signIn = client.StartSignIn();
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => signIn.RegisterAsync("Mike", "1234", CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInNewAsync("Mike", "1234", CancellationToken.None));
 
         Assert.Contains("too many sign-in attempts from this network", ex.Message);
         Assert.Contains("wait a minute", ex.Message);
@@ -179,37 +174,36 @@ public sealed class DriverCheckInClientTests
         backend.Answer = (_, _) => (HttpStatusCode.OK, CheckedIn, null);
 
         Assert.False(DriverCheckInClient.IsPin(pin));
-        using var signIn = client.StartSignIn();
-        var login = await Assert.ThrowsAsync<CheckInRefusedException>(() => signIn.LogInAsync("Mike", pin, CancellationToken.None));
-        var register = await Assert.ThrowsAsync<CheckInRefusedException>(() => signIn.RegisterAsync("Mike", pin, CancellationToken.None));
+        var returning = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInReturningAsync("Mike", pin, CancellationToken.None));
+        var created = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInNewAsync("Mike", pin, CancellationToken.None));
 
-        Assert.Contains("4 digits", login.Message);
-        Assert.Contains("4 digits", register.Message);
+        Assert.Contains("4 digits", returning.Message);
+        Assert.Contains("4 digits", created.Message);
         Assert.Empty(backend.Requests);
     }
 
     [Theory]
-    [InlineData("/api/auth/login", 400, "not allowed")]
-    [InlineData("/api/auth/login", 500, "HTTP 500")]
-    [InlineData("/api/auth/register", 400, "not allowed")]
-    [InlineData("/api/auth/register", 500, "HTTP 500")]
-    [InlineData("/api/checkin", 404, "QR token")]
-    [InlineData("/api/checkin", 401, "did not keep the sign-in")]
-    [InlineData("/api/checkin", 403, "not allowed to check in")]
-    [InlineData("/api/checkin", 409, "same moment")]
-    [InlineData("/api/checkin", 429, "too many check-ins")]
-    [InlineData("/api/checkin", 500, "HTTP 500")]
-    public async Task RefusalsBecomeSentencesForThePersonAtTheRig(string failingPath, int status, string expected)
+    [InlineData(true, "/api/auth/login", 400, "not allowed")]
+    [InlineData(true, "/api/auth/login", 500, "HTTP 500")]
+    [InlineData(false, "/api/auth/register", 400, "not allowed")]
+    [InlineData(false, "/api/auth/register", 500, "HTTP 500")]
+    [InlineData(true, "/api/checkin", 404, "QR token")]
+    [InlineData(false, "/api/checkin", 401, "did not keep the sign-in")]
+    [InlineData(true, "/api/checkin", 403, "not allowed to check in")]
+    [InlineData(false, "/api/checkin", 409, "same moment")]
+    [InlineData(true, "/api/checkin", 429, "too many check-ins")]
+    [InlineData(false, "/api/checkin", 500, "HTTP 500")]
+    public async Task RefusalsBecomeSentencesForThePersonAtTheRig(bool returning, string failingPath, int status, string expected)
     {
         var (client, backend) = Build();
         backend.Answer = (path, _) => path == failingPath
             ? ((HttpStatusCode)status, """{"error":"whatever"}""", null)
-            : path == "/api/auth/login"
-                ? (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}""", null)
-                : path == "/api/auth/register"
-                    ? (HttpStatusCode.OK, """{"driverId":"d","displayName":"X"}""", "oasis_driver=j; Path=/")
-                    : (HttpStatusCode.OK, CheckedIn, null);
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => CheckInAsync(client, "Some Name", "1234"));
+            : path is "/api/auth/login" or "/api/auth/register"
+                ? (HttpStatusCode.OK, """{"driverId":"d","displayName":"X"}""", "oasis_driver=j; Path=/")
+                : (HttpStatusCode.OK, CheckedIn, null);
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => returning
+            ? client.CheckInReturningAsync("Some Name", "1234", CancellationToken.None)
+            : client.CheckInNewAsync("Some Name", "1234", CancellationToken.None));
         Assert.Contains(expected, ex.Message);
     }
 
@@ -218,12 +212,12 @@ public sealed class DriverCheckInClientTests
     {
         var (client, backend) = Build();
         backend.Answer = (_, _) => throw new HttpRequestException("connection refused");
-        using var signIn = client.StartSignIn();
-        await Assert.ThrowsAsync<HttpRequestException>(() => signIn.LogInAsync("Mike", "1234", CancellationToken.None));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.CheckInReturningAsync("Mike", "1234", CancellationToken.None));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.CheckInNewAsync("Mike", "1234", CancellationToken.None));
     }
 
     [Fact]
-    public async Task EachSignInStartsWithAnEmptyCookieJar()
+    public async Task EachCheckInStartsWithAnEmptyCookieJar()
     {
         var backend = new ScriptedBackend();
         var client = new DriverCheckInClient("https://rig.test", "qr-rig-1",
@@ -231,8 +225,8 @@ public sealed class DriverCheckInClientTests
         backend.Answer = (path, _) => path == "/api/auth/login"
             ? (HttpStatusCode.OK, """{"driverId":"d","displayName":"X"}""", "oasis_driver=first; Path=/")
             : (HttpStatusCode.OK, CheckedIn, null);
-        await CheckInAsync(client, "First", "1111");
-        await CheckInAsync(client, "Second", "2222");
+        await client.CheckInReturningAsync("First", "1111", CancellationToken.None);
+        await client.CheckInReturningAsync("Second", "2222", CancellationToken.None);
         // The second sign-in carries no cookie from the first person.
         Assert.Null(backend.Requests[2].Cookie);
     }

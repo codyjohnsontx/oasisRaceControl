@@ -36,10 +36,11 @@ internal sealed class SystemPromptConsole : IPromptConsole
 }
 
 /// <summary>
-/// The walk-up loop on the rig PC, as two screens. SIGN IN asks for a name and
-/// a 4-digit PIN (twice for a name that matches nobody, before it is
-/// registered); the PIN shows as it is typed, and the screen is cleared the
-/// moment Enter is pressed so it is gone before the next person sits down.
+/// The walk-up loop on the rig PC, as two screens. SIGN IN asks whether the
+/// driver has raced here before, then a name and a 4-digit PIN (twice for a
+/// new driver, before it is registered); the PIN shows as it is typed, and the
+/// screen is cleared the moment Enter is pressed so it is gone before the next
+/// person sits down.
 /// DRIVING shows only the signed-in name and "Press Enter to log out", with the
 /// driver's laps printed below it - queued, then posted once the backend has
 /// them; Enter logs them out and clears back to SIGN IN. A lap driven while
@@ -62,8 +63,7 @@ internal sealed class SystemPromptConsole : IPromptConsole
 internal static class DriverPrompt
 {
     private const int EmptySeatAttempts = 5;
-    private const int StrikesBeforeName = 2;
-    private const int ConfirmAttempts = 2;
+    private const int LoginsPerName = 2;
     private static readonly TimeSpan EmptySeatRetryGap = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ExitSignOutLimit = TimeSpan.FromSeconds(3);
     private static readonly string Rule = new('=', 60);
@@ -116,22 +116,9 @@ internal static class DriverPrompt
 
         while (!quit.IsCancellationRequested)
         {
-            ShowSignIn(screen, rigNumber, notice, name: null, prompt: "Type your name and press Enter:");
-            var typed = await screen.ReadLineAsync(quit);
-            if (typed is null) return;
-            var name = typed.Trim();
-            notice = null;
-            if (name.Length == 0) continue;
+            var driver = await SignInAsync(agent, checkIn, rigNumber, screen, notice, quit);
+            if (driver is null) return;
 
-            var outcome = await SignInAsync(agent, checkIn, rigNumber, screen, name, quit);
-            if (outcome.Quit) return;
-            if (outcome.CheckIn is null)
-            {
-                notice = outcome.Notice;
-                continue;
-            }
-
-            var driver = outcome.CheckIn;
             agent.SeatCheckedInDriver(driver);
             ShowDriving(screen, rigNumber, driver);
 
@@ -157,156 +144,200 @@ internal static class DriverPrompt
         }
     }
 
-    /// <summary>What asking one name for its PIN came to: a driver to seat, or
-    /// a notice for the name screen, or the program closing.</summary>
-    private readonly record struct SignInOutcome(DriverCheckIn? CheckIn, string? Notice, bool Quit)
-    {
-        public static SignInOutcome Closing => new(null, null, Quit: true);
-        public static SignInOutcome BackToName(string? notice) => new(null, notice, Quit: false);
-    }
-
     /// <summary>
-    /// Where signing one typed name in has got to (<see cref="SignInAsync"/>).
+    /// Where signing the next driver in has got to (<see cref="SignInAsync"/>).
+    /// The rig asks whether the driver has raced here before instead of
+    /// guessing it from a failed login, so a wrong PIN is never offered as a
+    /// new sign-up and a new driver is never told their PIN is wrong. Enter
+    /// alone at any prompt goes back one step.
     /// <list type="bullet">
-    /// <item><see cref="AskPin"/>: a PIN goes to <see cref="LogIn"/>; Enter
-    /// alone at a re-asked PIN goes back to the name.</item>
-    /// <item><see cref="LogIn"/>: a match goes to <see cref="CheckIn"/>. No
-    /// match for a name not known to be taken goes to
-    /// <see cref="OfferSignUp"/>; no match for a name known to be taken is a
-    /// strike.</item>
-    /// <item><see cref="OfferSignUp"/>: the same PIN again goes to
-    /// <see cref="Register"/>. A different one asks again, on the rig, with no
-    /// login and no strike, and after <c>ConfirmAttempts</c> goes back to the
-    /// name. Enter declines the offer (raced here before) and is a
-    /// strike.</item>
-    /// <item><see cref="Register"/>: a new driver goes to <see cref="CheckIn"/>.
-    /// A taken name (409) makes the name known to be taken, and the login
-    /// before it a wrong PIN for it: a strike.</item>
-    /// <item><see cref="CheckIn"/>: seats the driver.</item>
+    /// <item><see cref="AskRacedBefore"/>: y goes to the returning path, n to
+    /// the new one.</item>
+    /// <item><see cref="AskName"/>: the name, then <see cref="AskPin"/>
+    /// (returning) or <see cref="AskNewPin"/> (new).</item>
+    /// <item><see cref="AskPin"/> then <see cref="LogIn"/>: a match signs the
+    /// driver in. A miss asks for the PIN once more; the second miss goes to
+    /// <see cref="PinRefused"/>, so one name typed makes at most
+    /// <c>LoginsPerName</c> failed logins and a stranger cannot run a real
+    /// name into the backend's lockout. Never registers anything.</item>
+    /// <item><see cref="PinRefused"/>: says to ask staff for a PIN reset; Enter
+    /// goes back to the name.</item>
+    /// <item><see cref="AskNewPin"/> then <see cref="AskNewPinAgain"/>: two PINs
+    /// that differ ask for both again, on the rig, with no backend call; the
+    /// same PIN twice goes to <see cref="Register"/>.</item>
+    /// <item><see cref="Register"/>: a new driver is signed in. A taken name
+    /// (409) goes back to the name, saying to answer y if it is theirs. Never
+    /// logs in.</item>
     /// </list>
-    /// A strike asks for the PIN again, and <c>StrikesBeforeName</c> strikes go
-    /// back to the name. Every failed login ends in a strike or back at the
-    /// name, so one sign-in makes at most two failed logins, and someone typing
-    /// a name that is not theirs cannot run its owner into the backend's
-    /// lockout. Only a name the backend has said is taken is ever told to ask
-    /// staff.
     /// </summary>
-    private enum SignInState { AskPin, LogIn, OfferSignUp, Register, CheckIn }
+    private enum SignInState { AskRacedBefore, AskName, AskPin, LogIn, PinRefused, AskNewPin, AskNewPinAgain, Register }
 
-    private static async Task<SignInOutcome> SignInAsync(
-        AgentService agent, DriverCheckInClient checkIn, int rigNumber, WalkUpScreen screen, string name, CancellationToken quit)
+    /// <summary>Walk the next driver from "Raced here before?" to a check-in.
+    /// Null when the program is closing.</summary>
+    private static async Task<DriverCheckIn?> SignInAsync(
+        AgentService agent, DriverCheckInClient checkIn, int rigNumber, WalkUpScreen screen, string? notice, CancellationToken quit)
     {
-        using var session = checkIn.StartSignIn();
-        var state = SignInState.AskPin;
-        string? notice = null;
+        var state = SignInState.AskRacedBefore;
+        var returning = false;
+        var name = "";
         var pin = "";
-        var nameTaken = false;
-        var strikes = 0;
-        var confirmsMissed = 0;
+        var misses = 0;
 
-        SignInOutcome? Strike()
+        while (true)
         {
-            if (++strikes == StrikesBeforeName)
-                return SignInOutcome.BackToName(nameTaken
-                    ? $"The PIN for \"{name}\" did not match twice. If \"{name}\" is your name, ask staff to reset your PIN; if not, pick a different name."
-                    : $"No driver signed in as \"{name}\" with either PIN, and nothing was signed up. Type your name to start again.");
-            notice = nameTaken
-                ? $"Could not sign in: the name \"{name}\" is already registered and that PIN does not match. If this is your name, type your PIN again or ask staff. If \"{name}\" is not you, press Enter to pick a different name."
-                : "Nothing was signed up - type your PIN again.";
-            state = SignInState.AskPin;
-            return null;
-        }
-
-        try
-        {
-            while (true)
+            string? typed;
+            switch (state)
             {
-                switch (state)
-                {
-                    case SignInState.AskPin:
+                case SignInState.AskRacedBefore:
+                    typed = await AskAsync(screen, rigNumber, notice, null, "Raced here before? Type y or n and press Enter:", quit);
+                    if (typed is null) return null;
+                    notice = null;
+                    switch (typed.ToLowerInvariant())
                     {
-                        var typed = await ReadPinAsync(screen, rigNumber, name, notice, quit);
-                        if (typed is null) return SignInOutcome.Closing;
-                        if (typed.Length == 0) return SignInOutcome.BackToName(null);
+                        case "y" or "yes":
+                            returning = true;
+                            state = SignInState.AskName;
+                            break;
+                        case "n" or "no":
+                            returning = false;
+                            state = SignInState.AskName;
+                            break;
+                        case "":
+                            break;
+                        default:
+                            notice = "Type y if you have raced here before, or n if you are new.";
+                            break;
+                    }
+                    break;
+
+                case SignInState.AskName:
+                    typed = await AskAsync(screen, rigNumber, notice, null, returning
+                        ? "Type the name you raced under and press Enter (Enter alone goes back):"
+                        : "Type a name for the leaderboard and press Enter (Enter alone goes back):", quit);
+                    if (typed is null) return null;
+                    notice = null;
+                    if (typed.Length == 0)
+                    {
+                        state = SignInState.AskRacedBefore;
+                        break;
+                    }
+                    name = typed;
+                    misses = 0;
+                    state = returning ? SignInState.AskPin : SignInState.AskNewPin;
+                    break;
+
+                case SignInState.AskPin:
+                    typed = await AskAsync(screen, rigNumber, notice, name,
+                        "Type your 4-digit PIN and press Enter (Enter alone goes back to the name):", quit);
+                    if (typed is null) return null;
+                    notice = null;
+                    if (typed.Length == 0) state = SignInState.AskName;
+                    else if (!DriverCheckInClient.IsPin(typed)) notice = "The PIN is exactly 4 digits.";
+                    else
+                    {
                         pin = typed;
                         state = SignInState.LogIn;
-                        break;
                     }
-                    case SignInState.LogIn:
+                    break;
+
+                case SignInState.LogIn:
+                case SignInState.Register:
+                {
+                    screen.Transition(state == SignInState.LogIn ? $"Signing in {name}..." : $"Signing up {name}...");
+                    DriverCheckIn? driver;
+                    try
                     {
-                        screen.Transition($"Signing in {name}...");
                         if (!await agent.SettlePendingCheckoutAsync())
-                            return SignInOutcome.BackToName("Could not reach the backend to finish the last log-out. Check the network and try again.");
-                        if (await session.LogInAsync(name, pin, quit))
                         {
-                            state = SignInState.CheckIn;
-                        }
-                        else if (!nameTaken)
-                        {
-                            confirmsMissed = 0;
-                            notice = $"No driver is signed up as \"{name}\" with that PIN.";
-                            state = SignInState.OfferSignUp;
-                        }
-                        else if (Strike() is { } outcome)
-                        {
-                            return outcome;
-                        }
-                        break;
-                    }
-                    case SignInState.OfferSignUp:
-                    {
-                        ShowSignIn(screen, rigNumber, notice, name,
-                            "New here? Type the same PIN again to sign up (raced here before? press Enter to type your PIN again):");
-                        var typed = await screen.ReadLineAsync(quit);
-                        if (typed is null) return SignInOutcome.Closing;
-                        var again = typed.Trim();
-                        if (again.Length == 0)
-                        {
-                            if (Strike() is { } outcome) return outcome;
-                        }
-                        else if (again == pin)
-                        {
-                            state = SignInState.Register;
-                        }
-                        else if (++confirmsMissed == ConfirmAttempts)
-                        {
-                            return SignInOutcome.BackToName("The two PINs did not match, so nothing was signed up; type your name to start again.");
-                        }
-                        else
-                        {
-                            notice = "The two PINs did not match. Type the PIN you picked once more.";
-                        }
-                        break;
-                    }
-                    case SignInState.Register:
-                    {
-                        screen.Transition($"Signing up {name}...");
-                        if (await session.RegisterAsync(name, pin, quit))
-                        {
-                            state = SignInState.CheckIn;
+                            notice = "Could not reach the backend to finish the last log-out. Check the network and try again.";
+                            state = SignInState.AskName;
                             break;
                         }
-                        nameTaken = true;
-                        if (Strike() is { } outcome) return outcome;
+                        driver = state == SignInState.LogIn
+                            ? await checkIn.CheckInReturningAsync(name, pin, quit)
+                            : await checkIn.CheckInNewAsync(name, pin, quit);
+                    }
+                    catch (CheckInRefusedException ex)
+                    {
+                        notice = $"Could not sign in: {ex.Message}";
+                        state = SignInState.AskName;
                         break;
                     }
-                    case SignInState.CheckIn:
-                        return new SignInOutcome(await session.CheckInAsync(quit), null, Quit: false);
+                    catch (OperationCanceledException) when (quit.IsCancellationRequested)
+                    {
+                        return null;
+                    }
+                    catch (Exception ex)
+                    {
+                        notice = $"Could not reach the backend ({ex.Message}). Check the network and try again.";
+                        state = SignInState.AskName;
+                        break;
+                    }
+                    if (driver is not null) return driver;
+
+                    if (state == SignInState.Register)
+                    {
+                        notice = $"The name \"{name}\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
+                        state = SignInState.AskName;
+                    }
+                    else if (++misses < LoginsPerName)
+                    {
+                        notice = $"That PIN does not match \"{name}\". Type it again.";
+                        state = SignInState.AskPin;
+                    }
+                    else
+                    {
+                        state = SignInState.PinRefused;
+                    }
+                    break;
                 }
+
+                case SignInState.PinRefused:
+                    typed = await AskAsync(screen, rigNumber, null, name,
+                        "That PIN does not match. Ask staff to reset your PIN, or press Enter to try a different name.", quit);
+                    if (typed is null) return null;
+                    state = SignInState.AskName;
+                    break;
+
+                case SignInState.AskNewPin:
+                    typed = await AskAsync(screen, rigNumber, notice, name,
+                        "Pick a 4-digit PIN, remember it, and press Enter (Enter alone goes back to the name):", quit);
+                    if (typed is null) return null;
+                    notice = null;
+                    if (typed.Length == 0) state = SignInState.AskName;
+                    else if (!DriverCheckInClient.IsPin(typed)) notice = "The PIN is exactly 4 digits.";
+                    else
+                    {
+                        pin = typed;
+                        state = SignInState.AskNewPinAgain;
+                    }
+                    break;
+
+                case SignInState.AskNewPinAgain:
+                    typed = await AskAsync(screen, rigNumber, null, name,
+                        "Type the same PIN again and press Enter (Enter alone goes back):", quit);
+                    if (typed is null) return null;
+                    if (typed.Length == 0) state = SignInState.AskNewPin;
+                    else if (typed == pin) state = SignInState.Register;
+                    else
+                    {
+                        notice = "The two PINs did not match, so nothing was signed up. Pick a PIN and type it twice.";
+                        state = SignInState.AskNewPin;
+                    }
+                    break;
             }
         }
-        catch (CheckInRefusedException ex)
-        {
-            return SignInOutcome.BackToName($"Could not sign in: {ex.Message}");
-        }
-        catch (OperationCanceledException) when (quit.IsCancellationRequested)
-        {
-            return SignInOutcome.Closing;
-        }
-        catch (Exception ex)
-        {
-            return SignInOutcome.BackToName($"Could not reach the backend ({ex.Message}). Check the network and try again.");
-        }
+    }
+
+    /// <summary>Show one sign-in prompt and read the answer, trimmed; null when
+    /// the program is closing. The screen is cleared the moment Enter is
+    /// pressed, by whatever is shown next, so a PIN is gone before the next
+    /// person sits down.</summary>
+    private static async Task<string?> AskAsync(
+        WalkUpScreen screen, int rigNumber, string? notice, string? name, string prompt, CancellationToken quit)
+    {
+        ShowSignIn(screen, rigNumber, notice, name, prompt);
+        return (await screen.ReadLineAsync(quit))?.Trim();
     }
 
     /// <summary>Sign-out when the program is closing (Enter at end of input,
@@ -399,29 +430,6 @@ internal static class DriverPrompt
             catch (OperationCanceledException) { return null; }
         }
     }
-
-    /// <summary>Ask for the PIN until it is four digits, or empty to go back to
-    /// the name. A wrong one is cleared off the screen before asking again, the
-    /// name staying in view. <paramref name="notice"/> opens a fresh screen with
-    /// it; without one the prompt goes under the name just typed.</summary>
-    private static async Task<string?> ReadPinAsync(
-        WalkUpScreen screen, int rigNumber, string name, string? notice, CancellationToken quit)
-    {
-        const string prompt = "Type your 4-digit PIN and press Enter (new here? pick one and remember it):";
-        const string again = "Type your 4-digit PIN and press Enter (Enter alone goes back to the name):";
-        var retrying = notice is not null;
-        while (true)
-        {
-            if (notice is not null) ShowSignIn(screen, rigNumber, notice, name, retrying ? again : prompt);
-            else screen.Append(prompt);
-            var typed = await screen.ReadLineAsync(quit);
-            if (typed is null) return null;
-            var pin = typed.Trim();
-            if (pin.Length == 0 && retrying) return "";
-            if (DriverCheckInClient.IsPin(pin)) return pin;
-            notice = "The PIN is exactly 4 digits.";
-        }
-    }
 }
 
 /// <summary>
@@ -450,7 +458,6 @@ internal sealed class WalkUpScreen
     private Action<IPromptConsole, IReadOnlyList<string>>? _body;
     private bool _typedOn;
     private List<string> _shownWarnings = new();
-    private readonly List<string> _appended = new();
 
     public WalkUpScreen(IPromptConsole console, AgentService agent)
     {
@@ -470,18 +477,7 @@ internal sealed class WalkUpScreen
             _body = body;
             _typedOn = typedOn;
             _log.Clear();
-            _appended.Clear();
             Draw(Warnings(_agent.CurrentStatus()));
-        }
-    }
-
-    /// <summary>A prompt line that belongs to the current screen (re-printed on a redraw).</summary>
-    public void Append(string line)
-    {
-        lock (_lock)
-        {
-            _appended.Add(line);
-            _console.WriteLine(line);
         }
     }
 
@@ -492,7 +488,6 @@ internal sealed class WalkUpScreen
         {
             _body = null;
             _log.Clear();
-            _appended.Clear();
             _console.Clear();
             _console.WriteLine(message);
         }
@@ -529,7 +524,6 @@ internal sealed class WalkUpScreen
         _console.Clear();
         _shownWarnings = warnings;
         _body?.Invoke(_console, warnings);
-        foreach (var line in _appended) _console.WriteLine(line);
         foreach (var line in _log) _console.WriteLine(line);
     }
 
