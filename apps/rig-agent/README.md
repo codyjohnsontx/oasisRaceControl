@@ -403,9 +403,9 @@ driver's.
   asks again.
 - The backend allows about ten sign-in attempts a minute per network
   address, and the two event rigs share one. Every new name counts, and so
-  does every wrong PIN typed a second time (a confirmed PIN that fails login
-  is followed by a registration attempt), so a run of wrong PINs on either
-  rig can make both wait a minute.
+  does every wrong PIN typed a second time (a PIN that fails login and is then
+  typed again at "New here?" is sent as a registration), so a run of wrong
+  PINs on either rig can make both wait a minute.
 - Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.
 - A rig whose QR token is not registered says so at the first name and asks
   again; fix `rigQrToken`.

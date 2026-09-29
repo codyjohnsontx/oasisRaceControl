@@ -4,7 +4,7 @@
  * never sign back in with - that is how a returning driver was locked out of
  * their own name at the 2026-09-28 event - and only staff can fix it
  * afterwards, with Reset PIN on /staff. The rig console asks the same way
- * (`DriverCheckInClient` in apps/rig-agent).
+ * (`SignInState` in apps/rig-agent/OasisRigAgent/DriverPrompt.cs).
  */
 
 /** Why a new profile's PIN cannot be sent yet, or null when it can. */
