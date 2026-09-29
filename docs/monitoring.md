@@ -25,7 +25,10 @@ An evaluation runs
   minute (below), so a venue whose every rig went dark is still noticed.
 
 However many of those arrive, at most one evaluation runs every 20 seconds
-(`monitor_state.last_evaluated_at`, claimed in one statement).
+(`monitor_state.last_evaluated_at`), and never two at once: an evaluation
+claims, reads and applies its alert changes in one short transaction holding
+that row's lock, so one that reads later always applies later. It commits
+before posting anything, so a slow Discord never holds the others up.
 
 ## The rules so far
 
@@ -35,7 +38,7 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 | # | Rule | Fires when | Clears when | Severity |
 |---|---|---|---|---|
 | 1 | Rig silent | no word from a rig for 2 min, and its agent did not say goodbye | the rig is heard again | urgent with a driver seated or in event mode; otherwise a warning after 7 min (below) |
-| 1 | Every rig went quiet | outside event mode only: two or more empty rigs went quiet within 5 min of each other and none is left running | 7 min after the first rig is heard again (by heartbeat or by laps), time enough for the rest's backed-off heartbeats; rigs still quiet then are warned about one by one | warning, one note instead of one per rig. In event mode there is no such note: each silent rig is urgent at once, because mid-event rigs going quiet together is an outage, not closing time |
+| 1 | Every rig went quiet | outside event mode only: two or more empty rigs went quiet within 5 min of each other and none is left running | 7 min after the first rig is heard again (by heartbeat or by laps), time enough for the rest's backed-off heartbeats. A rig not heard since before the first one came back stays dark without a warning of its own - still switched off after a close, or not yet back - until it is heard again (after which it alerts as usual) or 12 h pass; a seated one still alerts at once | warning, one note instead of one per rig. In event mode there is no such note: each silent rig is urgent at once, because mid-event rigs going quiet together is an outage, not closing time |
 | 2 | iRacing not connected while a driver is signed in | a seated rig's agent has reported iRacing disconnected for 3 min (counted from when the driver sat down) | iRacing connects, or the stint ends | urgent |
 | 3a | Laps queued but not reaching the site | a lap has waited over 2 min while at least two heartbeats got through | the queue drains | urgent |
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
@@ -91,9 +94,17 @@ Set both in Vercel for **Production only**. The webhook URL is a credential:
 it lives there and nowhere in the repository.
 
 A post that fails (Discord down, rate-limited) is retried by a later
-evaluation, no sooner than a minute after the last attempt and for up to an
-hour, and never twice. An alert that came and went while Discord was down
-posts its opening late and then its recovery, never a lone "recovered".
+evaluation, no sooner than a minute after the last attempt, until an hour
+after the alert opened (or its count last rose) - however long the problem
+itself lasts - and never by two evaluations at once. An alert that came and
+went while Discord was down posts its opening late and then its recovery,
+never a lone "recovered".
+
+One tradeoff cannot be designed away: a post that times out may still have
+reached Discord, and Discord gives the monitor no way to ask. The monitor
+treats it as failed and retries, so on a slow Discord the same alert can
+appear more than once - at most once a minute, and never after that hour.
+Counting a timeout as delivered instead would risk an alert nobody ever saw.
 
 ## The outside clock
 

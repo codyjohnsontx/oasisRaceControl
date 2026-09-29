@@ -175,6 +175,7 @@ describe("routineUpdateMessage", () => {
     lastSeenAt: NOW - 20_000,
     seated: null,
     heartbeats: [beat(20_000)],
+    heard: [],
     ...overrides,
   });
 

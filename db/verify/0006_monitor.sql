@@ -19,6 +19,11 @@
 -- freshly migrated database), so editing the migration without updating them
 -- fails the suite.
 --
+-- The column rows hash each column's name, type, nullability, default and
+-- identity generator: a plain bigint id where the migration says `generated
+-- always as identity` would pass every other check and then fail the first
+-- alert insert.
+--
 -- On a mismatch, `actual` shows what the database holds; for the hashed
 -- column rows, compare `\d monitor_alerts` / `\d monitor_state` (or
 -- information_schema.columns) with the migration by eye.
@@ -32,9 +37,10 @@ with fingerprints (check_name, expected, actual) as (
     ),
     (
       'alerts columns',
-      'd41f4c2028a09c75084baf42f32432b8',
+      '2683ff0947a3ceca9d8da13c075fa279',
       (select md5(string_agg(
-                concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, '')),
+                concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, ''),
+                          is_identity, coalesce(identity_generation, '')),
                 ',' order by ordinal_position))
        from information_schema.columns
        where table_schema = 'public' and table_name = 'monitor_alerts')
@@ -58,9 +64,10 @@ with fingerprints (check_name, expected, actual) as (
     ),
     (
       'state columns',
-      '8303dba436d6ddd54dfa03e5c067b57c',
+      '01a58fe96f9204260caf27485218205e',
       (select md5(string_agg(
-                concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, '')),
+                concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, ''),
+                          is_identity, coalesce(identity_generation, '')),
                 ',' order by ordinal_position))
        from information_schema.columns
        where table_schema = 'public' and table_name = 'monitor_state'

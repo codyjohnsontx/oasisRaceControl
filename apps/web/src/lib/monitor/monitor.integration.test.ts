@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { db } from "@/lib/db";
 import { runMonitor } from "./run";
-import { applyFindings, nextVenueMidnightSql, type OpenAlert } from "./store";
+import { applyFindings, claimEvaluation, nextVenueMidnightSql, type OpenAlert } from "./store";
 import type { Finding } from "./rules";
 import {
   closeTestDb,
@@ -94,6 +95,19 @@ async function heartbeat(
   );
 }
 
+/** Waits until `n` backends in the test database are waiting on a lock. */
+async function waitForLockWaiters(n: number) {
+  for (let i = 0; i < 100; i++) {
+    const { rows } = await testDb().query<{ waiting: number }>(
+      `select count(*)::int as waiting from pg_stat_activity
+       where datname = current_database() and wait_event_type = 'Lock'`,
+    );
+    if (rows[0]!.waiting >= n) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`no ${n} backend(s) waiting on a lock`);
+}
+
 async function alerts() {
   const { rows } = await testDb().query<{
     rule: string;
@@ -144,7 +158,7 @@ describeDb("rig monitor against real Postgres", () => {
       detail: { headline: "Rig 01: lap reading stopped", where: "Rig 01", fields: [] },
     };
     const results = await Promise.all(
-      Array.from({ length: 8 }, () => applyFindings([finding], [])),
+      Array.from({ length: 8 }, () => applyFindings(db(), [finding], [])),
     );
 
     expect(results.flatMap((r) => r.announce)).toHaveLength(1);
@@ -160,11 +174,11 @@ describeDb("rig monitor against real Postgres", () => {
       level: 0,
       detail: { headline: "x", where: "Rig 01", fields: [] },
     };
-    const [opened] = (await applyFindings([finding], [])).announce;
+    const [opened] = (await applyFindings(db(), [finding], [])).announce;
     await testDb().query("update monitor_alerts set notified_at = now(), absent_evaluations = 1");
     const open: OpenAlert[] = [{ id: opened!, rule: finding.rule, subject: finding.subject }];
 
-    const results = await Promise.all(Array.from({ length: 8 }, () => applyFindings([], open)));
+    const results = await Promise.all(Array.from({ length: 8 }, () => applyFindings(db(), [], open)));
     expect(results.flatMap((r) => r.recover)).toEqual([opened]);
   });
 
@@ -243,6 +257,43 @@ describeDb("rig monitor against real Postgres", () => {
     await expect(runMonitor()).resolves.toMatchObject({ evaluated: true });
   });
 
+  it("holds every other evaluation back until one has applied what it read", async () => {
+    // A barrier: lock monitor_alerts against writes, so an evaluation gets
+    // through its claim and snapshot and then waits to apply its transitions.
+    const rig = await seedRig(1);
+    await heartbeat(rig, 60, { rejectedLaps: 1 });
+    const barrier = await testDb().connect();
+    const rival = await testDb().connect();
+    try {
+      await barrier.query("begin; lock table monitor_alerts in exclusive mode");
+      const first = runMonitor();
+      await waitForLockWaiters(1);
+
+      // Another evaluation's claim - the statement every evaluation starts
+      // with - cannot get past the first one while it sits between reading
+      // and applying. Were the claim its own transaction, this would answer
+      // at once and a second snapshot could be applied before the first.
+      await rival.query("begin; set local lock_timeout = '300ms'");
+      await expect(claimEvaluation(rival)).rejects.toMatchObject({ code: "55P03" });
+      await rival.query("rollback");
+
+      await barrier.query("commit");
+      await expect(first).resolves.toMatchObject({ evaluated: true, announced: 1 });
+
+      // Once it has committed, the next claim goes straight through.
+      await rival.query("begin; set local lock_timeout = '300ms'");
+      await expect(claimEvaluation(rival)).resolves.toBeNull();
+      await rival.query("rollback");
+    } finally {
+      // Never hand a client back to the pool mid-transaction: a claim it made
+      // would hold monitor_state's lock against every later test.
+      await barrier.query("rollback").catch(() => {});
+      await rival.query("rollback").catch(() => {});
+      barrier.release();
+      rival.release();
+    }
+  });
+
   it("lets exactly one of many simultaneous evaluations run", async () => {
     const runs = await Promise.all(Array.from({ length: 6 }, () => runMonitor()));
     expect(runs.filter((r) => r.evaluated)).toHaveLength(1);
@@ -270,20 +321,33 @@ describeDb("rig monitor against real Postgres", () => {
     expect(await alerts()).toMatchObject([{ notified: true }]);
   });
 
-  it("stops retrying a post after an hour rather than flooding the channel later", async () => {
+  it("stops retrying an hour after the alert opened, though the problem persists", async () => {
     const rig = await seedRig(1);
     await heartbeat(rig, 60, { rejectedLaps: 1 });
     discordAnswers = [500];
     await nextEvaluation();
+    // An hour and more later, the problem still there on every evaluation
+    // (which refreshes last_seen_at), and Discord still failing until now.
     await testDb().query(
-      `update monitor_alerts set notify_attempted_at = now() - interval '2 hours',
-                                 last_seen_at = now() - interval '2 hours'`,
+      `update monitor_alerts set opened_at = now() - interval '61 minutes',
+         notify_attempted_at = now() - interval '2 minutes',
+         notify_until = now() - interval '1 minute'`,
     );
-    // The rig is gone from the snapshot, so the alert is not refreshed either.
-    await testDb().query("delete from rig_heartbeats");
 
     await nextEvaluation();
+    await nextEvaluation();
     expect(posts).toEqual([]);
+    const { rows } = await testDb().query(
+      "select now() - last_seen_at < interval '10 seconds' as fresh, notified_at from monitor_alerts",
+    );
+    expect(rows).toEqual([{ fresh: true, notified_at: null }]);
+
+    // A rise in the count is a new announcement, with its own hour.
+    await heartbeat(rig, 0, { rejectedLaps: 2 });
+    await nextEvaluation();
+    expect(posts.map((p) => p.content)).toEqual([
+      `<@${OWNER}> 🔴 Rig 01: the site refused 2 laps; they are parked on the rig`,
+    ]);
   });
 
   it("posts nothing and claims no retries without a webhook", async () => {
@@ -314,6 +378,21 @@ describeDb("rig monitor against real Postgres", () => {
       `<@${OWNER}> 🔴 Rig 01: the site refused 3 laps; they are parked on the rig`,
     ]);
     expect(await alerts()).toMatchObject([{ rule: "laps_refused", level: 3, resolved: false }]);
+  });
+
+  it("keeps the last rig still off after a close dark, from runs older than the recent history", async () => {
+    const [off, booted] = [await seedRig(1), await seedRig(2)];
+    const closedS = 11 * 3600;
+    for (const rig of [off, booted]) {
+      for (const agoS of [closedS + 120, closedS + 60, closedS]) await heartbeat(rig, agoS);
+    }
+    // Booted half an hour ago: its pre-close run is out of the rules' recent
+    // history, and only the heard runs show it went quiet with rig 1.
+    for (let agoS = 1800; agoS >= 0; agoS -= 60) await heartbeat(booted, agoS);
+
+    await nextEvaluation();
+
+    expect(await alerts()).toEqual([]);
   });
 
   it("prunes heartbeats past seven days at most once a day", async () => {
@@ -355,6 +434,32 @@ describeDb("rig monitor against real Postgres", () => {
       client.release();
     }
   });
+
+  it("fails the verify for an alert id that is a plain bigint rather than an identity", async () => {
+    // The near miss a hand paste can make: every column name, type, default
+    // and constraint as written, but no generator - so the first alert insert
+    // fails. Inside a transaction that is rolled back.
+    const verify = readFileSync(join(REPO_ROOT, "db", "verify", "0006_monitor.sql"), "utf8");
+    const client = await testDb().connect();
+    try {
+      await client.query("begin");
+      await client.query("insert into monitor_state (id) values (1) on conflict do nothing");
+      await client.query(
+        `create temporary table schema_migrations (version text primary key) on commit drop;
+         insert into schema_migrations values ('0006_monitor.sql')`,
+      );
+      await client.query("alter table monitor_alerts alter column id drop identity");
+      const { rows } = await client.query<{ check_name: string; ok: boolean }>(verify);
+
+      expect(rows.filter((check) => !check.ok).map((check) => check.check_name)).toEqual([
+        "alerts columns",
+      ]);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
   describe("event mode", () => {
     /** A /tv page's row, as the heartbeat route writes it. */
     async function board(fields: { mode?: string; lastSeenAgoS?: number; closedAgoS?: number } = {}) {

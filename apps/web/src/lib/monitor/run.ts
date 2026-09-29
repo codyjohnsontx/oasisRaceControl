@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { withTransaction } from "@/lib/db";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
 import { eventMode, type EventMode } from "./event-mode";
 import {
@@ -26,6 +27,7 @@ import {
   pruneHeartbeats,
   releaseEventModeFlip,
   releaseRoutineUpdate,
+  type RoutineClaim,
 } from "./store";
 
 /**
@@ -38,8 +40,8 @@ import {
  * Nothing runs it on a timer inside Vercel (Hobby cron is once a day). It
  * runs after every rig and TV board heartbeat's response has gone
  * (scheduleMonitor) and on every GET /api/monitor/tick from the external
- * one-minute clock, and the claim throttles all of them to one evaluation at
- * a time.
+ * one-minute clock, and the claim throttles all of them to one evaluation
+ * every few seconds, run one at a time.
  */
 export type MonitorRun =
   | { evaluated: false }
@@ -53,12 +55,25 @@ export type MonitorRun =
     };
 
 export async function runMonitor(): Promise<MonitorRun> {
-  const claim = await claimEvaluation();
-  if (!claim) return { evaluated: false };
-
-  const snapshot = await loadSnapshot(claim.now);
-  const findings = evaluateRules(snapshot);
-  const won = await applyFindings(findings, snapshot.openAlerts);
+  // Claim, snapshot, rules and transitions in one short transaction holding
+  // the monitor_state row lock, so evaluations apply in the order they read
+  // (store.ts). It commits before anything is posted: no Discord call ever
+  // holds the lock. Event mode's flip and the 20-minute update are claimed in
+  // it too, so an older evaluation can never flip the mode back after a
+  // newer one.
+  const evaluation = await withTransaction(async (client) => {
+    const claim = await claimEvaluation(client);
+    if (!claim) return null;
+    const snapshot = await loadSnapshot(client, claim.now);
+    const findings = evaluateRules(snapshot);
+    const won = await applyFindings(client, findings, snapshot.openAlerts);
+    const mode = eventMode(snapshot);
+    const flip = await claimEventModeFlip(client, mode.on);
+    const routine = mode.on ? await claimRoutineUpdate(client) : null;
+    return { claim, snapshot, findings, won, mode, flip, routine };
+  });
+  if (!evaluation) return { evaluated: false };
+  const { claim, snapshot, findings, won, mode, flip, routine } = evaluation;
 
   const mention = alertUserId();
   let announced = await deliver(await alertsById(won.announce), (a) => alertMessage(a, mention), markAnnounced);
@@ -71,11 +86,10 @@ export async function runMonitor(): Promise<MonitorRun> {
     recovered += await deliver(await claimRecoveryRetries(), recoveryMessage, markRecoveryAnnounced);
   }
 
-  const mode = eventMode(snapshot);
-  await announceEventMode(mode);
+  if (flip !== null) await announceEventMode(mode, flip);
   const gap = monitorGap(claim.previous, claim.now);
   if (gap) await postNote(monitorGapLine(gap), "monitor gap");
-  const routineUpdate = mode.on && (await postRoutineUpdate(snapshot));
+  const routineUpdate = routine !== null && (await postRoutineUpdate(snapshot, routine));
 
   const pruned = await pruneHeartbeats();
   if (pruned !== null) console.log(`[monitor] pruned ${pruned} heartbeat(s) past retention`);
@@ -91,23 +105,18 @@ export async function runMonitor(): Promise<MonitorRun> {
 }
 
 /**
- * Posts event mode's one line when it differs from what the channel was last
- * told. The flip is claimed in the database before posting, so only one
- * evaluation posts it, and handed back if the post fails, so a later one
- * does.
+ * Posts event mode's one line, which this evaluation claimed because the mode
+ * differs from what the channel was last told, so only one evaluation posts
+ * it; handed back if the post fails, so a later one does.
  */
-async function announceEventMode(mode: EventMode): Promise<void> {
-  const claimed = await claimEventModeFlip(mode.on);
-  if (claimed === null) return;
+async function announceEventMode(mode: EventMode, claimed: string): Promise<void> {
   if (!(await postNote(eventModeLine(mode), "event mode"))) {
     await releaseEventModeFlip(mode.on, claimed);
   }
 }
 
 /** The 20-minute update, when one is due; handed back if the post fails. */
-async function postRoutineUpdate(snapshot: MonitorSnapshot): Promise<boolean> {
-  const claim = await claimRoutineUpdate();
-  if (!claim) return false;
+async function postRoutineUpdate(snapshot: MonitorSnapshot, claim: RoutineClaim): Promise<boolean> {
   try {
     const facts = await loadRoutineFacts();
     const result = await postDiscord(routineUpdateMessage(snapshot, facts, claim.nextAt));

@@ -17,6 +17,9 @@
 -- freshly migrated database), so editing the migration without updating them
 -- fails the suite.
 --
+-- The column rows hash each column's name, type, nullability, default and
+-- identity generator, as db/verify/0006_monitor.sql does.
+--
 -- On a mismatch, `actual` shows what the database holds; for the hashed
 -- column rows, compare `\d board_heartbeats` / `\d monitor_state` (or
 -- information_schema.columns) with the migration by eye.
@@ -30,9 +33,10 @@ with fingerprints (check_name, expected, actual) as (
     ),
     (
       'board columns',
-      '93c06136d48ea77b4695a3ac141493f7',
+      '776d833c8ae6b6c969e1df63e1ab4906',
       (select md5(string_agg(
-                concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, '')),
+                concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, ''),
+                          is_identity, coalesce(identity_generation, '')),
                 ',' order by ordinal_position))
        from information_schema.columns
        where table_schema = 'public' and table_name = 'board_heartbeats')
@@ -63,9 +67,10 @@ with fingerprints (check_name, expected, actual) as (
     ),
     (
       'state event mode columns',
-      '16587dec1857fd46c72ddd766a196d59',
+      'fdb5e09116761b7bbf111484d54f4bae',
       (select md5(string_agg(
-                concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, '')),
+                concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, ''),
+                          is_identity, coalesce(identity_generation, '')),
                 ',' order by ordinal_position))
        from information_schema.columns
        where table_schema = 'public' and table_name = 'monitor_state'

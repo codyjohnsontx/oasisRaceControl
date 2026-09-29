@@ -303,19 +303,29 @@ next person."
 The console is two screens, and it is cleared whenever it moves between
 them.
 
-**Sign in.** A name, then a 4-digit PIN. The PIN shows as it is typed (the
-rig keyboards are hard to type on blind), and the screen is cleared the moment
-Enter is pressed, so it is gone before the next person sits down. A refused
-sign-in comes back to this screen with the reason.
+**Sign in.** "Raced here before?" first, then a name and a 4-digit PIN - typed
+twice by a new driver. Each prompt is its own screen. The PIN shows as it is
+typed (the rig keyboards are hard to type on blind), and the screen is cleared
+the moment Enter is pressed, so it is gone before the next person sits down.
+Enter alone at any prompt goes back one step. A refused sign-in comes back to
+the name with the reason.
 
 ```text
 ============================================================
   OASIS RACE CONTROL - RIG 01 - SIGN IN
 ============================================================
 
-Type your name and press Enter:
-Mike
-Type your 4-digit PIN and press Enter (new here? pick one and remember it):
+Raced here before? Type y or n and press Enter:
+y
+```
+
+```text
+============================================================
+  OASIS RACE CONTROL - RIG 01 - SIGN IN
+============================================================
+
+Name: Mike
+Type your 4-digit PIN and press Enter (Enter alone goes back to the name):
 4821
 ```
 
@@ -355,10 +365,11 @@ A name and a 4-digit PIN are the driver's for the whole event: the same name
 and PIN on either rig, on either day, come back to the same driver, so every
 attempt at a fast time lands on one leaderboard row.
 
-How it works, with nothing new on the server: the name and PIN are logged in
-through the backend's own driver sign-in (`POST /api/auth/login`), and when
-they match nobody a new driver is registered with them
-(`POST /api/auth/register`); then `POST /api/checkin` with this rig's QR token
+How it works, with nothing new on the server: a returning driver's name and
+PIN are logged in through the backend's own driver sign-in (`POST
+/api/auth/login`), and a new driver's are registered (`POST
+/api/auth/register`) once the PIN has been typed the same twice; then `POST
+/api/checkin` with this rig's QR token
 and the takeover confirmed - the same requests the phone pages send, so it
 runs against the deployed app as it is. The next lap is stamped with the new
 stint at once. Logging out goes through the agent's existing
@@ -380,17 +391,33 @@ agent only ever stamps a lap with a stint its own check-in created, so a lap
 driven before anyone signs in on this run is nobody's, never the last
 driver's.
 
-- A new name registers with the PIN typed. A name that already exists with a
-  different PIN is refused: type the PIN again, or pick a different name.
+- The rig asks whether the driver has raced here before instead of guessing
+  it from a failed login. That guess is what went wrong at the 2026-09-28
+  event: a returning driver's wrong PIN was tried as a new sign-up and they
+  were told to use a different name.
+- Returning (y): the PIN is asked once, and a wrong one once more. After the
+  second wrong PIN: "That PIN does not match. Ask staff to reset your PIN, or
+  press Enter to try a different name." A name that has used its two tries
+  gets the same message immediately if it is typed again, in any case, without
+  asking the backend, until someone signs in. So one sign-in makes at most two
+  failed logins for a name, and someone typing a name that is not theirs
+  cannot lock the real driver out (the backend locks a name at five). This
+  path never registers anything. Staff reset a PIN on `/staff`; there is no
+  PIN reset on the rig.
+- New (n): the PIN is typed twice, and two that differ are both asked for
+  again on the rig, without a backend call. A PIN mistyped once at sign-up is
+  one its owner can never sign back in with. A name that is already taken
+  says so, and says to answer y if it is theirs. This path never logs in. A
+  check-in that fails after the sign-up says the driver is signed up and goes
+  back to the name as a returning driver, so the retry logs in.
   Names are unique across everyone the app has ever stored, not only this
   event's drivers.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
-- The PIN is exactly 4 digits; anything else asks for it again. An empty name
-  asks again.
-- The backend allows about ten sign-in attempts a minute per network
-  address, and the two event rigs share one. Every new name counts, and so
-  does every wrong PIN (a login that fails is followed by a registration
-  attempt), so a run of wrong PINs on either rig can make both wait a minute.
+- The PIN is exactly 4 digits; anything else asks for it again and never
+  reaches the backend.
+- The backend allows about ten sign-ups a minute per network address, and the
+  two event rigs share one, so a run of new names (taken ones too) on either
+  rig can make both wait a minute.
 - Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.
 - A rig whose QR token is not registered says so at the first name and asks
   again; fix `rigQrToken`.
@@ -461,10 +488,11 @@ after a goodbye with a lower sequence.
 
 **Sign-in failures** are counted from the answers the check-in routes give
 (`SignInFailureWatch`, handed to `DriverCheckInClient` as its HTTP handler), not
-from the prompt's exceptions: `wrong_pin_or_name` (a name registered to a
-different PIN, or a name the backend will not take), `locked`, `rate_limited`,
-`unreachable`, `other`. A login answering 401 is not a failure by itself; the
-register call after it decides.
+from the prompt's exceptions: `wrong_pin_or_name` (a returning driver's wrong
+PIN - a login answering 401 - or a new driver's name that is already taken or
+not allowed), `locked`, `rate_limited`, `unreachable`, `other`. Only the
+returning path logs in and only the new path registers, so each refused
+answer is one failed sign-in.
 
 ### Checking the footprint on a rig with iRacing
 

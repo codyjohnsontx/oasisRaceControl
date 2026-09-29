@@ -11,6 +11,7 @@ import {
   type MonitorSnapshot,
   type RigSnapshot,
   type RuleKey,
+  SILENT_AFTER_MS,
 } from "./rules";
 
 /**
@@ -65,6 +66,17 @@ function minutely(
   return rows;
 }
 
+/** The heartbeats' unbroken runs, as the snapshot's `heard` holds them. */
+function runsOf(heartbeats: Heartbeat[]): RigSnapshot["heard"] {
+  const runs: RigSnapshot["heard"] = [];
+  for (const { receivedAt } of heartbeats) {
+    const last = runs.at(-1);
+    if (last && receivedAt - last.to <= SILENT_AFTER_MS) last.to = receivedAt;
+    else runs.push({ from: receivedAt, to: receivedAt });
+  }
+  return runs;
+}
+
 function rig(number: number, overrides: Partial<RigSnapshot> = {}): RigSnapshot {
   const heartbeats = overrides.heartbeats ?? minutely(14 * MIN);
   return {
@@ -74,6 +86,7 @@ function rig(number: number, overrides: Partial<RigSnapshot> = {}): RigSnapshot 
     lastSeenAt: heartbeats.at(-1)?.receivedAt ?? null,
     seated: null,
     heartbeats,
+    heard: runsOf(heartbeats),
     ...overrides,
   };
 }
@@ -205,6 +218,12 @@ describe("rule 1: rig silent", () => {
     expect(evaluate([quiet(1, 13 * 60 * MIN), rig(2)], open)).toEqual([]);
   });
 
+  it("holds the note, not a warning, for the last rig of a close still inside the lookback", () => {
+    const open = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
+    const aging = [quiet(1, 12 * 60 * MIN + 20 * S), quiet(2, 12 * 60 * MIN - 20 * S)];
+    expect(rulesOf(evaluate(aging, open))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+  });
+
   describe("when the venue comes back", () => {
     const open = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
     /** Heard up to `lostAt` ago, then nothing until `backAt` ago, and every minute since. */
@@ -231,9 +250,14 @@ describe("rule 1: rig silent", () => {
       expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
     });
 
-    it("warns about each rig still quiet once the window after the first one back has passed", () => {
-      const findings = evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
-      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning", "rig_silent rig:rig-3 warning"]);
+    it("lets the note clear once the window after the first one back has passed, warning about no rig still dark", () => {
+      expect(evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open)).toEqual([]);
+    });
+
+    it("judges a rig that went quiet after the venue came back as before", () => {
+      const cameBackThenDied = rig(2, { heartbeats: [...minutely(30 * MIN, 25 * MIN), ...minutely(20 * MIN, 8 * MIN)] });
+      const findings = evaluate([back(1, 25 * MIN, 20 * MIN), cameBackThenDied, quiet(3, 25 * MIN)]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning"]);
     });
 
     it("still alerts at once for a seated rig that has not come back", () => {
@@ -245,6 +269,104 @@ describe("rule 1: rig silent", () => {
         "rig_silent rig:rig-2 urgent",
         `venue_silent ${VENUE_SUBJECT} warning`,
       ]);
+    });
+  });
+
+  describe("the morning after a close with no goodbyes", () => {
+    const open = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
+    const HOUR = 60 * MIN;
+    /** Heard until the close `closedAgo` ago, then from `bootedAgo` ago until `until` ago. */
+    const closed = (number: number, closedAgo: number, bootedAgo: number, until = 0) =>
+      rig(number, {
+        heartbeats: [...minutely(closedAgo + 10 * MIN, closedAgo), ...minutely(bootedAgo, until)],
+      });
+    /**
+     * Twenty empty rigs went quiet together at 23:00 and are booted one every
+     * four minutes from 10:00, `into` the opening past 10:00.
+     */
+    const opening = (into: number) => {
+      const closedAgo = 11 * HOUR + into;
+      return Array.from({ length: 20 }, (_, i) => {
+        const bootedAgo = into - i * 4 * MIN;
+        return bootedAgo >= 0 ? closed(i + 1, closedAgo, bootedAgo) : quiet(i + 1, closedAgo);
+      });
+    };
+    const perRig = (findings: Finding[]) => findings.filter((f) => f.rule === "rig_silent");
+
+    it("warns about no rig still switched off while they are booted one by one", () => {
+      for (let into = 0; into <= 75 * MIN; into += MIN) {
+        const findings = evaluate(opening(into), into < 7 * MIN ? open : []);
+        expect(perRig(findings), `${into / MIN} min into the opening`).toEqual([]);
+      }
+    });
+
+    it("resolves the note once rigs are live and the grace has passed", () => {
+      expect(rulesOf(evaluate(opening(3 * MIN), open))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+      expect(evaluate(opening(8 * MIN), open)).toEqual([]);
+    });
+
+    it("warns about none when the note never opened overnight because evaluations stopped", () => {
+      for (const into of [0, 10 * MIN, 45 * MIN]) {
+        expect(evaluate(opening(into)), `${into / MIN} min into the opening`).toEqual([]);
+      }
+    });
+
+    it("warns about none still dark past the twelve-hour lookback", () => {
+      const lateOpening = [rig(1), ...Array.from({ length: 19 }, (_, i) => quiet(i + 2, 13 * HOUR))];
+      expect(evaluate(lateOpening)).toEqual([]);
+    });
+
+    it("keeps a seated rig's urgent alert while it is still dark", () => {
+      const findings = evaluate([rig(1), quiet(2, 11 * HOUR, { seated: SEATED }), quiet(3, 11 * HOUR)]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 urgent"]);
+    });
+
+    it("alerts normally for a rig that came back and then went quiet", () => {
+      const findings = evaluate([
+        closed(1, 11 * HOUR, 30 * MIN),
+        closed(2, 11 * HOUR, 25 * MIN, 8 * MIN),
+        quiet(3, 11 * HOUR),
+      ]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning"]);
+    });
+
+    const stillOff = (closedAgo: number) =>
+      Array.from({ length: 18 }, (_, i) => quiet(i + 3, closedAgo));
+
+    it("warns about the first rig booted when it fails before the next is booted", () => {
+      const first = closed(1, 11 * HOUR, 10 * MIN, 7 * MIN);
+      expect(rulesOf(evaluate([first, ...stillOff(11 * HOUR)], open))).toEqual([
+        "rig_silent rig:rig-1 warning",
+        `venue_silent ${VENUE_SUBJECT} warning`,
+      ]);
+    });
+
+    it("still warns about it once the next rig is booted", () => {
+      const first = closed(1, 11 * HOUR, 20 * MIN, 17 * MIN);
+      const second = closed(2, 11 * HOUR, 10 * MIN);
+      expect(rulesOf(evaluate([first, second, ...stillOff(11 * HOUR)]))).toEqual([
+        "rig_silent rig:rig-1 warning",
+      ]);
+    });
+
+    it("warns about the first rig booted after a close more than twelve hours ago when it fails", () => {
+      const first = closed(1, 13 * HOUR, 10 * MIN, 7 * MIN);
+      expect(rulesOf(evaluate([first, ...stillOff(13 * HOUR)], open))).toEqual([
+        "rig_silent rig:rig-1 warning",
+        `venue_silent ${VENUE_SUBJECT} warning`,
+      ]);
+    });
+  });
+
+  describe("a lone rig that crashes shortly before another is booted", () => {
+    it("is warned about when its warning comes due", () => {
+      const findings = evaluate([quiet(3, 7 * MIN), rig(1, { heartbeats: minutely(2 * MIN) })]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-3 warning"]);
+    });
+
+    it("is still warned about later", () => {
+      const findings = evaluate([quiet(3, 20 * MIN), rig(1, { heartbeats: minutely(15 * MIN) })]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-3 warning"]);
     });
   });
 
@@ -537,6 +659,40 @@ describe("rules 12, 17 and 18 across a restart", () => {
       "Rig 01: this iRacing build does not publish some variables the agent reads",
     );
     expect(evaluate([rig(1, { heartbeats: neverAttached })])).toEqual([]);
+  });
+
+  // A heartbeat sent before the one standing can arrive after it (a retry, or
+  // one in flight when the next or the goodbye went). It must not stand in for
+  // the rig's newer report, or the open alert recovers and then fires again.
+  it("holds 17 when an earlier, clean heartbeat arrives after the one that showed it", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, 2 * MIN, (ago) => ({ sequence: 100 - ago / MIN })),
+      hb(MIN, { sequence: 102, missingVariables: ["PlayerCarIdx"] }),
+      hb(30 * S, { sequence: 101, sentAt: NOW - 2 * MIN }),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })], open))).toEqual([
+      "missing_variables rig:rig-1 warning",
+    ]);
+  });
+
+  it("holds 18 when a healthy heartbeat sent before the goodbye arrives after it", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, 3 * MIN, (ago) => ({ sequence: 100 - ago / MIN })),
+      hb(2 * MIN, { sequence: 102, agentMemoryMb: 200 }),
+      hb(MIN, { sequence: 103, agentMemoryMb: 200, shuttingDown: true }),
+      hb(30 * S, { sequence: 101, sentAt: NOW - 3 * MIN }),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })], open))).toEqual([
+      "footprint_high rig:rig-1 warning",
+    ]);
+  });
+
+  it("does not let an idle heartbeat from before the busy run cut it by arriving late", () => {
+    const busy = minutely(10 * MIN, 0, (ago) => ({ sequence: 100 - ago / MIN, agentCpuPercent: 4 }));
+    // Sent twenty minutes ago, before the run began; lands three minutes ago.
+    const late = hb(3 * MIN - 5 * S, { sequence: 80, sentAt: NOW - 20 * MIN, agentCpuPercent: 0.2 });
+    const heartbeats = [...busy.slice(0, 8), late, ...busy.slice(8)];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })]))).toEqual(["footprint_high rig:rig-1 warning"]);
   });
 
   it("holds 18 on CPU over the line without a fresh five-minute run, as after a restart", () => {
