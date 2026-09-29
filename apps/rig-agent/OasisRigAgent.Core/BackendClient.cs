@@ -31,7 +31,12 @@ public sealed class BackendClient
     /// schema that judges it are deployed separately, and a field one side
     /// bounds differently from the other must cost the monitor that minute's
     /// detail, never the rig its "seen" - a rig that reads as silent is an
-    /// alert, and the wrong one. Returns false when that is what happened.</summary>
+    /// alert, and the wrong one. It stays because this exe can reach the rigs
+    /// before or after the server-side change, and the server can also answer
+    /// 400 for its own request-size and rate bounds: the bare heartbeat keeps
+    /// the rig's liveness visible instead of raising a false rig-silent alert,
+    /// and the once-per-process notice says why. Returns false when that is
+    /// what happened.</summary>
     public async Task<bool> HeartbeatAsync(HeartbeatReport report, CancellationToken ct)
     {
         using (var res = await PostJsonAsync("api/agent/events", Events(report.ToEvent()), ct))
