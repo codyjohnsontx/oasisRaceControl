@@ -87,8 +87,8 @@ one-open-assignment-per-rig/driver partial unique indexes, the
 and only on the calling rig, the check constraints that keep an unattributed
 lap unrankable and make it say why, every rig heartbeat (v1 or v2) kept as a
 row with its clock skew worked out by the database, and the upgrade path of a
-migration onto a database that already holds laps - are covered by a separate suite that needs a
-real database:
+migration onto a database that already holds laps - are covered by a separate
+suite that needs a real database:
 
 ```bash
 docker start oasis-pg   # or: docker run -d --name oasis-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
