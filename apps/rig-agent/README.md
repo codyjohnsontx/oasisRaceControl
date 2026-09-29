@@ -427,8 +427,8 @@ thread keeps waiting on iRacing's data event as before; the lap detector
 already tolerates a late tick.
 
 **Offline.** Only the heartbeat backs off. Every 60 s while it gets through;
-after one that does not - unreachable, timed out, or answered with any error
-- it is retried once 10 s later, so a blip stays well inside the monitor's
+after one that does not (unreachable, timed out, or answered with any error)
+it is retried once 10 s later, so a blip stays well inside the monitor's
 two-minute silence rule. If that fails too, the gaps are 120, 240 and then at
 most 300 seconds, each within 10% jitter, back to 60 on the first heartbeat
 that gets through. The heartbeat keeps this schedule on its own: its outcome

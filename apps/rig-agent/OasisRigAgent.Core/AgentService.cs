@@ -548,8 +548,8 @@ public sealed class AgentService : IAsyncDisposable
     private async Task PollAssignmentTick(CancellationToken ct)
     {
         // Success must come from this poll's own result — _connection is shared
-        // with the heartbeat/flush loops, so it can flip between our call and
-        // this check (e.g. clearing the assignment because a heartbeat failed).
+        // with the flush loop, so it can flip between our call and this check
+        // (e.g. clearing the assignment because a flush failed).
         // Read before the request goes out, compared after it comes back.
         var generation = Volatile.Read(ref _assignmentGeneration);
 
