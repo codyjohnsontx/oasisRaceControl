@@ -42,6 +42,9 @@ public sealed class EventQueue : IDisposable
               assignment_id text not null,
               ended_at      text not null
             );
+            create table if not exists start_log (
+              started_at_ms integer not null
+            );
             """;
         cmd.ExecuteNonQuery();
         AddResolvedColumnIfMissing();
@@ -259,6 +262,60 @@ public sealed class EventQueue : IDisposable
             cmd.CommandText = "delete from pending_checkout where id = 1 and assignment_id = $id";
             cmd.Parameters.AddWithValue("$id", assignmentId);
             cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>How long ago the oldest lap still to be sent was queued, or null
+    /// when none is waiting - the heartbeat's measure of laps stuck on the rig.</summary>
+    public TimeSpan? OldestPendingAge(DateTimeOffset now)
+    {
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "select min(created_at) from outbox where rejected_reason is null";
+            return cmd.ExecuteScalar() is string created
+                   && DateTimeOffset.TryParse(created, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
+                ? now - at
+                : null;
+        }
+    }
+
+    /// <summary>Starts of the agent kept, for telling a crash loop from a rig
+    /// that was simply switched on this morning.</summary>
+    public static readonly TimeSpan StartLogWindow = TimeSpan.FromHours(24);
+
+    /// <summary>Record that the agent started at <paramref name="now"/>, forget
+    /// starts older than <see cref="StartLogWindow"/>, and return how many
+    /// starts that leaves, this one included. On disk because the question is
+    /// about processes that did not survive.</summary>
+    public int RecordStart(DateTimeOffset now)
+    {
+        lock (_lock)
+        {
+            using var tx = _connection.BeginTransaction();
+            using (var insert = _connection.CreateCommand())
+            {
+                insert.Transaction = tx;
+                insert.CommandText = "insert into start_log (started_at_ms) values ($now)";
+                insert.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+                insert.ExecuteNonQuery();
+            }
+            using (var prune = _connection.CreateCommand())
+            {
+                prune.Transaction = tx;
+                prune.CommandText = "delete from start_log where started_at_ms < $cutoff";
+                prune.Parameters.AddWithValue("$cutoff", (now - StartLogWindow).ToUnixTimeMilliseconds());
+                prune.ExecuteNonQuery();
+            }
+            int count;
+            using (var read = _connection.CreateCommand())
+            {
+                read.Transaction = tx;
+                read.CommandText = "select count(*) from start_log";
+                count = Convert.ToInt32(read.ExecuteScalar());
+            }
+            tx.Commit();
+            return count;
         }
     }
 

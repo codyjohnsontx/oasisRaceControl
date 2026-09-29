@@ -23,16 +23,39 @@ public sealed class BackendClient
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rigToken);
     }
 
-    /// <summary>Send a heartbeat so the rig shows as online on the staff dashboard.</summary>
-    public async Task HeartbeatAsync(string agentVersion, CancellationToken ct)
+    /// <summary>Send a heartbeat so the rig shows as online on the staff
+    /// dashboard, and the monitor has this minute's view of it.
+    ///
+    /// A backend that refuses the report as invalid input (400) is sent the
+    /// bare v1 heartbeat - type and version - instead. The report and the
+    /// schema that judges it are deployed separately, and a field one side
+    /// bounds differently from the other must cost the monitor that minute's
+    /// detail, never the rig its "seen" - a rig that reads as silent is an
+    /// alert, and the wrong one. It stays because this exe can reach the rigs
+    /// before or after the server-side change, and the server can also answer
+    /// 400 for its own request-size and rate bounds: the bare heartbeat keeps
+    /// the rig's liveness visible instead of raising a false rig-silent alert,
+    /// and the once-per-process notice says why. Returns false when that is
+    /// what happened.</summary>
+    public async Task<bool> HeartbeatAsync(HeartbeatReport report, CancellationToken ct)
     {
-        var body = new JsonObject
+        using (var res = await PostJsonAsync("api/agent/events", Events(report.ToEvent()), ct))
         {
-            ["events"] = new JsonArray(
-                new JsonObject { ["type"] = "RIG_HEARTBEAT", ["agentVersion"] = agentVersion }),
-        };
-        using var res = await PostJsonAsync("api/agent/events", body, ct);
-        res.EnsureSuccessStatusCode();
+            if (res.StatusCode != System.Net.HttpStatusCode.BadRequest)
+            {
+                res.EnsureSuccessStatusCode();
+                return true;
+            }
+        }
+        using var bare = await PostJsonAsync("api/agent/events", Events(new JsonObject
+        {
+            ["type"] = "RIG_HEARTBEAT",
+            ["agentVersion"] = report.AgentVersion,
+        }), ct);
+        bare.EnsureSuccessStatusCode();
+        return false;
+
+        static JsonObject Events(JsonObject heartbeat) => new() { ["events"] = new JsonArray(heartbeat) };
     }
 
     /// <summary>Statuses that mean the lap is now the backend's problem and the

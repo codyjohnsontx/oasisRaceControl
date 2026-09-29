@@ -9,7 +9,10 @@ ships them to the backend even across network drops and restarts.
 Built and verified end-to-end against the live backend:
 
 - ✅ Per-rig config + bearer-token auth
-- ✅ Heartbeat (rig shows online on the staff dashboard)
+- ✅ Heartbeat (rig shows online on the staff dashboard), and since `0.4` the
+  rig's whole status report to the server-side monitor, once a minute, from a
+  process running below normal priority - see
+  [Heartbeat and footprint](#heartbeat-and-footprint)
 - ✅ Current-driver display (polls the assignment)
 - ✅ Durable, idempotent lap outbox (SQLite) — survives outages and restarts
 - ✅ Capture-time attribution: every queued lap carries the `rigAssignmentId`
@@ -369,7 +372,7 @@ Closing the program signs the driver out too, by every way it can close:
 Ctrl+C, the window's close button, a Windows shutdown, or its input ending.
 The sign-out is recorded in the outbox first and the agent then waits up to
 three seconds for the backend to take it. Closed with nobody signed in, it
-sends nothing: with no stint of its own to name, a checkout would end
+sends no sign-out (only the goodbye heartbeat): with no stint of its own to name, a checkout would end
 whatever is open on the rig, such as a phone check-in. And every start empties the seat
 before it asks for a name: it ends whatever is open on this rig - a stint
 whose sign-out never landed, or a phone check-in - and in walk-up mode the
@@ -391,6 +394,140 @@ driver's.
 - Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.
 - A rig whose QR token is not registered says so at the first name and asks
   again; fix `rigQrToken`.
+
+## Heartbeat and footprint
+
+The owner's rule for anything that runs on a rig: "it is very crucial that
+iracing takes priority to maintain high performance and high FPS". So the
+agent reports and the server judges. Every rule, alert and summary runs on the
+backend; the rig only says what it already knows.
+
+**What it sends.** One `RIG_HEARTBEAT` every 60 seconds, about 600 bytes, on
+the wire the agent already posts laps on (`HeartbeatReport` in
+`OasisRigAgent.Core/Heartbeat.cs` mirrors `heartbeatEvent` in
+`apps/web/src/lib/events.ts`; both change together): the agent version, the
+rig clock (the server derives clock skew from it), when the process started
+and how many times it started in the last 24 hours (the outbox's `start_log`
+table), OS uptime, the telemetry mode, whether iRacing is connected and in
+which session - track, layout and car in the strings laps are posted with -
+whether lap reading stopped and which variables the iRacing build does not
+publish, the assignment laps are being stamped with, queued and parked lap
+counts with the age of the oldest queued lap, whether a sign-out is still
+owed, when the last lap was captured and posted, walk-up sign-in failures and
+agent notices since the previous heartbeat, the agent's own CPU and memory,
+and a `sequence` number counting up from 1 in each process. The server does
+not use `sequence` yet: PR 38 (heartbeat storage) stays as it is and strips
+it, and the next monitoring PR (PR 3, the evaluator) will accept it. It
+carries no driver name: the server knows the driver from the assignment.
+
+**What it costs.** It is built from state the agent already holds; the only
+file it reads is the outbox counts. No new thread and no new timer: the
+heartbeat is one `Task.Delay` loop in place of the 30-second one it replaced.
+No GPU. The process runs at **below-normal priority** (set first thing in
+`Program.cs`, after `--diagnose`, which is unchanged), so whenever iRacing and
+the agent both want the CPU the scheduler gives it to iRacing. The telemetry
+thread keeps waiting on iRacing's data event as before; the lap detector
+already tolerates a late tick.
+
+**Offline.** Only the heartbeat backs off. Every 60 s while it gets through;
+after one that does not (unreachable, timed out, or answered with any error)
+it is retried once 10 s later, so a blip stays well inside the monitor's
+two-minute silence rule. If that fails too, the gaps are 120, 240 and then at
+most 300 seconds, each within 10% jitter, back to 60 on the first heartbeat
+that gets through. The heartbeat keeps this schedule on its own: its outcome
+never changes the connection status, which the assignment poll and lap flush
+own and which therefore cannot flap on a heartbeat's answer. The poll and
+flush keep their intervals, because they carry the laps and the sign-out.
+Notices and sign-in failures raised while the
+backend is away are kept (the newest ten notices) and arrive with the first
+heartbeat that gets through. A backend that refuses the report as invalid input
+gets the bare `{type, agentVersion}` heartbeat instead, so a schema mismatch
+costs the monitor detail and never makes the rig read as silent.
+
+**Goodbye.** Every way out - `q`, input ending in walk-up mode, Ctrl+C, the
+window's close button, a Windows shutdown - sends one last heartbeat with
+`shuttingDown: true`, in parallel with the walk-up sign-out and under the same
+three-second bound, so a rig that was closed reads differently from one that
+lost power. Pulling the plug sends nothing, which is the case the monitor's
+silence rule is for. The goodbye is the last heartbeat the process sends: only
+one heartbeat is ever on the wire, the agent awaits an ordinary one already
+in flight and cancels it once half the budget has gone, and none starts once
+the goodbye has begun. A cancelled request may still have reached the server
+and be stored after the goodbye. The server does not order heartbeats by
+`sequence` yet - PR 38 (heartbeat storage) stays as it is and strips it -
+and that ordering arrives with the next monitoring PR (PR 3, the evaluator),
+which will accept `sequence` and ignore an ordinary heartbeat that arrives
+after a goodbye with a lower sequence.
+
+**Sign-in failures** are counted from the answers the check-in routes give
+(`SignInFailureWatch`, handed to `DriverCheckInClient` as its HTTP handler), not
+from the prompt's exceptions: `wrong_pin_or_name` (a name registered to a
+different PIN, or a name the backend will not take), `locked`, `rate_limited`,
+`unreachable`, `other`. A login answering 401 is not a failure by itself; the
+register call after it decides.
+
+### Checking the footprint on a rig with iRacing
+
+The live number is on every heartbeat (`agentCpuPercent`, `agentMemoryMb`). To
+confirm iRacing's frame rate is unaffected, run this on the rig, with nothing
+else running:
+
+1. **Setup.** An iRacing test session, FIA F4 at COTA Grand Prix, a fixed
+   graphics preset. Install [PresentMon](https://github.com/GameTechDev/PresentMon)
+   or [CapFrameX](https://www.capframex.com/) to record `iRacingSim64DX11.exe`
+   frame times.
+2. **Baseline, three runs.** Agent not running. Drive five timed minutes per
+   run; record average FPS and 1% low.
+3. **With the agent, three runs.** `OasisRigAgent.exe` in walk-up mode, a
+   driver signed in, backend reachable. Same protocol.
+4. **Agent footprint during step 3** - in PowerShell, one sample every 5 s for
+   5 minutes:
+   ```powershell
+   Get-Counter '\Process(OasisRigAgent)\% Processor Time','\Process(OasisRigAgent)\Working Set - Private' -SampleInterval 5 -MaxSamples 60 | Export-Counter -Path agent-footprint.blg -FileFormat blg
+   ```
+   In Task Manager > Details, the `OasisRigAgent.exe` row must show priority
+   "Below normal" and 0 in the GPU column (add the columns with a right-click
+   on the header). The console's first lines also print
+   `Priority: below normal (iRacing comes first)`.
+5. **Offline, one run.** Unplug the rig's network for five minutes mid-run:
+   the agent's CPU must not rise and the FPS capture must not change.
+6. **Pass when** the agent averages at most 1% of one core, its private working
+   set stays at or under 60 MB, the with-agent average FPS and 1% low sit within
+   the spread of the three baseline runs, no lap in the agent log is skipped
+   for missed ticks, and the heartbeat's `agentCpuPercent` agrees with the
+   counter within half a point (both are percent of one core).
+
+### Measured on a Mac (no iRacing)
+
+Not a substitute for the procedure above - there is no iRacing here, so it
+says nothing about frame rate - but it bounds what the agent itself costs.
+Machine: Apple M1 Pro (10 cores, 16 GB), macOS 26.2, .NET 8, a Release
+`osx-arm64` build of `0.4-monitor` in the staff console, simulated telemetry
+emitting a lap every 8 seconds (far busier than a real driver), against a
+local stub backend, on 2026-09-28. 18 minutes: 10 online, 5 with the backend
+killed, 3 back online. CPU is from the process's cumulative CPU time (`ps`),
+the rest from `dotnet-counters` (`System.Runtime`, 5-second samples).
+
+| | Online | Backend down | Back online |
+|---|---|---|---|
+| CPU, share of one core | 0.40% | 0.23% | 0.22% |
+
+- The heartbeat's own `agentCpuPercent` read 0.21-0.43% once warm (0.9% on
+  the minute that included start-up JIT), agreeing with `ps`.
+- Working set 38-55 MB in steady state, 66 MB peak at start-up; managed heap
+  3.5 MB on average, 7.2 MB at most.
+- About 13 KB allocated per second across the whole agent (lap flushes and
+  assignment polls included); three garbage collections in 18 minutes, none
+  of them gen 2.
+- Process nice value 10 (below normal) throughout.
+- Each heartbeat was 720 bytes on the wire (596 before the first poll).
+- Offline, the heartbeat backed off: after the last answer at 601 s, the next
+  that got through was at 1019 s, about 100 s after the backend came back,
+  instead of one a minute. That run predates the current schedule (one retry
+  after 10 s, then 120, 240, 300 s); after a long outage the next heartbeat
+  can still land up to 300 s (plus 10%) after the backend returns.
+- SIGTERM with the backend up sent the goodbye (`shuttingDown: true`) after
+  the queued laps had drained, and the process exited 0.
 
 ## Run (from source)
 
