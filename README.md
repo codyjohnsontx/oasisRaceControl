@@ -87,7 +87,9 @@ one-open-assignment-per-rig/driver partial unique indexes, the
 and only on the calling rig, the check constraints that keep an unattributed
 lap unrankable and make it say why, every rig heartbeat (v1 or v2) kept as a
 row with its clock skew worked out by the database, the rig monitor's alerts
-firing once and recovering once however many evaluations run at once, the
+firing once and recovering once however many evaluations run at once, event
+mode and its once-per-flip line and 20-minute update, the TV board heartbeat's
+one row per open page, the
 upgrade path of a migration onto a database that already holds laps, and the
 staff PIN reset judged through the driver sign-in it repairs (new PIN in, old
 PIN out, lockout gone, laps kept, audit row written) - are covered by a
@@ -149,6 +151,14 @@ right way (a click moves nothing), and gives it back to the automatic scroll
 twenty seconds after the last interaction - not while a mouse button is still
 held on it. The featured combo needs enough laps today for the list to
 overflow the screen. It takes a little over two minutes.
+
+`npm run tv:heartbeat-check` proves the board's heartbeat to the rig monitor
+(`docs/monitoring.md`): the event view heartbeats every 30 seconds, closing
+the tab sends a goodbye and raises no alert, and killing the browser raises
+exactly one "board went dark" alert three minutes later. It reads the server's
+database and calls the monitor tick, so run the server as a production build
+with `SESSION_SECRET` and `CRON_SECRET`, no `DISCORD_WEBHOOK_URL`, and a
+throwaway `DATABASE_URL` that the script is given too. About eight minutes.
 
 `npm run leaderboards:check` does the same for the page the shop rotation's
 code opens: it loads `/leaderboards` at 390x844 (`--viewport` for another

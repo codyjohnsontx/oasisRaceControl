@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
+import { mintBoardTicket } from "@/lib/board-ticket";
 import { listBoards } from "@/lib/leaderboards-queries";
 import { tvMode } from "@/lib/tv-rotation";
 import { tvHostLogo } from "@/lib/tv-host-logo";
+import { BoardHeartbeat } from "@/components/tv/board-heartbeat";
 import { TvScreen } from "@/components/tv/tv-screen";
 
 /**
@@ -17,6 +20,10 @@ import { TvScreen } from "@/components/tv/tv-screen";
  *
  * The rotation list is seeded here so the first paint already has a board; the
  * client re-reads it periodically as new tracks get driven.
+ *
+ * Every page load is also a board the rig monitor watches: it gets its own id
+ * and a signed ticket here, and heartbeats with them (`board-heartbeat.tsx`).
+ * An open event view is what turns the monitor's event mode on.
  */
 export const dynamic = "force-dynamic";
 
@@ -42,5 +49,22 @@ export default async function TvPage({ searchParams }: Props) {
     }
   }
 
-  return <TvScreen initialBoards={boards} mode={mode} hostLogo={hostLogo} />;
+  // Without a ticket the wall still works; the monitor just cannot see it.
+  let ticket: string | null = null;
+  try {
+    ticket = await mintBoardTicket({
+      boardId: randomUUID(),
+      mode,
+      host: hostLogo ? (params.host as string) : null,
+    });
+  } catch (error) {
+    console.error("[tv] cannot mint a board ticket", (error as Error).message);
+  }
+
+  return (
+    <>
+      <TvScreen initialBoards={boards} mode={mode} hostLogo={hostLogo} />
+      {ticket && <BoardHeartbeat ticket={ticket} />}
+    </>
+  );
 }

@@ -16,6 +16,7 @@ function hb(id: string, receivedAt: number, overrides: Partial<Heartbeat> = {}):
     telemetryMode: "iracing",
     simConnected: true,
     telemetryFaulted: false,
+    session: null,
     pendingLaps: 0,
     oldestPendingAgeS: null,
     rejectedLaps: 0,

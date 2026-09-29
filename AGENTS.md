@@ -278,7 +278,18 @@ day): evaluation runs in `after()` on each heartbeat and on
 reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
-migration.
+migration, and a verify fingerprints only the columns its own migration
+created, so a later `alter table` does not fail an earlier verify.
+
+Every `/tv` page heartbeats too (`components/tv/board-heartbeat.tsx`, beside
+the engine, never inside it - `tv-screen.tsx` stays untouched), with a ticket
+the page's server render signed (`lib/board-ticket.ts`): the route is public
+and believes board, mode and host only from that ticket. Feed health comes
+from wrapping each registered board type's `load` (`lib/tv-feed-health.ts`),
+not from the engine. An open event board is event mode (`eventMode()` in
+`monitor/event-mode.ts`, pure, shared like the rules); a dark board keeps it
+on until a goodbye, venue midnight or staff, or rule 8a could never fire.
+Verify board-heartbeat changes with `npm run tv:heartbeat-check`.
 
 ## The twenty-rig soak
 

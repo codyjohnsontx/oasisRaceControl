@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { runMonitor } from "@/lib/monitor/run";
-import { countOpenAlerts } from "@/lib/monitor/store";
+import { monitorStatus } from "@/lib/monitor/store";
 import { probeDatabase } from "@/lib/readiness";
 
 /**
@@ -38,11 +38,7 @@ export async function GET(request: Request) {
 
   try {
     const run = await runMonitor();
-    return Response.json({
-      status: "ok",
-      evaluated: run.evaluated,
-      activeAlerts: await countOpenAlerts(),
-    });
+    return Response.json({ status: "ok", evaluated: run.evaluated, ...(await monitorStatus()) });
   } catch (error) {
     console.error("[monitor/tick] evaluation failed", (error as Error).message);
     return Response.json({ status: "unavailable", reason: "evaluation failed" }, { status: 503 });

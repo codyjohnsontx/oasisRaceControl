@@ -9,11 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const probeDatabase = vi.fn();
 const runMonitor = vi.fn();
-const countOpenAlerts = vi.fn();
+const monitorStatus = vi.fn();
 
 vi.mock("@/lib/readiness", () => ({ probeDatabase: (tag: string) => probeDatabase(tag) }));
 vi.mock("@/lib/monitor/run", () => ({ runMonitor: () => runMonitor() }));
-vi.mock("@/lib/monitor/store", () => ({ countOpenAlerts: () => countOpenAlerts() }));
+vi.mock("@/lib/monitor/store", () => ({ monitorStatus: () => monitorStatus() }));
 
 const { GET } = await import("./route");
 
@@ -33,7 +33,7 @@ beforeEach(() => {
   process.env.CRON_SECRET = SECRET;
   probeDatabase.mockReset().mockResolvedValue({ ok: true, appliedMigrations: 6 });
   runMonitor.mockReset().mockResolvedValue({ evaluated: true, findings: 1, announced: 1, recovered: 0 });
-  countOpenAlerts.mockReset().mockResolvedValue(2);
+  monitorStatus.mockReset().mockResolvedValue({ activeAlerts: 2, eventMode: true });
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -47,7 +47,7 @@ describe("GET /api/monitor/tick", () => {
   it("evaluates and reports the open alert count for the right secret", async () => {
     const response = await GET(tick(`Bearer ${SECRET}`));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: true, activeAlerts: 2 });
+    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: true, activeAlerts: 2, eventMode: true });
     expect(probeDatabase).toHaveBeenCalledWith("monitor/tick");
     expect(runMonitor).toHaveBeenCalledTimes(1);
   });
@@ -55,7 +55,7 @@ describe("GET /api/monitor/tick", () => {
   it("says so when another evaluation ran moments ago", async () => {
     runMonitor.mockResolvedValue({ evaluated: false });
     const response = await GET(tick(`Bearer ${SECRET}`));
-    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: false, activeAlerts: 2 });
+    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: false, activeAlerts: 2, eventMode: true });
   });
 
   it.each([

@@ -401,6 +401,60 @@ merge deploys, nothing reads the new tables.
    Then set the monitor's variables and the outside clock
    ([monitoring.md](./monitoring.md)).
 
+### Applying 0007_board_heartbeats.sql
+
+`0007_board_heartbeats.sql` stores each open `/tv` page's heartbeat and the
+event mode the monitor last announced ([monitoring.md](./monitoring.md#event-mode-and-the-20-minute-update)).
+It is additive - one new table, one index, two new `monitor_state` columns
+with defaults - so apply it to Neon **before merging** the change that adds
+it, exactly as 0006 went. It needs 0006 applied first.
+
+1. Point at production exactly as in
+   [step 2 of the recovery runbook](#2-point-at-production-and-prove-it).
+2. From `apps/web`: `npm run db:check`. Read the target line, then expect
+   exactly one missing file, `0007_board_heartbeats.sql`. Anything more and
+   stop.
+3. `npm run db:migrate`. Read the `migrating <host>/<database>` line; expect
+   `applied 0007_board_heartbeats.sql` and `skip` for the rest. The runner
+   applies the file and its bookkeeping row in one transaction.
+
+   Only if you cannot run it, paste this into Neon's SQL Editor as one
+   explicit transaction, with the whole of
+   `db/migrations/0007_board_heartbeats.sql` copied in unaltered where marked:
+
+   ```sql
+   begin;
+   -- the whole of db/migrations/0007_board_heartbeats.sql, unaltered
+   insert into schema_migrations (version) values ('0007_board_heartbeats.sql');
+   commit;
+   ```
+
+   If anything in it fails, nothing is applied - fix the paste and run it
+   again. Without the `insert` the build gate keeps refusing to deploy.
+4. Verify, whichever way you applied it. `db/verify/0007_board_heartbeats.sql`
+   fingerprints the new table's columns, its constraints and index, and the
+   two new `monitor_state` columns against a database built from the
+   migration. Like 0006's, it is a **single SELECT with no transaction around
+   it** - paste the whole file and the result grid is the answer. Or from
+   `psql`:
+
+   ```bash
+   psql "$DATABASE_URL" -f ../../db/verify/0007_board_heartbeats.sql
+   ```
+
+   Expect seven rows, every one `ok = t`. Any `f` means the database does not
+   hold what the file says: stop and compare `actual` with `expected`.
+   `db/verify/0006_monitor.sql` still passes after 0007: it fingerprints only
+   the `monitor_state` columns 0006 created.
+5. After the merge deploys, open `/tv` on the hosted address. This shows its
+   heartbeat arrived (read-only, one statement):
+
+   ```sql
+   select mode, host, now() - last_seen_at as ago, feed_ok, closed_at
+   from board_heartbeats order by last_seen_at desc limit 5;
+   -- ago under 30 seconds while the page is open
+   ```
+
 ---
 
 ## Recovering a database that is behind the code

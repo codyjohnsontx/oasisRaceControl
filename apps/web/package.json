@@ -13,6 +13,7 @@
     "fake-rig": "tsx scripts/fake-rig.ts",
     "tv:check": "tsx scripts/tv-corner-check.ts",
     "tv:scroll-check": "tsx scripts/tv-event-scroll-check.ts",
+    "tv:heartbeat-check": "tsx scripts/tv-heartbeat-check.ts",
     "leaderboards:check": "tsx scripts/leaderboards-phone-check.ts",
     "db:check": "tsx scripts/check-migrations.ts",
     "db:migrate": "tsx scripts/migrate.ts",

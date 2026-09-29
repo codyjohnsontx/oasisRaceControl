@@ -11,6 +11,7 @@ import {
 import { roundLabel, type LeagueRound } from "@/lib/league";
 import type { SeasonStanding } from "@/lib/league-scoring";
 import { venueToday } from "@/lib/venue";
+import { reportingFeedHealth } from "@/lib/tv-feed-health";
 import {
   type AnyTvBoardDefinition,
   type TvBoardProps,
@@ -387,12 +388,14 @@ function leagueGap(
 
 // ---- registry + rotation list ---------------------------------------------
 
-/** Every board type `/tv` can play, keyed by `kind`. */
-export const TV_BOARD_TYPES: Record<string, AnyTvBoardDefinition> = {
-  [LEAGUE_BOARD.kind]: LEAGUE_BOARD,
-  [TRACK_BOARD.kind]: TRACK_BOARD,
-  [TONIGHT_BOARD.kind]: TONIGHT_BOARD,
-};
+/**
+ * Every board type `/tv` can play, keyed by `kind`. Each one's loads are
+ * counted for the page's heartbeat (`lib/tv-feed-health.ts`), which is how the
+ * rig monitor hears that a board is up but cannot load its numbers.
+ */
+export const TV_BOARD_TYPES: Record<string, AnyTvBoardDefinition> = Object.fromEntries(
+  [LEAGUE_BOARD, TRACK_BOARD, TONIGHT_BOARD].map((board) => [board.kind, reportingFeedHealth(board)]),
+);
 
 /**
  * The rotation lists, one per `TvMode`.

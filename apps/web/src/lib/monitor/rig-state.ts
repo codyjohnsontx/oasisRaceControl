@@ -21,6 +21,8 @@ export type Heartbeat = {
   telemetryMode: string | null;
   simConnected: boolean | null;
   telemetryFaulted: boolean | null;
+  /** The session iRacing is in, in the strings laps are posted with; null when idle. */
+  session: { trackName: string; trackConfig: string | null; carName: string } | null;
   pendingLaps: number | null;
   oldestPendingAgeS: number | null;
   rejectedLaps: number | null;

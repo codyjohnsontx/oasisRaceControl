@@ -1,7 +1,14 @@
 import { query, queryOne } from "@/lib/db";
+import type { BoardMode, BoardSnapshot, EventModeOverride } from "./event-mode";
 import type { AlertForMessage } from "./messages";
 import type { Heartbeat } from "./rig-state";
-import type { AlertDetail, Finding, MonitorSnapshot, RigSnapshot, Severity } from "./rules";
+import type {
+  AlertDetail,
+  Finding,
+  MonitorSnapshot,
+  RigSnapshot,
+  Severity,
+} from "./rules";
 
 /**
  * The monitor's database side: the evaluation throttle, the snapshot the rules
@@ -38,30 +45,57 @@ const RETRY_FOR = "1 hour";
 const RETRY_AFTER = "60 seconds";
 
 const HEARTBEAT_RETENTION = "7 days";
+const BOARD_RETENTION = "7 days";
 const PRUNE_EVERY = "24 hours";
 
 /**
  * Claims this evaluation, or returns null when another one ran within
  * EVALUATION_INTERVAL. Answers with the database's now(), which every rule
- * judges by, so no instance's own clock enters a comparison. An upsert rather
- * than an update so a missing state row (a test database truncated around it)
- * is recreated instead of silently stopping the monitor.
+ * judges by, so no instance's own clock enters a comparison, and with when
+ * the previous evaluation ran (rule 9b). The row lock makes concurrent claims
+ * queue, and each re-reads what the one before it wrote, so exactly one wins.
+ * A missing state row (a test database truncated around it) is recreated,
+ * claimed, instead of silently stopping the monitor.
  */
-export async function claimEvaluation(): Promise<{ now: number } | null> {
-  const row = await queryOne<{ now_ms: number }>(
-    `insert into monitor_state as s (id, last_evaluated_at) values (1, now())
-     on conflict (id) do update set last_evaluated_at = excluded.last_evaluated_at
-     where s.last_evaluated_at is null or s.last_evaluated_at < now() - $1::interval
-     returning (extract(epoch from now()) * 1000)::float8 as now_ms`,
+export async function claimEvaluation(): Promise<{ now: number; previous: number | null } | null> {
+  const row = await queryOne<{ now_ms: number; previous_ms: number | null }>(
+    `update monitor_state s set last_evaluated_at = now()
+     from (select last_evaluated_at from monitor_state where id = 1 for update) old
+     where s.id = 1
+       and (old.last_evaluated_at is null or old.last_evaluated_at < now() - $1::interval)
+     returning (extract(epoch from now()) * 1000)::float8 as now_ms,
+               (extract(epoch from old.last_evaluated_at) * 1000)::float8 as previous_ms`,
     [EVALUATION_INTERVAL],
   );
-  return row ? { now: row.now_ms } : null;
+  if (row) return { now: row.now_ms, previous: row.previous_ms };
+  const created = await queryOne<{ now_ms: number }>(
+    `insert into monitor_state (id, last_evaluated_at) values (1, now())
+     on conflict (id) do nothing
+     returning (extract(epoch from now()) * 1000)::float8 as now_ms`,
+  );
+  return created ? { now: created.now_ms, previous: null } : null;
 }
 
 export type OpenAlert = { id: string; rule: string; subject: string };
 
 export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { openAlerts: OpenAlert[] }> {
-  const [rigRows, heartbeatRows, openAlerts] = await Promise.all([
+  const [venue, boardRows, rigRows, heartbeatRows, openAlerts] = await Promise.all([
+    queryOne<VenueRow>(
+      `select (extract(epoch from ${VENUE_DAY_START}) * 1000)::float8 as venue_day_start_ms,
+              s.event_mode_override, s.override_expires_at, su.display_name as override_set_by,
+              fc.track_name, fc.track_config, fc.car_name
+       from (select 1) one
+       left join monitor_state s on s.id = 1
+       left join staff_users su on su.id = s.override_set_by
+       left join featured_combos fc on fc.combo_date = venue_today()`,
+    ),
+    query<BoardRow>(
+      `select board_id::text, mode, host, first_seen_at, last_seen_at, visible, feed_ok,
+              feed_failures, closed_at
+       from board_heartbeats
+       where last_seen_at >= ${VENUE_DAY_START}
+       order by last_seen_at desc`,
+    ),
     query<{
       id: string;
       rig_number: number;
@@ -87,6 +121,7 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
               h.clock_skew_ms::float8 as clock_skew_ms, h.process_started_at,
               h.agent_version, h.sim_connected, h.telemetry_faulted,
               h.pending_laps, h.rejected_laps, h.checkout, h.shutting_down,
+              h.session_track, h.session_config, h.session_car,
               h.payload->>'telemetryMode' as telemetry_mode,
               (h.payload->>'sequence')::float8 as sequence,
               (h.payload->>'oldestPendingAgeS')::float8 as oldest_pending_age_s,
@@ -128,7 +163,72 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
     heartbeats: byRig.get(row.id) ?? [],
   }));
 
-  return { now, rigs, openAlerts };
+  return {
+    now,
+    venueDayStart: venue!.venue_day_start_ms,
+    rigs,
+    featuredCombo: venue!.track_name
+      ? { trackName: venue!.track_name, trackConfig: venue!.track_config, carName: venue!.car_name! }
+      : null,
+    override:
+      venue!.event_mode_override && venue!.override_expires_at
+        ? {
+            mode: venue!.event_mode_override,
+            expiresAt: venue!.override_expires_at.getTime(),
+            setBy: venue!.override_set_by,
+          }
+        : null,
+    boards: boardRows.map(toBoard),
+    openAlerts,
+  };
+}
+
+/** Venue-local midnight that began today, as a timestamptz. */
+const VENUE_DAY_START = "(venue_today()::timestamp at time zone 'America/Chicago')";
+/**
+ * The venue-local midnight after the instant `at` (an SQL expression): when a
+ * staff override set at that instant lapses. Computed on the venue's
+ * calendar, so a day that is 23 or 25 hours long (daylight saving) still ends
+ * at midnight. At midnight exactly, that is the next one.
+ */
+export function nextVenueMidnightSql(at: string): string {
+  return `(((${at}) at time zone 'America/Chicago')::date + 1)::timestamp at time zone 'America/Chicago'`;
+}
+
+type VenueRow = {
+  venue_day_start_ms: number;
+  event_mode_override: EventModeOverride["mode"] | null;
+  override_expires_at: Date | null;
+  override_set_by: string | null;
+  track_name: string | null;
+  track_config: string | null;
+  car_name: string | null;
+};
+
+type BoardRow = {
+  board_id: string;
+  mode: BoardMode;
+  host: string | null;
+  first_seen_at: Date;
+  last_seen_at: Date;
+  visible: boolean | null;
+  feed_ok: boolean | null;
+  feed_failures: number;
+  closed_at: Date | null;
+};
+
+function toBoard(row: BoardRow): BoardSnapshot {
+  return {
+    id: row.board_id,
+    mode: row.mode,
+    host: row.host,
+    firstSeenAt: row.first_seen_at.getTime(),
+    lastSeenAt: row.last_seen_at.getTime(),
+    visible: row.visible,
+    feedOk: row.feed_ok,
+    feedFailures: row.feed_failures,
+    closedAt: row.closed_at?.getTime() ?? null,
+  };
 }
 
 type HeartbeatRow = {
@@ -145,6 +245,9 @@ type HeartbeatRow = {
   rejected_laps: number | null;
   checkout: string | null;
   shutting_down: boolean;
+  session_track: string | null;
+  session_config: string | null;
+  session_car: string | null;
   telemetry_mode: string | null;
   sequence: number | null;
   oldest_pending_age_s: number | null;
@@ -165,6 +268,10 @@ function toHeartbeat(row: HeartbeatRow): Heartbeat {
     telemetryMode: row.telemetry_mode,
     simConnected: row.sim_connected,
     telemetryFaulted: row.telemetry_faulted,
+    session:
+      row.session_track && row.session_car
+        ? { trackName: row.session_track, trackConfig: row.session_config, carName: row.session_car }
+        : null,
     pendingLaps: row.pending_laps,
     oldestPendingAgeS: row.oldest_pending_age_s,
     rejectedLaps: row.rejected_laps,
@@ -325,7 +432,8 @@ export async function claimRecoveryRetries(): Promise<AlertForMessage[]> {
 }
 
 /**
- * Deletes heartbeats past HEARTBEAT_RETENTION, at most once per PRUNE_EVERY -
+ * Deletes rig heartbeats past HEARTBEAT_RETENTION and board heartbeats past
+ * BOARD_RETENTION, at most once per PRUNE_EVERY -
  * the claim and the delete are one statement, so concurrent evaluations
  * cannot both prune. Returns the rows deleted, or null when it was not due.
  */
@@ -340,16 +448,128 @@ export async function pruneHeartbeats(): Promise<number | null> {
        delete from rig_heartbeats
        where received_at < now() - $2::interval and exists (select 1 from claimed)
        returning 1
+     ),
+     boards as (
+       delete from board_heartbeats
+       where last_seen_at < now() - $3::interval and exists (select 1 from claimed)
+       returning 1
      )
-     select exists (select 1 from claimed) as due, (select count(*) from pruned)::int as deleted`,
-    [PRUNE_EVERY, HEARTBEAT_RETENTION],
+     select exists (select 1 from claimed) as due,
+            (select count(*) from pruned)::int + (select count(*) from boards)::int as deleted`,
+    [PRUNE_EVERY, HEARTBEAT_RETENTION, BOARD_RETENTION],
   );
   return row?.due ? row.deleted : null;
 }
 
-export async function countOpenAlerts(): Promise<number> {
-  const row = await queryOne<{ open: number }>(
-    "select count(*)::int as open from monitor_alerts where resolved_at is null",
+/** What the tick answers with: open alerts, and whether event mode is on as the channel was last told. */
+export async function monitorStatus(): Promise<{ activeAlerts: number; eventMode: boolean }> {
+  const row = await queryOne<{ open: number; event_mode: boolean | null }>(
+    `select (select count(*)::int from monitor_alerts where resolved_at is null) as open,
+            (select event_mode from monitor_state where id = 1) as event_mode`,
   );
-  return row?.open ?? 0;
+  return { activeAlerts: row?.open ?? 0, eventMode: row?.event_mode ?? false };
+}
+
+/**
+ * Claims telling the channel event mode is now `on` (or off): moves the stored
+ * mode, if it is not there already. Only the evaluation whose update moved it
+ * posts the line. Returns the stamp to release with, or null.
+ */
+export async function claimEventModeFlip(on: boolean): Promise<string | null> {
+  const row = await queryOne<{ changed_at: string }>(
+    `update monitor_state set event_mode = $1, event_mode_changed_at = now()
+     where id = 1 and event_mode <> $1
+     returning event_mode_changed_at::text as changed_at`,
+    [on],
+  );
+  return row?.changed_at ?? null;
+}
+
+/** Puts a flip back after its post failed, so the next evaluation posts it again. */
+export async function releaseEventModeFlip(on: boolean, changedAt: string): Promise<void> {
+  await query(
+    `update monitor_state set event_mode = not $1
+     where id = 1 and event_mode = $1 and event_mode_changed_at = $2::timestamptz`,
+    [on, changedAt],
+  );
+}
+
+/** The routine update's cadence in event mode (owner's decision R1). */
+const ROUTINE_UPDATE_EVERY = "20 minutes";
+/**
+ * An update posted this late or less keeps the cadence: it is stamped with
+ * its mark, not with now, so a clock that ticks a few seconds after each mark
+ * does not walk the updates later all afternoon.
+ */
+const ROUTINE_UPDATE_SLACK = "1 minute";
+
+export type RoutineClaim = { previous: string | null; stamped: string; nextAt: number };
+
+/**
+ * Claims the 20-minute update when one is due, and stamps it: exactly one
+ * evaluation gets it. Returns what release needs if the post then fails.
+ */
+export async function claimRoutineUpdate(): Promise<RoutineClaim | null> {
+  const row = await queryOne<{ previous: string | null; stamped: string; next_ms: number }>(
+    `update monitor_state s
+     set last_routine_update_at =
+       case when old.last + $1::interval >= now() - $2::interval
+            then old.last + $1::interval else now() end
+     from (select last_routine_update_at as last from monitor_state where id = 1 for update) old
+     where s.id = 1 and (old.last is null or old.last <= now() - $1::interval)
+     returning old.last::text as previous, s.last_routine_update_at::text as stamped,
+               (extract(epoch from s.last_routine_update_at + $1::interval) * 1000)::float8 as next_ms`,
+    [ROUTINE_UPDATE_EVERY, ROUTINE_UPDATE_SLACK],
+  );
+  return row ? { previous: row.previous, stamped: row.stamped, nextAt: row.next_ms } : null;
+}
+
+/** Hands a claimed update back after its post failed, so the next evaluation retries it. */
+export async function releaseRoutineUpdate(claim: RoutineClaim): Promise<void> {
+  await query(
+    `update monitor_state set last_routine_update_at = $1::timestamptz
+     where id = 1 and last_routine_update_at = $2::timestamptz`,
+    [claim.previous, claim.stamped],
+  );
+}
+
+export type RoutineFacts = {
+  /** Drivers with a valid lap today, and the top three, as the event board ranks them. */
+  driversToday: number;
+  top: Array<{ displayName: string; lapTimeMs: number }>;
+  lapsLast20Min: number;
+  lastLapAtByRig: Map<string, number>;
+  activeAlerts: Array<{ severity: Severity; headline: string }>;
+};
+
+/**
+ * What the 20-minute update says beyond the snapshot. The ranking is read
+ * from v_fastest_tonight, the view the event board's own feed reads, so the
+ * channel and the wall agree by construction.
+ */
+export async function loadRoutineFacts(): Promise<RoutineFacts> {
+  const [top, recent, lastLaps, open] = await Promise.all([
+    query<{ display_name: string; lap_time_ms: number; drivers: number }>(
+      `select display_name::text, lap_time_ms, count(*) over ()::int as drivers
+       from v_fastest_tonight order by lap_time_ms limit 3`,
+    ),
+    queryOne<{ laps: number }>(
+      "select count(*)::int as laps from laps where completed_at > now() - interval '20 minutes'",
+    ),
+    query<{ rig_id: string; last_lap_at: Date }>(
+      `select rig_id, max(completed_at) as last_lap_at from laps
+       where completed_at >= ${VENUE_DAY_START} group by rig_id`,
+    ),
+    query<{ severity: Severity; headline: string }>(
+      `select severity, detail->>'headline' as headline from monitor_alerts
+       where resolved_at is null order by opened_at, id`,
+    ),
+  ]);
+  return {
+    driversToday: top[0]?.drivers ?? 0,
+    top: top.map((row) => ({ displayName: row.display_name, lapTimeMs: row.lap_time_ms })),
+    lapsLast20Min: recent?.laps ?? 0,
+    lastLapAtByRig: new Map(lastLaps.map((row) => [row.rig_id, row.last_lap_at.getTime()])),
+    activeAlerts: open,
+  };
 }
