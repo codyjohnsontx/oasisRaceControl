@@ -9,8 +9,32 @@ also sees the screen the room is watching, and an open event board puts it in
 **event mode** (below).
 
 The code is `apps/web/src/lib/monitor/`. The rules are one pure module,
-`rules.ts`, which the staff Rig health page will call on the same snapshot the
+`rules.ts`, which the staff Rig health page calls on the same snapshot the
 alerts use, so a tile and the channel can never disagree.
+
+## The Rig health page
+
+`/staff/rigs` (staff sign-in; linked from the staff dashboard's header)
+refreshes every 15 s. It reads the monitor's snapshot and runs `evaluateRules`
+on it without claiming an evaluation, so opening it posts nothing.
+
+- **A tile per rig** (`lib/monitor/rig-health.ts`): red when a rule finds
+  something urgent on the rig, yellow for a warning, and the finding's
+  headline on the tile. With no finding it is green while the rig is running,
+  grey when it is not (never seen, closed, or off for the day). Then who is
+  seated and for how long, iRacing's session, the last lap today, the upload
+  queue and parked laps, the agent build, its CPU and memory, clock skew and
+  the last heartbeat. An agent older than `rig-agent/0.4` sends none of that
+  and is badged **old agent** rather than shown as blanks.
+- **Venue** problems (no featured combo, a dark board) above the tiles.
+- **Event mode**: on or off and why, with Start event / Stop event / Auto
+  (the override below) and today's TV boards.
+- **Run checks now** runs one evaluation, throttled with every other one.
+  **Send test message to Discord** posts one line naming who pressed it and
+  says what happened: sent, no `DISCORD_WEBHOOK_URL` on this deployment, or
+  Discord's refusal and its reason.
+- **Alerts**: the last 50, open or recovered, with a link to the GitHub issue
+  when one was filed.
 
 ## When it runs
 

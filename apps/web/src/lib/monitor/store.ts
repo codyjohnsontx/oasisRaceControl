@@ -556,10 +556,7 @@ export async function loadRoutineFacts(): Promise<RoutineFacts> {
     queryOne<{ laps: number }>(
       "select count(*)::int as laps from laps where completed_at > now() - interval '20 minutes'",
     ),
-    query<{ rig_id: string; last_lap_at: Date }>(
-      `select rig_id, max(completed_at) as last_lap_at from laps
-       where completed_at >= ${VENUE_DAY_START} group by rig_id`,
-    ),
+    lastLapAtByRig(),
     query<{ severity: Severity; headline: string }>(
       `select severity, detail->>'headline' as headline from monitor_alerts
        where resolved_at is null order by opened_at, id`,
@@ -569,7 +566,70 @@ export async function loadRoutineFacts(): Promise<RoutineFacts> {
     driversToday: top[0]?.drivers ?? 0,
     top: top.map((row) => ({ displayName: row.display_name, lapTimeMs: row.lap_time_ms })),
     lapsLast20Min: recent?.laps ?? 0,
-    lastLapAtByRig: new Map(lastLaps.map((row) => [row.rig_id, row.last_lap_at.getTime()])),
+    lastLapAtByRig: lastLaps,
     activeAlerts: open,
   };
+}
+
+/** When each rig's latest lap today was completed, by rig id. */
+export async function lastLapAtByRig(): Promise<Map<string, number>> {
+  const rows = await query<{ rig_id: string; last_lap_at: Date }>(
+    `select rig_id, max(completed_at) as last_lap_at from laps
+     where completed_at >= ${VENUE_DAY_START} group by rig_id`,
+  );
+  return new Map(rows.map((row) => [row.rig_id, row.last_lap_at.getTime()]));
+}
+
+/**
+ * The database's clock, which every rule judges by, and when the monitor last
+ * evaluated: what the staff Rig health page reads before loadSnapshot, since
+ * it evaluates without claiming an evaluation (it posts nothing).
+ */
+export async function monitorClock(): Promise<{ now: number; lastEvaluatedAt: number | null }> {
+  const row = await queryOne<{ now_ms: number; last_evaluated_ms: number | null }>(
+    `select (extract(epoch from now()) * 1000)::float8 as now_ms,
+            (select (extract(epoch from last_evaluated_at) * 1000)::float8
+             from monitor_state where id = 1) as last_evaluated_ms`,
+  );
+  return { now: row!.now_ms, lastEvaluatedAt: row!.last_evaluated_ms };
+}
+
+export type RecentAlert = {
+  id: string;
+  rule: string;
+  severity: Severity;
+  where: string;
+  headline: string;
+  openedAt: number;
+  resolvedAt: number | null;
+  githubIssueNumber: number | null;
+};
+
+/** The latest alerts, open or recovered, newest first. */
+export async function recentAlerts(limit = 50): Promise<RecentAlert[]> {
+  const rows = await query<{
+    id: string;
+    rule: string;
+    severity: Severity;
+    where: string;
+    headline: string;
+    opened_at: Date;
+    resolved_at: Date | null;
+    github_issue_number: number | null;
+  }>(
+    `select id::text, rule, severity, detail->>'where' as where, detail->>'headline' as headline,
+            opened_at, resolved_at, github_issue_number
+     from monitor_alerts order by opened_at desc, id desc limit $1`,
+    [limit],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    rule: row.rule,
+    severity: row.severity,
+    where: row.where,
+    headline: row.headline,
+    openedAt: row.opened_at.getTime(),
+    resolvedAt: row.resolved_at?.getTime() ?? null,
+    githubIssueNumber: row.github_issue_number,
+  }));
 }

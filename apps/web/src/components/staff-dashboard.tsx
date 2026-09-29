@@ -123,6 +123,9 @@ export function StaffDashboard({
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-black">Race Control — Staff</h1>
         <div className="flex items-center gap-4">
+          <Link href="/staff/rigs" className="text-muted text-sm underline underline-offset-4">
+            Rig health
+          </Link>
           <Link
             href="/leaderboards"
             className="text-muted text-sm underline underline-offset-4"

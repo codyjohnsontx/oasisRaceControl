@@ -2,8 +2,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runMonitor } from "./run";
-import { applyFindings, nextVenueMidnightSql, type OpenAlert } from "./store";
-import type { Finding } from "./rules";
+import { rigTiles } from "./rig-health";
+import {
+  applyFindings,
+  lastLapAtByRig,
+  loadSnapshot,
+  monitorClock,
+  nextVenueMidnightSql,
+  recentAlerts,
+  type OpenAlert,
+} from "./store";
+import { evaluateRules, type Finding } from "./rules";
 import {
   closeTestDb,
   describeDb,
@@ -330,6 +339,39 @@ describeDb("rig monitor against real Postgres", () => {
     await heartbeat(rig, 9 * 86_400);
     await nextEvaluation();
     expect(await count()).toBe(3);
+  });
+
+  it("shows the Rig health page the channel's answer: a red tile and the open alert", async () => {
+    const rig = await seedRig(2);
+    const driver = await seedDriver("Matt G");
+    await openAssignment(rig.id, driver.id);
+    for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) await heartbeat(rig, ago);
+    await nextEvaluation();
+    await testDb().query("update monitor_alerts set github_issue_number = 57");
+
+    // What the page reads, without claiming an evaluation.
+    const clock = await monitorClock();
+    expect(clock.lastEvaluatedAt).not.toBeNull();
+    expect(clock.now - clock.lastEvaluatedAt!).toBeLessThan(60_000);
+    const snapshot = await loadSnapshot(clock.now);
+    const [tile] = rigTiles(snapshot, evaluateRules(snapshot), await lastLapAtByRig());
+    expect(tile).toMatchObject({ label: "R02", colour: "red", status: "silent 3 min" });
+    expect(tile!.problems).toEqual([
+      { severity: "urgent", headline: "Rig 02 has been silent for 3 min with Matt G signed in" },
+    ]);
+
+    expect(await recentAlerts()).toEqual([
+      {
+        id: expect.any(String),
+        rule: "rig_silent",
+        severity: "urgent",
+        where: "Rig 02",
+        headline: "Rig 02 has been silent for 3 min with Matt G signed in",
+        openedAt: expect.any(Number),
+        resolvedAt: null,
+        githubIssueNumber: 57,
+      },
+    ]);
   });
 
   it("passes the read-only verify the owner runs after hand-applying 0006", async () => {
