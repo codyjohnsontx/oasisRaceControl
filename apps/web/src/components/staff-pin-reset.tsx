@@ -11,6 +11,8 @@ const ERROR_MESSAGES = new Map([
   ["invalid_input", "The PIN must be exactly 4 digits."],
   ["not_found", "That racer no longer exists - search again."],
   ["forbidden", "Your staff sign-in has expired - sign in again."],
+  ["cross_origin", "The reset was refused as not coming from this page - reload and try again."],
+  ["unsupported_media_type", "The reset was refused as not coming from this page - reload and try again."],
 ]);
 
 type Outcome = { tone: "ok" | "error"; text: string } | null;

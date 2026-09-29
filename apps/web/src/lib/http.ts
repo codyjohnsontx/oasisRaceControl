@@ -26,13 +26,18 @@ export async function parseJsonBody<Schema extends z.ZodType>(
  * Browsers send Origin on every POST, so a missing one is refused too - no
  * browser-driven caller of these routes lacks it.
  *
+ * The Origin is compared with the host the browser addressed (X-Forwarded-Host,
+ * else Host), as Next's own server-action check does, not with `request.url`:
+ * under `next start` and the standalone server that URL is built from the bind
+ * address, so a staff page opened on a LAN IP or a forwarded port would never
+ * match it.
+ *
  * Returns a ready-to-return response, or null when the request may proceed.
  * Call it before anything else in the handler, so a refused request costs no
  * session lookup, no hashing and no query.
  */
 export function refuseCrossOriginRequest(request: Request): Response | null {
-  const origin = request.headers.get("origin");
-  if (origin === null || origin !== new URL(request.url).origin) {
+  if (!originMatchesHost(request.headers)) {
     return Response.json({ error: "cross_origin" }, { status: 403 });
   }
   const contentType = request.headers.get("content-type") ?? "";
@@ -40,4 +45,11 @@ export function refuseCrossOriginRequest(request: Request): Response | null {
     return Response.json({ error: "unsupported_media_type" }, { status: 415 });
   }
   return null;
+}
+
+function originMatchesHost(headers: Headers): boolean {
+  const origin = headers.get("origin");
+  const host = headers.get("x-forwarded-host")?.split(",")[0]?.trim() || headers.get("host");
+  if (!origin || !host || !URL.canParse(origin)) return false;
+  return new URL(origin).host === host.toLowerCase();
 }

@@ -33,6 +33,7 @@ function post(body: unknown, headers: Record<string, string> = {}) {
   return new Request("http://localhost/api/staff/reset-pin", {
     method: "POST",
     headers: {
+      host: "localhost",
       origin: "http://localhost",
       "content-type": "application/json",
       ...headers,
@@ -96,7 +97,7 @@ describe("POST /api/staff/reset-pin", () => {
   it("refuses a request with no Origin header at all", async () => {
     const request = new Request("http://localhost/api/staff/reset-pin", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }),
     });
 
@@ -123,6 +124,41 @@ describe("POST /api/staff/reset-pin", () => {
     );
     expect(form.status).toBe(415);
     await expect(form.json()).resolves.toEqual({ error: "unsupported_media_type" });
+  });
+
+  // Under `next start` and the standalone server, request.url carries the bind
+  // address, not the one staff typed - the event laptop's LAN IP, or the kind
+  // cluster's forwarded port.
+  it.each([
+    ["a LAN address", { host: "192.168.1.20:3000" }, "http://192.168.1.20:3000"],
+    ["a forwarded port", { host: "localhost:8080" }, "http://localhost:8080"],
+    [
+      "a proxy's forwarded host",
+      { host: "10.0.0.5:3000", "x-forwarded-host": "oasis.example" },
+      "https://oasis.example",
+    ],
+  ])("accepts the staff page opened on %s", async (_label, hostHeaders, origin) => {
+    const request = new Request("http://0.0.0.0:3000/api/staff/reset-pin", {
+      method: "POST",
+      headers: { ...hostHeaders, origin, "content-type": "application/json" },
+      body: JSON.stringify({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(withTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an origin that matches the Host but not the forwarded host", async () => {
+    const response = await POST(
+      post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }, {
+        "x-forwarded-host": "oasis.example",
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(getStaffUser).not.toHaveBeenCalled();
   });
 
   it("accepts the staff page's own JSON request, charset and all", async () => {

@@ -82,7 +82,12 @@ function reset(
   return resetPin(
     new Request("http://localhost/api/staff/reset-pin", {
       method: "POST",
-      headers: { origin: "http://localhost", "content-type": "application/json", ...headers },
+      headers: {
+        host: "localhost",
+        origin: "http://localhost",
+        "content-type": "application/json",
+        ...headers,
+      },
       body: JSON.stringify({ driverId, newPin, confirmPin }),
     }),
   );
