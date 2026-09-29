@@ -372,7 +372,7 @@ Closing the program signs the driver out too, by every way it can close:
 Ctrl+C, the window's close button, a Windows shutdown, or its input ending.
 The sign-out is recorded in the outbox first and the agent then waits up to
 three seconds for the backend to take it. Closed with nobody signed in, it
-sends nothing: with no stint of its own to name, a checkout would end
+sends no sign-out (only the goodbye heartbeat): with no stint of its own to name, a checkout would end
 whatever is open on the rig, such as a phone check-in. And every start empties the seat
 before it asks for a name: it ends whatever is open on this rig - a stint
 whose sign-out never landed, or a phone check-in - and in walk-up mode the
