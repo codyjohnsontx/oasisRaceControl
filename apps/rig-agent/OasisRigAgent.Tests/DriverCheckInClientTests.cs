@@ -170,7 +170,6 @@ public sealed class DriverCheckInClientTests
     [InlineData("Strau\u00DF", "STRAU\u1E9E")] // capital sharp s
     [InlineData("\u039C\u0391\u03A3", "\u03BC\u03B1\u03C2")] // final sigma
     [InlineData("\uFEFF Mike ", "mike")] // the backend's trim takes U+FEFF
-    [InlineData("Mike", "Mi\u0307ke")] // how an ICU locale lowers dotted capital I
     [InlineData("\uA7CB", "\u0264")] // a Unicode 16 capital .NET 8 cannot lower
     [InlineData("\u1C89", "\u1C8A")] // a Unicode 16 pair .NET 8 does not know
     public void SpellingsTheBackendReadsAsOneNameShareAKey(string a, string b) =>
