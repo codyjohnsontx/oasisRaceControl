@@ -16,6 +16,14 @@ vi.mock("@/lib/db", () => ({
   isUniqueViolation: () => false,
 }));
 
+// The monitor runs after the response, through Next's after(), which needs a
+// request scope these direct calls do not have; what matters here is when the
+// route asks for it.
+const scheduleMonitor = vi.fn();
+vi.mock("@/lib/monitor/run", () => ({
+  scheduleMonitor: () => scheduleMonitor(),
+}));
+
 const { POST } = await import("./route");
 const { MAX_EVENTS_BODY_BYTES } = await import("@/lib/events");
 
@@ -75,6 +83,7 @@ const HEARTBEAT_V2 = {
   agentCpuPercent: 0.1,
   agentMemoryMb: 38,
   shuttingDown: false,
+  sequence: 7,
 };
 
 /** Did the handler try to write a lap, through either db helper? */
@@ -131,6 +140,7 @@ function insertedCause(): unknown {
 }
 
 beforeEach(() => {
+  scheduleMonitor.mockReset();
   query.mockReset();
   queryOne.mockReset();
   query.mockResolvedValue([]);
@@ -409,10 +419,24 @@ describe("POST /api/agent/events behaviour", () => {
         notices: ["[agent] the backend will not accept lap 12 (lapTimeMs: Too big)"],
         agentCpuPercent: 0.1,
         agentMemoryMb: 38,
+        sequence: 7,
       },
       6, // heartbeat rate limit
       "1 minute", // and its window
     ]);
+  });
+
+  it("asks for a monitor evaluation after every heartbeat, and only then", async () => {
+    await POST(post({ events: [HEARTBEAT_V2] }));
+    expect(scheduleMonitor).toHaveBeenCalledTimes(1);
+
+    scheduleMonitor.mockReset();
+    await POST(post({ events: [LAP] }));
+    expect(scheduleMonitor).not.toHaveBeenCalled();
+
+    // A refused body stores nothing, so there is nothing new to judge.
+    await POST(post({ events: [{ ...HEARTBEAT_V2, pendingLaps: -1 }] }));
+    expect(scheduleMonitor).not.toHaveBeenCalled();
   });
 
   it("marks the rig seen once per heartbeat, in the heartbeat's own statement", async () => {

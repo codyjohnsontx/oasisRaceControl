@@ -259,6 +259,27 @@ and an integration test counts the rows it reads.
 owner runs after hand-applying; its pinned values are tested against the
 migration, so update both together.
 
+## Rig monitor
+
+`apps/web/src/lib/monitor/` judges rigs from those rows and posts to Discord;
+the runbook is [docs/monitoring.md](docs/monitoring.md). Every rule lives in
+`rules.ts`, pure, and the future staff Rig health page must call the same
+`evaluateRules` on the same snapshot - do not write a second implementation
+of a rule, the same discipline as `/tv` ranking. "Fires once, recovers once"
+is enforced by `monitor_alerts_one_open` (`db/migrations/0006_monitor.sql`)
+and single-statement transitions in `store.ts`, not by locks or by the
+throttle; only the evaluation whose statement won posts. A rig's state is its
+latest heartbeat *by send order* (`rigState`), never by arrival: an ordinary
+heartbeat that lands after the goodbye it was sent before must not turn a
+clean shutdown into a silent rig. There is no Vercel cron (Hobby runs one a
+day): evaluation runs in `after()` on each heartbeat and on
+`GET /api/monitor/tick`, which an outside clock calls with `CRON_SECRET`.
+`scheduleMonitor` must never throw into the ingestion route - a 500 there
+reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
+SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
+the last statement's result); its pinned values are tested against the
+migration.
+
 ## The twenty-rig soak
 
 The venue has 20-25 sims and the platform had only ever been driven by one rig

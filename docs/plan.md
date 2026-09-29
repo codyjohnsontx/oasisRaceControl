@@ -77,6 +77,7 @@ Points/championships and driver-vs-driver comparison were deferred here, then pu
 - `drivers` — id, display_name (citext unique), pin_hash (null for guests), is_guest, status (active/banned/name_flagged), created_at. Guest→profile conversion sets pin_hash and clears is_guest on the **same row**.
 - `rigs` — id, rig_number, display_name, agent_token_hash, agent_version, last_seen_at, connection_status.
 - `rig_heartbeats` — one row per `RIG_HEARTBEAT` for the rig monitor: the fields rules filter on as columns, everything else in a `payload` jsonb; `v_rig_latest_heartbeat` is each rig's newest. Columns and rationale in `db/migrations/0005_rig_heartbeats.sql`.
+- `monitor_alerts` / `monitor_state` — the rig monitor's alerts (one open per rule and subject, by partial unique index, so each fires and recovers once) and its single-row clock. Columns and rationale in `db/migrations/0006_monitor.sql`; behaviour in [monitoring.md](./monitoring.md).
 - `rig_qr_tokens` — rig_id, token (random slug, not the rig number), active — replaceable if a QR leaks/breaks.
 - `rig_assignments` — id, rig_id, driver_id, started_at, ended_at, end_reason (driver_ended/switched/takeover/staff_cleared/idle_timeout/moved). Partial unique index: one open assignment per rig, one per driver.
 - `sim_sessions` — id, rig_id, iracing_session_key (from spike), track_id, track_config, car_id, started_at, ended_at.

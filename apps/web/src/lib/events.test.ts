@@ -21,6 +21,16 @@ describe("agent events contract", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a heartbeat's sequence and refuses one that is not a count from 1", () => {
+    const heartbeat = (sequence: unknown) =>
+      agentEventsBody.safeParse({ events: [{ type: "RIG_HEARTBEAT", sequence }] }).success;
+    expect(heartbeat(1)).toBe(true);
+    expect(heartbeat(Number.MAX_SAFE_INTEGER)).toBe(true);
+    expect(heartbeat(0)).toBe(false);
+    expect(heartbeat(2.5)).toBe(false);
+    expect(heartbeat("3")).toBe(false);
+  });
+
   it("rejects a lap without an idempotency key", () => {
     const rest: Record<string, unknown> = { ...lap };
     delete rest.eventId;

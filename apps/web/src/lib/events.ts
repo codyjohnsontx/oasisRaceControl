@@ -111,6 +111,14 @@ export const heartbeatEvent = z.object({
   agentMemoryMb: z.number().min(0).max(1_000_000).optional(),
   /** True on the goodbye an agent sends as it exits. */
   shuttingDown: z.boolean().optional(),
+  /**
+   * This heartbeat's place among the ones this agent process has sent, from 1.
+   * With `processStartedAt` it orders one process's heartbeats however the
+   * network reordered them, so an ordinary heartbeat that lands after the
+   * goodbye it was sent before cannot read as the rig coming back
+   * (`rigState` in src/lib/monitor/rig-state.ts). Stored in `payload`.
+   */
+  sequence: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
 });
 
 export type HeartbeatEvent = z.infer<typeof heartbeatEvent>;

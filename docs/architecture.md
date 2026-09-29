@@ -82,6 +82,7 @@ flowchart TB
 | **Driver** | session cookie (JWT) | `/api/auth/{guest,login,register,logout,claim}`, `POST /api/checkin`, `GET /api/me/laps`, `POST /api/session/end` | on action · portal polls laps 5s |
 | **League board / round page** | none (public) | `GET /api/league/season`, `GET /api/league/rounds/[roundId]` | standings poll 10s · open round poll 6s (a closed round never polls) |
 | **Staff** | staff session cookie | `POST /api/staff/{login,logout,clear-rig,lap-validity,reset-pin}`, `GET /api/staff/drivers` (name lookup for a PIN reset), `POST /api/staff/league/{open-round,close-round,roll-season}` | on action · dashboard refreshes 15s |
+| **Monitor clock** (cron-job.org) | `Authorization: Bearer <CRON_SECRET>` | `GET /api/monitor/tick` (runs a rig-monitor evaluation; 503 when the database is down) | every minute in venue hours, every 30 min overnight. Rig heartbeats also evaluate, after their response; the monitor posts outbound to Discord ([monitoring.md](./monitoring.md)) |
 | **Kubernetes probes** | none (public) | `GET /api/health` (liveness: the process is up; touches nothing), `GET /api/ready` (readiness: one `select 1` through the pool under a 2s deadline; 503 with a plain-English `reason` when the database does not answer) | on the probe periods the manifests set, every replica |
 
 ## Key properties
