@@ -157,9 +157,13 @@ internal static class DriverPrompt
     /// (returning) or <see cref="AskNewPin"/> (new).</item>
     /// <item><see cref="AskPin"/> then <see cref="LogIn"/>: a match signs the
     /// driver in. A miss asks for the PIN once more; the second miss goes to
-    /// <see cref="PinRefused"/>, so one name typed makes at most
-    /// <c>LoginsPerName</c> failed logins and a stranger cannot run a real
-    /// name into the backend's lockout. Never registers anything.</item>
+    /// <see cref="PinRefused"/>. The misses are counted per name for the whole
+    /// sign-in, however often the name is typed again, and a name that has used
+    /// them goes straight to <see cref="PinRefused"/> without a login - so one
+    /// sign-in makes at most <c>LoginsPerName</c> failed logins for a name, and
+    /// a stranger cannot run a real name into the backend's lockout (five).
+    /// Names compare without case, as the backend's do. Never registers
+    /// anything.</item>
     /// <item><see cref="PinRefused"/>: says to ask staff for a PIN reset; Enter
     /// goes back to the name.</item>
     /// <item><see cref="AskNewPin"/> then <see cref="AskNewPinAgain"/>: two PINs
@@ -182,7 +186,7 @@ internal static class DriverPrompt
         var returning = false;
         var name = "";
         var pin = "";
-        var misses = 0;
+        var misses = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         while (true)
         {
@@ -223,8 +227,9 @@ internal static class DriverPrompt
                         break;
                     }
                     name = typed;
-                    misses = 0;
-                    state = returning ? SignInState.AskPin : SignInState.AskNewPin;
+                    state = !returning ? SignInState.AskNewPin
+                        : misses.GetValueOrDefault(name) >= LoginsPerName ? SignInState.PinRefused
+                        : SignInState.AskPin;
                     break;
 
                 case SignInState.AskPin:
@@ -290,7 +295,7 @@ internal static class DriverPrompt
                             notice = $"The name \"{name}\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
                             state = SignInState.AskName;
                         }
-                        else if (++misses < LoginsPerName)
+                        else if ((misses[name] = misses.GetValueOrDefault(name) + 1) < LoginsPerName)
                         {
                             notice = $"That PIN does not match \"{name}\". Type it again.";
                             state = SignInState.AskPin;

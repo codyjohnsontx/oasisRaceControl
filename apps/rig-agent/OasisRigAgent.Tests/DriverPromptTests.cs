@@ -246,6 +246,11 @@ public sealed class DriverPromptTests : IDisposable
         new object[] { "returning driver, wrong once", new[] { "y", "Mike", "1234" }, 1, 0, AskPin, "That PIN does not match \"Mike\". Type it again." },
         new object[] { "returning driver, wrong twice", new[] { "y", "Mike", "1234", "5678" }, 2, 0, PinRefused, "Name: Mike" },
         new object[] { "stranger typing a registered name stops at two logins", new[] { "y", "Mike", "1234", "5678", "9999" }, 2, 0, ReturningName, ReturningName },
+        // Typing the name again, in any case, gets no fresh tries: the PINs
+        // after it are answered on the rig and never reach the backend, whose
+        // lockout comes at five.
+        new object[] { "stranger typing the name again gets no more logins", new[] { "y", "Mike", "1234", "5678", "", "Mike", "1111", "mike", "2222" }, 2, 0, ReturningName, ReturningName },
+        new object[] { "a used-up name leaves another name its own two", new[] { "y", "Mike", "1234", "5678", "", "Guest", "1234", "5678" }, 4, 0, PinRefused, "Name: Guest" },
         new object[] { "guest or banned name, no PIN logs in", new[] { "y", "Guest", "4321", "4321" }, 2, 0, PinRefused, "Name: Guest" },
         new object[] { "not 4 digits, never sent", new[] { "y", "Mike", "12" }, 0, 0, AskPin, "The PIN is exactly 4 digits." },
         new object[] { "new driver, PIN typed the same twice", new[] { "n", "Alex", "1234", "1234" }, 0, 1, "driving", "  RIG 01 - DRIVING: Alex" },

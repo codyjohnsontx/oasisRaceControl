@@ -167,7 +167,7 @@ public sealed class HeartbeatTests : IDisposable
     }
 
     [Theory]
-    [InlineData("/api/auth/login", 401, null)]
+    [InlineData("/api/auth/login", 401, SignInFailureKind.WrongPinOrName)]
     [InlineData("/api/auth/login", 200, null)]
     [InlineData("/api/auth/login", 429, SignInFailureKind.Locked)]
     [InlineData("/api/auth/login", 400, SignInFailureKind.WrongPinOrName)]
@@ -182,9 +182,9 @@ public sealed class HeartbeatTests : IDisposable
     public void SignInAnswersAreClassifiedByRouteAndStatus(string path, int status, SignInFailureKind? expected)
         => Assert.Equal(expected, SignInFailureWatch.Classify(path, (HttpStatusCode)status));
 
-    /// <summary>The walk-up client's own sequence for a name registered to a
-    /// different PIN: a 401 login, then a 409 register. One failed sign-in is
-    /// one count, and a network that is not there is another kind - with the
+    /// <summary>The walk-up client's two paths: a returning driver's wrong PIN
+    /// (a 401 login) and a new driver's taken name (a 409 register), each one
+    /// count, and a network that is not there is another kind - with the
     /// failure still reaching the caller exactly as it would without the
     /// watch.</summary>
     [Fact]
@@ -206,7 +206,7 @@ public sealed class HeartbeatTests : IDisposable
         offline = true;
         await Assert.ThrowsAsync<HttpRequestException>(() => http.PostAsync("api/auth/login", null));
 
-        Assert.Equal([SignInFailureKind.WrongPinOrName, SignInFailureKind.Unreachable], recorded);
+        Assert.Equal([SignInFailureKind.WrongPinOrName, SignInFailureKind.WrongPinOrName, SignInFailureKind.Unreachable], recorded);
     }
 
     /// <summary>Everything the monitor needs, from state the agent already

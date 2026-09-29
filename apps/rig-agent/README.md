@@ -397,9 +397,11 @@ driver's.
   were told to use a different name.
 - Returning (y): the PIN is asked once, and a wrong one once more. After the
   second wrong PIN: "That PIN does not match. Ask staff to reset your PIN, or
-  press Enter to try a different name." So one name typed makes at most two
-  failed logins, and someone typing a name that is not theirs cannot lock the
-  real driver out from one sign-in. This path never registers anything. Staff
+  press Enter to try a different name." A name that has had its two goes
+  says the same at once if it is typed again, in any case, without asking the
+  backend - until someone signs in. So one sign-in makes at most two failed
+  logins for a name, and someone typing a name that is not theirs cannot lock
+  the real driver out (the backend locks a name at five). This path never registers anything. Staff
   reset a PIN on `/staff`; there is no PIN reset on the rig.
 - New (n): the PIN is typed twice, and two that differ are both asked for
   again on the rig, without a backend call. A PIN mistyped once at sign-up is
@@ -485,10 +487,11 @@ after a goodbye with a lower sequence.
 
 **Sign-in failures** are counted from the answers the check-in routes give
 (`SignInFailureWatch`, handed to `DriverCheckInClient` as its HTTP handler), not
-from the prompt's exceptions: `wrong_pin_or_name` (a name registered to a
-different PIN, or a name the backend will not take), `locked`, `rate_limited`,
-`unreachable`, `other`. A login answering 401 is not a failure by itself; the
-register call after it decides.
+from the prompt's exceptions: `wrong_pin_or_name` (a returning driver's wrong
+PIN - a login answering 401 - or a new driver's name that is already taken or
+not allowed), `locked`, `rate_limited`, `unreachable`, `other`. Only the
+returning path logs in and only the new path registers, so each refused
+answer is one failed sign-in.
 
 ### Checking the footprint on a rig with iRacing
 
