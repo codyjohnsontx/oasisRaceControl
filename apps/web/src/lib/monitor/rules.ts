@@ -174,8 +174,9 @@ function silence(
   // If no rig was heard around then, it went dark with the venue - closed for
   // the night, or cut off - and the venue note, not a warning, answered it;
   // once the venue is heard again it stays dark until heard itself.
-  const wentDarkWithVenue = ({ rig }: Rig) => {
-    const due = rig.lastSeenAt! + SILENT_AFTER_MS + CORRELATION_WINDOW_MS;
+  const dueAt = ({ rig }: Rig) => rig.lastSeenAt! + SILENT_AFTER_MS + CORRELATION_WINDOW_MS;
+  const wentDarkWithVenue = (r: Rig) => {
+    const due = dueAt(r);
     return (
       !heardBetween(due - SILENT_AFTER_MS, due + SILENT_AFTER_MS) &&
       runs.some((run) => run.to > due)
@@ -205,15 +206,16 @@ function silence(
     ...runs.filter((run) => now - run.to <= SILENT_AFTER_MS).map((run) => run.from),
   );
   const venueRecovering = anyLive && venueOpen && now - firstHeardAgain < VENUE_RECOVERY_GRACE_MS;
-  // Who the note speaks for: every quiet rig while they went quiet together,
-  // and while the venue comes back, those not heard since before it did. A
-  // rig that went quiet on its own is judged on its own, note or not.
-  const covered =
-    !anyLive && together
-      ? unexplained
-      : venueRecovering
-        ? unexplained.filter(({ rig }) => rig.lastSeenAt! < firstHeardAgain)
-        : [];
+  // Who the note speaks for: every quiet rig while they went quiet together
+  // or the note holds, and while the venue comes back, those not heard since
+  // before it did. A rig heard after the venue went dark, that has since gone
+  // quiet on its own, is judged on its own, note or not.
+  const heardAfterDark = ({ rig }: Rig) => dark.some((d) => rig.lastSeenAt! > dueAt(d));
+  const covered = venueRecovering
+    ? unexplained.filter(({ rig }) => rig.lastSeenAt! < firstHeardAgain)
+    : !anyLive && (together || venueOpen)
+      ? unexplained.filter((r) => together || !heardAfterDark(r))
+      : [];
   if ((!anyLive && (together || venueOpen)) || venueRecovering) {
     const names = [...dark, ...covered].map(({ rig }) => rig.name);
     findings.push({

@@ -187,6 +187,12 @@ describe("rule 1: rig silent", () => {
     expect(evaluate([quiet(1, 13 * 60 * MIN), rig(2)], open)).toEqual([]);
   });
 
+  it("holds the note, not a warning, for the last rig of a close still inside the lookback", () => {
+    const open = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
+    const aging = [quiet(1, 12 * 60 * MIN + 20 * S), quiet(2, 12 * 60 * MIN - 20 * S)];
+    expect(rulesOf(evaluate(aging, open))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+  });
+
   describe("when the venue comes back", () => {
     const open = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
     /** Heard up to `lostAt` ago, then nothing until `backAt` ago, and every minute since. */
