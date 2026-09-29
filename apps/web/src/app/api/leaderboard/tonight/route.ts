@@ -1,20 +1,25 @@
 import { z } from "zod";
 import { query, queryOne } from "@/lib/db";
-import { TONIGHT_FEED_DEFAULT_ROWS, TONIGHT_FEED_MAX_ROWS } from "@/lib/leaderboards";
+import { TONIGHT_FEED_DEFAULT_ROWS } from "@/lib/leaderboards";
 import { venueToday } from "@/lib/venue";
 
 /**
- * `limit` is optional and bounded: unset means the cap the feed has always had,
- * and anything past `TONIGHT_FEED_MAX_ROWS` (or not a whole positive number) is
- * refused rather than clamped, so a caller asking for more than the feed gives
- * finds out instead of silently getting fewer rows than it asked for.
+ * `limit` is optional: unset means the cap the feed has always had, a whole
+ * positive number means that many rows, and `all` - what the event view of
+ * `/tv` asks for - means every row, so no driver of the day can fall off the
+ * end of that board unannounced. Anything else is refused rather than guessed
+ * at.
+ *
+ * There is no ceiling because the view already is one: `v_fastest_tonight`
+ * holds one row per driver with a valid lap in today's venue day, so the most
+ * this feed can return is today's own leaderboard, which is public anyway -
+ * never the laps table. Nor does leaving the `limit` off cost the query much:
+ * the view ranks every driver of the day before any limit applies, and what
+ * the extra rows add is one indexed incident lookup each.
  */
 const querySchema = z.object({
-  limit: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .max(TONIGHT_FEED_MAX_ROWS)
+  limit: z
+    .union([z.literal("all"), z.coerce.number().int().min(1)])
     .default(TONIGHT_FEED_DEFAULT_ROWS),
 });
 
@@ -63,7 +68,8 @@ export async function GET(request: Request) {
          ) shown on true
          order by v.lap_time_ms asc
          limit $1`,
-        [parsed.data.limit],
+        // Postgres reads `limit null` as no limit at all.
+        [parsed.data.limit === "all" ? null : parsed.data.limit],
       ),
       queryOne<{ track_name: string; track_config: string | null; car_name: string }>(
         `select track_name, track_config, car_name

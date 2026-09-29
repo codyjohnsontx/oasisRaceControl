@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { formatGap, formatLapTime } from "@/lib/time";
 import { AutoScroll } from "./auto-scroll";
 
@@ -37,7 +38,7 @@ export const SLOT_COUNT = 10;
 /**
  * The table's columns, shared by the heading row and every slot so the two stay
  * in step. Rank and the two score columns are fixed because their content is:
- * two tabular digits (sized for Orbitron's widest pair, not for "01"), a lap
+ * the board's rank digits (`rankWidth`, sized for Orbitron's widest, not for "01"), a lap
  * time, a gap - all fixed-width by nature, and each sized for the widest string
  * it can realistically hold rather than the common one. Both time columns gain
  * a digit past ten minutes, which a 25km layout reaches on an ordinary slow
@@ -64,7 +65,16 @@ export const SLOT_COUNT = 10;
  * `1.5em`.
  */
 const COLUMNS =
-  "grid grid-cols-[5em_minmax(0,5fr)_minmax(0,4fr)_14.5em_9.5em] items-center gap-[1.5em]";
+  "grid grid-cols-[var(--tv-rank-w)_minmax(0,5fr)_minmax(0,4fr)_14.5em_9.5em] items-center gap-[1.5em]";
+
+/**
+ * The rank track, sized for as many digits as the board's last rank has: 2.5em
+ * a digit, the budget the original two-digit `5em` gave Orbitron's widest pair.
+ * Every slots board and any scroll board under a hundred rows keep that `5em`;
+ * the event view's list can run past a hundred drivers, where a fixed two-digit
+ * track printed "200" into the driver's name.
+ */
+const rankWidth = (lastRank: number) => `${Math.max(2, String(lastRank).length) * 2.5}em`;
 
 /**
  * Floor on a slot's height, from the tallest thing printed in one: the rank at
@@ -248,6 +258,7 @@ export function ArcadeHighScores({
       className={`flex min-h-0 flex-1 flex-col transition-opacity duration-500 ${
         stale ? "opacity-70" : "opacity-100"
       }`}
+      style={{ "--tv-rank-w": rankWidth(slots.length) } as CSSProperties}
     >
       <header className="flex shrink-0 flex-col gap-[0.5em]">
         <p className="font-display text-accent text-glow-subtle text-[1.25em]/[1.4] font-bold uppercase tracking-[0.42em]">

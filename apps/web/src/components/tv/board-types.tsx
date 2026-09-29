@@ -5,7 +5,6 @@ import { formatLapTime } from "@/lib/time";
 import {
   type Board,
   type BoardRow,
-  TONIGHT_FEED_MAX_ROWS,
   trackKey,
 } from "@/lib/leaderboards";
 import { roundLabel, type LeagueRound } from "@/lib/league";
@@ -114,8 +113,9 @@ const driverCount = (n: number) => `${n} driver${n === 1 ? "" : "s"}`;
  * The tonight board plays two ways. In the rotation it is the top ten of the
  * featured combo, one slide among the others. With `everyone` it is the event
  * view of `/tv`: the same board and the same feed, asking for every driver with
- * a lap today (up to the feed's ceiling) and scrolling through them, because at
- * an off-site event the point is that everybody finds their own name.
+ * a lap today (`limit=all` - no ceiling, so nobody drops off the end
+ * unannounced) and scrolling through them, because at an off-site event the
+ * point is that everybody finds their own name.
  */
 type TonightSpec = { everyone: boolean };
 
@@ -149,10 +149,8 @@ const TONIGHT_BOARD = defineTvBoard<TonightSpec, TonightData>({
   kind: "tonight",
   async load(spec, signal) {
     // The rotation's slide asks for nothing, so the request the venue's wall
-    // has always made is unchanged; only the event view asks for the ceiling.
-    const url = spec.everyone
-      ? `/api/leaderboard/tonight?limit=${TONIGHT_FEED_MAX_ROWS}`
-      : "/api/leaderboard/tonight";
+    // has always made is unchanged; only the event view asks for everyone.
+    const url = spec.everyone ? "/api/leaderboard/tonight?limit=all" : "/api/leaderboard/tonight";
     const data = (await fetchJson(url, signal)) as TonightData;
     if (!Array.isArray(data.rows)) throw new Error("malformed tonight response");
     // An empty feed is the venue day rolling over. This runs on every pass,

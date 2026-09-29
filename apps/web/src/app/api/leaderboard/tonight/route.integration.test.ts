@@ -69,4 +69,38 @@ describeDb("GET /api/leaderboard/tonight", () => {
       ["Clean", 92_000, 0],
     ]);
   });
+
+  // The event view promises every driver of the day. It used to ask for a
+  // ceiling of 200 rows, and the 201st driver vanished while the board still
+  // read "200 drivers" - so the count here is deliberately past that.
+  it("returns every driver of the day for limit=all", async () => {
+    await setFeaturedCombo({ trackName: TRACK, carName: CAR });
+    const rig = await seedRig(1);
+    const drivers = 250;
+    await testDb().query(
+      `with d as (
+         insert into drivers (display_name, is_guest)
+         select 'Driver ' || lpad(n::text, 3, '0'), true from generate_series(1, $1) n
+         returning id, display_name
+       ), a as (
+         insert into rig_assignments (rig_id, driver_id, ended_at, end_reason)
+         select $2, id, now(), 'driver_ended' from d
+         returning id, driver_id
+       )
+       insert into laps (event_id, rig_id, rig_assignment_id, driver_id,
+                         track_name, car_name, lap_time_ms, incident_delta,
+                         is_valid, completed_at)
+       select 'evt-' || gen_random_uuid(), $2, a.id, a.driver_id, $3, $4,
+              100000 + substring(d.display_name from 8)::int, 0, true, now()
+       from a join d on d.id = a.driver_id`,
+      [drivers, rig.id, TRACK, CAR],
+    );
+
+    const res = await GET(new Request("http://tv.local/api/leaderboard/tonight?limit=all"));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.rows).toHaveLength(drivers);
+    expect(body.rows.at(-1).display_name).toBe("Driver 250");
+  });
 });

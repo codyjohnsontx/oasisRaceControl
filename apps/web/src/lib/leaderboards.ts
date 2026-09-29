@@ -34,18 +34,15 @@ export type BoardRow = {
 export type BoardWindow = "alltime" | "tonight";
 
 /**
- * Row caps on the `/api/leaderboard/tonight` feed. The default is what the
- * feed has always returned: the wall's tonight board draws ten slots and the
- * phone a little more. The ceiling is for the event view of `/tv`, which puts
- * every driver with a lap today on the screen and scrolls - an off-site event
- * runs two rigs for an afternoon, so a couple of hundred distinct drivers is
- * the most a venue day can produce, and the bound keeps a mistyped or hostile
- * `limit` from turning the public feed into a full-table dump. Both live here,
- * rather than in the route, because the board that asks for the ceiling is a
- * client component and this module is the one it may import.
+ * Rows the `/api/leaderboard/tonight` feed returns when no `limit` is asked
+ * for - what it has always returned: the wall's tonight board draws ten slots
+ * and the phone a little more. The event view of `/tv` asks for `limit=all`
+ * instead, because it promises every driver with a lap today and a fixed
+ * ceiling would drop the next one silently. Lives here, rather than in the
+ * route, because a Next route file may export only its handlers and the
+ * route's tests need it too.
  */
 export const TONIGHT_FEED_DEFAULT_ROWS = 15;
-export const TONIGHT_FEED_MAX_ROWS = 200;
 
 // ---- Pure helpers (unit-tested; no DB) ------------------------------------
 

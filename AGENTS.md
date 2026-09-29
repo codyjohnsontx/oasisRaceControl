@@ -22,7 +22,9 @@ every driver with a lap today in the featured combo, scrolling on its own
 (`auto-scroll.tsx`), no rotation. It is a second rotation *list* (`TvMode` in
 `tv-rotation.ts`, chosen by `buildRotation`), not a second engine or a second
 board type - the tonight board plays it with `everyone: true`, asking the
-tonight feed for its `TONIGHT_FEED_MAX_ROWS` ceiling. It exists because at an
+tonight feed for `limit=all`. Do not give it a row ceiling back: 200 once hid
+the 201st driver of the day while the board still read "200 drivers", and
+`v_fastest_tonight` is already bounded by the day's drivers. It exists because at an
 off-site event the venue rotation shows the same laps under three headings:
 a league slide with no season, which is counted in the footer but never
 plays, then "Fastest tonight" and "All-time best laps", identical when every
