@@ -25,7 +25,7 @@ namespace OasisRigAgent.Core.Iracing;
 /// header on attach and on rejection, the combo strings as parsed, every lap
 /// decision, and the variables iRacing did not publish.
 /// </summary>
-public sealed class IracingTelemetrySource : ITelemetrySource, IDisposable
+public sealed class IracingTelemetrySource : ITelemetrySource, ISimHealthSource, IDisposable
 {
     private const string MemoryMapName = "Local\\IRSDKMemMapFileName";
     private const string DataEventName = "Local\\IRSDKDataValidEvent";

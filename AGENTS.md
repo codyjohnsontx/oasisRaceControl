@@ -340,6 +340,21 @@ loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
 test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
 `OASIS_TEST_BACKEND_URL`).
 
+## Rig heartbeat
+
+`RIG_HEARTBEAT` is the rig's whole report to the server-side monitor:
+`HeartbeatReport` (`apps/rig-agent/OasisRigAgent.Core/Heartbeat.cs`) mirrors
+`heartbeatEvent` in `apps/web/src/lib/events.ts`, and both change together.
+The owner's rule is that iRacing's frame rate comes first, so the agent runs
+below normal priority (`Program.cs`), reports only state it already holds, and
+every judgement stays on the server - do not add rig-side checks, threads or
+timers for monitoring. Only the heartbeat backs off while offline; the poll
+and flush carry laps and the sign-out and keep their intervals. Every exit
+path sends a `shuttingDown` goodbye, or a closed rig reads as a dead one.
+Walk-up sign-in failures are counted from the check-in routes' HTTP answers
+(`SignInFailureWatch`), not inside `DriverCheckInClient`. The on-rig FPS check
+is in `apps/rig-agent/README.md` (Heartbeat and footprint).
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which

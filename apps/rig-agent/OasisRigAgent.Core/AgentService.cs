@@ -1,15 +1,19 @@
+using OasisRigAgent.Core.Iracing;
+
 namespace OasisRigAgent.Core;
 
 /// <summary>
 /// Orchestrates the rig agent: queues detected laps, and runs the background
 /// loops - heartbeat, assignment poll, queue flush, and the sim-state check.
+/// The heartbeat is also the rig's whole report to the server-side monitor
+/// (<see cref="HeartbeatReport"/>): built from state this class already
+/// holds, once a minute, and nothing on the rig decides whether it is healthy.
 /// Exposes a StatusChanged event the UI renders, and a Notice event for
 /// one-line problems the host prints. All backend calls funnel through
 /// RunBackend so one place owns the online/offline state transition.
 /// </summary>
 public sealed class AgentService : IAsyncDisposable
 {
-    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FlushInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SimStateInterval = TimeSpan.FromSeconds(1);
@@ -70,6 +74,31 @@ public sealed class AgentService : IAsyncDisposable
     // run left open, and not a phone check-in either.
     private readonly bool _ownStintsOnly;
 
+    // What the heartbeat reports beyond AgentStatus. The sim's side is written
+    // by the telemetry thread's events and only ever replaced whole, so a
+    // volatile reference is enough; the counters and notices are drained by
+    // the heartbeat that delivered them and share one lock.
+    private readonly ProcessFootprint _footprint;
+    private readonly DateTimeOffset? _processStartedAt;
+    private int? _startCount;
+    private volatile SessionCombo? _session;
+    private volatile IReadOnlyList<string> _missingVariables = Array.Empty<string>();
+    private volatile bool _telemetryFaulted;
+    private readonly object _reportLock = new();
+    private DateTimeOffset? _lastLapCapturedAt;
+    private DateTimeOffset? _lastLapPostedAt;
+    private long _reportSequence;
+    private readonly List<(long Seq, string Text)> _unreportedNotices = new();
+    private readonly List<(long Seq, SignInFailureKind Kind)> _unreportedSignInFailures = new();
+    private volatile bool _shuttingDown;
+    private bool _reportedBareHeartbeat;
+
+    // A sign-in failure count is a number, so unlike the notices it is not
+    // capped at the ten the wire takes: a long outage keeps counting. The
+    // list itself is capped so a rig nobody can sign into for a night does
+    // not grow without bound; past it only the oldest kinds are forgotten.
+    private const int MaxUnreportedSignInFailures = 1000;
+
     public event Action<AgentStatus>? StatusChanged;
 
     /// <summary>A lap was queued with the stint it was stamped with (null:
@@ -85,12 +114,16 @@ public sealed class AgentService : IAsyncDisposable
     /// line for whichever console the host shows.</summary>
     public event Action<string>? Notice;
 
-    public AgentService(AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry)
+    public AgentService(
+        AgentConfig config, BackendClient client, EventQueue queue, ITelemetrySource telemetry,
+        ProcessFootprint? footprint = null)
     {
         _config = config;
         _client = client;
         _queue = queue;
         _telemetry = telemetry;
+        _footprint = footprint ?? new ProcessFootprint();
+        _processStartedAt = ProcessStartedAt();
         _ownStintsOnly = config.RigQrToken is not null;
         // A checkout left undelivered by the previous run of this agent. Read
         // before any loop starts, so the first poll already knows not to adopt
@@ -108,6 +141,7 @@ public sealed class AgentService : IAsyncDisposable
         // process, not just drop the lap.
         _telemetry.LapCompleted += lap =>
         {
+            lock (_reportLock) _lastLapCapturedAt = DateTimeOffset.UtcNow;
             try
             {
                 // Who was in the seat NOW. The lap may sit in the outbox through
@@ -139,12 +173,43 @@ public sealed class AgentService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Notice?.Invoke($"[agent] failed to queue lap {lap.EventId}: {ex.Message}");
+                RaiseNotice($"[agent] failed to queue lap {lap.EventId}: {ex.Message}");
             }
         };
+        if (_telemetry is ISimHealthSource sim)
+        {
+            // Raised on the telemetry thread: each handler only swaps a
+            // reference, so the sim never waits on the agent.
+            sim.ConnectionChanged += up =>
+            {
+                if (up) return;
+                _session = null;
+                _missingVariables = Array.Empty<string>();
+            };
+            sim.ComboChanged += combo => _session = combo;
+            sim.MissingVariables += names => _missingVariables = names.ToArray();
+            sim.Faulted += ex =>
+            {
+                _telemetryFaulted = true;
+                // For the heartbeat only: both consoles already print the
+                // source's own Faulted line.
+                RememberNotice($"[telemetry] lap reading stopped: {ex.Message}");
+            };
+        }
+        // Counted before the first heartbeat goes, so that heartbeat already
+        // says how many times this rig has started today. An outbox that
+        // cannot record it costs the count, not the start.
+        try
+        {
+            _startCount = _queue.RecordStart(DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex)
+        {
+            RaiseNotice($"[agent] failed to record this start: {ex.Message}");
+        }
         _telemetry.Start();
 
-        _loops.Add(RunLoop(HeartbeatInterval, HeartbeatTick, runImmediately: true));
+        _loops.Add(HeartbeatLoop());
         _loops.Add(RunLoop(PollInterval, PollAssignmentTick, runImmediately: true));
         _loops.Add(RunLoop(FlushInterval, FlushQueueTick, runImmediately: true));
         // The sim's state is not an event the telemetry contract carries, and
@@ -221,7 +286,7 @@ public sealed class AgentService : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    Notice?.Invoke(
+                    RaiseNotice(
                         $"[agent] failed to record queued sign-out {ending}: {ex.Message}");
                 }
                 _pendingCheckout = ending;
@@ -283,12 +348,188 @@ public sealed class AgentService : IAsyncDisposable
         return Task.CompletedTask;
     }
 
-    private async Task HeartbeatTick(CancellationToken ct)
-        => await RunBackend(async token =>
+    /// <summary>One heartbeat now, then one a minute - further apart while the
+    /// backend does not answer (<see cref="HeartbeatSchedule"/>). A Task.Delay
+    /// between sends rather than a timer: nothing wakes in between, and the
+    /// gap can grow. Ends when the agent is disposed or a goodbye has gone.</summary>
+    private async Task HeartbeatLoop()
+    {
+        var failures = 0;
+        while (!_cts.IsCancellationRequested && !_shuttingDown)
         {
-            await _client.HeartbeatAsync(_config.AgentVersion, token);
-            return true;
-        });
+            bool? delivered;
+            try
+            {
+                delivered = await SendHeartbeatAsync(shuttingDown: false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Building the report failed locally; that is no reason to
+                // back off from a backend that may be answering fine.
+                RaiseNotice($"[agent] tick failed: {ex.Message}");
+                delivered = null;
+            }
+            if (delivered is { } ok) failures = ok ? 0 : failures + 1;
+
+            try
+            {
+                await Task.Delay(HeartbeatSchedule.Delay(failures, Random.Shared.NextDouble()), _cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>Send one heartbeat. True once the backend has it (the full
+    /// report or, if it refused that, the bare one), false when it could not be
+    /// reached. What it reported is forgotten only then, so a notice or a
+    /// sign-in failure from an outage arrives with the first heartbeat that
+    /// gets through.</summary>
+    internal async Task<bool> SendHeartbeatAsync(bool shuttingDown)
+    {
+        var (report, reportedUpTo) = BuildHeartbeat(shuttingDown);
+        var sent = await RunBackend(async token => (Ok: true, Full: await _client.HeartbeatAsync(report, token)));
+        if (!sent.Ok) return false;
+
+        lock (_reportLock)
+        {
+            // Dropped even when only the bare heartbeat got through: whatever
+            // in them the backend could not take would otherwise be offered
+            // again every minute, and the report would never get through.
+            _unreportedNotices.RemoveAll(n => n.Seq <= reportedUpTo);
+            _unreportedSignInFailures.RemoveAll(f => f.Seq <= reportedUpTo);
+            if (sent.Full || _reportedBareHeartbeat) return true;
+            _reportedBareHeartbeat = true;
+        }
+        RaiseNotice("[agent] the backend refused this rig's status report and got the bare heartbeat instead - "
+            + "the rig shows as online, but the agent and the site disagree on the report's shape.");
+        return true;
+    }
+
+    /// <summary>The goodbye: one heartbeat saying this agent is shutting down,
+    /// so a rig that was closed reads differently from one that lost power.
+    /// Bounded by <paramref name="limit"/> because it runs on the way out,
+    /// where a backend that does not answer must not hold the window open;
+    /// no heartbeat follows it.</summary>
+    public async Task SendGoodbyeAsync(TimeSpan limit)
+    {
+        _shuttingDown = true;
+        try
+        {
+            await SendHeartbeatAsync(shuttingDown: true).WaitAsync(limit);
+        }
+        catch (Exception)
+        {
+            // Nothing more can be done on the way out; the monitor reads the
+            // silence that follows as a rig that went away unannounced.
+        }
+    }
+
+    /// <summary>A walk-up sign-in that seated nobody, counted for the next
+    /// heartbeat (see <see cref="SignInFailureWatch"/>).</summary>
+    public void RecordSignInFailure(SignInFailureKind kind)
+    {
+        lock (_reportLock)
+        {
+            _unreportedSignInFailures.Add((++_reportSequence, kind));
+            if (_unreportedSignInFailures.Count > MaxUnreportedSignInFailures) _unreportedSignInFailures.RemoveAt(0);
+        }
+    }
+
+    private void RaiseNotice(string message)
+    {
+        RememberNotice(message);
+        Notice?.Invoke(message);
+    }
+
+    /// <summary>Keep a notice for the next heartbeat; only the newest ten go.</summary>
+    private void RememberNotice(string message)
+    {
+        lock (_reportLock)
+        {
+            _unreportedNotices.Add((++_reportSequence, message));
+            if (_unreportedNotices.Count > HeartbeatReport.MaxListItems) _unreportedNotices.RemoveAt(0);
+        }
+    }
+
+    /// <summary>This minute's report, and the sequence number of the last
+    /// notice or sign-in failure in it.</summary>
+    internal (HeartbeatReport Report, long ReportedUpTo) BuildHeartbeat(bool shuttingDown)
+    {
+        var now = DateTimeOffset.UtcNow;
+        (double? CpuPercent, double MemoryMb) footprint;
+        lock (_footprint) footprint = _footprint.Sample();
+        // The outbox is the one file read here. A disk that fails leaves those
+        // counts out of the report rather than the report out of the minute.
+        int? pending = Outbox(_queue.PendingCount);
+        int? rejected = Outbox(_queue.RejectedCount);
+        double? oldest = null;
+        try { oldest = _queue.OldestPendingAge(now)?.TotalSeconds; }
+        catch (Exception) { }
+        var pendingCheckout = _pendingCheckout;
+
+        lock (_reportLock)
+        {
+            var report = new HeartbeatReport
+            {
+                AgentVersion = _config.AgentVersion,
+                SentAt = now,
+                ProcessStartedAt = _processStartedAt,
+                StartCount = _startCount,
+                OsUptimeS = Environment.TickCount64 / 1000,
+                TelemetryMode = _config.TelemetryMode,
+                SimConnected = _telemetry.SimRunning,
+                TelemetryFaulted = _telemetryFaulted,
+                MissingVariables = _missingVariables,
+                Session = _telemetry.SimRunning ? _session : null,
+                AssignmentId = _assignment?.Id,
+                AssignmentKnown = _hasPolled,
+                PendingLaps = pending,
+                OldestPendingAgeS = oldest,
+                RejectedLaps = rejected,
+                Checkout = pendingCheckout is null
+                    ? CheckoutDelivery.None
+                    : _pendingCheckoutIsDurable ? CheckoutDelivery.Queued : CheckoutDelivery.NotQueued,
+                LastLapCapturedAt = _lastLapCapturedAt,
+                LastLapPostedAt = _lastLapPostedAt,
+                SignInFailures = _unreportedSignInFailures.Count,
+                SignInFailureKinds = _unreportedSignInFailures.Select(f => f.Kind).ToArray(),
+                Notices = _unreportedNotices.Select(n => n.Text).ToArray(),
+                AgentCpuPercent = footprint.CpuPercent,
+                AgentMemoryMb = footprint.MemoryMb,
+                // Once a goodbye is under way, a heartbeat that was already
+                // being built says so too: it may land after the goodbye, and
+                // must not read as the rig coming back.
+                ShuttingDown = shuttingDown || _shuttingDown,
+            };
+            return (report, _reportSequence);
+        }
+
+        static T? Outbox<T>(Func<T> read) where T : struct
+        {
+            try { return read(); }
+            catch (Exception) { return null; }
+        }
+    }
+
+    private static DateTimeOffset? ProcessStartedAt()
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
 
     private async Task PollAssignmentTick(CancellationToken ct)
     {
@@ -389,7 +630,7 @@ public sealed class AgentService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Notice?.Invoke(
+                RaiseNotice(
                     $"[agent] failed to forget delivered sign-out {assignmentId}: {ex.Message}");
             }
             if (_pendingCheckout == assignmentId)
@@ -414,6 +655,7 @@ public sealed class AgentService : IAsyncDisposable
         if (outcome.Rejected.Count > 0) Quarantine(outcome.Rejected);
         if (outcome.Settled.Count > 0)
         {
+            lock (_reportLock) _lastLapPostedAt = DateTimeOffset.UtcNow;
             _queue.Remove(outcome.Settled);
             PublishStatus();
             LapsPosted?.Invoke(outcome.Settled);
@@ -436,7 +678,7 @@ public sealed class AgentService : IAsyncDisposable
     private void Quarantine(IReadOnlyList<RejectedEvent> rejected)
     {
         foreach (var lap in _queue.Reject(rejected))
-            Notice?.Invoke(
+            RaiseNotice(
                 $"[agent] the backend will not accept lap {lap.EventId} ({lap.Reason}). "
                 + "It is kept in the outbox and will not be sent again; the rest of the "
                 + "queue is now free to flush.");
@@ -496,7 +738,7 @@ public sealed class AgentService : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Notice?.Invoke($"[agent] tick failed: {ex.Message}");
+            RaiseNotice($"[agent] tick failed: {ex.Message}");
             return true;
         }
     }

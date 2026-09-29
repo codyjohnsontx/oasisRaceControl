@@ -16,6 +16,12 @@ using OasisRigAgent.Core.Iracing;
 if (args.Contains("--diagnose"))
     return Diagnose();
 
+// iRacing comes first on this PC: the agent runs below normal priority, so the
+// scheduler gives the sim the CPU whenever both want it. The agent waits on the
+// network and the sim almost all the time, and the lap detector already
+// tolerates a late telemetry tick.
+var priority = LowerPriority();
+
 // Startup failures (bad config, unwritable outbox db, invalid backend URL, ...)
 // all get the same friendly message instead of a raw stack trace.
 var configPath = Path.Combine(AppContext.BaseDirectory, "agent.config.json");
@@ -78,38 +84,50 @@ Console.WriteLine(config.TelemetryMode switch
     TelemetryMode.Simulated => "Telemetry: SIMULATED (emitting fake laps)",
     _ => "Telemetry: none (heartbeat and driver display only)",
 });
+Console.WriteLine(priority);
 var quit = new CancellationTokenSource();
+
+// Every way out - input ending (walk-up), q (staff console), Ctrl+C, the
+// window's close button (SIGHUP; CTRL_CLOSE_EVENT on Windows), a shutdown
+// (SIGTERM; CTRL_SHUTDOWN_EVENT) and the runtime's own exit - runs the same
+// exit work once: the goodbye heartbeat, so the monitor reads a rig that was
+// closed differently from one that lost power, and in walk-up mode the seated
+// driver's sign-out beside it. The signal handlers wait for it, because
+// Windows ends the process as soon as a close handler returns. Both are bounded
+// to three seconds, so a backend that does not answer cannot hold the window
+// open.
+var exitWork = new Lazy<Task>(() => Task.WhenAll(
+    walkUp is null ? Task.CompletedTask : DriverPrompt.SignOutOnExitAsync(agent),
+    agent.SendGoodbyeAsync(TimeSpan.FromSeconds(3))));
+void FinishBeforeExit()
+{
+    quit.Cancel();
+    exitWork.Value.GetAwaiter().GetResult();
+}
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
+using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => { context.Cancel = true; FinishBeforeExit(); });
+using var onShutdown = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; FinishBeforeExit(); });
+AppDomain.CurrentDomain.ProcessExit += (_, _) => FinishBeforeExit();
 
 if (walkUp is not null && config.RigQrToken is { } qrToken)
 {
-    // Walk-up mode: the rig itself is the check-in. Every way out - input
-    // ending, Ctrl+C, the window's close button (SIGHUP; CTRL_CLOSE_EVENT on
-    // Windows), a shutdown (SIGTERM; CTRL_SHUTDOWN_EVENT) and the runtime's own
-    // exit - runs the same sign-out once, and the signal handlers wait for it,
-    // because Windows ends the process as soon as a close handler returns.
+    // Walk-up mode: the rig itself is the check-in.
     Console.WriteLine("Walk-up mode: type your name and a 4-digit PIN to start driving, press Enter to log out.");
     Console.WriteLine(new string('-', 60));
-    var checkIn = new DriverCheckInClient(config.BackendBaseUrl, qrToken);
-    var signOut = new Lazy<Task>(() => DriverPrompt.SignOutOnExitAsync(agent));
-    void SignOutBeforeExit()
-    {
-        quit.Cancel();
-        signOut.Value.GetAwaiter().GetResult();
-    }
-    Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
-    using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => { context.Cancel = true; SignOutBeforeExit(); });
-    using var onShutdown = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; SignOutBeforeExit(); });
-    AppDomain.CurrentDomain.ProcessExit += (_, _) => SignOutBeforeExit();
+    // Every sign-in the backend turns away is counted for the heartbeat, by
+    // the answers it gives; a fresh cookie jar per check-in, as the client's
+    // own default, so one person's session never leaks into the next.
+    var checkIn = new DriverCheckInClient(config.BackendBaseUrl, qrToken, () => new SignInFailureWatch(
+        agent.RecordSignInFailure,
+        new HttpClientHandler { UseCookies = true, CookieContainer = new System.Net.CookieContainer() }));
     await DriverPrompt.RunAsync(agent, checkIn, config.RigNumber, walkUp, quit.Token);
-    await signOut.Value;
+    await exitWork.Value;
     Console.WriteLine("Shutting down...");
     return 0;
 }
 
 Console.WriteLine("Commands:  s = switch driver / sign out   q = quit");
 Console.WriteLine(new string('-', 60));
-
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
 
 _ = Task.Run(async () =>
 {
@@ -155,8 +173,26 @@ _ = Task.Run(async () =>
 try { await Task.Delay(Timeout.Infinite, quit.Token); }
 catch (OperationCanceledException) { }
 
+await exitWork.Value;
 Console.WriteLine("Shutting down...");
 return 0;
+
+/// <summary>Drop this process to below-normal priority, and say what came of
+/// it for the start-up banner. A rig where Windows refuses it still runs the
+/// agent - just without the head start for the sim.</summary>
+static string LowerPriority()
+{
+    try
+    {
+        using var self = System.Diagnostics.Process.GetCurrentProcess();
+        self.PriorityClass = System.Diagnostics.ProcessPriorityClass.BelowNormal;
+        return "Priority: below normal (iRacing comes first)";
+    }
+    catch (Exception ex)
+    {
+        return $"Priority: unchanged - could not lower it ({ex.Message})";
+    }
+}
 
 static string StatusLine(AgentStatus s)
 {
