@@ -15,6 +15,9 @@ const ERROR_MESSAGES = new Map([
 
 type Outcome = { tone: "ok" | "error"; text: string } | null;
 
+/** A racer picked from somewhere other than this panel's own search. */
+export type PinResetTarget = Pick<StaffDriverMatch, "id" | "display_name">;
+
 function lapSummary(driver: StaffDriverMatch): string {
   if (driver.lap_count === 0) return "no laps";
   const laps = driver.lap_count === 1 ? "1 lap" : `${driver.lap_count} laps`;
@@ -48,14 +51,15 @@ function failureText(error: unknown): string {
 
 /**
  * A returning racer who cannot sign in because the PIN on file does not match.
- * Staff find them by name and give them a new PIN, typed twice. The driver row
- * is updated in place, so their laps stay theirs, and the route writes an
- * audit_log row naming the staff member.
+ * Staff find them by name, or tap their name under Recent laps (`driver`), and
+ * give them a new PIN, typed twice. The driver row is updated in place, so
+ * their laps stay theirs, and the route writes an audit_log row naming the
+ * staff member.
  */
-export function StaffPinReset() {
+export function StaffPinReset({ driver = null }: { driver?: PinResetTarget | null }) {
   const [name, setName] = useState("");
   const [matches, setMatches] = useState<StaffDriverMatch[] | null>(null);
-  const [selected, setSelected] = useState<StaffDriverMatch | null>(null);
+  const [selected, setSelected] = useState<PinResetTarget | StaffDriverMatch | null>(driver);
   const [pin, setPin] = useState({ newPin: "", confirmPin: "" });
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>(null);
@@ -213,14 +217,17 @@ export function StaffPinReset() {
         {selected && (
           <form onSubmit={reset} className="flex flex-col gap-3">
             <p className="text-sm">
-              New PIN for <span className="font-bold">{selected.display_name}</span>{" "}
-              <span className="text-muted">({lapSummary(selected)})</span>
+              New PIN for <span className="font-bold">{selected.display_name}</span>
+              {"lap_count" in selected && (
+                <span className="text-muted"> ({lapSummary(selected)})</span>
+              )}
             </p>
             <div className="flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1 text-sm">
                 <span className="text-muted text-xs uppercase tracking-wider">New PIN</span>
                 <input
                   {...pinInput}
+                  autoFocus
                   value={pin.newPin}
                   onChange={(event) => setPin({ ...pin, newPin: event.target.value })}
                 />

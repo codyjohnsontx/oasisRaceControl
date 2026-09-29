@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
 import { StaffLeaguePanel, type StaffLeagueProps } from "@/components/staff-league-panel";
-import { StaffPinReset } from "@/components/staff-pin-reset";
+import { StaffPinReset, type PinResetTarget } from "@/components/staff-pin-reset";
 import { UnclaimedLaps } from "@/components/unclaimed-laps";
 import type { UnattributedLapRow } from "@/lib/unattributed-laps";
 
@@ -60,6 +60,10 @@ export function StaffDashboard({
 }) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [pinTarget, setPinTarget] = useState<{ driver: PinResetTarget; seq: number } | null>(
+    null,
+  );
+  const pinPanel = useRef<HTMLDivElement>(null);
 
   // Rig freshness matters at a glance; refresh the server data every 15s.
   useEffect(() => {
@@ -98,6 +102,14 @@ export function StaffDashboard({
     const reason = window.prompt(`${action} this ${formatLapTime(lap.lap_time_ms)} lap by ${lap.driver_name}? Reason:`);
     if (!reason) return;
     void post("/api/staff/lap-validity", { lapId: lap.id, action, reason }, lap.id);
+  }
+
+  function resetPin(lap: StaffLapRow) {
+    setPinTarget((prev) => ({
+      driver: { id: lap.driver_id, display_name: lap.driver_name },
+      seq: (prev?.seq ?? 0) + 1,
+    }));
+    pinPanel.current?.scrollIntoView({ block: "start" });
   }
 
   return (
@@ -163,7 +175,9 @@ export function StaffDashboard({
 
       <StaffLeaguePanel {...league} />
 
-      <StaffPinReset />
+      <div ref={pinPanel} className="scroll-mt-20 xl:scroll-mt-6">
+        <StaffPinReset key={pinTarget?.seq ?? 0} driver={pinTarget?.driver} />
+      </div>
 
       <section>
         <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">
@@ -178,7 +192,14 @@ export function StaffDashboard({
               }`}
             >
               <span className="laptime font-bold w-20">{formatLapTime(lap.lap_time_ms)}</span>
-              <span className="w-32 truncate">{lap.driver_name}</span>
+              <button
+                type="button"
+                onClick={() => resetPin(lap)}
+                title="Reset PIN"
+                className="w-32 truncate text-left underline decoration-dotted underline-offset-4"
+              >
+                {lap.driver_name}
+              </button>
               <span className="text-muted w-12">
                 {lap.rig_number ? `R${lap.rig_number.toString().padStart(2, "0")}` : "—"}
               </span>
@@ -202,6 +223,9 @@ export function StaffDashboard({
           ))}
           {laps.length === 0 && <p className="text-muted text-sm">No laps yet.</p>}
         </div>
+        <p className="text-muted text-xs mt-2">
+          Tip: tap a driver&apos;s name to reset their PIN.
+        </p>
       </section>
 
       <UnclaimedLaps laps={unattributedLaps} total={unattributedLapTotal} />
