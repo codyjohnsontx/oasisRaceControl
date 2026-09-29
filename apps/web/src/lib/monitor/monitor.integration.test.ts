@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
 import { runMonitor } from "./run";
 import { applyFindings, type OpenAlert } from "./store";
 import type { Finding } from "./rules";
@@ -30,7 +31,7 @@ const OWNER = "123456789012345678";
 /** One agent process, as the agent names it: the same instant on every heartbeat. */
 const PROCESS_STARTED = new Date(Date.now() - 3 * 3_600_000);
 
-type Post = { content?: string; allowed_mentions: unknown };
+type Post = { content?: string; embeds?: unknown[]; allowed_mentions: unknown };
 let posts: Post[] = [];
 let discordAnswers: number[] = [];
 
@@ -326,6 +327,160 @@ describeDb("rig monitor against real Postgres", () => {
     await heartbeat(rig, 9 * 86_400);
     await nextEvaluation();
     expect(await count()).toBe(3);
+  });
+
+  describe("AI diagnosis and the copy-paste handoff", () => {
+    const GEMINI = "https://generativelanguage.googleapis.com/";
+    let geminiAnswers: Array<"timeout" | "answer"> = [];
+    let prompts: string[] = [];
+
+    beforeEach(() => {
+      geminiAnswers = [];
+      prompts = [];
+      vi.stubEnv("GEMINI_API_KEY", "test-gemini-key");
+      vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "9b4fd5d0c0ffee");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init: RequestInit) => {
+          if (!url.startsWith(GEMINI)) return fetchMock(url, init);
+          prompts.push(init.body as string);
+          // What AbortSignal.timeout() rejects with when the 20 s run out.
+          if (geminiAnswers.shift() !== "answer") throw new DOMException("timed out", "TimeoutError");
+          return Response.json(geminiAnswer);
+        }),
+      );
+    });
+
+    async function diagnosis() {
+      const { rows } = await testDb().query<{ diagnosis: Record<string, unknown> | null; handoff: string | null }>(
+        "select diagnosis, handoff from monitor_alerts order by id",
+      );
+      return rows;
+    }
+
+    /** Moves the stored diagnosis's clocks back, as if `seconds` had passed. */
+    async function age(seconds: number) {
+      await testDb().query(
+        `update monitor_alerts set diagnosis = diagnosis
+           || jsonb_build_object('at', now() - make_interval(secs => $1))
+           || case when diagnosis ? 'postAttemptedAt'
+                   then jsonb_build_object('postAttemptedAt', now() - make_interval(secs => $1))
+                   else '{}'::jsonb end`,
+        [seconds],
+      );
+    }
+
+    async function seatedSilentRig() {
+      const rig = await seedRig(2);
+      const driver = await seedDriver("Matt G");
+      await openAssignment(rig.id, driver.id);
+      for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) await heartbeat(rig, ago);
+    }
+
+    it("posts the alert alone when the model times out, retries once, then posts diagnosis and handoff", async () => {
+      await seatedSilentRig();
+      geminiAnswers = ["timeout", "answer"];
+
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        `<@${OWNER}> 🔴 Rig 02 has been silent for 3 min with Matt G signed in`,
+      ]);
+      expect(await diagnosis()).toMatchObject([
+        { diagnosis: { status: "retry", attempts: 1, error: "timed out" }, handoff: null },
+      ]);
+
+      // Not before a minute has passed.
+      await nextEvaluation();
+      expect(prompts).toHaveLength(1);
+
+      await age(90);
+      await expect(nextEvaluation()).resolves.toMatchObject({ diagnosed: 1 });
+      expect(prompts).toHaveLength(2);
+      expect(posts).toHaveLength(3);
+      expect(posts[1]).toMatchObject({
+        embeds: [{ title: "Likely cause (Gemini, confidence medium)" }],
+        allowed_mentions: { parse: [] },
+      });
+      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 02\)\n/);
+      expect(posts[2]!.content).toContain("Site commit: 9b4fd5d");
+      expect(posts[2]!.content).toContain("Likely cause (AI, confidence medium): The lap ingestion route");
+      expect(posts[2]!.allowed_mentions).toEqual({ parse: [] });
+      expect(await diagnosis()).toMatchObject([
+        {
+          diagnosis: {
+            status: "done",
+            attempts: 2,
+            provider: "gemini",
+            model: "gemini-2.5-flash",
+            result: { causeClass: "software" },
+            diagnosisPostedAt: expect.any(String),
+            handoffPostedAt: expect.any(String),
+          },
+          handoff: expect.stringMatching(/^Oasis rig alert #/),
+        },
+      ]);
+
+      // The driver's name reached Discord in the alert, and nowhere else.
+      for (const prompt of prompts) expect(prompt).not.toContain("Matt G");
+      expect(posts[2]!.content).not.toContain("Matt G");
+
+      // Nothing more, however many evaluations follow.
+      await age(600);
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(prompts).toHaveLength(2);
+      expect(posts).toHaveLength(3);
+    });
+
+    it("posts the handoff without the model's lines once the retry fails too", async () => {
+      await seatedSilentRig();
+
+      await nextEvaluation();
+      await age(90);
+      await expect(nextEvaluation()).resolves.toMatchObject({ diagnosed: 0 });
+
+      expect(prompts).toHaveLength(2);
+      expect(posts).toHaveLength(2);
+      expect(posts[1]!.content).toContain("Likely cause (AI): no diagnosis (timed out)");
+      expect(await diagnosis()).toMatchObject([
+        { diagnosis: { status: "done", attempts: 2, error: "timed out", handoffPostedAt: expect.any(String) } },
+      ]);
+
+      await age(600);
+      await nextEvaluation();
+      expect(prompts).toHaveLength(2);
+      expect(posts).toHaveLength(2);
+    });
+
+    it("finishes a half-posted diagnosis later without posting the first half twice", async () => {
+      await seatedSilentRig();
+      geminiAnswers = ["answer"];
+      // The alert and the diagnosis go through; the handoff is refused.
+      discordAnswers = [204, 204, 500];
+
+      await nextEvaluation();
+      expect(posts).toHaveLength(2);
+
+      await nextEvaluation();
+      expect(posts).toHaveLength(2);
+
+      await age(90);
+      await nextEvaluation();
+      expect(posts).toHaveLength(3);
+      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #/);
+      expect(prompts).toHaveLength(1);
+    });
+
+    it("makes no call without a key, and posts the alert as before", async () => {
+      vi.stubEnv("GEMINI_API_KEY", "");
+      await seatedSilentRig();
+
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(prompts).toHaveLength(0);
+      expect(posts).toHaveLength(1);
+      expect(await diagnosis()).toMatchObject([{ diagnosis: null, handoff: null }]);
+    });
   });
 
   it("passes the read-only verify the owner runs after hand-applying 0006", async () => {

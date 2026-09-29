@@ -1,4 +1,5 @@
 import { query, queryOne } from "@/lib/db";
+import type { HeartbeatRow as DiagnosisHeartbeat } from "./diagnosis/context";
 import type { AlertForMessage } from "./messages";
 import type { Heartbeat } from "./rig-state";
 import type { AlertDetail, Finding, MonitorSnapshot, RigSnapshot, Severity } from "./rules";
@@ -352,4 +353,119 @@ export async function countOpenAlerts(): Promise<number> {
     "select count(*)::int as open from monitor_alerts where resolved_at is null",
   );
   return row?.open ?? 0;
+}
+
+/**
+ * The AI diagnosis of an urgent alert, kept in monitor_alerts.diagnosis:
+ *
+ *   pending  a call is in flight (claimed by one evaluation)
+ *   retry    the call failed; the next evaluation after RETRY_AFTER tries again
+ *   done     there is a result, or the retry failed too - either way the
+ *            handoff is written and only the posting is left
+ *
+ * `attempts` counts calls; `diagnosisPostedAt` and `handoffPostedAt` record
+ * the two messages separately, so a post that fails half way is finished
+ * later without the half that got through being posted twice.
+ */
+export type DiagnosisState = {
+  status: "pending" | "retry" | "done";
+  attempts: number;
+  provider?: string;
+  model?: string;
+  error?: string;
+  result?: unknown;
+  diagnosisPostedAt?: string;
+  handoffPostedAt?: string;
+};
+
+/** A call that never reported back (its function died) is retried after this. */
+const DIAGNOSIS_STALE = "2 minutes";
+/** Calls claimed per evaluation: each can take the provider's whole timeout. */
+const DIAGNOSES_PER_EVALUATION = 3;
+
+export type AlertToDiagnose = AlertForMessage & { subject: string; attempts: number };
+
+/**
+ * Claims the urgent alerts that need a diagnosis call: announced (so the
+ * alert itself always goes first), still open, and never diagnosed, due a
+ * retry, or claimed by a call that went quiet. One statement, and SKIP LOCKED,
+ * so two evaluations cannot both call for one alert.
+ */
+export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
+  const rows = await query<AlertRow & { subject: string; attempts: number }>(
+    `update monitor_alerts a
+     set diagnosis = jsonb_build_object(
+       'status', 'pending',
+       'attempts', coalesce((a.diagnosis->>'attempts')::int, 0) + 1,
+       'at', now())
+     where a.id in (
+       select id from monitor_alerts
+       where severity = 'urgent' and notified_at is not null and resolved_at is null
+         and opened_at > now() - $1::interval
+         and (diagnosis is null
+           or (diagnosis->>'status' = 'retry' and (diagnosis->>'at')::timestamptz < now() - $2::interval)
+           or (diagnosis->>'status' = 'pending' and (diagnosis->>'at')::timestamptz < now() - $3::interval))
+       order by id
+       limit $4
+       for update skip locked)
+     returning ${ALERT_COLUMNS}, subject, (diagnosis->>'attempts')::int as attempts`,
+    [RETRY_FOR, RETRY_AFTER, DIAGNOSIS_STALE, DIAGNOSES_PER_EVALUATION],
+  );
+  return rows.map((row) => ({ ...toAlert(row), subject: row.subject, attempts: row.attempts }));
+}
+
+/** A rig's latest heartbeats, newest first, for the diagnosis to read. */
+export async function recentHeartbeats(subject: string): Promise<DiagnosisHeartbeat[]> {
+  const rigId = subject.match(/^rig:([0-9a-f-]{36})$/i)?.[1];
+  if (!rigId) return [];
+  const rows = await query<{ received_ms: number; clock_skew_ms: number | null; payload: Record<string, unknown> }>(
+    `select (extract(epoch from received_at) * 1000)::float8 as received_ms,
+            clock_skew_ms::float8 as clock_skew_ms, payload
+     from rig_heartbeats where rig_id = $1 order by received_at desc, id desc limit 15`,
+    [rigId],
+  );
+  return rows.map((r) => ({ receivedAt: r.received_ms, clockSkewMs: r.clock_skew_ms, payload: r.payload }));
+}
+
+/**
+ * Stores a call's outcome. A `done` state also claims its posting, so the
+ * evaluation that made the call posts it and a retry sweep does not race it.
+ */
+export async function saveDiagnosis(id: string, state: DiagnosisState, handoff: string | null): Promise<void> {
+  await query(
+    `update monitor_alerts
+     set diagnosis = $2::jsonb || jsonb_build_object('at', now()) ||
+                     case when $2::jsonb->>'status' = 'done'
+                          then jsonb_build_object('postAttemptedAt', now()) else '{}'::jsonb end,
+         handoff = $3
+     where id = $1`,
+    [id, JSON.stringify(state), handoff],
+  );
+}
+
+export async function markDiagnosisPosted(
+  id: string,
+  which: "diagnosisPostedAt" | "handoffPostedAt",
+): Promise<void> {
+  await query(
+    "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object($2::text, now()) where id = $1",
+    [id, which],
+  );
+}
+
+export type DiagnosisToPost = { id: string; diagnosis: DiagnosisState; handoff: string; alert: AlertForMessage };
+
+/** Diagnosis messages an earlier evaluation could not post, claimed as the alert retries are. */
+export async function claimDiagnosisPostRetries(): Promise<DiagnosisToPost[]> {
+  const rows = await query<AlertRow & { diagnosis: DiagnosisState; handoff: string }>(
+    `update monitor_alerts
+     set diagnosis = diagnosis || jsonb_build_object('postAttemptedAt', now())
+     where diagnosis->>'status' = 'done' and handoff is not null
+       and diagnosis->>'handoffPostedAt' is null
+       and coalesce((diagnosis->>'postAttemptedAt')::timestamptz, '-infinity') < now() - $1::interval
+       and opened_at > now() - $2::interval
+     returning ${ALERT_COLUMNS}, diagnosis, handoff`,
+    [RETRY_AFTER, RETRY_FOR],
+  );
+  return rows.map((row) => ({ id: row.id, diagnosis: row.diagnosis, handoff: row.handoff, alert: toAlert(row) }));
 }

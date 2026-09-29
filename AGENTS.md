@@ -278,7 +278,12 @@ day): evaluation runs in `after()` on each heartbeat and on
 reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
-migration.
+migration. An urgent alert's AI diagnosis and copy-paste handoff
+(`diagnosis/`, `handoff.ts`) are written from `incidentContext`, which
+replaces the driver's name and every uuid before anything reaches the model
+(plan decision D9: the free Gemini tier may train on prompts, and the handoff
+is meant for this public repository's issues). Build any new prompt or handoff
+field through it, never from `monitor_alerts.detail` directly.
 
 ## The twenty-rig soak
 

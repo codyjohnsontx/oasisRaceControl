@@ -87,6 +87,41 @@ evaluation, no sooner than a minute after the last attempt and for up to an
 hour, and never twice. An alert that came and went while Discord was down
 posts its opening late and then its recovery, never a lone "recovered".
 
+## AI diagnosis and the copy-paste handoff
+
+An **urgent** alert is followed by two more messages, both quiet:
+
+1. **Likely cause** - a purple embed with the model's summary and the change
+   it suggests, titled with the provider and its confidence.
+2. **The handoff** - one fenced block to copy and paste into the coding
+   harness: the rule, the rig, when it opened, the deployed commit, the last
+   three heartbeats, the agent's recent notices, and the model's likely cause,
+   suggested change and where to look. The frame is fixed text the monitor
+   fills in (`handoff.ts`); the model only writes those three lines.
+
+The alert itself always goes first and never waits for the model. A call
+that fails or takes over 20 s leaves a retry marker, and an evaluation at
+least a minute later tries once more; if that fails too, the handoff is
+posted anyway with "no diagnosis" in place of the model's lines. Nothing is
+diagnosed twice, and a post Discord refused is retried like an alert's.
+
+**No driver's name or id leaves.** Before the call, the seated driver's
+display name becomes `driver-<4 hex>` and every uuid becomes `<id>`; the
+prompt carries only the rule, the rig's name, named heartbeat fields and the
+agent's notices (`diagnosis/context.ts`). The handoff is built from the same
+redacted text, because it is meant to be pasted elsewhere. The alert message
+above it still names the driver, as it always has: that is the staff channel.
+
+| Variable | What it is |
+|---|---|
+| `GEMINI_API_KEY` | a free key from [AI Studio](https://aistudio.google.com) > Get API key. Without it there is no diagnosis and no handoff; alerts post as before |
+| `DIAGNOSIS_PROVIDER` | `gemini` (default), `anthropic`, or `off` |
+| `ANTHROPIC_API_KEY` | only with `DIAGNOSIS_PROVIDER=anthropic` |
+| `DIAGNOSIS_MODEL` | optional; defaults to `gemini-2.5-flash`, or `claude-haiku-4-5-20251001` for `anthropic`. It names a model of the chosen provider, so clear it when switching |
+
+Production only, like the webhook. Google may use free-tier prompts to
+improve its products, which is why the redaction above is not optional.
+
 ## The outside clock
 
 `GET /api/monitor/tick` evaluates and answers
