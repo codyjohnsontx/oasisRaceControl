@@ -198,6 +198,22 @@ describeDb("rig monitor against real Postgres", () => {
     expect(await alerts()).toMatchObject([{ resolved: true, notified: true, recovery_notified: true }]);
   });
 
+  it("never posts or stores the name of a driver whose name is under review", async () => {
+    const rig = await seedRig(3);
+    const driver = await seedDriver("Flagged Name");
+    await testDb().query("update drivers set status = 'name_flagged' where id = $1", [driver.id]);
+    await openAssignment(rig.id, driver.id);
+    for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) await heartbeat(rig, ago);
+
+    await nextEvaluation();
+    expect(posts.map((p) => p.content)).toEqual([
+      `<@${OWNER}> 🔴 Rig 03 has been silent for 3 min with a driver (name under review) signed in`,
+    ]);
+    const { rows } = await testDb().query<{ detail: unknown }>("select detail from monitor_alerts");
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(rows)).not.toContain("Flagged Name");
+  });
+
   it("does not open an alert for a goodbye an ordinary heartbeat landed after", async () => {
     // Stored the way the ingestion route stores them, with the sequence in the
     // payload: 42 was on the wire when 43 said goodbye, and arrived second.

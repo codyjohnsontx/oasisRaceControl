@@ -31,7 +31,7 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 | # | Rule | Fires when | Clears when | Severity |
 |---|---|---|---|---|
 | 1 | Rig silent | no word from a rig for 2 min, and its agent did not say goodbye | the rig is heard again | urgent with a driver seated; otherwise a warning after 7 min (below) |
-| 1 | Every rig went quiet | two or more empty rigs went quiet within 5 min of each other and none is left running | any rig is heard again | warning, one note instead of one per rig |
+| 1 | Every rig went quiet | two or more empty rigs went quiet within 5 min of each other and none is left running | 5 min after the first rig is heard again; rigs still quiet then are warned about one by one | warning, one note instead of one per rig. The plan's "outside event mode" qualifier arrives with event mode in PR 4; until then the note applies in every mode |
 | 2 | iRacing not connected while a driver is signed in | a seated rig's agent has reported iRacing disconnected for 3 min (counted from when the driver sat down) | iRacing connects, or the stint ends | urgent |
 | 3a | Laps queued but not reaching the site | a lap has waited over 2 min while at least two heartbeats got through | the queue drains | urgent |
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
@@ -59,8 +59,15 @@ Details worth knowing:
 - **Recovery needs two evaluations in a row** without the problem, so one
   evaluation that misses a condition does not post "recovered".
 - **Rules 3a, 3b and 10 hold through a goodbye** - closing the agent does not
-  deliver its laps, and a restart loop says goodbye on every cycle. The others
-  are about a running agent and stop at goodbye.
+  deliver its laps, and a restart loop says goodbye on every cycle.
+- **Rules 12, 17 and 18 describe the rig, not the agent process**, so an alert
+  already open stays open through a goodbye and clears only on a heartbeat
+  from a running agent that no longer shows the problem; a goodbye never opens
+  one. A rig with a dead clock battery is not re-announced on every reboot.
+  The rest are about a running agent and stop at goodbye.
+- **A driver is named in an alert only while their account is active.** A
+  name under review (or a banned driver) reads "a driver (name under review)",
+  in Discord and in `monitor_alerts`, as the public leaderboard hides them.
 
 ## Discord
 

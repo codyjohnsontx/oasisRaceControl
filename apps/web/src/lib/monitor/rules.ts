@@ -53,7 +53,9 @@ export const SILENT_LOOKBACK_MS = 12 * 60 * 60_000;
  * as the venue closing rather than as that many broken rigs - one quiet note
  * instead of a warning per rig. A lone rig nobody is seated on is warned about
  * only once this has passed, because until then it may be the first of a
- * closing. A seated rig never waits: someone is mid-session on it.
+ * closing. A seated rig never waits: someone is mid-session on it. It is also
+ * how long the venue note holds once the first rig is heard again, so rigs
+ * still coming back from the same outage are not warned about one by one.
  */
 export const CORRELATION_WINDOW_MS = 5 * 60_000;
 /** iRacing hides its telemetry while a session loads, for about a minute. */
@@ -80,8 +82,11 @@ export type RigSnapshot = {
   name: string;
   /** rigs.last_seen_at: the last time the rig reached the site at all. */
   lastSeenAt: number | null;
-  /** The rig's open assignment, if a driver is signed in. */
-  seated: { driverName: string; startedAt: number } | null;
+  /**
+   * The rig's open assignment, if a driver is signed in. `driverStatus` is
+   * drivers.status: only an active driver's name is ever put in an alert.
+   */
+  seated: { driverName: string; driverStatus: string; startedAt: number } | null;
   /**
    * The rig's recent heartbeats in arrival order: at least the last
    * fifteen minutes' and the latest one, with the few minutes before it.
@@ -147,7 +152,8 @@ function silence(
     ({ rig, state }) => rig.lastSeenAt !== null && state?.shuttingDown !== true,
   );
   const quietFor = ({ rig }: Rig) => now - rig.lastSeenAt!;
-  const anyLive = reporting.some((r) => quietFor(r) <= SILENT_AFTER_MS);
+  const live = reporting.filter((r) => quietFor(r) <= SILENT_AFTER_MS);
+  const anyLive = live.length > 0;
   const silent = reporting.filter(
     (r) =>
       quietFor(r) > SILENT_AFTER_MS &&
@@ -170,7 +176,10 @@ function silence(
   const together =
     unexplained.length >= 2 &&
     Math.max(...lastSeen) - Math.min(...lastSeen) <= CORRELATION_WINDOW_MS;
-  if (!anyLive && (together || isOpen("venue_silent", VENUE_SUBJECT))) {
+  const venueOpen = isOpen("venue_silent", VENUE_SUBJECT);
+  const firstHeardAgain = Math.min(...live.map(({ rig }) => heardSince(rig.heartbeats)));
+  const venueRecovering = anyLive && venueOpen && now - firstHeardAgain < CORRELATION_WINDOW_MS;
+  if ((!anyLive && (together || venueOpen)) || venueRecovering) {
     const names = unexplained.map(({ rig }) => rig.name);
     findings.push({
       rule: "venue_silent",
@@ -194,9 +203,21 @@ function silence(
   return findings;
 }
 
+/**
+ * When the rig was first heard in the unbroken run of heartbeats that ends at
+ * its latest: after its last gap long enough to be silence, or its earliest
+ * heartbeat here. Never for a rig with none.
+ */
+function heardSince(heartbeats: readonly Heartbeat[]): number {
+  let i = heartbeats.length - 1;
+  if (i < 0) return -Infinity;
+  while (i > 0 && heartbeats[i]!.receivedAt - heartbeats[i - 1]!.receivedAt <= SILENT_AFTER_MS) i--;
+  return heartbeats[i]!.receivedAt;
+}
+
 function rigSilent(now: number, { rig, state }: Rig, severity: Severity): Finding {
   const quiet = duration(now - rig.lastSeenAt!);
-  const seated = rig.seated ? ` with ${rig.seated.driverName} signed in` : "";
+  const seated = rig.seated ? ` with ${driverName(rig.seated)} signed in` : "";
   return finding("rig_silent", rig, severity, `${rig.name} has been silent for ${quiet}${seated}`, [
     ...rigFields(now, rig, state),
   ]);
@@ -255,6 +276,18 @@ function rigFindings(
     );
   }
 
+  // Rules 12, 17 and 18 describe the rig, not the process, so a restart does
+  // not end them. They are judged on the rig's last live heartbeat; while the
+  // standing state is a goodbye they only hold an alert already open, and the
+  // goodbye neither opens nor clears one.
+  const live = state.shuttingDown ? lastLive(rig.heartbeats) : state;
+  if (live) {
+    const properties = rigProperties(rig, live, fields, isOpen);
+    findings.push(
+      ...(state.shuttingDown ? properties.filter((f) => isOpen(f.rule, subject)) : properties),
+    );
+  }
+
   // Everything below is about a running agent; a goodbye ended it.
   if (state.shuttingDown) return findings;
 
@@ -268,27 +301,8 @@ function rigFindings(
           rig,
           "urgent",
           `${rig.name}: iRacing not connected for ${duration(state.receivedAt - from)} while ` +
-            `${rig.seated.driverName} is signed in`,
+            `${driverName(rig.seated)} is signed in`,
           fields,
-        ),
-      );
-    }
-  }
-
-  if (state.clockSkewMs !== null) {
-    const skew = Math.abs(state.clockSkewMs);
-    const threshold = isOpen("clock_skew", subject) ? CLOCK_SKEW_CLEAR_MS : CLOCK_SKEW_ALERT_MS;
-    if (skew >= threshold) {
-      // received - sent: positive means the rig stamped an earlier time.
-      const side = state.clockSkewMs > 0 ? "behind" : "ahead of";
-      findings.push(
-        finding(
-          "clock_skew",
-          rig,
-          "urgent",
-          `${rig.name}: its clock is ${duration(skew)} ${side} the server's, so its laps ` +
-            `may stop reaching the right driver`,
-          [...fields, { name: "Clock skew", value: `${Math.round(state.clockSkewMs / 1000)} s` }],
         ),
       );
     }
@@ -318,13 +332,44 @@ function rigFindings(
     );
   }
 
-  if (state.missingVariables.length > 0) {
+  return findings;
+}
+
+function rigProperties(
+  rig: RigSnapshot,
+  live: Heartbeat,
+  fields: AlertDetail["fields"],
+  isOpen: (rule: RuleKey, subject: string) => boolean,
+): Finding[] {
+  const findings: Finding[] = [];
+  const subject = rigSubject(rig.id);
+
+  if (live.clockSkewMs !== null) {
+    const skew = Math.abs(live.clockSkewMs);
+    const threshold = isOpen("clock_skew", subject) ? CLOCK_SKEW_CLEAR_MS : CLOCK_SKEW_ALERT_MS;
+    if (skew >= threshold) {
+      // received - sent: positive means the rig stamped an earlier time.
+      const side = live.clockSkewMs > 0 ? "behind" : "ahead of";
+      findings.push(
+        finding(
+          "clock_skew",
+          rig,
+          "urgent",
+          `${rig.name}: its clock is ${duration(skew)} ${side} the server's, so its laps ` +
+            `may stop reaching the right driver`,
+          [...fields, { name: "Clock skew", value: `${Math.round(live.clockSkewMs / 1000)} s` }],
+        ),
+      );
+    }
+  }
+
+  if (live.missingVariables.length > 0) {
     findings.push(
       finding(
         "missing_variables",
         rig,
         "warning",
-        `${rig.name}: this iRacing build does not publish ${state.missingVariables.join(", ")}`,
+        `${rig.name}: this iRacing build does not publish ${live.missingVariables.join(", ")}`,
         fields,
       ),
     );
@@ -332,15 +377,15 @@ function rigFindings(
 
   const cpuSince = holdingSince(
     rig.heartbeats,
-    state,
+    live,
     (h) => h.agentCpuPercent !== null && h.agentCpuPercent > FOOTPRINT_CPU_PERCENT,
   );
-  const cpuHigh = cpuSince !== null && state.receivedAt - cpuSince >= FOOTPRINT_CPU_FOR_MS;
-  const memoryHigh = state.agentMemoryMb !== null && state.agentMemoryMb > FOOTPRINT_MEMORY_MB;
+  const cpuHigh = cpuSince !== null && live.receivedAt - cpuSince >= FOOTPRINT_CPU_FOR_MS;
+  const memoryHigh = live.agentMemoryMb !== null && live.agentMemoryMb > FOOTPRINT_MEMORY_MB;
   if (cpuHigh || memoryHigh) {
     const usage = [
-      state.agentCpuPercent === null ? null : `${state.agentCpuPercent}% of a core`,
-      state.agentMemoryMb === null ? null : `${state.agentMemoryMb} MB`,
+      live.agentCpuPercent === null ? null : `${live.agentCpuPercent}% of a core`,
+      live.agentMemoryMb === null ? null : `${live.agentMemoryMb} MB`,
     ].filter(Boolean);
     findings.push(
       finding(
@@ -354,6 +399,10 @@ function rigFindings(
   }
 
   return findings;
+}
+
+function lastLive(heartbeats: readonly Heartbeat[]): Heartbeat | null {
+  return heartbeats.findLast((h) => !h.shuttingDown) ?? null;
 }
 
 /**
@@ -422,7 +471,7 @@ function rigFields(now: number, rig: RigSnapshot, state: Heartbeat | null): Aler
     {
       name: "Driver",
       value: rig.seated
-        ? `${rig.seated.driverName} (seated ${duration(now - rig.seated.startedAt)})`
+        ? `${driverName(rig.seated)} (seated ${duration(now - rig.seated.startedAt)})`
         : "nobody signed in",
     },
     {
@@ -431,6 +480,15 @@ function rigFields(now: number, rig: RigSnapshot, state: Heartbeat | null): Aler
     },
     { name: "Agent", value: state?.agentVersion ?? "unknown" },
   ];
+}
+
+/**
+ * The seated driver as an alert names them. A driver whose name is under
+ * review (or who is banned) is never named, as the public leaderboard never
+ * shows them: the alert is posted to Discord and kept in monitor_alerts.
+ */
+function driverName(seated: NonNullable<RigSnapshot["seated"]>): string {
+  return seated.driverStatus === "active" ? seated.driverName : "a driver (name under review)";
 }
 
 function laps(n: number): string {

@@ -69,9 +69,11 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
       last_seen_at: Date | null;
       seated_since: Date | null;
       driver_name: string | null;
+      driver_status: string | null;
     }>(
       `select r.id, r.rig_number, r.display_name, r.last_seen_at,
-              ra.started_at as seated_since, d.display_name::text as driver_name
+              ra.started_at as seated_since, d.display_name::text as driver_name,
+              d.status::text as driver_status
        from rigs r
        left join rig_assignments ra on ra.rig_id = r.id and ra.ended_at is null
        left join drivers d on d.id = ra.driver_id
@@ -116,8 +118,12 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
     name: row.display_name,
     lastSeenAt: row.last_seen_at?.getTime() ?? null,
     seated:
-      row.seated_since && row.driver_name
-        ? { driverName: row.driver_name, startedAt: row.seated_since.getTime() }
+      row.seated_since && row.driver_name && row.driver_status
+        ? {
+            driverName: row.driver_name,
+            driverStatus: row.driver_status,
+            startedAt: row.seated_since.getTime(),
+          }
         : null,
     heartbeats: byRig.get(row.id) ?? [],
   }));

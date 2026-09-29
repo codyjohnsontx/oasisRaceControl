@@ -74,7 +74,7 @@ function rig(number: number, overrides: Partial<RigSnapshot> = {}): RigSnapshot 
   };
 }
 
-const SEATED = { driverName: "Matt G", startedAt: NOW - 30 * MIN };
+const SEATED = { driverName: "Matt G", driverStatus: "active", startedAt: NOW - 30 * MIN };
 
 function evaluate(
   rigs: RigSnapshot[],
@@ -187,6 +187,34 @@ describe("rule 1: rig silent", () => {
     expect(evaluate([quiet(1, 13 * 60 * MIN), rig(2)], open)).toEqual([]);
   });
 
+  describe("when the venue comes back", () => {
+    const open = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
+    /** Heard up to `lostAt` ago, then nothing until `backAt` ago, and every minute since. */
+    const back = (number: number, lostAt: number, backAt: number) =>
+      rig(number, { heartbeats: [...minutely(lostAt + 10 * MIN, lostAt), ...minutely(backAt)] });
+
+    it("holds the venue note, not a warning per rig, while the rest are still coming back", () => {
+      const findings = evaluate([back(1, 12 * MIN, 2 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
+      expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+    });
+
+    it("warns about each rig still quiet once the window after the first one back has passed", () => {
+      const findings = evaluate([back(1, 12 * MIN, 6 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning", "rig_silent rig:rig-3 warning"]);
+    });
+
+    it("still alerts at once for a seated rig that has not come back", () => {
+      const findings = evaluate(
+        [back(1, 12 * MIN, 2 * MIN), quiet(2, 12 * MIN, { seated: SEATED }), quiet(3, 12 * MIN)],
+        open,
+      );
+      expect(rulesOf(findings)).toEqual([
+        "rig_silent rig:rig-2 urgent",
+        `venue_silent ${VENUE_SUBJECT} warning`,
+      ]);
+    });
+  });
+
   it("does not open for a rig quiet past the lookback, but holds one already open", () => {
     const longGone = quiet(1, 13 * 60 * MIN, { seated: SEATED });
     expect(evaluate([longGone, rig(2)])).toEqual([]);
@@ -217,7 +245,7 @@ describe("rule 2: iRacing not connected while a driver is signed in", () => {
   });
 
   it("counts from when the driver sat down, not from when iRacing closed", () => {
-    const justSeated = { driverName: "Matt G", startedAt: NOW - 2 * MIN };
+    const justSeated = { ...SEATED, startedAt: NOW - 2 * MIN };
     expect(evaluate([rig(1, { seated: justSeated, heartbeats: disconnectedFor(10 * MIN) })])).toEqual([]);
   });
 
@@ -396,9 +424,84 @@ describe("rules 15, 16 and 17: what the agent reports about itself", () => {
     expect(evaluate([rig(1, { heartbeats: latest({ missingVariables: [] }) })])).toEqual([]);
   });
 
+  it("17 holds an open alert through a goodbye, whatever the goodbye says", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, 2 * MIN, () => ({ missingVariables: ["PlayerCarIdx"] })),
+      hb(MIN, { missingVariables: [], shuttingDown: true }),
+    ];
+    const open = [{ rule: "missing_variables" as const, subject: rigSubject("rig-1") }];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })], open))).toEqual([
+      "missing_variables rig:rig-1 warning",
+    ]);
+    expect(evaluate([rig(1, { heartbeats })])).toEqual([]);
+  });
+
   it("stay quiet once the agent has said goodbye", () => {
     const bye = latest({ telemetryFaulted: true, checkout: "not_queued", missingVariables: ["X"], shuttingDown: true });
     expect(evaluate([rig(1, { heartbeats: bye })])).toEqual([]);
+  });
+});
+
+describe("rules 12, 17 and 18 across a restart", () => {
+  const subject = rigSubject("rig-1");
+  const open = [
+    { rule: "clock_skew" as const, subject },
+    { rule: "missing_variables" as const, subject },
+    { rule: "footprint_high" as const, subject },
+  ];
+  const ailing = { clockSkewMs: 6 * MIN, missingVariables: ["PlayerCarIdx"], agentMemoryMb: 180 };
+
+  it("holds open alerts while the standing state is a goodbye", () => {
+    const heartbeats = [...minutely(14 * MIN, 2 * MIN, () => ailing), hb(MIN, { shuttingDown: true })];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })], open))).toEqual([
+      "clock_skew rig:rig-1 urgent",
+      "footprint_high rig:rig-1 warning",
+      "missing_variables rig:rig-1 warning",
+    ]);
+  });
+
+  it("does not open them from a goodbye", () => {
+    const heartbeats = [...minutely(14 * MIN, 2 * MIN, () => ailing), hb(MIN, { ...ailing, shuttingDown: true })];
+    expect(evaluate([rig(1, { heartbeats })])).toEqual([]);
+  });
+
+  it("clears them on the next process's live heartbeat that no longer shows them", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, 5 * MIN, () => ailing),
+      hb(4 * MIN, { ...ailing, shuttingDown: true }),
+      ...minutely(MIN, 0, () => ({ processStartedAt: NOW - 90 * S, sequence: 1 })),
+    ];
+    expect(evaluate([rig(1, { heartbeats })], open)).toEqual([]);
+  });
+});
+
+describe("driver names in alerts", () => {
+  const silentWith = (driverStatus: string) =>
+    rig(1, {
+      heartbeats: minutely(20 * MIN, 3 * MIN),
+      seated: { ...SEATED, driverStatus },
+    });
+
+  it("names an active driver", () => {
+    const [silent] = evaluate([silentWith("active"), rig(2)]);
+    expect(silent!.detail.headline).toBe("Rig 01 has been silent for 3 min with Matt G signed in");
+  });
+
+  it.each(["name_flagged", "banned"])("never names a %s driver, in the headline or the fields", (status) => {
+    const [silent] = evaluate([silentWith(status), rig(2)]);
+    expect(silent!.detail.headline).toBe(
+      "Rig 01 has been silent for 3 min with a driver (name under review) signed in",
+    );
+    expect(JSON.stringify(silent!.detail)).not.toContain("Matt G");
+  });
+
+  it("never names one in the iRacing alert either", () => {
+    const heartbeats = minutely(14 * MIN, 0, () => ({ simConnected: false }));
+    const findings = evaluate([rig(1, { heartbeats, seated: { ...SEATED, driverStatus: "name_flagged" } })]);
+    expect(only(findings, "sim_disconnected")!.detail.headline).toBe(
+      "Rig 01: iRacing not connected for 14 min while a driver (name under review) is signed in",
+    );
+    expect(JSON.stringify(findings)).not.toContain("Matt G");
   });
 });
 
