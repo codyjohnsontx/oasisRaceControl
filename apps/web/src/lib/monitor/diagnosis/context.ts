@@ -236,13 +236,13 @@ export function noticeCode(notice: string): NoticeCode {
  * characters, and the seated driver's name replaced by its stand-in.
  */
 function serverText(driver: string | null | undefined) {
-  const trimmed = driver?.trim();
-  const name = trimmed
-    ? new RegExp(`(?<![\\p{L}\\p{N}])${escape(trimmed)}(?![\\p{L}\\p{N}])`, "giu")
+  const normalized = driver ? oneLine(driver) : "";
+  const name = normalized
+    ? new RegExp(`(?<![\\p{L}\\p{N}])${escape(normalized)}(?![\\p{L}\\p{N}])`, "giu")
     : null;
   return (s: string) => {
     const line = oneLine(s);
-    return name ? line.replace(name, pseudonym(trimmed!)) : line;
+    return name ? line.replace(name, pseudonym(normalized)) : line;
   };
 }
 

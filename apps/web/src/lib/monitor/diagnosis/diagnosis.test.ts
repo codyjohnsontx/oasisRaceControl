@@ -118,6 +118,20 @@ describe("redaction before the call (D9)", () => {
     expect(context.headline).toBe(`${pseudonym("Al")} is seated; Always check ${pseudonym("Al")}.`);
   });
 
+  it.each([
+    ["two spaces", "Jo  Smith"],
+    ["a tab", "Jo\tSmith"],
+    ["a line break", "Jo\nSmith"],
+  ])("replaces a name with %s inside it, as the headline collapses it", (_case, driver) => {
+    const context = incidentContext(
+      { ...ALERT, detail: { ...ALERT.detail, headline: `Rig 02: ${driver} is seated`, driver } },
+      [],
+      null,
+    );
+    expect(context.headline).toBe(`Rig 02: ${pseudonym("Jo Smith")} is seated`);
+    expect(handoffText(context, { ok: false, error: "timed out" })).not.toMatch(/jo\s*smith/i);
+  });
+
   it("keeps the handoff free of names and ids too", () => {
     const context = incidentContext(ALERT, HEARTBEATS, null);
     const text = handoffText(context, { ok: false, error: "timed out" });
