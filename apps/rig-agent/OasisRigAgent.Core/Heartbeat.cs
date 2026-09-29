@@ -174,8 +174,8 @@ public static class HeartbeatSchedule
 /// saying who was trying.</summary>
 public enum SignInFailureKind
 {
-    /// <summary>A name the backend will not take, or a name registered to a
-    /// different PIN.</summary>
+    /// <summary>A returning driver's PIN that does not match the name, or a
+    /// new driver's name that is already taken or not allowed.</summary>
     WrongPinOrName,
     /// <summary>The name is locked after too many wrong PINs.</summary>
     Locked,
