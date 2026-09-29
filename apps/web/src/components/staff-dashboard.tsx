@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
 import { StaffLeaguePanel, type StaffLeagueProps } from "@/components/staff-league-panel";
+import { StaffPinReset } from "@/components/staff-pin-reset";
 import { UnclaimedLaps } from "@/components/unclaimed-laps";
 import type { UnattributedLapRow } from "@/lib/unattributed-laps";
 
@@ -99,18 +100,10 @@ export function StaffDashboard({
     void post("/api/staff/lap-validity", { lapId: lap.id, action, reason }, lap.id);
   }
 
-  function resetPin(driverId: string, driverName: string) {
-    const newPin = window.prompt(`New 4-digit PIN for ${driverName}:`);
-    if (!newPin) return;
-    if (!/^\d{4}$/.test(newPin)) {
-      window.alert("PIN must be exactly 4 digits");
-      return;
-    }
-    void post("/api/staff/reset-pin", { driverId, newPin }, driverId);
-  }
-
   return (
-    <main className="flex-1 flex flex-col gap-8 p-6 max-w-5xl w-full mx-auto">
+    // Below xl the floating Screens button reaches over the header's right end
+    // (the staff name), so the page starts under it - as /leaderboards does.
+    <main className="flex-1 flex flex-col gap-8 p-6 pt-20 xl:pt-6 max-w-5xl w-full mx-auto">
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-black">Race Control — Staff</h1>
         <div className="flex items-center gap-4">
@@ -170,6 +163,8 @@ export function StaffDashboard({
 
       <StaffLeaguePanel {...league} />
 
+      <StaffPinReset />
+
       <section>
         <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">
           Recent laps
@@ -183,15 +178,7 @@ export function StaffDashboard({
               }`}
             >
               <span className="laptime font-bold w-20">{formatLapTime(lap.lap_time_ms)}</span>
-              <button
-                type="button"
-                disabled={busyId === lap.driver_id}
-                onClick={() => resetPin(lap.driver_id, lap.driver_name)}
-                title="Reset PIN"
-                className="w-32 truncate text-left underline decoration-dotted underline-offset-4 disabled:opacity-40"
-              >
-                {lap.driver_name}
-              </button>
+              <span className="w-32 truncate">{lap.driver_name}</span>
               <span className="text-muted w-12">
                 {lap.rig_number ? `R${lap.rig_number.toString().padStart(2, "0")}` : "—"}
               </span>
@@ -215,9 +202,6 @@ export function StaffDashboard({
           ))}
           {laps.length === 0 && <p className="text-muted text-sm">No laps yet.</p>}
         </div>
-        <p className="text-muted text-xs mt-2">
-          Tip: tap a driver&apos;s name to reset their PIN.
-        </p>
       </section>
 
       <UnclaimedLaps laps={unattributedLaps} total={unattributedLapTotal} />
