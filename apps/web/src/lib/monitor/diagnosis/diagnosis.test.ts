@@ -231,6 +231,31 @@ describe("failures", () => {
     });
   });
 
+  it("clips an overlong answer instead of refusing it", async () => {
+    const paths = Array.from({ length: 7 }, (_, i) => `apps/web/src/path-${i}.ts`);
+    const long = {
+      summary: "s".repeat(1600),
+      likelyCause: "c".repeat(1100),
+      causeClass: "software",
+      suggestedChange: "x".repeat(1600),
+      whereToLook: paths,
+      confidence: "low",
+    };
+    const answer = { candidates: [{ content: { parts: [{ text: JSON.stringify(long) }] } }] };
+    const result = await diagnose(context, GEMINI, { fetch: answering(answer) });
+    expect(result).toEqual({
+      ok: true,
+      diagnosis: {
+        summary: "s".repeat(1500),
+        likelyCause: "c".repeat(1000),
+        causeClass: "software",
+        suggestedChange: "x".repeat(1500),
+        whereToLook: paths.slice(0, 6),
+        confidence: "low",
+      },
+    });
+  });
+
   it("reports an unreachable provider without quoting the request", async () => {
     const down = vi.fn(async () => {
       throw new TypeError("fetch failed");

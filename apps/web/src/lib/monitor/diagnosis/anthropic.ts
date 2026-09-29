@@ -24,7 +24,7 @@ export async function askAnthropic(
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 1024,
+      max_tokens: 2048,
       temperature: TEMPERATURE,
       system,
       tools: [{ name: TOOL, description: "Report the diagnosis.", input_schema: DIAGNOSIS_JSON_SCHEMA }],

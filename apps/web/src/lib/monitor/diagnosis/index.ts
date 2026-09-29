@@ -46,13 +46,21 @@ export function diagnosisConfig(env: Record<string, string | undefined> = proces
   return { provider, model, apiKey };
 }
 
-/** What the model must answer, checked here rather than trusted. */
+/** Text the model wrote, trimmed and held to a length rather than refused over it. */
+const clipped = (max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .transform((text) => text.slice(0, max));
+
+/** What the model must answer, checked here rather than trusted. An overlong answer is clipped, not refused. */
 export const diagnosisSchema = z.object({
-  summary: z.string().trim().min(1).max(1500),
-  likelyCause: z.string().trim().min(1).max(1000),
+  summary: clipped(1500),
+  likelyCause: clipped(1000),
   causeClass: z.enum(CAUSE_CLASSES),
-  suggestedChange: z.string().trim().min(1).max(1500),
-  whereToLook: z.array(z.string().trim().min(1).max(200)).max(6),
+  suggestedChange: clipped(1500),
+  whereToLook: z.array(clipped(200)).transform((paths) => paths.slice(0, 6)),
   confidence: z.enum(CONFIDENCES),
 });
 
