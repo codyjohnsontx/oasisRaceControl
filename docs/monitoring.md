@@ -120,10 +120,11 @@ diagnosed twice, and a post Discord refused is retried like an alert's.
 
 **No driver's name or id leaves.** Before the call, the seated driver's
 display name becomes `driver-<4 hex>` and every uuid becomes `<id>`; the
-prompt carries only the rule, the rig's name, named heartbeat fields and the
-agent's notices (`diagnosis/context.ts`). The handoff is built from the same
-redacted text, because it is meant to be pasted elsewhere. The alert message
-above it still names the driver, as it always has: that is the staff channel.
+prompt carries only the alert's own text, the rig's name, named heartbeat
+fields, the agent's notices and the deployed commit (`diagnosis/context.ts`).
+The handoff is built from the same redacted text, because it is meant to be
+pasted elsewhere. The alert message above it still names the driver, as it
+always has: that is the staff channel.
 
 | Variable | What it is |
 |---|---|
