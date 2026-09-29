@@ -79,7 +79,8 @@ describe("TvCornerQr", () => {
 
   it("waits for the page's origin on the rotation, drawing nothing on the server", () => {
     // The rotation's target is this site's own leaderboard, which only the
-    // client knows; tv-corner-check decodes it from a real browser.
+    // client knows. standingsHref below pins that target; tv-corner-check only
+    // proves a code paints in a real browser without covering a row.
     expect(renderToStaticMarkup(<TvCornerQr mode="rotation" />)).toBe("");
   });
 });
