@@ -275,6 +275,74 @@ consequences follow:
 - An unrelated production hotfix attempted before the migration is applied
   needs `SKIP_MIGRATION_CHECK=1` on that build.
 
+### Applying 0005_rig_heartbeats.sql
+
+`0005_rig_heartbeats.sql` stores every rig heartbeat for the rig monitor. It is
+additive - one table, one index, one view, nothing existing altered - and the
+code that writes to it refuses to deploy until it is there, so apply it to Neon
+**before merging** the change that adds it - by design the migration lands
+first and the merge second, and the verify in step 4 is what says it is safe
+to merge. A heartbeat that reaches the old
+deployment in the meantime is unaffected: that code never touches the table.
+
+1. Point at production exactly as in
+   [step 2 of the recovery runbook](#2-point-at-production-and-prove-it): the
+   Neon pooled URL in `apps/web/.env.local`, then the `export` line from that
+   step so `psql` reads the same value.
+2. From `apps/web`: `npm run db:check`. Read the target line, then expect
+   exactly one missing file, `0005_rig_heartbeats.sql`. Anything more and stop:
+   the database is behind by more than this change, which is the recovery
+   runbook's job.
+3. `npm run db:migrate`. Read the `migrating <host>/<database>` line once more;
+   expect `applied 0005_rig_heartbeats.sql` and `skip` for the rest. This is the
+   supported path: the runner applies the file and its bookkeeping row in one
+   transaction.
+
+   Only if you cannot run it, Neon's SQL Editor works as one explicit
+   transaction. Paste this, with the whole of
+   `db/migrations/0005_rig_heartbeats.sql` copied in unaltered where marked:
+
+   ```sql
+   begin;
+   -- the whole of db/migrations/0005_rig_heartbeats.sql, unaltered
+   insert into schema_migrations (version) values ('0005_rig_heartbeats.sql');
+   commit;
+   ```
+
+   If anything in it fails, the transaction aborts and nothing is applied -
+   fix the paste and run it again. Without the `insert` the build gate keeps
+   refusing to deploy, and a later `db:migrate` fails on the table that is
+   already there.
+4. Verify, whichever way you applied it. `db/verify/0005_rig_heartbeats.sql`
+   fingerprints every definition the migration creates - the table's columns
+   with their types, nullability and defaults, both constraints, the index's
+   exact key order and the view's definition - against a database built from
+   the migration file itself, because the bookkeeping row alone only proves a
+   filename. It runs in a read-only transaction and reads only catalogs, so it
+   is safe against production at any time, from `psql` or pasted into the SQL
+   Editor:
+
+   ```bash
+   psql "$DATABASE_URL" -f ../../db/verify/0005_rig_heartbeats.sql
+   ```
+
+   Expect seven rows, every one `ok = t`. Any `f` means the database does not
+   hold what the file says: stop and compare `actual` with `expected` before
+   merging. Then `npm run db:check` should say every migration is applied.
+5. After the merge deploys, the first heartbeat from each running rig (within
+   30 seconds on today's agent) proves the write path. Same read-only
+   transaction:
+
+   ```sql
+   begin transaction read only;
+   select r.display_name, h.received_at, h.agent_version, h.clock_skew_ms,
+          h.payload = '{}'::jsonb as sends_v1
+   from v_rig_latest_heartbeat h join rigs r on r.id = h.rig_id
+   order by r.rig_number;
+   commit;
+   -- one row per rig that is on; sends_v1 true until the rig runs rig-agent/0.4-monitor
+   ```
+
 ---
 
 ## Recovering a database that is behind the code

@@ -37,7 +37,7 @@ public sealed record AgentConfig
     /// which rigs stamp laps with their capture-time assignment (0.2 and later)
     /// and which are still on an agent whose laps the backend can only store
     /// unattributed, where they are kept but can never rank.</summary>
-    public string AgentVersion { get; init; } = "rig-agent/0.3-event";
+    public string AgentVersion { get; init; } = "rig-agent/0.4-monitor";
 
     /// <summary>This rig's check-in QR token (the slug in its /r/&lt;token&gt; URL).
     /// When set, the console runs the walk-up loop: it asks for a name and a

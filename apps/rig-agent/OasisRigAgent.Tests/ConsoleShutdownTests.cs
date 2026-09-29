@@ -12,7 +12,9 @@ namespace OasisRigAgent.Tests;
 /// walk-up mode. Shutting down must end cleanly with exit code 0 - an
 /// unattended event PC that prints a stack trace (or raises an error-reporting
 /// dialog) at every exit is a crash - and every way out must deliver the
-/// driver's sign-out before the process is gone, or the stint stays open.
+/// driver's sign-out before the process is gone, or the stint stays open. The
+/// goodbye heartbeat goes out on every one of them too, in both console modes,
+/// or the monitor reads a rig that was closed as one that lost power.
 /// </summary>
 public sealed class ConsoleShutdownTests
 {
@@ -65,12 +67,45 @@ public sealed class ConsoleShutdownTests
         var login = log.IndexOf("login");
         Assert.True(emptied >= 0 && emptied < login, string.Join(", ", log));
         Assert.Contains($"checkout:{MikeAssignmentId}", log);
+        Assert.Contains("goodbye", log);
         Assert.Null(backend.OpenAssignmentId);
         Assert.DoesNotContain("Unhandled exception", output.ToString());
         Assert.Equal(0, agent.ExitCode);
     }
 
-    private static Process StartAgent(string backendUrl, out StringBuilder output)
+    /// <summary>The staff console (no rig QR token): q, Ctrl+C, the close
+    /// button and a shutdown each send the goodbye before the process
+    /// ends - after the heartbeat that said it was running.</summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("INT")]
+    [InlineData("HUP")]
+    [InlineData("TERM")]
+    public async Task EveryWayOutOfTheStaffConsoleSaysGoodbye(string? signal)
+    {
+        if (signal is not null && OperatingSystem.IsWindows()) return;
+
+        using var backend = new FakeBackend(openAssignmentId: null);
+        using var agent = StartAgent(backend.BaseUrl, out var output, walkUp: false);
+        await WaitUntil(() => backend.Log.Contains("heartbeat") && output.ToString().Contains("Commands:"));
+
+        if (signal is null)
+        {
+            await agent.StandardInput.WriteLineAsync("q");
+            await agent.StandardInput.FlushAsync();
+        }
+        else Process.Start("kill", $"-{signal} {agent.Id}")!.WaitForExit();
+
+        await WaitForExit(agent);
+
+        var log = backend.Log;
+        Assert.True(log.LastIndexOf("heartbeat") < log.IndexOf("goodbye"), string.Join(", ", log));
+        Assert.Contains("Priority: below normal", output.ToString());
+        Assert.DoesNotContain("Unhandled exception", output.ToString());
+        Assert.Equal(0, agent.ExitCode);
+    }
+
+    private static Process StartAgent(string backendUrl, out StringBuilder output, bool walkUp = true)
     {
         foreach (var outbox in Directory.GetFiles(AppContext.BaseDirectory, "outbox.db*"))
             File.Delete(outbox);
@@ -87,7 +122,8 @@ public sealed class ConsoleShutdownTests
         start.Environment["OASIS_RIG_TOKEN"] = "test-rig-token";
         start.Environment["OASIS_RIG_NUMBER"] = "1";
         start.Environment["OASIS_TELEMETRY"] = "none";
-        start.Environment["OASIS_RIG_QR_TOKEN"] = "test-qr";
+        if (walkUp) start.Environment["OASIS_RIG_QR_TOKEN"] = "test-qr";
+        else start.Environment.Remove("OASIS_RIG_QR_TOKEN");
         start.Environment.Remove("OASIS_SIMULATE");
 
         var agent = Process.Start(start)!;
@@ -126,7 +162,8 @@ public sealed class ConsoleShutdownTests
     /// they do: one rig whose open stint the checkout and check-in routes
     /// change, a login that knows Mike, and a log of what arrived in order
     /// (a checkout is logged by the assignment it named, empty for "whatever
-    /// is open").</summary>
+    /// is open"; a heartbeat as "heartbeat", or "goodbye" when it says the
+    /// agent is shutting down).</summary>
     private sealed class FakeBackend : IDisposable
     {
         private readonly HttpListener _listener = new();
@@ -196,6 +233,11 @@ public sealed class ConsoleShutdownTests
                         _log.Add("checkin");
                         _open = MikeAssignmentId;
                         return (200, $$"""{"status":"checked_in","assignmentId":"{{MikeAssignmentId}}"}""");
+                    case "/api/agent/events":
+                        foreach (var e in body?["events"]?.AsArray() ?? [])
+                            if (e?["type"]?.GetValue<string>() == "RIG_HEARTBEAT")
+                                _log.Add(e["shuttingDown"]?.GetValue<bool>() == true ? "goodbye" : "heartbeat");
+                        return (200, """{"results":[]}""");
                     default:
                         return (200, """{"results":[]}""");
                 }

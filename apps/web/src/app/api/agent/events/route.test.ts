@@ -17,6 +17,7 @@ vi.mock("@/lib/db", () => ({
 }));
 
 const { POST } = await import("./route");
+const { MAX_EVENTS_BODY_BYTES } = await import("@/lib/events");
 
 const RIG = { id: "rig-uuid", rig_number: 1, display_name: "Rig 01" };
 const TOKEN = "agent-token";
@@ -43,11 +44,52 @@ const LAP = {
   completedAt: "2026-07-29T02:00:00.000Z",
 };
 
+/** Every v2 field, as rig-agent/0.4-monitor sends it (plan section 4.2). */
+const HEARTBEAT_V2 = {
+  type: "RIG_HEARTBEAT" as const,
+  agentVersion: "rig-agent/0.4-monitor",
+  sentAt: "2026-10-04T21:14:08.120Z",
+  processStartedAt: "2026-10-04T14:02:11Z",
+  startCount: 3,
+  osUptimeS: 26_120,
+  telemetryMode: "iracing" as const,
+  simConnected: true,
+  telemetryFaulted: false,
+  missingVariables: ["LapLastLapTime"],
+  session: {
+    trackName: "Circuit of the Americas",
+    trackConfig: "Grand Prix",
+    carName: "FIA F4",
+  },
+  assignmentId: "11111111-1111-4111-8111-111111111111" as string | null,
+  assignmentKnown: true,
+  pendingLaps: 2,
+  oldestPendingAgeS: 95,
+  rejectedLaps: 1,
+  checkout: "queued" as const,
+  lastLapCapturedAt: "2026-10-04T21:13:40.000Z",
+  lastLapPostedAt: null,
+  signInFailures: 4,
+  signInFailureKinds: ["wrong_pin_or_name", "locked"],
+  notices: ["[agent] the backend will not accept lap 12 (lapTimeMs: Too big)"],
+  agentCpuPercent: 0.1,
+  agentMemoryMb: 38,
+  shuttingDown: false,
+};
+
 /** Did the handler try to write a lap, through either db helper? */
 function insertedLaps(): boolean {
   return [...query.mock.calls, ...queryOne.mock.calls].some(([sql]) =>
     String(sql).includes("insert into laps"),
   );
+}
+
+/** The parameters the heartbeat insert was given, or null if none happened. */
+function heartbeatParams(): unknown[] | null {
+  const call = [...query.mock.calls, ...queryOne.mock.calls].find(([sql]) =>
+    String(sql).includes("insert into rig_heartbeats"),
+  );
+  return call ? (call[1] as unknown[]) : null;
 }
 
 /** Did the handler try to resolve a stamped assignment? */
@@ -63,6 +105,7 @@ function authenticateRig() {
   queryOne.mockImplementation(async (sql: string) => {
     if (sql.includes("from rigs where agent_token_hash")) return RIG;
     if (sql.includes("insert into laps")) return { id: "lap-uuid" };
+    if (sql.includes("insert into rig_heartbeats")) return { stored: true };
     return null;
   });
 }
@@ -190,6 +233,95 @@ describe("POST /api/agent/events validation", () => {
     expect(insertedLaps()).toBe(false);
   });
 
+  it.each([
+    ["more than ten notices", { notices: Array.from({ length: 11 }, () => "x") }],
+    ["a notice over 200 characters", { notices: ["x".repeat(201)] }],
+    ["more than ten missing variables", { missingVariables: Array(11).fill("Speed") }],
+    ["a count a Postgres int cannot hold", { pendingLaps: 2_147_483_648 }],
+    ["a negative count", { rejectedLaps: -1 }],
+    ["a fractional count", { startCount: 1.5 }],
+    ["an unknown checkout state", { checkout: "pending" }],
+    ["an unknown sign-in failure kind", { signInFailureKinds: ["bad_luck"] }],
+    ["an unknown telemetry mode", { telemetryMode: "acc" }],
+    ["a sentAt without an offset", { sentAt: "2026-10-04T21:14:08" }],
+    ["a malformed assignment id", { assignmentId: "not-a-uuid" }],
+  ])("rejects a heartbeat with %s", async (_label, field) => {
+    const response = await POST(post({ events: [{ ...HEARTBEAT_V2, ...field }] }));
+
+    expect(response.status).toBe(400);
+    expect(heartbeatParams()).toBeNull();
+  });
+
+  it("rejects a second heartbeat in one request, naming it", async () => {
+    const response = await POST(
+      post({ events: [{ type: "RIG_HEARTBEAT" }, LAP, { type: "RIG_HEARTBEAT" }] }),
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.detail).toEqual([expect.objectContaining({ path: ["events", 2] })]);
+    expect(heartbeatParams()).toBeNull();
+  });
+
+  it("refuses a body over the byte cap before parsing it", async () => {
+    // A valid heartbeat beside a megabyte of unknown junk: zod would strip the
+    // junk and accept it, so only the byte cap stops it.
+    const body = { events: [{ type: "RIG_HEARTBEAT", junk: "x".repeat(MAX_EVENTS_BODY_BYTES) }] };
+
+    const response = await POST(post(body));
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({ error: "body_too_large" });
+    expect(heartbeatParams()).toBeNull();
+  });
+
+  it("refuses an oversized body that declares no length", async () => {
+    const payload = JSON.stringify({
+      events: [{ type: "RIG_HEARTBEAT", junk: "x".repeat(MAX_EVENTS_BODY_BYTES) }],
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(payload));
+        controller.close();
+      },
+    });
+    const request = new Request("http://localhost/api/agent/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+
+    expect((await POST(request)).status).toBe(413);
+  });
+
+  it("accepts a full outbox batch at every field's limit", async () => {
+    // The cap must never refuse what the agent legitimately sends.
+    const events = Array.from({ length: 100 }, (_, index) => ({
+      ...LAP,
+      eventId: `e${String(index).padStart(7, "0")}`.padEnd(128, "x"),
+      rigAssignmentId: null,
+      trackName: "\u00fc".repeat(120),
+      trackConfig: "\u00fc".repeat(120),
+      carName: "\u00fc".repeat(120),
+    }));
+
+    // Written the way the agent's System.Text.Json writes it: every non-ASCII
+    // character escaped to six bytes, the largest a legitimate batch gets.
+    const text = JSON.stringify({ events }).replaceAll("\u00fc", "\\u00fc");
+    expect(new TextEncoder().encode(text).byteLength).toBeGreaterThan(200_000);
+    const response = await POST(
+      new Request("http://localhost/api/agent/events", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        body: text,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(insertParams()?.[4]).toBe("\u00fc".repeat(120)); // track_name, unescaped
+  });
+
   it("rejects a negative incident delta", async () => {
     expect((await POST(post({ events: [{ ...LAP, incidentDelta: -1 }] }))).status).toBe(
       400,
@@ -213,7 +345,7 @@ describe("POST /api/agent/events validation", () => {
 describe("POST /api/agent/events behaviour", () => {
   beforeEach(authenticateRig);
 
-  it("records a heartbeat and reports the agent version", async () => {
+  it("records a v1 heartbeat and reports the agent version", async () => {
     const response = await POST(
       post({ events: [{ type: "RIG_HEARTBEAT", agentVersion: "1.2.3" }] }),
     );
@@ -223,10 +355,113 @@ describe("POST /api/agent/events behaviour", () => {
       results: [{ type: "RIG_HEARTBEAT", status: "ok" }],
     });
 
-    const versionUpdate = query.mock.calls.find(([sql]) =>
-      String(sql).includes("agent_version"),
+    const params = heartbeatParams()!;
+    expect(params[0]).toBe(RIG.id);
+    expect(params[2]).toBe("1.2.3"); // agent_version, also coalesced onto rigs
+    // Everything a v1 agent cannot say is stored as not said.
+    expect(params.slice(3, 15).every((value) => value === null)).toBe(true);
+    expect(params[15]).toBe(false); // shutting_down
+    expect(params[16]).toEqual({}); // payload
+  });
+
+  it("stores a heartbeat that carries nothing but its type", async () => {
+    // The oldest shape on the wire. Refusing it would make that rig read as
+    // silent to the monitor, which is the one thing it can still tell us about.
+    const response = await POST(post({ events: [{ type: "RIG_HEARTBEAT" }] }));
+
+    expect(response.status).toBe(200);
+    const params = heartbeatParams()!;
+    expect(params[1]).toBeNull(); // sent_at, so no clock skew either
+    expect(params[2]).toBeNull();
+    expect(params[16]).toEqual({});
+  });
+
+  it("splits a v2 heartbeat into its columns and keeps the rest as payload", async () => {
+    const response = await POST(post({ events: [HEARTBEAT_V2] }));
+
+    expect(response.status).toBe(200);
+    expect(heartbeatParams()).toEqual([
+      RIG.id,
+      HEARTBEAT_V2.sentAt,
+      HEARTBEAT_V2.agentVersion,
+      HEARTBEAT_V2.processStartedAt,
+      3,
+      true,
+      false,
+      "Circuit of the Americas",
+      "Grand Prix",
+      "FIA F4",
+      ASSIGNMENT_ID,
+      2,
+      1,
+      "queued",
+      4,
+      false,
+      {
+        osUptimeS: 26_120,
+        telemetryMode: "iracing",
+        missingVariables: ["LapLastLapTime"],
+        assignmentKnown: true,
+        oldestPendingAgeS: 95,
+        lastLapCapturedAt: "2026-10-04T21:13:40.000Z",
+        lastLapPostedAt: null,
+        signInFailureKinds: ["wrong_pin_or_name", "locked"],
+        notices: ["[agent] the backend will not accept lap 12 (lapTimeMs: Too big)"],
+        agentCpuPercent: 0.1,
+        agentMemoryMb: 38,
+      },
+      6, // heartbeat rate limit
+      "1 minute", // and its window
+    ]);
+  });
+
+  it("marks the rig seen once per heartbeat, in the heartbeat's own statement", async () => {
+    await POST(post({ events: [HEARTBEAT_V2] }));
+
+    const rigUpdates = [...query.mock.calls, ...queryOne.mock.calls].filter(([sql]) =>
+      String(sql).includes("update rigs set last_seen_at"),
     );
-    expect(versionUpdate?.[1]).toEqual([RIG.id, "1.2.3"]);
+    expect(rigUpdates).toHaveLength(1);
+  });
+
+  it("still marks the rig seen after a batch of laps alone", async () => {
+    await POST(post({ events: [{ ...LAP, rigAssignmentId: null }] }));
+
+    const rigUpdates = [...query.mock.calls, ...queryOne.mock.calls].filter(([sql]) =>
+      String(sql).includes("update rigs set last_seen_at"),
+    );
+    expect(rigUpdates).toHaveLength(1);
+  });
+
+  it("answers a heartbeat over the rig's rate as rate_limited, not an error", async () => {
+    queryOne.mockImplementation(async (sql: string) => {
+      if (sql.includes("from rigs where agent_token_hash")) return RIG;
+      if (sql.includes("insert into rig_heartbeats")) return { stored: false };
+      return null;
+    });
+
+    const response = await POST(post({ events: [HEARTBEAT_V2] }));
+
+    // 200 so a lap riding in the same batch is never refused for it.
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      results: [{ type: "RIG_HEARTBEAT", status: "rate_limited" }],
+    });
+  });
+
+  it("stores the goodbye an exiting agent sends", async () => {
+    await POST(post({ events: [{ type: "RIG_HEARTBEAT", shuttingDown: true }] }));
+
+    expect(heartbeatParams()![15]).toBe(true);
+  });
+
+  it("stores an idle rig's heartbeat with no session", async () => {
+    await POST(
+      post({ events: [{ ...HEARTBEAT_V2, session: null, assignmentId: null }] }),
+    );
+
+    const params = heartbeatParams()!;
+    expect(params.slice(7, 11)).toEqual([null, null, null, null]);
   });
 
   it("stores a lap from an agent that sends no assignment id with no owner", async () => {
@@ -459,7 +694,10 @@ describe("POST /api/agent/events behaviour", () => {
   });
 
   it("returns 500 so the agent retries when the batch throws", async () => {
-    query.mockRejectedValue(new Error("connection terminated"));
+    queryOne.mockImplementation(async (sql: string) => {
+      if (sql.includes("from rigs where agent_token_hash")) return RIG;
+      throw new Error("connection terminated");
+    });
 
     const response = await POST(post({ events: [{ type: "RIG_HEARTBEAT" }] }));
 

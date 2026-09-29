@@ -2,8 +2,10 @@ import { query, queryOne } from "@/lib/db";
 import { rigFromBearer } from "@/lib/agent-auth";
 import {
   agentEventsBody,
+  MAX_EVENTS_BODY_BYTES,
   statesCaptureTimeAttribution,
   type AgentEventsBody,
+  type HeartbeatEvent,
   type LapCompletedEvent,
 } from "@/lib/events";
 import type { UnattributedCause } from "@/lib/unattributed-cause";
@@ -39,7 +41,11 @@ export async function POST(request: Request) {
   const rig = await rigFromBearer(request.headers.get("authorization"));
   if (!rig) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  const parsed = agentEventsBody.safeParse(await request.json().catch(() => null));
+  const raw = await readBody(request, MAX_EVENTS_BODY_BYTES);
+  if (raw === null) {
+    return Response.json({ error: "body_too_large" }, { status: 413 });
+  }
+  const parsed = agentEventsBody.safeParse(parseJson(raw));
   if (!parsed.success) {
     return Response.json(
       { error: "invalid_input", detail: parsed.error.issues },
@@ -61,16 +67,14 @@ export async function POST(request: Request) {
 
     const results: Array<{ type: string; status: string; eventId?: string }> = [];
     const causes: IngestionCause[] = [];
+    let markedSeen = false;
 
     for (const [index, event] of parsed.data.events.entries()) {
       if (event.type === "RIG_HEARTBEAT") {
-        await query(
-          `update rigs set last_seen_at = now(),
-             agent_version = coalesce($2, agent_version)
-           where id = $1`,
-          [rig.id, event.agentVersion ?? null],
-        );
-        results.push({ type: event.type, status: "ok" });
+        const { type, ...heartbeat } = event;
+        const stored = await recordHeartbeat(rig.id, heartbeat);
+        markedSeen = true;
+        results.push({ type, status: stored ? "ok" : "rate_limited" });
       } else {
         const attribution = attributeLap(event, index, matches);
         if (attribution.kind === "unattributed") causes.push(attribution.cause);
@@ -79,8 +83,12 @@ export async function POST(request: Request) {
     }
     warnAboutAbnormalCauses(rig.rig_number, causes);
 
-    // Any activity proves the agent is alive.
-    await query("update rigs set last_seen_at = now() where id = $1", [rig.id]);
+    // Any activity proves the agent is alive. A heartbeat already said so in
+    // its own statement; updating the same rigs row twice per heartbeat is
+    // write churn for nothing.
+    if (!markedSeen) {
+      await query("update rigs set last_seen_at = now() where id = $1", [rig.id]);
+    }
 
     return Response.json({ results });
   } catch (error) {
@@ -89,6 +97,145 @@ export async function POST(request: Request) {
     console.error("[agent/events] batch failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });
   }
+}
+
+/**
+ * The request body as text, or null once it passes `maxBytes`. Reads the stream
+ * and stops there rather than buffering whatever was sent, and trusts a
+ * Content-Length only to refuse early, never to accept.
+ */
+async function readBody(request: Request, maxBytes: number): Promise<string | null> {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+  if (!request.body) return "";
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Most heartbeats one rig may store per HEARTBEAT_RATE_WINDOW. Both producers
+ * send one a minute or two (the agent's 60 s cadence plus its goodbye; today's
+ * agent and the fake rig at 30 s), so six is triple the busiest honest rate. It
+ * is judged in the database, against the rig's own recent rows through the
+ * (rig_id, received_at) index, so it holds across every Vercel instance
+ * without a second store.
+ *
+ * Goodbyes (`shuttingDown: true`) are exempt: always stored and never counted.
+ * A goodbye is what tells a clean exit from a power cut, and a rig in a fast
+ * crash loop is exactly the one whose every exit the monitor needs to see.
+ */
+const HEARTBEAT_RATE_LIMIT = 6;
+const HEARTBEAT_RATE_WINDOW = "1 minute";
+
+/**
+ * Stores one heartbeat as a `rig_heartbeats` row and marks the rig seen, in one
+ * statement. Returns false when the rig is over its heartbeat rate and this is
+ * not a goodbye: the row is not stored, but the rig is still marked seen,
+ * because it did answer.
+ *
+ * The fields the monitor's rules filter on get their own columns; every other
+ * field lands in `payload` as validated, so a v1 heartbeat - `agentVersion` or
+ * nothing at all - stores a row with an empty payload rather than being
+ * refused. Clock skew is worked out here against the database's own now(), the
+ * same instant `received_at` takes, so the two always agree and every rig is
+ * compared with one server clock rather than whichever Vercel instance
+ * answered.
+ */
+async function recordHeartbeat(
+  rigId: string,
+  heartbeat: Omit<HeartbeatEvent, "type">,
+): Promise<boolean> {
+  const {
+    agentVersion,
+    sentAt,
+    processStartedAt,
+    startCount,
+    simConnected,
+    telemetryFaulted,
+    session,
+    assignmentId,
+    pendingLaps,
+    rejectedLaps,
+    checkout,
+    signInFailures,
+    shuttingDown,
+    ...payload
+  } = heartbeat;
+
+  const row = await queryOne<{ stored: boolean }>(
+    `with admitted as (
+       select $16::boolean or count(*) < $18 as ok
+       from rig_heartbeats
+       where rig_id = $1 and not shutting_down
+         and received_at > now() - $19::interval
+     ),
+     heartbeat as (
+       insert into rig_heartbeats (
+         rig_id, sent_at, clock_skew_ms, agent_version, process_started_at,
+         start_count, sim_connected, telemetry_faulted,
+         session_track, session_config, session_car,
+         assignment_id, pending_laps, rejected_laps, checkout,
+         sign_in_failures, shutting_down, payload
+       )
+       select
+         $1, $2::timestamptz,
+         round(extract(epoch from now() - $2::timestamptz) * 1000)::bigint,
+         -- INSERT ... SELECT does not infer parameter types from the target
+         -- columns the way VALUES does, so each one is typed here.
+         $3::text, $4::timestamptz, $5::int, $6::boolean, $7::boolean,
+         $8::text, $9::text, $10::text, $11::uuid, $12::int, $13::int,
+         $14::text, $15::int, $16::boolean, $17::jsonb
+       from admitted where ok
+       returning id
+     )
+     update rigs set last_seen_at = now(),
+       agent_version = coalesce($3, agent_version)
+     where id = $1
+     returning exists (select 1 from heartbeat) as stored`,
+    [
+      rigId,
+      sentAt ?? null,
+      agentVersion ?? null,
+      processStartedAt ?? null,
+      startCount ?? null,
+      simConnected ?? null,
+      telemetryFaulted ?? null,
+      session?.trackName ?? null,
+      session?.trackConfig ?? null,
+      session?.carName ?? null,
+      assignmentId ?? null,
+      pendingLaps ?? null,
+      rejectedLaps ?? null,
+      checkout ?? null,
+      signInFailures ?? null,
+      shuttingDown ?? false,
+      payload,
+      HEARTBEAT_RATE_LIMIT,
+      HEARTBEAT_RATE_WINDOW,
+    ],
+  );
+  return row?.stored ?? false;
 }
 
 type StampedAssignment = { id: string; driver_id: string };

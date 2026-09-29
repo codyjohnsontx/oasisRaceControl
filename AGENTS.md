@@ -39,14 +39,28 @@ the rest, which is how rows came to overlap and the car column to render
 varies are `fr` tracks, and rows carry a `min-h` tied to their own text so they
 can stretch but never collapse.
 
-Every board also carries the phone-standings QR code (`phone-standings-qr.tsx`),
-which opens `/leaderboards` on the page's own origin - nothing configured, so
-it is right on the hosted site, a preview, and a laptop at an off-site event.
-Open `/tv` on the hosted address, or on the laptop's LAN IP in the fallback -
-never `localhost`, because the code encodes the page's own origin.
+Every board also carries a corner QR code (`phone-standings-qr.tsx`). On the
+shop rotation it opens `/leaderboards` on the page's own origin - nothing
+configured, so it is right on the hosted site and a preview; open `/tv` on
+the hosted address, never `localhost`, because that code encodes the page's
+own origin. On the event view it opens the Oasis website
+(`OASIS_WEBSITE_URL`) instead: the owner asked for that after the 2026-09-27
+event, because the leaderboard's site menu hands the public every other
+screen including the staff login. Do not make that target a query parameter.
 It sits in the footer's flow rather than pinned over the board, which is what
 makes it unable to cover a row; `npm run tv:check` screenshots `/tv` and fails
 on any overlap (root README, Integration tests).
+
+For the same reason the event view shows no app-wide Screens menu: nothing on
+it may navigate to another screen of the app, since any visitor can tap a
+touch display. The menu lives in the root layout, which cannot see the query,
+so it is in every page's server HTML and the `/tv` page hides it - its `main`
+carries `data-tv-mode`, and a `body:has(...)` rule in `globals.css` sets the
+menu's `data-screen-menu` root to `display: none`. Do not make the menu read
+the query string instead: `useSearchParams` in the root layout needs a
+Suspense boundary that takes the menu out of every prerendered page's HTML.
+`npm run tv:check` fails if the button shows on the event view or not on the
+rotation.
 
 A board can also take the wall over rather than take a turn on it, without any
 engine change: renew the contract's `hold()` on every refresh while the takeover
@@ -59,8 +73,7 @@ a real scroll container the whole time, and the first touch, press or wheel
 converts the animation's current offset into a native scroll position on a
 single copy of the list (`auto-scroll.tsx`), resuming from the leader's hold
 after `IDLE_RESUME_MS` untouched. The frame allows only vertical panning and
-`main` disallows every other touch gesture; the app-wide Screens button lives
-in the root layout, outside `main`, which is why that does not reach it.
+`main` disallows every other touch gesture.
 A mouse or pen press-and-drag scrolls it too (`drag-scroll.ts`), because the
 event laptop is a Mac, where an external touch display reports a finger as a
 mouse and nothing pans natively; real touch stays with the browser.
@@ -223,6 +236,29 @@ retried - quarantining on it would retire a whole venue's night over a config
 change. Parked laps are counted and displayed apart from the queued ones, so the
 rig's status line does not read the way it read while it was wedged.
 
+## Rig heartbeats
+
+Every `RIG_HEARTBEAT` is stored as a row in `rig_heartbeats`
+(`db/migrations/0005_rig_heartbeats.sql`) for the rig monitor; `rigs.last_seen_at`
+still moves, so nothing that reads `v_rig_status` changed. The contract is
+`heartbeatEvent` in `apps/web/src/lib/events.ts`: v1 (`agentVersion` or nothing)
+must keep working, so every v2 field stays optional, and its bounds are the
+agent's to clamp to - the body is validated whole, so a heartbeat over one is
+a 400 and the rig reads as silent. Clock skew is computed by the database
+against the row's own `received_at`, never from a Vercel instance's clock. The
+producers are the .NET agent and `scripts/fake-rig.ts`; change them with it.
+A request carries at most one heartbeat and at most `MAX_EVENTS_BODY_BYTES`, and
+a rig over six stored heartbeats a minute gets `rate_limited` (still 200, still
+seen) - judged in the database so it holds across instances. Goodbyes
+(`shuttingDown: true`) are exempt, always stored and never counted, because
+they are what tells a clean exit from a power cut.
+`v_rig_latest_heartbeat` is a per-rig `limit 1` lateral lookup on purpose: a
+`distinct on` over the table reads all seven days of history every evaluation,
+and an integration test counts the rows it reads.
+`db/verify/0005_rig_heartbeats.sql` is the read-only fingerprint check the
+owner runs after hand-applying; its pinned values are tested against the
+migration, so update both together.
+
 ## The twenty-rig soak
 
 The venue has 20-25 sims and the platform had only ever been driven by one rig
@@ -342,6 +378,21 @@ together. The load-bearing ones: the returning path never registers and makes
 at most two failed logins per name typed, so a stranger cannot lock the real
 driver out from one sign-in; the new path never logs in, and compares its two
 PINs on the rig. The website says the same in `driver-auth-refusal.ts`.
+
+## Rig heartbeat
+
+`RIG_HEARTBEAT` is the rig's whole report to the server-side monitor:
+`HeartbeatReport` (`apps/rig-agent/OasisRigAgent.Core/Heartbeat.cs`) mirrors
+`heartbeatEvent` in `apps/web/src/lib/events.ts`, and both change together.
+The owner's rule is that iRacing's frame rate comes first, so the agent runs
+below normal priority (`Program.cs`), reports only state it already holds, and
+every judgement stays on the server - do not add rig-side checks, threads or
+timers for monitoring. Only the heartbeat backs off while offline; the poll
+and flush carry laps and the sign-out and keep their intervals. Every exit
+path sends a `shuttingDown` goodbye, or a closed rig reads as a dead one.
+Walk-up sign-in failures are counted from the check-in routes' HTTP answers
+(`SignInFailureWatch`), not inside `DriverCheckInClient`. The on-rig FPS check
+is in `apps/rig-agent/README.md` (Heartbeat and footprint).
 
 ## Local dev
 
