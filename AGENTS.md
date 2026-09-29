@@ -267,8 +267,10 @@ the runbook is [docs/monitoring.md](docs/monitoring.md). Every rule lives in
 `evaluateRules` on the same snapshot - do not write a second implementation
 of a rule, the same discipline as `/tv` ranking. "Fires once, recovers once"
 is enforced by `monitor_alerts_one_open` (`db/migrations/0006_monitor.sql`)
-and single-statement transitions in `store.ts`, not by locks or by the
-throttle; only the evaluation whose statement won posts. A rig's state is its
+and single-statement transitions in `store.ts`, not by the throttle; only the
+evaluation whose statement won posts. The `monitor_state` row lock the claim
+takes is load-bearing too: it serializes evaluations, so an older snapshot is
+never applied after a newer one (`store.ts` header). A rig's state is its
 latest heartbeat *by send order* (`rigState`), never by arrival: an ordinary
 heartbeat that lands after the goodbye it was sent before must not turn a
 clean shutdown into a silent rig. There is no Vercel cron (Hobby runs one a
