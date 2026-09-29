@@ -38,9 +38,9 @@ export const SLOT_COUNT = 10;
 /**
  * The table's columns, shared by the heading row and every slot so the two stay
  * in step. Rank and the two score columns are fixed because their content is:
- * the board's rank digits (`rankWidth`, sized for Orbitron's widest, not for "01"), a lap
- * time, a gap - all fixed-width by nature, and each sized for the widest string
- * it can realistically hold rather than the common one. Both time columns gain
+ * the board's rank digits (`rankWidth`, sized for Orbitron's widest, not for
+ * "01"), a lap time, a gap - all fixed-width by nature, and each sized for the
+ * widest string it can realistically hold rather than the common one. Both time columns gain
  * a digit past ten minutes, which a 25km layout reaches on an ordinary slow
  * lap: `formatLapTime` prints `10:18.103` and `formatGap` switches to a
  * lap-time shape past a minute and widens the same way (`+10:01.204`). 14.5em
