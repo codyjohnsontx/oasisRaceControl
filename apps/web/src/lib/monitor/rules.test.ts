@@ -521,6 +521,40 @@ describe("rules 12, 17 and 18 across a restart", () => {
     expect(evaluate([rig(1, { heartbeats: neverAttached })])).toEqual([]);
   });
 
+  // A heartbeat sent before the one standing can arrive after it (a retry, or
+  // one in flight when the next or the goodbye went). It must not stand in for
+  // the rig's newer report, or the open alert recovers and then fires again.
+  it("holds 17 when an earlier, clean heartbeat arrives after the one that showed it", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, 2 * MIN, (ago) => ({ sequence: 100 - ago / MIN })),
+      hb(MIN, { sequence: 102, missingVariables: ["PlayerCarIdx"] }),
+      hb(30 * S, { sequence: 101, sentAt: NOW - 2 * MIN }),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })], open))).toEqual([
+      "missing_variables rig:rig-1 warning",
+    ]);
+  });
+
+  it("holds 18 when a healthy heartbeat sent before the goodbye arrives after it", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, 3 * MIN, (ago) => ({ sequence: 100 - ago / MIN })),
+      hb(2 * MIN, { sequence: 102, agentMemoryMb: 200 }),
+      hb(MIN, { sequence: 103, agentMemoryMb: 200, shuttingDown: true }),
+      hb(30 * S, { sequence: 101, sentAt: NOW - 3 * MIN }),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })], open))).toEqual([
+      "footprint_high rig:rig-1 warning",
+    ]);
+  });
+
+  it("does not let an idle heartbeat from before the busy run cut it by arriving late", () => {
+    const busy = minutely(10 * MIN, 0, (ago) => ({ sequence: 100 - ago / MIN, agentCpuPercent: 4 }));
+    // Sent twenty minutes ago, before the run began; lands three minutes ago.
+    const late = hb(3 * MIN - 5 * S, { sequence: 80, sentAt: NOW - 20 * MIN, agentCpuPercent: 0.2 });
+    const heartbeats = [...busy.slice(0, 8), late, ...busy.slice(8)];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })]))).toEqual(["footprint_high rig:rig-1 warning"]);
+  });
+
   it("holds 18 on CPU over the line without a fresh five-minute run, as after a restart", () => {
     const heartbeats = [
       ...minutely(14 * MIN, 3 * MIN),

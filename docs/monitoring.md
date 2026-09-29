@@ -21,7 +21,10 @@ An evaluation runs
   minute (below), so a venue whose every rig went dark is still noticed.
 
 However many of those arrive, at most one evaluation runs every 20 seconds
-(`monitor_state.last_evaluated_at`, claimed in one statement).
+(`monitor_state.last_evaluated_at`), and never two at once: an evaluation
+claims, reads and applies its alert changes in one short transaction holding
+that row's lock, so one that reads later always applies later. It commits
+before posting anything, so a slow Discord never holds the others up.
 
 ## The rules so far
 
@@ -83,9 +86,17 @@ Set both in Vercel for **Production only**. The webhook URL is a credential:
 it lives there and nowhere in the repository.
 
 A post that fails (Discord down, rate-limited) is retried by a later
-evaluation, no sooner than a minute after the last attempt and for up to an
-hour, and never twice. An alert that came and went while Discord was down
-posts its opening late and then its recovery, never a lone "recovered".
+evaluation, no sooner than a minute after the last attempt, until an hour
+after the alert opened (or its count last rose) - however long the problem
+itself lasts - and never by two evaluations at once. An alert that came and
+went while Discord was down posts its opening late and then its recovery,
+never a lone "recovered".
+
+One tradeoff cannot be designed away: a post that times out may still have
+reached Discord, and Discord gives the monitor no way to ask. The monitor
+treats it as failed and retries, so on a slow Discord the same alert can
+appear more than once - at most once a minute, and never after that hour.
+Counting a timeout as delivered instead would risk an alert nobody ever saw.
 
 ## The outside clock
 

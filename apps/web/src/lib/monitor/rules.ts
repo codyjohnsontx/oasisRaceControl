@@ -1,4 +1,4 @@
-import { holdingSince, rigState, type Heartbeat } from "./rig-state";
+import { holdingSince, lastSent, rigState, type Heartbeat } from "./rig-state";
 
 /**
  * The rig monitor's rules: given what the database holds right now, which
@@ -291,7 +291,7 @@ function rigFindings(
   // not end them. They are judged on the rig's last live heartbeat; while the
   // standing state is a goodbye they only hold an alert already open, and the
   // goodbye neither opens nor clears one.
-  const live = state.shuttingDown ? lastLive(rig.heartbeats) : state;
+  const live = state.shuttingDown ? lastSent(rig.heartbeats, (h) => !h.shuttingDown) : state;
   if (live) {
     const properties = rigProperties(rig, live, fields, isOpen);
     findings.push(
@@ -377,7 +377,7 @@ function rigProperties(
   // The agent learns what iRacing publishes only while attached, and forgets
   // it whenever iRacing goes, so only an attached heartbeat is evidence; with
   // none in view an open alert holds.
-  const attached = rig.heartbeats.findLast((h) => !h.shuttingDown && h.simConnected === true);
+  const attached = lastSent(rig.heartbeats, (h) => !h.shuttingDown && h.simConnected === true);
   const missing = attached?.missingVariables ?? [];
   if (attached ? missing.length > 0 : isOpen("missing_variables", subject)) {
     findings.push(
@@ -418,10 +418,6 @@ function rigProperties(
   }
 
   return findings;
-}
-
-function lastLive(heartbeats: readonly Heartbeat[]): Heartbeat | null {
-  return heartbeats.findLast((h) => !h.shuttingDown) ?? null;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { withTransaction } from "@/lib/db";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
 import { alertMessage, recoveryMessage, type AlertForMessage } from "./messages";
 import { evaluateRules } from "./rules";
@@ -22,19 +23,28 @@ import {
  * Nothing runs it on a timer inside Vercel (Hobby cron is once a day). It
  * runs after every rig heartbeat's response has gone (scheduleMonitor) and on
  * every GET /api/monitor/tick from the external one-minute clock, and the
- * claim throttles all of them to one evaluation at a time.
+ * claim throttles all of them to one evaluation every few seconds, run one
+ * at a time.
  */
 export type MonitorRun =
   | { evaluated: false }
   | { evaluated: true; findings: number; announced: number; recovered: number };
 
 export async function runMonitor(): Promise<MonitorRun> {
-  const claim = await claimEvaluation();
-  if (!claim) return { evaluated: false };
-
-  const snapshot = await loadSnapshot(claim.now);
-  const findings = evaluateRules(snapshot);
-  const won = await applyFindings(findings, snapshot.openAlerts);
+  // Claim, snapshot, rules and transitions in one short transaction holding
+  // the monitor_state row lock, so evaluations apply in the order they read
+  // (store.ts). It commits before anything is posted: no Discord call ever
+  // holds the lock.
+  const evaluation = await withTransaction(async (client) => {
+    const claim = await claimEvaluation(client);
+    if (!claim) return null;
+    const snapshot = await loadSnapshot(client, claim.now);
+    const findings = evaluateRules(snapshot);
+    const won = await applyFindings(client, findings, snapshot.openAlerts);
+    return { findings, won };
+  });
+  if (!evaluation) return { evaluated: false };
+  const { findings, won } = evaluation;
 
   const mention = alertUserId();
   let announced = await deliver(await alertsById(won.announce), (a) => alertMessage(a, mention), markAnnounced);
