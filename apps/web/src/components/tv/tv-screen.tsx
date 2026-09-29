@@ -29,8 +29,9 @@ import { TvCornerQr } from "./phone-standings-qr";
  *  - Nothing here reacts to input, except the event view's list, which a hand
  *    on a touch screen can take over for a while (`auto-scroll.tsx`). The
  *    board disallows every touch gesture but that vertical pan, so a tap on a
- *    projected screen cannot zoom or flash-select it; the app-wide Screens
- *    button is outside it.
+ *    projected screen cannot zoom or flash-select it. The app-wide Screens
+ *    button is outside it on the rotation, and absent on the event view
+ *    (`hidesScreenMenu` in `nav-menu.tsx`).
  */
 
 type Props = {

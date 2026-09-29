@@ -47,6 +47,9 @@ own origin. On the event view it opens the Oasis website
 (`OASIS_WEBSITE_URL`) instead: the owner asked for that after the 2026-09-27
 event, because the leaderboard's site menu hands the public every other
 screen including the staff login. Do not make that target a query parameter.
+For the same reason the event view has no app-wide Screens menu at all
+(`hidesScreenMenu` in `nav-menu.tsx`): nothing on it may navigate to another
+screen of the app, since any visitor can tap a touch display.
 It sits in the footer's flow rather than pinned over the board, which is what
 makes it unable to cover a row; `npm run tv:check` screenshots `/tv` and fails
 on any overlap (root README, Integration tests).
@@ -62,8 +65,7 @@ a real scroll container the whole time, and the first touch, press or wheel
 converts the animation's current offset into a native scroll position on a
 single copy of the list (`auto-scroll.tsx`), resuming from the leader's hold
 after `IDLE_RESUME_MS` untouched. The frame allows only vertical panning and
-`main` disallows every other touch gesture; the app-wide Screens button lives
-in the root layout, outside `main`, which is why that does not reach it.
+`main` disallows every other touch gesture.
 A mouse or pen press-and-drag scrolls it too (`drag-scroll.ts`), because the
 event laptop is a Mac, where an external touch display reports a finger as a
 mouse and nothing pans natively; real touch stays with the browser.
