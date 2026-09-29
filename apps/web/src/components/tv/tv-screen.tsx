@@ -7,7 +7,7 @@ import type { TvMode, TvSlide } from "@/lib/tv-rotation";
 import type { TvHostLogo } from "@/lib/tv-host-logo";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
-import { PhoneStandingsQr } from "./phone-standings-qr";
+import { TvCornerQr } from "./phone-standings-qr";
 
 /**
  * The `/tv` rotation engine.
@@ -388,9 +388,10 @@ export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
           <Wordmark stale={stale || offline} />
           {/* In the footer's flow rather than pinned over the board, so the
               rows above give it room by construction and it never covers one.
-              It reads the origin after hydration, so the server paint has no
-              code - the footer grows to fit it a moment later. */}
-          <PhoneStandingsQr />
+              Off the event view it reads the origin after hydration, so the
+              server paint has no code - the footer grows to fit it a moment
+              later. */}
+          <TvCornerQr mode={mode} />
         </div>
       </footer>
     </main>

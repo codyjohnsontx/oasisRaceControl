@@ -39,11 +39,14 @@ the rest, which is how rows came to overlap and the car column to render
 varies are `fr` tracks, and rows carry a `min-h` tied to their own text so they
 can stretch but never collapse.
 
-Every board also carries the phone-standings QR code (`phone-standings-qr.tsx`),
-which opens `/leaderboards` on the page's own origin - nothing configured, so
-it is right on the hosted site, a preview, and a laptop at an off-site event.
-Open `/tv` on the hosted address, or on the laptop's LAN IP in the fallback -
-never `localhost`, because the code encodes the page's own origin.
+Every board also carries a corner QR code (`phone-standings-qr.tsx`). On the
+shop rotation it opens `/leaderboards` on the page's own origin - nothing
+configured, so it is right on the hosted site and a preview; open `/tv` on
+the hosted address, never `localhost`, because that code encodes the page's
+own origin. On the event view it opens the Oasis website
+(`OASIS_WEBSITE_URL`) instead: the owner asked for that after the 2026-09-27
+event, because the leaderboard's site menu hands the public every other
+screen including the staff login. Do not make that target a query parameter.
 It sits in the footer's flow rather than pinned over the board, which is what
 makes it unable to cover a row; `npm run tv:check` screenshots `/tv` and fails
 on any overlap (root README, Integration tests).
