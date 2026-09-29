@@ -1,4 +1,4 @@
-import { holdingSince, rigState, startedAtOnServer, type Heartbeat } from "./rig-state";
+import { holdingSince, rigState, type Heartbeat } from "./rig-state";
 
 /**
  * The rig monitor's rules: given what the database holds right now, which
@@ -377,15 +377,27 @@ function lapsStuck(heartbeats: readonly Heartbeat[], state: Heartbeat): boolean 
 
 /**
  * Rule 10: agent processes that started within RESTART_WINDOW_MS and lived to
- * send a heartbeat. Each process names its own start on every heartbeat.
+ * send a heartbeat. Each process names its own start on the rig's clock; the
+ * process's age at its earliest heartbeat here (sent - started, a duration on
+ * that clock) places the start on the server's. The earliest, because the
+ * rig's clock can be stepped while the agent runs: a process young enough to
+ * count has its first heartbeat in the snapshot, sent before any such step,
+ * and a clock stepped back past the start leaves a negative age that proves
+ * nothing.
  */
 function recentStarts(now: number, heartbeats: readonly Heartbeat[]): number {
-  const starts = new Set<number>();
+  const earliest = new Map<number, Heartbeat>();
   for (const h of heartbeats) {
-    const startedAt = startedAtOnServer(h);
-    if (startedAt !== null && now - startedAt <= RESTART_WINDOW_MS) starts.add(h.processStartedAt!);
+    if (h.processStartedAt !== null && !earliest.has(h.processStartedAt)) {
+      earliest.set(h.processStartedAt, h);
+    }
   }
-  return starts.size;
+  let starts = 0;
+  for (const [processStartedAt, h] of earliest) {
+    const age = (h.sentAt ?? h.receivedAt) - processStartedAt;
+    if (age >= 0 && now - (h.receivedAt - age) <= RESTART_WINDOW_MS) starts++;
+  }
+  return starts;
 }
 
 function finding(

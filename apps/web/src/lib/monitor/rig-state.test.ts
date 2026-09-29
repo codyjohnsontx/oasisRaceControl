@@ -42,10 +42,10 @@ describe("sentBefore", () => {
     expect(sentBefore(later, earlier)).toBe(false);
   });
 
-  it("orders different processes by when each started, since sequence restarts at 1", () => {
+  it("proves nothing between different processes, whose starts are on the rig's clock", () => {
     const old = hb("a", T, { sequence: 500 });
     const restarted = hb("b", T, { sequence: 1, processStartedAt: STARTED + 60_000 });
-    expect(sentBefore(old, restarted)).toBe(true);
+    expect(sentBefore(old, restarted)).toBe(false);
     expect(sentBefore(restarted, old)).toBe(false);
   });
 
@@ -104,6 +104,15 @@ describe("rigState", () => {
         sentAt: T + 120_000 - year,
         clockSkewMs: year,
       }),
+    ];
+    expect(rigState(rows)?.id).toBe("back");
+  });
+
+  it("lets a new process replace a goodbye sent after the rig's clock was set back", () => {
+    // The old agent started on a clock two hours fast, corrected while it ran.
+    const rows = [
+      hb("bye", T, { sequence: 900, processStartedAt: T + 7_200_000 - 3_600_000, shuttingDown: true }),
+      hb("back", T + 120_000, { sequence: 1, processStartedAt: T + 110_000 }),
     ];
     expect(rigState(rows)?.id).toBe("back");
   });

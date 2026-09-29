@@ -309,12 +309,21 @@ describe("rule 10: rig agent restarting repeatedly", () => {
     expect(findings[0]!.detail.headline).toBe("Rig 01: the rig agent started 3 times in 15 min");
   });
 
-  it("places each start on the server's clock with that heartbeat's skew", () => {
+  it("places each start on the server's clock, whatever the rig's clock says", () => {
     // The rig's clock runs ten minutes slow, so its "20 minutes ago" is ten.
-    const skewed = starts(20, 18, 16).map((h) => ({ ...h, clockSkewMs: 10 * MIN }));
-    expect(rulesOf(evaluate([rig(1, { heartbeats: skewed })]))).toContain(
+    const slow = [10, 8, 6].map((m) => {
+      const h = hb(m * MIN - 20 * S, { processStartedAt: NOW - (m + 10) * MIN, sequence: 1 });
+      return { ...h, sentAt: h.receivedAt - 10 * MIN, clockSkewMs: 10 * MIN };
+    });
+    expect(rulesOf(evaluate([rig(1, { heartbeats: slow })]))).toContain(
       "agent_restarting rig:rig-1 urgent",
     );
+  });
+
+  it("does not count a long-running process whose clock was set back while it ran", () => {
+    // Started 50 min ago on a clock two hours fast, since corrected.
+    const corrected = minutely(14 * MIN, 9 * MIN, () => ({ processStartedAt: NOW + 70 * MIN }));
+    expect(evaluate([rig(1, { heartbeats: [...corrected, ...starts(7, 2)] })])).toEqual([]);
   });
 
   it("holds while the rig's standing state is a goodbye from the loop", () => {

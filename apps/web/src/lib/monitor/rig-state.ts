@@ -37,10 +37,11 @@ export type Heartbeat = {
  * ordinary heartbeat already in flight when the goodbye went - so arrival
  * order alone would let a stale one overwrite a newer state.
  *
- * - Different processes: the one that started earlier sent first, judged on
- *   the server's clock (`startedAtOnServer`), since the rig's clock can move
- *   between processes. A new process restarts `sequence` at 1, so sequences
- *   are only comparable within one process.
+ * - Different processes: nothing is proved, so they are taken in arrival
+ *   order. A new process restarts `sequence` at 1, and each names its start
+ *   on the rig's clock, which can be stepped while an agent runs. A process
+ *   sends its goodbye before it exits, so the next one cannot be overtaken by
+ *   it.
  * - Same process with sequences: the lower sequence sent first. It is the
  *   agent's own counter, so it holds even if the rig's clock is corrected
  *   between the two.
@@ -51,23 +52,11 @@ export type Heartbeat = {
  */
 export function sentBefore(a: Heartbeat, b: Heartbeat): boolean {
   if (a.processStartedAt !== null && b.processStartedAt !== null) {
-    if (a.processStartedAt !== b.processStartedAt) {
-      return startedAtOnServer(a)! < startedAtOnServer(b)!;
-    }
+    if (a.processStartedAt !== b.processStartedAt) return false;
     if (a.sequence !== null && b.sequence !== null) return a.sequence < b.sequence;
   }
   if (a.sentAt !== null && b.sentAt !== null) return a.sentAt < b.sentAt;
   return false;
-}
-
-/**
- * When the heartbeat's process started, moved from the rig's clock onto the
- * server's with that heartbeat's own skew. Null for a heartbeat that does not
- * name its process start.
- */
-export function startedAtOnServer(heartbeat: Heartbeat): number | null {
-  if (heartbeat.processStartedAt === null) return null;
-  return heartbeat.processStartedAt + (heartbeat.clockSkewMs ?? 0);
 }
 
 /**

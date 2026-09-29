@@ -58,8 +58,9 @@ Details worth knowing:
   replaces the per-rig warnings. A rig with a driver in it never waits.
 - **Recovery needs two evaluations in a row** without the problem, so one
   evaluation that misses a condition does not post "recovered".
-- **Rules 3a and 3b hold through a goodbye** - closing the agent does not
-  deliver its laps. The others are about a running agent and stop at goodbye.
+- **Rules 3a, 3b and 10 hold through a goodbye** - closing the agent does not
+  deliver its laps, and a restart loop says goodbye on every cycle. The others
+  are about a running agent and stop at goodbye.
 
 ## Discord
 
