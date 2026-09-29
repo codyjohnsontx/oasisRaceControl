@@ -60,31 +60,53 @@ export function sentBefore(a: Heartbeat, b: Heartbeat): boolean {
 }
 
 /**
- * The heartbeat that states a rig's current state: the latest one received,
- * except that a heartbeat sent before the one already standing never replaces
- * it. That is what keeps a clean shutdown a clean shutdown: an ordinary
- * heartbeat that was on the wire when the agent said goodbye lands after the
- * goodbye, and read by arrival it would say the rig came back and then went
- * silent - the very alert the goodbye exists to prevent.
+ * The rig's heartbeats in the order they were SENT: arrival order, corrected
+ * wherever `sentBefore` proves one heartbeat left the rig before another that
+ * arrived ahead of it. Every rule that asks "the latest", "the latest live" or
+ * "since when" reads this one order, so a late heartbeat with a lower sequence
+ * can never stand in for newer state - not as the rig's state, not as its last
+ * live report after a goodbye, and not inside a duration.
  *
- * `heartbeats` is in arrival order (received_at, then id). Null when the rig
- * has none.
+ * `heartbeats` is in arrival order (received_at, then id).
+ */
+export function inSendOrder(heartbeats: readonly Heartbeat[]): Heartbeat[] {
+  const ordered: Heartbeat[] = [];
+  for (const heartbeat of heartbeats) {
+    const later = ordered.findIndex((other) => sentBefore(heartbeat, other));
+    if (later === -1) ordered.push(heartbeat);
+    else ordered.splice(later, 0, heartbeat);
+  }
+  return ordered;
+}
+
+/**
+ * The heartbeat that states a rig's current state: the last one sent. That is
+ * what keeps a clean shutdown a clean shutdown: an ordinary heartbeat that was
+ * on the wire when the agent said goodbye lands after the goodbye, and read by
+ * arrival it would say the rig came back and then went silent - the very
+ * alert the goodbye exists to prevent. Null when the rig has none.
  */
 export function rigState(heartbeats: readonly Heartbeat[]): Heartbeat | null {
-  let state: Heartbeat | null = null;
-  for (const heartbeat of heartbeats) {
-    if (state === null || !sentBefore(heartbeat, state)) state = heartbeat;
-  }
-  return state;
+  return inSendOrder(heartbeats).at(-1) ?? null;
+}
+
+/**
+ * The last heartbeat sent that satisfies `matches`, in send order.
+ */
+export function lastSent(
+  heartbeats: readonly Heartbeat[],
+  matches: (heartbeat: Heartbeat) => boolean,
+): Heartbeat | null {
+  return inSendOrder(heartbeats).findLast(matches) ?? null;
 }
 
 /**
  * When the condition started holding without a break, judged by the rig's
- * heartbeats in arrival order up to and including `state`: the arrival time of
- * the earliest heartbeat in the unbroken run that ends at `state`. Null when
- * `state` itself does not satisfy it. A heartbeat that cannot say (a v1 one,
- * or a field the agent left out) breaks the run, so a condition is never
- * assumed to have held through a stretch nobody reported on.
+ * heartbeats in send order up to and including `state`: the earliest arrival
+ * in the unbroken run that ends at `state`. Null when `state` itself does not
+ * satisfy it. A heartbeat that cannot say (a v1 one, or a field the agent left
+ * out) or a goodbye breaks the run, so a condition is never assumed to have
+ * held through a stretch nobody reported on.
  */
 export function holdingSince(
   heartbeats: readonly Heartbeat[],
@@ -92,12 +114,13 @@ export function holdingSince(
   holds: (heartbeat: Heartbeat) => boolean,
 ): number | null {
   if (!holds(state)) return null;
-  const end = heartbeats.indexOf(state);
+  const ordered = inSendOrder(heartbeats);
+  const end = ordered.indexOf(state);
   let since = state.receivedAt;
   for (let i = end - 1; i >= 0; i--) {
-    const heartbeat = heartbeats[i]!;
+    const heartbeat = ordered[i]!;
     if (heartbeat.shuttingDown || !holds(heartbeat)) break;
-    since = heartbeat.receivedAt;
+    since = Math.min(since, heartbeat.receivedAt);
   }
   return since;
 }

@@ -22,11 +22,14 @@ every driver with a lap today in the featured combo, scrolling on its own
 (`auto-scroll.tsx`), no rotation. It is a second rotation *list* (`TvMode` in
 `tv-rotation.ts`, chosen by `buildRotation`), not a second engine or a second
 board type - the tonight board plays it with `everyone: true`, asking the
-tonight feed for its `TONIGHT_FEED_MAX_ROWS` ceiling. It exists because at an
-off-site event the venue rotation shows the same laps under three headings:
-a league slide with no season, which is counted in the footer but never
-plays, then "Fastest tonight" and "All-time best laps", identical when every
-lap the database holds was driven today. Plain `/tv` is unchanged by it.
+tonight feed for `limit=all`. Do not give it a row ceiling back:
+`v_fastest_tonight` is already bounded by the day's drivers, and any fixed cap
+drops the next driver silently (pinned by the tonight route's
+`route.integration.test.ts`). It exists because at an off-site event the
+venue rotation shows the same laps under three headings: a league slide with
+no season, which is counted in the footer but never plays, then "Fastest
+tonight" and "All-time best laps", identical when every lap the database holds
+was driven today. Plain `/tv` is unchanged by it.
 
 Sizing is one composition, not per-element pixels. The wall renders at
 **1272x601** - not 1080p - so `/tv` is written entirely in `em` of the
@@ -267,8 +270,10 @@ the runbook is [docs/monitoring.md](docs/monitoring.md). Every rule lives in
 `evaluateRules` on the same snapshot - do not write a second implementation
 of a rule, the same discipline as `/tv` ranking. "Fires once, recovers once"
 is enforced by `monitor_alerts_one_open` (`db/migrations/0006_monitor.sql`)
-and single-statement transitions in `store.ts`, not by locks or by the
-throttle; only the evaluation whose statement won posts. A rig's state is its
+and single-statement transitions in `store.ts`, not by the throttle; only the
+evaluation whose statement won posts. The `monitor_state` row lock the claim
+takes is load-bearing too: it serializes evaluations, so an older snapshot is
+never applied after a newer one (`store.ts` header). A rig's state is its
 latest heartbeat *by send order* (`rigState`), never by arrival: an ordinary
 heartbeat that lands after the goodbye it was sent before must not turn a
 clean shutdown into a silent rig. There is no Vercel cron (Hobby runs one a
@@ -279,11 +284,14 @@ reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
 migration. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
-GitHub issue (`diagnosis/`, `handoff.ts`, `github.ts`) are written from `incidentContext`, which
-replaces the driver's name and every uuid before anything reaches the model
-(plan decision D9: the free Gemini tier may train on prompts, and the handoff
-is meant for this public repository's issues). Build any new prompt or handoff
-field through it, never from `monitor_alerts.detail` directly.
+GitHub issue (`diagnosis/`, `handoff.ts`, `github.ts`) are written from
+`incidentContext`, an allowlist of what the server can vouch for - numbers,
+flags, enum values, known agent notices as codes - that never carries a rig's
+own strings (plan decision D9:
+the free Gemini tier may train on prompts, and the handoff is pasted into a
+coding harness and this public repository's issues). Do not add a rig string
+to it behind a redaction regex; add a field of a vouchable kind, and keep
+model text going through `modelText`.
 
 ## The twenty-rig soak
 
@@ -388,6 +396,23 @@ unnamed checkout would close whatever stint is open on the rig. The
 loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
 test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
 `OASIS_TEST_BACKEND_URL`).
+
+A PIN chosen for a new name is typed twice before anything is registered, on
+the rig and on the web's sign-up and guest "Save profile" forms
+(`apps/web/src/lib/new-pin.ts`): a PIN mistyped once is one its owner can
+never sign back in with, and only staff can fix it, with Reset PIN on
+`/staff` (2026-09-28). The
+rig asks "Raced here before?" instead of guessing from a failed login - that
+guess is what told chuy to use a different name - and its sign-in is one small
+state machine, `SignInState` in `DriverPrompt.cs`, over the client's separate
+`CheckInReturningAsync` (login only) and `CheckInNewAsync` (register only).
+The rules are documented on the enum and every sequence is a row of
+`EverySignInSequenceEndsWhereTheRulesSay`, so change a rule and its row
+together. The load-bearing ones: the returning path never registers and makes
+at most two failed logins per name for the whole sign-in - typing the name
+again gets no fresh tries - so a stranger cannot lock the real driver out
+(the backend locks at five) from one sign-in; the new path never logs in, and compares its two
+PINs on the rig. The website says the same in `driver-auth-refusal.ts`.
 
 ## Rig heartbeat
 

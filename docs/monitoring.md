@@ -21,7 +21,10 @@ An evaluation runs
   minute (below), so a venue whose every rig went dark is still noticed.
 
 However many of those arrive, at most one evaluation runs every 20 seconds
-(`monitor_state.last_evaluated_at`, claimed in one statement).
+(`monitor_state.last_evaluated_at`), and never two at once: an evaluation
+claims, reads and applies its alert changes in one short transaction holding
+that row's lock, so one that reads later always applies later. It commits
+before posting anything, so a slow Discord never holds the others up.
 
 ## The rules so far
 
@@ -31,7 +34,7 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 | # | Rule | Fires when | Clears when | Severity |
 |---|---|---|---|---|
 | 1 | Rig silent | no word from a rig for 2 min, and its agent did not say goodbye | the rig is heard again | urgent with a driver seated; otherwise a warning after 7 min (below) |
-| 1 | Every rig went quiet | two or more empty rigs went quiet within 5 min of each other and none is left running | 7 min after the first rig is heard again (by heartbeat or by laps), time enough for the rest's backed-off heartbeats; rigs still quiet then are warned about one by one | warning, one note instead of one per rig. The plan's "outside event mode" qualifier arrives with event mode in PR 4; until then the note applies in every mode |
+| 1 | Every rig went quiet | two or more empty rigs went quiet within 5 min of each other and none is left running | 7 min after the first rig is heard again (by heartbeat or by laps), time enough for the rest's backed-off heartbeats. A rig not heard since before the first one came back stays dark without a warning of its own - still switched off after a close, or not yet back - until it is heard again (after which it alerts as usual) or 12 h pass; a seated one still alerts at once | warning, one note instead of one per rig. The plan's "outside event mode" qualifier arrives with event mode in PR 4; until then the note applies in every mode |
 | 2 | iRacing not connected while a driver is signed in | a seated rig's agent has reported iRacing disconnected for 3 min (counted from when the driver sat down) | iRacing connects, or the stint ends | urgent |
 | 3a | Laps queued but not reaching the site | a lap has waited over 2 min while at least two heartbeats got through | the queue drains | urgent |
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
@@ -83,9 +86,17 @@ Set both in Vercel for **Production only**. The webhook URL is a credential:
 it lives there and nowhere in the repository.
 
 A post that fails (Discord down, rate-limited) is retried by a later
-evaluation, no sooner than a minute after the last attempt and for up to an
-hour, and never twice. An alert that came and went while Discord was down
-posts its opening late and then its recovery, never a lone "recovered".
+evaluation, no sooner than a minute after the last attempt, until an hour
+after the alert opened (or its count last rose) - however long the problem
+itself lasts - and never by two evaluations at once. An alert that came and
+went while Discord was down posts its opening late and then its recovery,
+never a lone "recovered".
+
+One tradeoff cannot be designed away: a post that times out may still have
+reached Discord, and Discord gives the monitor no way to ask. The monitor
+treats it as failed and retries, so on a slow Discord the same alert can
+appear more than once - at most once a minute, and never after that hour.
+Counting a timeout as delivered instead would risk an alert nobody ever saw.
 
 ## AI diagnosis and the copy-paste handoff
 
@@ -99,18 +110,33 @@ An **urgent** alert is followed by two more messages, both quiet:
    suggested change and where to look. The frame is fixed text the monitor
    fills in (`handoff.ts`); the model only writes those three lines.
 
-The alert itself always goes first and never waits for the model. A call
+The alert itself always goes first and never waits for the model, and the
+tick answers its clock before the model is called: the diagnosis runs in
+`after()` once the evaluation has answered (`runDiagnoses` in `run.ts`). A call
 that fails or takes over 20 s leaves a retry marker, and an evaluation at
 least a minute later tries once more; if that fails too, the handoff is
 posted anyway with "no diagnosis" in place of the model's lines. Nothing is
 diagnosed twice, and a post Discord refused is retried like an alert's.
 
-**No driver's name or id leaves.** Before the call, the seated driver's
-display name becomes `driver-<4 hex>` and every uuid becomes `<id>`; the
-prompt carries only the rule, the rig's name, named heartbeat fields and the
-agent's notices (`diagnosis/context.ts`). The handoff is built from the same
-redacted text, because it is meant to be pasted elsewhere. The alert message
-above it still names the driver, as it always has: that is the staff channel.
+**Nothing a rig typed leaves.** A heartbeat's strings - session names,
+agent notices, variable names - are whatever the rig, or anyone holding its
+token, sent, and no filter can promise they hold no name, address, path or
+instruction. So the prompt and the handoff carry only what the server can
+vouch for (`diagnosis/context.ts`): the heartbeats' numbers, true/false
+flags and enum values; the agent version only when it has a version's
+shape; agent notices only as codes of the notices the agent is known to
+raise, counted, with a fixed summary; and the alert's own words - the rule,
+the rig's name and the headline and numbers the rules wrote, with the seated
+driver's name replaced by `driver-<4 hex>`. The alert message above still
+names the driver, as it always has: that is the staff channel.
+
+**The handoff keeps its shape.** The model read rig data, so its answer is
+treated as untrusted too: the prompt marks the incident as data, never
+instructions; every field of the answer is flattened to one line with links,
+mentions, code fences and the handoff's own labels (such as `Rules:`)
+neutralized; and `whereToLook` can only name the repository paths listed in
+the prompt. The handoff ends with its one `Rules:` line, which
+the length clip never cuts, and labels the model's three lines AI.
 
 | Variable | What it is |
 |---|---|
@@ -120,7 +146,7 @@ above it still names the driver, as it always has: that is the staff channel.
 | `DIAGNOSIS_MODEL` | optional; defaults to `gemini-2.5-flash`, or `claude-haiku-4-5-20251001` for `anthropic`. It names a model of the chosen provider, so clear it when switching |
 
 Production only, like the webhook. Google may use free-tier prompts to
-improve its products, which is why the redaction above is not optional.
+improve its products, which is why the allowlist above is not optional.
 
 ## The rig-alert GitHub issue
 
@@ -134,7 +160,10 @@ handoff stays either way, as the fallback when the harness is offline.
   diagnosis classes as `software`. An unplugged rig or a closed iRacing files
   nothing.
 - **The issue:** titled `[rig-alert] <rule> - <rig>`, its body is the handoff
-  plus the redacted heartbeat rows it was written from, in a `<details>` block.
+  exactly as Discord got it, plus the heartbeat facts it was written from (the
+  same allowlisted fields, as JSON) in a `<details>` block. Both sit in code
+  blocks, so no rig string reaches the issue and nothing in it can @mention
+  anyone or link anywhere; the rule and rig names in the title are made inert.
   The number is stored in `monitor_alerts.github_issue_number`.
 - **A re-fire** of the same rule on the same rig within 24 hours comments on
   that issue instead of opening another.

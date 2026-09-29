@@ -1,17 +1,47 @@
+import type { QueryResult, QueryResultRow } from "pg";
 import { query, queryOne } from "@/lib/db";
 import type { HeartbeatRow as DiagnosisHeartbeat } from "./diagnosis/context";
 import type { AlertForMessage } from "./messages";
 import type { Heartbeat } from "./rig-state";
-import type { AlertDetail, Finding, MonitorSnapshot, RigSnapshot, Severity } from "./rules";
+import {
+  HEARD_HISTORY_MS,
+  SILENT_AFTER_MS,
+  type AlertDetail,
+  type Finding,
+  type MonitorSnapshot,
+  type RigSnapshot,
+  type Severity,
+} from "./rules";
 
 /**
  * The monitor's database side: the evaluation throttle, the snapshot the rules
- * read, and the alert transitions (db/migrations/0006_monitor.sql). Every
- * transition is one statement whose WHERE clause is the guard, so two
- * evaluations running at once - two Vercel instances, a heartbeat and the
- * external clock - can both try and exactly one wins. Whoever wins a
- * transition is the only one that posts it.
+ * read, and the alert transitions (db/migrations/0006_monitor.sql).
+ *
+ * An evaluation's claim, snapshot and transitions run in ONE transaction on
+ * one client (runMonitor), and the claim is an upsert of the single
+ * monitor_state row, so it holds that row's lock until the transaction
+ * commits. A second evaluation's claim waits on the lock and then finds the
+ * first one's timestamp, so evaluations are serialized, not merely spaced: a
+ * slow evaluation's old snapshot can never be applied after a newer one's
+ * (two stale "absent" counts resolving an alert that is present, or a stale
+ * level moving it backwards). The transaction does no network I/O and
+ * commits before any Discord post, so it holds the lock for a handful of
+ * short statements. Each transition is also one statement whose WHERE clause
+ * is its guard, and whoever wins a transition is the only one that posts it.
  */
+
+/** A pool or a transaction's client: anything these statements can run on. */
+export type Db = {
+  query<Row extends QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<Row>>;
+};
+
+async function rows<Row extends QueryResultRow>(
+  db: Db,
+  text: string,
+  values: unknown[] = [],
+): Promise<Row[]> {
+  return (await db.query<Row>(text, values)).rows;
+}
 
 /**
  * At most one evaluation this often, however many heartbeats and ticks arrive.
@@ -33,7 +63,15 @@ const HISTORY = "15 minutes";
  */
 const BEFORE_LATEST = "5 minutes";
 
-/** A post that failed is retried by a later evaluation, for this long. */
+/**
+ * A post that failed is retried by later evaluations until this long after the
+ * alert opened (or its level last rose) - monitor_alerts.notify_until, fixed
+ * then and never moved by the problem persisting or by a retry. A post that
+ * timed out may still have reached Discord, and nothing Discord offers lets
+ * the monitor ask, so such a retry can show the same alert twice; the
+ * deadline is what bounds that to one hour of once-a-minute retries rather
+ * than the life of the problem.
+ */
 const RETRY_FOR = "1 hour";
 /** And no sooner than this after the previous attempt at the same post. */
 const RETRY_AFTER = "60 seconds";
@@ -48,8 +86,9 @@ const PRUNE_EVERY = "24 hours";
  * than an update so a missing state row (a test database truncated around it)
  * is recreated instead of silently stopping the monitor.
  */
-export async function claimEvaluation(): Promise<{ now: number } | null> {
-  const row = await queryOne<{ now_ms: number }>(
+export async function claimEvaluation(db: Db): Promise<{ now: number } | null> {
+  const [row] = await rows<{ now_ms: number }>(
+    db,
     `insert into monitor_state as s (id, last_evaluated_at) values (1, now())
      on conflict (id) do update set last_evaluated_at = excluded.last_evaluated_at
      where s.last_evaluated_at is null or s.last_evaluated_at < now() - $1::interval
@@ -61,9 +100,13 @@ export async function claimEvaluation(): Promise<{ now: number } | null> {
 
 export type OpenAlert = { id: string; rule: string; subject: string };
 
-export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { openAlerts: OpenAlert[] }> {
-  const [rigRows, heartbeatRows, openAlerts] = await Promise.all([
-    query<{
+export async function loadSnapshot(
+  db: Db,
+  now: number,
+): Promise<MonitorSnapshot & { openAlerts: OpenAlert[] }> {
+  // One client runs one statement at a time; these queue on it in order.
+  const [rigRows, heartbeatRows, heardRows, openAlerts] = await Promise.all([
+    rows<{
       id: string;
       rig_number: number;
       display_name: string;
@@ -72,6 +115,7 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
       driver_name: string | null;
       driver_status: string | null;
     }>(
+      db,
       `select r.id, r.rig_number, r.display_name, r.last_seen_at,
               ra.started_at as seated_since, d.display_name::text as driver_name,
               d.status::text as driver_status
@@ -83,7 +127,8 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
     // Through each rig's latest heartbeat (one index lookup per rig) and then
     // an index range from there, so the read is bounded by HISTORY however
     // much history is retained.
-    query<HeartbeatRow>(
+    rows<HeartbeatRow>(
+      db,
       `select h.id::text, h.rig_id, h.received_at, h.sent_at,
               h.clock_skew_ms::float8 as clock_skew_ms, h.process_started_at,
               h.agent_version, h.sim_connected, h.telemetry_faulted,
@@ -101,7 +146,28 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
        order by h.rig_id, h.received_at, h.id`,
       [HISTORY, BEFORE_LATEST],
     ),
-    query<OpenAlert>(
+    // Each rig's unbroken runs of heartbeats over HEARD_HISTORY_MS: an index
+    // range per rig, folded in the database so only the runs come back.
+    rows<{ rig_id: string; heard_from: Date; heard_to: Date }>(
+      db,
+      `select rig_id, min(received_at) as heard_from, max(received_at) as heard_to
+       from (
+         select rig_id, received_at,
+                sum(case when received_at - previous > $2::interval then 1 else 0 end)
+                  over (partition by rig_id order by received_at) as run
+         from (
+           select h.rig_id, h.received_at,
+                  lag(h.received_at) over (partition by h.rig_id order by h.received_at) as previous
+           from rigs r
+           join rig_heartbeats h on h.rig_id = r.id and h.received_at >= now() - $1::interval
+         ) gaps
+       ) runs
+       group by rig_id, run
+       order by rig_id, heard_from`,
+      [`${HEARD_HISTORY_MS / 1000} seconds`, `${SILENT_AFTER_MS / 1000} seconds`],
+    ),
+    rows<OpenAlert>(
+      db,
       "select id::text, rule, subject from monitor_alerts where resolved_at is null",
     ),
   ]);
@@ -111,6 +177,13 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
     const list = byRig.get(row.rig_id) ?? [];
     list.push(toHeartbeat(row));
     byRig.set(row.rig_id, list);
+  }
+
+  const heardByRig = new Map<string, RigSnapshot["heard"]>();
+  for (const row of heardRows) {
+    const list = heardByRig.get(row.rig_id) ?? [];
+    list.push({ from: row.heard_from.getTime(), to: row.heard_to.getTime() });
+    heardByRig.set(row.rig_id, list);
   }
 
   const rigs: RigSnapshot[] = rigRows.map((row) => ({
@@ -127,6 +200,7 @@ export async function loadSnapshot(now: number): Promise<MonitorSnapshot & { ope
           }
         : null,
     heartbeats: byRig.get(row.id) ?? [],
+    heard: heardByRig.get(row.id) ?? [],
   }));
 
   return { now, rigs, openAlerts };
@@ -193,6 +267,7 @@ function toHeartbeat(row: HeartbeatRow): Heartbeat {
  *   whose update reaches RESOLVE_AFTER_ABSENT resolves it and posts.
  */
 export async function applyFindings(
+  db: Db,
   findings: readonly Finding[],
   openAlerts: readonly OpenAlert[],
 ): Promise<{ announce: string[]; recover: string[] }> {
@@ -201,18 +276,20 @@ export async function applyFindings(
 
   for (const finding of findings) {
     seen.add(`${finding.rule}|${finding.subject}`);
-    const row = await queryOne<{ id: string; inserted: boolean }>(
-      `insert into monitor_alerts (rule, subject, severity, level, detail, notify_attempted_at)
-       values ($1, $2, $3, $4, $5, now())
+    const [row] = await rows<{ id: string; inserted: boolean }>(
+      db,
+      `insert into monitor_alerts
+         (rule, subject, severity, level, detail, notify_attempted_at, notify_until)
+       values ($1, $2, $3, $4, $5, now(), now() + $6::interval)
        on conflict (rule, subject) where resolved_at is null
        do update set last_seen_at = now(), absent_evaluations = 0, detail = excluded.detail
        returning id::text, (xmax = 0) as inserted`,
-      [finding.rule, finding.subject, finding.severity, finding.level, finding.detail],
+      [finding.rule, finding.subject, finding.severity, finding.level, finding.detail, RETRY_FOR],
     );
     if (!row) continue;
     if (row.inserted) {
       announce.push(row.id);
-    } else if (finding.level > 0 && (await levelRose(row.id, finding.level))) {
+    } else if (finding.level > 0 && (await levelRose(db, row.id, finding.level))) {
       announce.push(row.id);
     }
   }
@@ -222,7 +299,8 @@ export async function applyFindings(
     .map((alert) => alert.id);
   if (absent.length === 0) return { announce, recover: [] };
 
-  const resolved = await query<{ id: string; announced: boolean }>(
+  const resolved = await rows<{ id: string; announced: boolean }>(
+    db,
     `update monitor_alerts
      set absent_evaluations = absent_evaluations + 1,
          resolved_at = case when absent_evaluations + 1 >= $2 then now() end,
@@ -240,16 +318,18 @@ export async function applyFindings(
  * actually is. The row lock makes two evaluations seeing the same rise agree
  * on which of them moved it.
  */
-async function levelRose(id: string, level: number): Promise<boolean> {
-  const row = await queryOne<{ rose: boolean }>(
+async function levelRose(db: Db, id: string, level: number): Promise<boolean> {
+  const [row] = await rows<{ rose: boolean }>(
+    db,
     `update monitor_alerts a
      set level = $2::int,
          notified_at = case when $2::int > old.level then null else a.notified_at end,
-         notify_attempted_at = case when $2::int > old.level then now() else a.notify_attempted_at end
+         notify_attempted_at = case when $2::int > old.level then now() else a.notify_attempted_at end,
+         notify_until = case when $2::int > old.level then now() + $3::interval else a.notify_until end
      from (select id, level from monitor_alerts where id = $1::bigint for update) old
      where a.id = old.id and a.level <> $2::int
      returning old.level < $2::int as rose`,
-    [id, level],
+    [id, level, RETRY_FOR],
   );
   return row?.rose ?? false;
 }
@@ -305,9 +385,9 @@ export async function claimAnnounceRetries(): Promise<AlertForMessage[]> {
     `update monitor_alerts set notify_attempted_at = now()
      where notified_at is null
        and coalesce(notify_attempted_at, '-infinity') < now() - $1::interval
-       and last_seen_at > now() - $2::interval
+       and notify_until > now()
      returning ${ALERT_COLUMNS}`,
-    [RETRY_AFTER, RETRY_FOR],
+    [RETRY_AFTER],
   );
   return rows.map(toAlert);
 }
@@ -395,7 +475,9 @@ export type AlertToDiagnose = AlertForMessage & { subject: string; attempts: num
 /**
  * Claims the urgent alerts that need a diagnosis call: announced (so the
  * alert itself always goes first), still open, and never diagnosed, due a
- * retry, or claimed by a call that went quiet. One statement, and SKIP LOCKED,
+ * retry, or claimed by a call that went quiet. A rig alert whose detail does
+ * not say who was seated (stored before AlertDetail.driver existed) is never
+ * claimed, since its text may name a driver the redaction cannot know. One statement, and SKIP LOCKED,
  * so two evaluations cannot both call for one alert.
  */
 export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
@@ -409,6 +491,7 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
        select id from monitor_alerts
        where severity = 'urgent' and notified_at is not null and resolved_at is null
          and opened_at > now() - $1::interval
+         and (subject not like 'rig:%' or detail ? 'driver')
          and (diagnosis is null
            or (diagnosis->>'status' = 'retry' and (diagnosis->>'at')::timestamptz < now() - $2::interval)
            or (diagnosis->>'status' = 'pending' and (diagnosis->>'at')::timestamptz < now() - $3::interval))
@@ -421,13 +504,36 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
   return rows.map((row) => ({ ...toAlert(row), subject: row.subject, attempts: row.attempts }));
 }
 
-/** A rig's latest heartbeats, newest first, for the diagnosis to read. */
+/**
+ * A rig's latest heartbeats, newest first, for the diagnosis to read. The
+ * ingestion route stores the fields the rules filter on in their own columns
+ * and only the rest in `payload`, so the columns are put back under their
+ * wire names here. A null column is a field the heartbeat did not carry,
+ * except `assignment_id`: a current agent always says whether anyone is
+ * seated (`assignmentKnown`), so there null means nobody.
+ */
 export async function recentHeartbeats(subject: string): Promise<DiagnosisHeartbeat[]> {
   const rigId = subject.match(/^rig:([0-9a-f-]{36})$/i)?.[1];
   if (!rigId) return [];
   const rows = await query<{ received_ms: number; clock_skew_ms: number | null; payload: Record<string, unknown> }>(
     `select (extract(epoch from received_at) * 1000)::float8 as received_ms,
-            clock_skew_ms::float8 as clock_skew_ms, payload
+            clock_skew_ms::float8 as clock_skew_ms,
+            payload || jsonb_strip_nulls(jsonb_build_object(
+              'agentVersion', agent_version,
+              'processStartedAt', process_started_at,
+              'startCount', start_count,
+              'simConnected', sim_connected,
+              'telemetryFaulted', telemetry_faulted,
+              'session', case when session_track is not null then jsonb_build_object(
+                'trackName', session_track, 'trackConfig', session_config, 'carName', session_car) end,
+              'pendingLaps', pending_laps,
+              'rejectedLaps', rejected_laps,
+              'checkout', checkout,
+              'signInFailures', sign_in_failures,
+              'shuttingDown', case when shutting_down then true end))
+            || case when assignment_id is not null or (payload->>'assignmentKnown')::boolean
+                    then jsonb_build_object('assignmentId', assignment_id) else '{}'::jsonb end
+              as payload
      from rig_heartbeats where rig_id = $1 order by received_at desc, id desc limit 15`,
     [rigId],
   );

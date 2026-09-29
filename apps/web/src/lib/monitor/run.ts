@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { withTransaction } from "@/lib/db";
 import { diagnose, diagnosisConfig, diagnosisSchema, type DiagnosisConfig } from "./diagnosis";
 import { incidentContext } from "./diagnosis/context";
 import type { ProviderName } from "./diagnosis/provider";
@@ -49,23 +50,34 @@ const SOFTWARE_RULES = Object.entries(RULES)
  * One monitor evaluation, end to end: claim it, read the snapshot, run the
  * rules, apply the transitions, post what this evaluation won, retry what an
  * earlier one could not deliver, and prune old heartbeats when that is due.
+ * Urgent alerts' diagnoses are a separate stage, runDiagnoses, which follows
+ * an evaluation that ran and never delays its answer.
  *
  * Nothing runs it on a timer inside Vercel (Hobby cron is once a day). It
  * runs after every rig heartbeat's response has gone (scheduleMonitor) and on
  * every GET /api/monitor/tick from the external one-minute clock, and the
- * claim throttles all of them to one evaluation at a time.
+ * claim throttles all of them to one evaluation every few seconds, run one
+ * at a time.
  */
 export type MonitorRun =
   | { evaluated: false }
-  | { evaluated: true; findings: number; announced: number; recovered: number; diagnosed: number };
+  | { evaluated: true; findings: number; announced: number; recovered: number };
 
 export async function runMonitor(): Promise<MonitorRun> {
-  const claim = await claimEvaluation();
-  if (!claim) return { evaluated: false };
-
-  const snapshot = await loadSnapshot(claim.now);
-  const findings = evaluateRules(snapshot);
-  const won = await applyFindings(findings, snapshot.openAlerts);
+  // Claim, snapshot, rules and transitions in one short transaction holding
+  // the monitor_state row lock, so evaluations apply in the order they read
+  // (store.ts). It commits before anything is posted: no Discord call ever
+  // holds the lock.
+  const evaluation = await withTransaction(async (client) => {
+    const claim = await claimEvaluation(client);
+    if (!claim) return null;
+    const snapshot = await loadSnapshot(client, claim.now);
+    const findings = evaluateRules(snapshot);
+    const won = await applyFindings(client, findings, snapshot.openAlerts);
+    return { findings, won };
+  });
+  if (!evaluation) return { evaluated: false };
+  const { findings, won } = evaluation;
 
   const mention = alertUserId();
   let announced = await deliver(await alertsById(won.announce), (a) => alertMessage(a, mention), markAnnounced);
@@ -78,19 +90,30 @@ export async function runMonitor(): Promise<MonitorRun> {
     recovered += await deliver(await claimRecoveryRetries(), recoveryMessage, markRecoveryAnnounced);
   }
 
-  // Urgent alerts' diagnoses and handoffs come after every alert and recovery
-  // above has had its turn, so a slow or failing model delays nothing.
+  const pruned = await pruneHeartbeats();
+  if (pruned !== null) console.log(`[monitor] pruned ${pruned} heartbeat(s) past retention`);
+
+  return { evaluated: true, findings: findings.length, announced, recovered };
+}
+
+/**
+ * Urgent alerts' diagnoses and handoffs, the retry of any that Discord
+ * refused, and the rig-alert issues filed from those handoffs. Runs after an evaluation, so every alert and recovery has had its
+ * turn first and a slow or failing model delays nothing; the claims keep two
+ * concurrent runs from diagnosing or posting the same alert. Returns how many
+ * diagnoses were made.
+ */
+export async function runDiagnoses(): Promise<number> {
+  if (!discordConfigured()) return 0;
   let diagnosed = 0;
   const config = diagnosisConfig();
-  if (config && discordConfigured()) {
+  if (config) {
     for (const alert of await claimDiagnoses()) {
       if (await diagnoseAlert(alert, config)) diagnosed++;
     }
   }
-  if (discordConfigured()) {
-    for (const row of await claimDiagnosisPostRetries()) {
-      await postDiagnosis(row.alert, row.diagnosis, row.handoff);
-    }
+  for (const row of await claimDiagnosisPostRetries()) {
+    await postDiagnosis(row.alert, row.diagnosis, row.handoff);
   }
 
   // The rig-alert issue comes last: it carries the handoff written above, and
@@ -104,11 +127,7 @@ export async function runMonitor(): Promise<MonitorRun> {
       else logFailedIssue(alert.id, sent);
     }
   }
-
-  const pruned = await pruneHeartbeats();
-  if (pruned !== null) console.log(`[monitor] pruned ${pruned} heartbeat(s) past retention`);
-
-  return { evaluated: true, findings: findings.length, announced, recovered, diagnosed };
+  return diagnosed;
 }
 
 /**
@@ -228,24 +247,40 @@ function logFailedPost(id: string, result: Awaited<ReturnType<typeof postDiscord
 }
 
 /**
- * Runs an evaluation after the current response has been sent (Next's
- * after(), which Vercel keeps the function alive for), so the rig's heartbeat
- * is answered at the speed it always was. Never throws, and a failure is
- * logged and goes nowhere else: the heartbeat is already stored, and the
- * next heartbeat or tick evaluates again. A monitor problem must never turn a
- * heartbeat into a 500 - the rig would read that as the site being down.
+ * Runs an evaluation and then its diagnoses after the current response has
+ * been sent (Next's after(), which Vercel keeps the function alive for), so
+ * the rig's heartbeat is answered at the speed it always was. Never throws,
+ * and a failure is logged and goes nowhere else: the heartbeat is already
+ * stored, and the next heartbeat or tick evaluates again. A monitor problem
+ * must never turn a heartbeat into a 500 - the rig would read that as the
+ * site being down.
  */
 export function scheduleMonitor(): void {
+  afterResponse("an evaluation", async () => {
+    if ((await runMonitor()).evaluated) await runDiagnoses();
+  });
+}
+
+/**
+ * Runs the diagnosis stage after the current response has been sent, for the
+ * tick, which awaits its own evaluation but must not wait on a model. Never
+ * throws; a failure is logged and the next evaluation's stage retries it.
+ */
+export function scheduleDiagnoses(): void {
+  afterResponse("the diagnoses", runDiagnoses);
+}
+
+function afterResponse(what: string, work: () => Promise<unknown>): void {
   try {
     after(async () => {
       try {
-        await runMonitor();
+        await work();
       } catch (error) {
-        console.error("[monitor] evaluation failed", (error as Error).message);
+        console.error(`[monitor] ${what} failed`, (error as Error).message);
       }
     });
   } catch (error) {
-    // after() refuses outside a request scope; nothing else calls this.
-    console.error("[monitor] could not schedule an evaluation", (error as Error).message);
+    // after() refuses outside a request scope; only routes call this.
+    console.error(`[monitor] could not schedule ${what}`, (error as Error).message);
   }
 }

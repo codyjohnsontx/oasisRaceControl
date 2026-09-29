@@ -57,6 +57,12 @@ create table monitor_alerts (
   -- evaluations retrying at once cannot both post.
   notified_at timestamptz,
   notify_attempted_at timestamptz,
+  -- The last moment an unannounced opening, or a rise in level, may still be
+  -- retried. Set when the alert opens and again only when its level rises;
+  -- neither the problem persisting nor a retry moves it, so a post Discord
+  -- keeps refusing is given up on an hour later instead of being retried for
+  -- as long as the problem lasts.
+  notify_until timestamptz,
   recovery_notified_at timestamptz,
   recovery_attempted_at timestamptz,
   github_issue_number int

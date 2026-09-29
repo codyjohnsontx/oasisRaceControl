@@ -1,19 +1,32 @@
 import { createHash } from "node:crypto";
+import { SIGN_IN_FAILURE_KINDS } from "@/lib/events";
 import { RULES, type AlertDetail, type Severity } from "../rules";
 
 /**
- * What an urgent alert's AI diagnosis and copy-paste handoff are written from,
- * with every driver's name and every id taken out first (plan decision D9).
- * The owner chose Gemini's free tier on the premise that the prompt carries no
- * customer data, and that tier's prompts may be used by Google - so the
- * premise is made true here, once, before anything leaves: a driver's display
- * name becomes `driver-<4 hex>` and a uuid becomes `<id>`. The handoff is
- * built from the same redacted context, because it also goes to the coding
- * harness and, later, to a GitHub issue on a public repository.
+ * What an urgent alert's AI diagnosis and copy-paste handoff are written from
+ * (plan decision D9). The owner chose Gemini's free tier on the premise that
+ * the prompt carries no customer data, and that tier's prompts may be used by
+ * Google; the handoff is pasted into a coding harness and, later, a GitHub
+ * issue on a public repository. So nothing a rig typed goes in.
  *
- * Only named heartbeat fields are carried (`HEARTBEAT_FIELDS`): the payload
- * holds the assignment id, which is dropped and replaced by whether anyone
- * was seated.
+ * That is an allowlist of kinds, not a filter of content: a heartbeat's
+ * strings (session names, agent notices, variable names) are whatever a rig -
+ * or anyone holding its token - sent, and no pattern can promise they hold no
+ * name, address, path or instruction. What is kept is what the server can
+ * vouch for:
+ *
+ * - numbers, booleans and values of the wire contract's own enums;
+ * - the agent version, only when it has a version's shape;
+ * - agent notices, only as codes of the notices the agent is known to raise
+ *   (`NOTICE_CODES`), counted, each with a fixed summary written here;
+ * - the alert's own words: the rule, the rig's name (set by staff), and the
+ *   headline and numeric fields the rules wrote from those numbers. The seated
+ *   driver's name, the one person-derived value a headline carries, becomes
+ *   `driver-<4 hex>`; the Driver and Agent fields are dropped, since the first
+ *   is that name again and the second is a rig string.
+ *
+ * Every string is also flattened to one line, so nothing here can pose as a
+ * line of the handoff frame.
  */
 
 export type HeartbeatRow = {
@@ -30,6 +43,34 @@ export type AlertForDiagnosis = {
   detail: AlertDetail;
 };
 
+export type HeartbeatFacts = {
+  receivedAt: number;
+  clockSkewMs: number | null;
+  agentVersion?: string;
+  processStartedAt?: number;
+  sequence?: number;
+  startCount?: number;
+  osUptimeS?: number;
+  telemetryMode?: string;
+  simConnected?: boolean;
+  telemetryFaulted?: boolean;
+  missingVariableCount?: number;
+  inSession?: boolean;
+  assignmentKnown?: boolean;
+  driverSeated?: boolean;
+  pendingLaps?: number;
+  oldestPendingAgeS?: number | null;
+  rejectedLaps?: number;
+  checkout?: string;
+  lastLapCapturedAt?: number | null;
+  lastLapPostedAt?: number | null;
+  signInFailures?: number;
+  signInFailureKinds?: string[];
+  agentCpuPercent?: number;
+  agentMemoryMb?: number;
+  shuttingDown?: boolean;
+};
+
 export type IncidentContext = {
   alertId: string;
   rule: { key: string; number: string; title: string };
@@ -39,44 +80,56 @@ export type IncidentContext = {
   headline: string;
   fields: Array<{ name: string; value: string }>;
   /** Oldest first; at most RECENT_HEARTBEATS. */
-  heartbeats: Array<{ receivedAt: number; clockSkewMs: number | null } & Record<string, unknown>>;
-  /** Agent notices from the heartbeats read, oldest first, at most MAX_NOTICES. */
-  notices: string[];
+  heartbeats: HeartbeatFacts[];
+  /** Agent notices in the heartbeats read, by code, with how many of each. */
+  notices: Array<{ code: NoticeCode; summary: string; count: number }>;
   /** The deployed commit (VERCEL_GIT_COMMIT_SHA), or null off Vercel. */
   commit: string | null;
 };
 
 /** The heartbeats a prompt shows in full. */
 export const RECENT_HEARTBEATS = 5;
-const MAX_NOTICES = 10;
 
-/** Payload fields that describe the rig and its agent, and nothing about a person. */
-const HEARTBEAT_FIELDS = [
-  "agentVersion",
-  "processStartedAt",
-  "sequence",
-  "startCount",
-  "osUptimeS",
-  "telemetryMode",
-  "simConnected",
-  "telemetryFaulted",
-  "missingVariables",
-  "session",
-  "assignmentKnown",
-  "pendingLaps",
-  "oldestPendingAgeS",
-  "rejectedLaps",
-  "checkout",
-  "lastLapCapturedAt",
-  "lastLapPostedAt",
-  "signInFailures",
-  "signInFailureKinds",
-  "agentCpuPercent",
-  "agentMemoryMb",
-  "shuttingDown",
-] as const;
+/**
+ * The notices apps/rig-agent/OasisRigAgent.Core/AgentService.cs raises, by the
+ * fixed text each starts with. Only the code and the summary here go on; the
+ * rest of a notice (an exception message, a path, an id) never does. A notice
+ * the agent gains later reads as `other` until it is added here.
+ */
+export const NOTICE_CODES = {
+  tick_failed: { prefix: "[agent] tick failed", summary: "the agent's work loop threw an error" },
+  lap_queue_failed: { prefix: "[agent] failed to queue lap", summary: "a lap could not be written to the outbox" },
+  telemetry_stopped: { prefix: "[telemetry] lap reading stopped", summary: "the iRacing reader faulted" },
+  start_log_failed: { prefix: "[agent] failed to record this start", summary: "the agent could not log its own start" },
+  checkout_queue_failed: {
+    prefix: "[agent] failed to record queued sign-out",
+    summary: "a sign-out could not be saved to the outbox",
+  },
+  checkout_forget_failed: {
+    prefix: "[agent] failed to forget delivered sign-out",
+    summary: "a delivered sign-out could not be cleared from the outbox",
+  },
+  lap_refused: {
+    prefix: "[agent] the backend will not accept lap",
+    summary: "the site refused a lap, which is now parked on the rig",
+  },
+  heartbeat_refused: {
+    prefix: "[agent] the backend refused this rig's status report",
+    summary: "the site refused the full heartbeat and got the bare one",
+  },
+  other: { prefix: null, summary: "a notice this monitor does not recognise" },
+} as const;
 
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+export type NoticeCode = keyof typeof NOTICE_CODES;
+
+/** The alert fields that are numbers the rules computed, never a rig's words. */
+const NUMERIC_FIELDS = new Set(["Last heard", "Queued laps", "Parked laps", "Starts", "Clock skew"]);
+
+const TELEMETRY_MODES = ["iracing", "simulated", "none"];
+const CHECKOUTS = ["none", "queued", "not_queued"];
+const SIGN_IN_KINDS: readonly string[] = SIGN_IN_FAILURE_KINDS;
+/** rig-agent/0.4-monitor, 1.4.1: a version, and too short to hide a sentence in. */
+const VERSION = /^(rig-agent\/)?\d{1,4}(\.\d{1,4}){0,3}(-[a-z0-9]{1,12})?$/i;
 
 /** A stable stand-in for a driver's name: the same name, the same stand-in. */
 export function pseudonym(name: string): string {
@@ -92,52 +145,110 @@ export function incidentContext(
   heartbeats: readonly HeartbeatRow[],
   commit: string | null,
 ): IncidentContext {
-  const redact = redactor(alert.detail.driver);
+  const text = serverText(alert.detail.driver);
   const rule = RULES[alert.rule as keyof typeof RULES] ?? { number: "?", title: alert.rule };
   const oldestFirst = [...heartbeats].reverse();
 
-  return redact({
+  return {
     alertId: alert.id,
-    rule: { key: alert.rule, number: rule.number, title: rule.title },
+    rule: { key: text(alert.rule), number: rule.number, title: text(rule.title) },
     severity: alert.severity,
     openedAt: alert.openedAt,
-    where: alert.detail.where,
-    headline: alert.detail.headline,
-    fields: alert.detail.fields,
-    heartbeats: oldestFirst.slice(-RECENT_HEARTBEATS).map((row) => {
-      const kept: Record<string, unknown> = {};
-      for (const key of HEARTBEAT_FIELDS) {
-        if (row.payload[key] !== undefined) kept[key] = row.payload[key];
-      }
-      if ("assignmentId" in row.payload) kept.driverSeated = row.payload.assignmentId !== null;
-      return { receivedAt: row.receivedAt, clockSkewMs: row.clockSkewMs, ...kept };
-    }),
-    notices: oldestFirst
-      .flatMap((row) => (Array.isArray(row.payload.notices) ? row.payload.notices : []))
-      .filter((n): n is string => typeof n === "string")
-      .slice(-MAX_NOTICES),
-    commit,
-  });
+    where: text(alert.detail.where),
+    headline: text(alert.detail.headline),
+    fields: alert.detail.fields
+      .filter((field) => NUMERIC_FIELDS.has(field.name))
+      .map((field) => ({ name: field.name, value: text(field.value) })),
+    heartbeats: oldestFirst.slice(-RECENT_HEARTBEATS).map(facts),
+    notices: noticeCounts(oldestFirst),
+    commit: commit && /^[0-9a-f]{7,40}$/i.test(commit) ? commit : null,
+  };
 }
 
-/** Rewrites every string in a value: ids out, the driver's name out. */
-function redactor(driver: string | undefined) {
-  const name = driver?.trim()
-    ? new RegExp(`(?<![\\p{L}\\p{N}])${escape(driver.trim())}(?![\\p{L}\\p{N}])`, "giu")
-    : null;
-  const text = (s: string) => {
-    const out = s.replace(UUID, "<id>");
-    return name ? out.replace(name, pseudonym(driver!.trim())) : out;
+function facts(row: HeartbeatRow): HeartbeatFacts {
+  const p = row.payload;
+  const out: HeartbeatFacts = { receivedAt: row.receivedAt, clockSkewMs: row.clockSkewMs };
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const bool = (v: unknown) => (typeof v === "boolean" ? v : undefined);
+  const oneOf = (v: unknown, allowed: readonly string[]) =>
+    typeof v === "string" && allowed.includes(v) ? v : undefined;
+  const instant = (v: unknown) => {
+    if (v === null) return null;
+    const ms = typeof v === "string" ? Date.parse(v) : NaN;
+    return Number.isFinite(ms) ? ms : undefined;
   };
-  const walk = (value: unknown): unknown => {
-    if (typeof value === "string") return text(value);
-    if (Array.isArray(value)) return value.map(walk);
-    if (value && typeof value === "object") {
-      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
+
+  const set = <K extends keyof HeartbeatFacts>(key: K, value: HeartbeatFacts[K] | undefined) => {
+    if (value !== undefined) out[key] = value;
+  };
+  set("agentVersion", typeof p.agentVersion === "string" && VERSION.test(p.agentVersion) ? p.agentVersion : undefined);
+  set("processStartedAt", instant(p.processStartedAt) ?? undefined);
+  set("sequence", num(p.sequence));
+  set("startCount", num(p.startCount));
+  set("osUptimeS", num(p.osUptimeS));
+  set("telemetryMode", oneOf(p.telemetryMode, TELEMETRY_MODES));
+  set("simConnected", bool(p.simConnected));
+  set("telemetryFaulted", bool(p.telemetryFaulted));
+  if (Array.isArray(p.missingVariables)) set("missingVariableCount", p.missingVariables.length);
+  if ("session" in p) set("inSession", p.session !== null && typeof p.session === "object");
+  set("assignmentKnown", bool(p.assignmentKnown));
+  if ("assignmentId" in p) set("driverSeated", p.assignmentId !== null);
+  set("pendingLaps", num(p.pendingLaps));
+  set("oldestPendingAgeS", p.oldestPendingAgeS === null ? null : num(p.oldestPendingAgeS));
+  set("rejectedLaps", num(p.rejectedLaps));
+  set("checkout", oneOf(p.checkout, CHECKOUTS));
+  set("lastLapCapturedAt", instant(p.lastLapCapturedAt));
+  set("lastLapPostedAt", instant(p.lastLapPostedAt));
+  set("signInFailures", num(p.signInFailures));
+  if (Array.isArray(p.signInFailureKinds)) {
+    set(
+      "signInFailureKinds",
+      p.signInFailureKinds.filter((k): k is string => typeof k === "string" && SIGN_IN_KINDS.includes(k)),
+    );
+  }
+  set("agentCpuPercent", num(p.agentCpuPercent));
+  set("agentMemoryMb", num(p.agentMemoryMb));
+  set("shuttingDown", bool(p.shuttingDown));
+  return out;
+}
+
+function noticeCounts(oldestFirst: readonly HeartbeatRow[]): IncidentContext["notices"] {
+  const counts = new Map<NoticeCode, number>();
+  for (const row of oldestFirst) {
+    for (const notice of Array.isArray(row.payload.notices) ? row.payload.notices : []) {
+      if (typeof notice !== "string") continue;
+      const code = noticeCode(notice);
+      counts.set(code, (counts.get(code) ?? 0) + 1);
     }
-    return value;
+  }
+  return [...counts].map(([code, count]) => ({ code, summary: NOTICE_CODES[code].summary, count }));
+}
+
+export function noticeCode(notice: string): NoticeCode {
+  for (const [code, { prefix }] of Object.entries(NOTICE_CODES)) {
+    if (prefix && notice.startsWith(prefix)) return code as NoticeCode;
+  }
+  return "other";
+}
+
+/**
+ * The monitor's own words, made safe to send: one line, no control
+ * characters, and the seated driver's name replaced by its stand-in.
+ */
+function serverText(driver: string | null | undefined) {
+  const normalized = driver ? oneLine(driver) : "";
+  const name = normalized
+    ? new RegExp(`(?<![\\p{L}\\p{N}])${escape(normalized)}(?![\\p{L}\\p{N}])`, "giu")
+    : null;
+  return (s: string) => {
+    const line = oneLine(s);
+    return name ? line.replace(name, pseudonym(normalized)) : line;
   };
-  return <T>(value: T) => walk(value) as T;
+}
+
+/** Control characters and line breaks become spaces, and runs of space one. */
+export function oneLine(s: string): string {
+  return s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/g, " ").trim();
 }
 
 function escape(s: string): string {

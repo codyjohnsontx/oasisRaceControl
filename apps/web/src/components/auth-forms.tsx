@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-
-type Mode = "guest" | "login" | "register";
+import type { DriverAuthMode as Mode } from "@/lib/driver-auth-refusal";
+import { submitDriverAuth } from "@/lib/driver-auth-submit";
 
 type Props = {
   /** Called after the driver is signed in (any mode). */
@@ -16,45 +16,17 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
   const [mode, setMode] = useState<Mode>(showGuest ? defaultMode : "login");
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
+  const [pinAgain, setPinAgain] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   async function submit() {
     setBusy(true);
     setMessage(null);
-    const endpoint =
-      mode === "guest" ? "/api/auth/guest" : mode === "login" ? "/api/auth/login" : "/api/auth/register";
-    const body = mode === "guest" ? { displayName: name } : { displayName: name, pin };
-
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        onSignedIn(String(data.displayName ?? name));
-        return;
-      }
-      if (data.error === "name_taken") {
-        setMessage(
-          data.suggestion
-            ? `That name is taken — try “${data.suggestion}”`
-            : "That name is taken — pick another",
-        );
-      } else if (data.error === "locked") {
-        setMessage("Too many wrong PINs — ask staff to reset it, or try later");
-      } else if (data.error === "invalid_credentials") {
-        setMessage("Name or PIN didn't match");
-      } else {
-        setMessage("Something went wrong — try again");
-      }
-    } catch {
-      setMessage("Network problem — try again");
-    } finally {
-      setBusy(false);
-    }
+    const result = await submitDriverAuth(mode, { name, pin, pinAgain });
+    setBusy(false);
+    if (result.ok) onSignedIn(result.displayName);
+    else setMessage(result.message);
   }
 
   const tab = (m: Mode, label: string) => (
@@ -120,10 +92,33 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
             />
           </>
         )}
+        {mode === "register" && (
+          <>
+            <label htmlFor="driver-pin-again" className="sr-only">
+              Type the PIN again
+            </label>
+            <input
+              id="driver-pin-again"
+              value={pinAgain}
+              onChange={(e) => setPinAgain(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="Type the PIN again"
+              inputMode="numeric"
+              autoComplete="new-password"
+              required
+              pattern="\d{4}"
+              className="bg-surface border border-edge rounded-lg px-4 py-3 text-lg outline-none focus:border-accent laptime"
+            />
+          </>
+        )}
         {message && <p className="text-invalid text-sm">{message}</p>}
         <button
           type="submit"
-          disabled={busy || name.trim().length < 2 || (mode !== "guest" && pin.length !== 4)}
+          disabled={
+            busy ||
+            name.trim().length < 2 ||
+            (mode !== "guest" && pin.length !== 4) ||
+            (mode === "register" && pinAgain.length !== 4)
+          }
           className="bg-accent text-bg glow-cyan rounded-lg py-3 font-bold uppercase tracking-wider disabled:opacity-40"
         >
           {busy ? "…" : mode === "guest" ? "Drive as guest" : mode === "login" ? "Sign in" : "Create profile"}
