@@ -58,7 +58,7 @@ export const SILENT_LOOKBACK_MS = 12 * 60 * 60_000;
 export const CORRELATION_WINDOW_MS = 5 * 60_000;
 /**
  * How long the venue note holds once the first rig is heard again, so rigs
- * still coming back from the same outage are counted back before it clears.
+ * still coming back from the same outage are not warned about one by one.
  * An offline agent backs its heartbeat off to HeartbeatSchedule.MaxInterval
  * (300 s) with Jitter (10%) in apps/rig-agent/OasisRigAgent.Core/Heartbeat.cs,
  * so the last rig back can land 330 s after the first; the rest is slack for
@@ -159,18 +159,28 @@ function silence(
     ({ rig, state }) => rig.lastSeenAt !== null && state?.shuttingDown !== true,
   );
   const quietFor = ({ rig }: Rig) => now - rig.lastSeenAt!;
-  const live = reporting.filter((r) => quietFor(r) <= SILENT_AFTER_MS);
-  const anyLive = live.length > 0;
+  const anyLive = reporting.some((r) => quietFor(r) <= SILENT_AFTER_MS);
   const silent = reporting.filter(
     (r) =>
       quietFor(r) > SILENT_AFTER_MS &&
       (quietFor(r) <= SILENT_LOOKBACK_MS || isOpen("rig_silent", rigSubject(r.rig.id))),
   );
 
-  // The venue was first heard again when the earliest live rig's run began.
-  // A rig that has not been heard since before then went dark with the venue
-  // - closed for the night, or cut off - and is not warned about on its own.
-  const firstHeardAgain = Math.min(...live.map(({ rig }) => heardSince(rig)));
+  // Each rig was heard without a break from `from` to `to`, its last word.
+  const runs = reporting.map(({ rig }) => ({ from: heardSince(rig), to: rig.lastSeenAt! }));
+  const heardBetween = (from: number, to: number) =>
+    runs.some((run) => run.from <= to && run.to >= from);
+  // A rig's own warning comes due CORRELATION_WINDOW_MS after it goes silent.
+  // If no rig was heard around then, it went dark with the venue - closed for
+  // the night, or cut off - and the venue note, not a warning, answered it;
+  // once the venue is heard again it stays dark until heard itself.
+  const wentDarkWithVenue = ({ rig }: Rig) => {
+    const due = rig.lastSeenAt! + SILENT_AFTER_MS + CORRELATION_WINDOW_MS;
+    return (
+      !heardBetween(due - SILENT_AFTER_MS, due + SILENT_AFTER_MS) &&
+      runs.some((run) => run.to > due)
+    );
+  };
   const dark: Rig[] = [];
   const unexplained: Rig[] = [];
   for (const r of silent) {
@@ -179,7 +189,7 @@ function silence(
       findings.push(rigSilent(now, r, "urgent"));
     } else if (isOpen("rig_silent", subject)) {
       findings.push(rigSilent(now, r, "warning"));
-    } else if (anyLive && r.rig.lastSeenAt! < firstHeardAgain) {
+    } else if (wentDarkWithVenue(r)) {
       dark.push(r);
     } else {
       unexplained.push(r);
@@ -191,9 +201,21 @@ function silence(
     unexplained.length >= 2 &&
     Math.max(...lastSeen) - Math.min(...lastSeen) <= CORRELATION_WINDOW_MS;
   const venueOpen = isOpen("venue_silent", VENUE_SUBJECT);
+  const firstHeardAgain = Math.min(
+    ...runs.filter((run) => now - run.to <= SILENT_AFTER_MS).map((run) => run.from),
+  );
   const venueRecovering = anyLive && venueOpen && now - firstHeardAgain < VENUE_RECOVERY_GRACE_MS;
+  // Who the note speaks for: every quiet rig while they went quiet together,
+  // and while the venue comes back, those not heard since before it did. A
+  // rig that went quiet on its own is judged on its own, note or not.
+  const covered =
+    !anyLive && together
+      ? unexplained
+      : venueRecovering
+        ? unexplained.filter(({ rig }) => rig.lastSeenAt! < firstHeardAgain)
+        : [];
   if ((!anyLive && (together || venueOpen)) || venueRecovering) {
-    const names = [...dark, ...unexplained].map(({ rig }) => rig.name);
+    const names = [...dark, ...covered].map(({ rig }) => rig.name);
     findings.push({
       rule: "venue_silent",
       subject: VENUE_SUBJECT,
@@ -205,11 +227,10 @@ function silence(
         fields: [{ name: "Rigs", value: names.join(", ") || "-" }],
       },
     });
-    return findings;
   }
 
   for (const r of unexplained) {
-    if (quietFor(r) >= SILENT_AFTER_MS + CORRELATION_WINDOW_MS) {
+    if (!covered.includes(r) && quietFor(r) >= SILENT_AFTER_MS + CORRELATION_WINDOW_MS) {
       findings.push(rigSilent(now, r, "warning"));
     }
   }

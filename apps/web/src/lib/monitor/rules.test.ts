@@ -214,12 +214,17 @@ describe("rule 1: rig silent", () => {
     });
 
     it("lets the note clear once the window after the first one back has passed, warning about no rig still dark", () => {
-      expect(evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open)).toEqual([]);
+      expect(evaluate([back(1, 20 * MIN, 8 * MIN), quiet(2, 20 * MIN), quiet(3, 20 * MIN)], open)).toEqual([]);
+    });
+
+    it("warns about each rig still quiet after an outage too short for their own warnings to fall inside it", () => {
+      const findings = evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning", "rig_silent rig:rig-3 warning"]);
     });
 
     it("judges a rig that went quiet after the venue came back as before", () => {
-      const cameBackThenDied = rig(2, { heartbeats: [...minutely(30 * MIN, 25 * MIN), ...minutely(20 * MIN, 8 * MIN)] });
-      const findings = evaluate([back(1, 25 * MIN, 20 * MIN), cameBackThenDied, quiet(3, 25 * MIN)]);
+      const cameBackThenDied = rig(2, { heartbeats: [...minutely(35 * MIN, 30 * MIN), ...minutely(20 * MIN, 8 * MIN)] });
+      const findings = evaluate([back(1, 30 * MIN, 20 * MIN), cameBackThenDied, quiet(3, 30 * MIN)]);
       expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning"]);
     });
 
@@ -285,6 +290,34 @@ describe("rule 1: rig silent", () => {
     it("alerts normally for a rig that came back and then went quiet", () => {
       const findings = evaluate([rig(1), quiet(2, 8 * MIN), quiet(3, 11 * HOUR)]);
       expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning"]);
+    });
+
+    const stillOff = Array.from({ length: 18 }, (_, i) => quiet(i + 3, 11 * HOUR));
+
+    it("warns about the first rig booted when it fails before the next is booted", () => {
+      const first = rig(1, { heartbeats: minutely(10 * MIN, 7 * MIN) });
+      expect(rulesOf(evaluate([first, ...stillOff], open))).toEqual([
+        "rig_silent rig:rig-1 warning",
+        `venue_silent ${VENUE_SUBJECT} warning`,
+      ]);
+    });
+
+    it("still warns about it once the next rig is booted", () => {
+      const first = rig(1, { heartbeats: minutely(20 * MIN, 17 * MIN) });
+      const second = rig(2, { heartbeats: minutely(10 * MIN) });
+      expect(rulesOf(evaluate([first, second, ...stillOff]))).toEqual(["rig_silent rig:rig-1 warning"]);
+    });
+  });
+
+  describe("a lone rig that crashes shortly before another is booted", () => {
+    it("is warned about when its warning comes due", () => {
+      const findings = evaluate([quiet(3, 7 * MIN), rig(1, { heartbeats: minutely(2 * MIN) })]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-3 warning"]);
+    });
+
+    it("is still warned about later", () => {
+      const findings = evaluate([quiet(3, 20 * MIN), rig(1, { heartbeats: minutely(15 * MIN) })]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-3 warning"]);
     });
   });
 
