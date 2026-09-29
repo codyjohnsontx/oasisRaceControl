@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterAll, beforeEach, expect, it } from "vitest";
 import { POST } from "./route";
 import { UNATTRIBUTED_CAUSES } from "@/lib/unattributed-cause";
@@ -51,6 +53,25 @@ const LAP = {
     return new Date().toISOString();
   },
 };
+
+const REPO_ROOT = join(__dirname, "..", "..", "..", "..", "..", "..", "..");
+
+/** Sum of "Actual Rows" over every plan node that scans `relation`, from an
+ *  EXPLAIN (ANALYZE, FORMAT JSON) plan: how many of its rows the query read. */
+function sumActualRows(plan: unknown, relation: string): number {
+  let total = 0;
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (record["Relation Name"] === relation) {
+      total += Number(record["Actual Rows"]) * Number(record["Actual Loops"] ?? 1);
+    }
+    Object.values(record).forEach(visit);
+  };
+  visit(plan);
+  return total;
+}
 
 /** Every stored heartbeat, oldest first. */
 async function heartbeatRows() {
@@ -965,12 +986,14 @@ describeDb("POST /api/agent/events against real Postgres", () => {
 
     await POST(post(rigOne, [{ type: "RIG_HEARTBEAT", pendingLaps: 1 }]));
     await POST(post(rigOne, [{ type: "RIG_HEARTBEAT", pendingLaps: 2 }]));
-    // Two in one batch share now(); the later one still wins.
-    await POST(
-      post(rigTwo, [
-        { type: "RIG_HEARTBEAT", pendingLaps: 5 },
-        { type: "RIG_HEARTBEAT", pendingLaps: 6, shuttingDown: true },
-      ]),
+    await POST(post(rigTwo, [{ type: "RIG_HEARTBEAT", pendingLaps: 5 }]));
+    await POST(post(rigTwo, [{ type: "RIG_HEARTBEAT", pendingLaps: 6, shuttingDown: true }]));
+    // Two rows sharing a received_at: id decides, so "latest" is still one row.
+    await testDb().query(
+      `insert into rig_heartbeats (rig_id, received_at, pending_laps)
+       select rig_id, received_at, 7 from rig_heartbeats
+       where rig_id = $1 order by id desc limit 1`,
+      [rigOne.id],
     );
 
     const { rows } = await testDb().query<{
@@ -980,11 +1003,89 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     }>("select rig_id, pending_laps, shutting_down from v_rig_latest_heartbeat");
 
     expect(rows).toHaveLength(2);
-    expect(rows.find((r) => r.rig_id === rigOne.id)).toMatchObject({ pending_laps: 2 });
+    expect(rows.find((r) => r.rig_id === rigOne.id)).toMatchObject({ pending_laps: 7 });
     expect(rows.find((r) => r.rig_id === rigTwo.id)).toMatchObject({
       pending_laps: 6,
       shutting_down: true,
     });
+  });
+
+  it("reads one row per rig for the latest heartbeat, however much history is kept", async () => {
+    // The monitor reads this view on every evaluation, so its cost must not
+    // grow with retention. distinct on (rig_id) over the table reads every
+    // retained row; the per-rig indexed lookup reads one. Counted from the
+    // executor's own statistics rather than timed, so it is not flaky.
+    const rigs = await Promise.all([1, 2, 3, 4, 5].map((n) => seedRig(n)));
+    await testDb().query(
+      `insert into rig_heartbeats (rig_id, received_at)
+       select r.id, now() - make_interval(mins => g)
+       from unnest($1::uuid[]) as r (id), generate_series(1, 2000) as g`,
+      [rigs.map((rig) => rig.id)],
+    );
+    await testDb().query("analyze rig_heartbeats");
+
+    const { rows } = await testDb().query<{ "QUERY PLAN": unknown }>(
+      "explain (analyze, format json) select * from v_rig_latest_heartbeat",
+    );
+    const heartbeatRowsRead = sumActualRows(rows[0]!["QUERY PLAN"], "rig_heartbeats");
+
+    // 10,000 rows retained; one per rig is all it may touch.
+    expect(heartbeatRowsRead).toBe(rigs.length);
+  });
+
+  it("stores at most six heartbeats a minute per rig, and still marks it seen", async () => {
+    const rig = await seedRig(1);
+    const other = await seedRig(2);
+
+    const statuses: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const response = await POST(post(rig, [{ type: "RIG_HEARTBEAT", pendingLaps: i }]));
+      statuses.push((await response.json()).results[0].status);
+    }
+    const otherResponse = await POST(post(other, [{ type: "RIG_HEARTBEAT" }]));
+
+    expect(statuses).toEqual([...Array(6).fill("ok"), "rate_limited", "rate_limited"]);
+    // Another rig's allowance is its own.
+    await expect(otherResponse.json()).resolves.toMatchObject({
+      results: [{ status: "ok" }],
+    });
+    const stored = await heartbeatRows();
+    expect(stored.filter((row) => row.rig_id === rig.id)).toHaveLength(6);
+    const { rows } = await testDb().query<{ last_seen_at: Date | null }>(
+      "select last_seen_at from rigs where id = $1",
+      [rig.id],
+    );
+    expect(rows[0]!.last_seen_at).not.toBeNull();
+  });
+
+  it("passes the read-only verify the owner runs after hand-applying 0005", async () => {
+    // db/verify/0005_rig_heartbeats.sql pins fingerprints of every object the
+    // migration creates; this database was built from the migration itself, so
+    // any row not ok means the migration and its verify have drifted apart.
+    // The suite applies migrations without the runner's bookkeeping, so the
+    // row the runner would have written is added for the duration.
+    const verify = readFileSync(
+      join(REPO_ROOT, "db", "verify", "0005_rig_heartbeats.sql"),
+      "utf8",
+    );
+    const client = await testDb().connect();
+    try {
+      await client.query(
+        `create temporary table schema_migrations (version text primary key);
+         insert into schema_migrations values ('0005_rig_heartbeats.sql')`,
+      );
+      const results = (await client.query(verify)) as unknown as Array<{
+        command: string;
+        rows: Array<{ check_name: string; ok: boolean; actual: string | null }>;
+      }>;
+      const checks = results.find((result) => result.command === "SELECT")!.rows;
+
+      expect(checks.map((check) => check.check_name)).toHaveLength(7);
+      expect(checks.filter((check) => !check.ok)).toEqual([]);
+    } finally {
+      await client.query("drop table if exists pg_temp.schema_migrations");
+      client.release();
+    }
   });
 
   it("stores a heartbeat naming an assignment the database does not know", async () => {

@@ -17,6 +17,7 @@ vi.mock("@/lib/db", () => ({
 }));
 
 const { POST } = await import("./route");
+const { MAX_EVENTS_BODY_BYTES } = await import("@/lib/events");
 
 const RIG = { id: "rig-uuid", rig_number: 1, display_name: "Rig 01" };
 const TOKEN = "agent-token";
@@ -85,7 +86,7 @@ function insertedLaps(): boolean {
 
 /** The parameters the heartbeat insert was given, or null if none happened. */
 function heartbeatParams(): unknown[] | null {
-  const call = query.mock.calls.find(([sql]) =>
+  const call = [...query.mock.calls, ...queryOne.mock.calls].find(([sql]) =>
     String(sql).includes("insert into rig_heartbeats"),
   );
   return call ? (call[1] as unknown[]) : null;
@@ -104,6 +105,7 @@ function authenticateRig() {
   queryOne.mockImplementation(async (sql: string) => {
     if (sql.includes("from rigs where agent_token_hash")) return RIG;
     if (sql.includes("insert into laps")) return { id: "lap-uuid" };
+    if (sql.includes("insert into rig_heartbeats")) return { stored: true };
     return null;
   });
 }
@@ -250,6 +252,76 @@ describe("POST /api/agent/events validation", () => {
     expect(heartbeatParams()).toBeNull();
   });
 
+  it("rejects a second heartbeat in one request, naming it", async () => {
+    const response = await POST(
+      post({ events: [{ type: "RIG_HEARTBEAT" }, LAP, { type: "RIG_HEARTBEAT" }] }),
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.detail).toEqual([expect.objectContaining({ path: ["events", 2] })]);
+    expect(heartbeatParams()).toBeNull();
+  });
+
+  it("refuses a body over the byte cap before parsing it", async () => {
+    // A valid heartbeat beside a megabyte of unknown junk: zod would strip the
+    // junk and accept it, so only the byte cap stops it.
+    const body = { events: [{ type: "RIG_HEARTBEAT", junk: "x".repeat(MAX_EVENTS_BODY_BYTES) }] };
+
+    const response = await POST(post(body));
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({ error: "body_too_large" });
+    expect(heartbeatParams()).toBeNull();
+  });
+
+  it("refuses an oversized body that declares no length", async () => {
+    const payload = JSON.stringify({
+      events: [{ type: "RIG_HEARTBEAT", junk: "x".repeat(MAX_EVENTS_BODY_BYTES) }],
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(payload));
+        controller.close();
+      },
+    });
+    const request = new Request("http://localhost/api/agent/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+
+    expect((await POST(request)).status).toBe(413);
+  });
+
+  it("accepts a full outbox batch at every field's limit", async () => {
+    // The cap must never refuse what the agent legitimately sends.
+    const events = Array.from({ length: 100 }, (_, index) => ({
+      ...LAP,
+      eventId: `e${String(index).padStart(7, "0")}`.padEnd(128, "x"),
+      rigAssignmentId: null,
+      trackName: "\u00fc".repeat(120),
+      trackConfig: "\u00fc".repeat(120),
+      carName: "\u00fc".repeat(120),
+    }));
+
+    // Written the way the agent's System.Text.Json writes it: every non-ASCII
+    // character escaped to six bytes, the largest a legitimate batch gets.
+    const text = JSON.stringify({ events }).replaceAll("\u00fc", "\\u00fc");
+    expect(new TextEncoder().encode(text).byteLength).toBeGreaterThan(200_000);
+    const response = await POST(
+      new Request("http://localhost/api/agent/events", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        body: text,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(insertParams()?.[4]).toBe("\u00fc".repeat(120)); // track_name, unescaped
+  });
+
   it("rejects a negative incident delta", async () => {
     expect((await POST(post({ events: [{ ...LAP, incidentDelta: -1 }] }))).status).toBe(
       400,
@@ -338,7 +410,43 @@ describe("POST /api/agent/events behaviour", () => {
         agentCpuPercent: 0.1,
         agentMemoryMb: 38,
       },
+      6, // heartbeat rate limit
+      "1 minute", // and its window
     ]);
+  });
+
+  it("marks the rig seen once per heartbeat, in the heartbeat's own statement", async () => {
+    await POST(post({ events: [HEARTBEAT_V2] }));
+
+    const rigUpdates = [...query.mock.calls, ...queryOne.mock.calls].filter(([sql]) =>
+      String(sql).includes("update rigs set last_seen_at"),
+    );
+    expect(rigUpdates).toHaveLength(1);
+  });
+
+  it("still marks the rig seen after a batch of laps alone", async () => {
+    await POST(post({ events: [{ ...LAP, rigAssignmentId: null }] }));
+
+    const rigUpdates = [...query.mock.calls, ...queryOne.mock.calls].filter(([sql]) =>
+      String(sql).includes("update rigs set last_seen_at"),
+    );
+    expect(rigUpdates).toHaveLength(1);
+  });
+
+  it("answers a heartbeat over the rig's rate as rate_limited, not an error", async () => {
+    queryOne.mockImplementation(async (sql: string) => {
+      if (sql.includes("from rigs where agent_token_hash")) return RIG;
+      if (sql.includes("insert into rig_heartbeats")) return { stored: false };
+      return null;
+    });
+
+    const response = await POST(post({ events: [HEARTBEAT_V2] }));
+
+    // 200 so a lap riding in the same batch is never refused for it.
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      results: [{ type: "RIG_HEARTBEAT", status: "rate_limited" }],
+    });
   });
 
   it("stores the goodbye an exiting agent sends", async () => {
@@ -586,7 +694,10 @@ describe("POST /api/agent/events behaviour", () => {
   });
 
   it("returns 500 so the agent retries when the batch throws", async () => {
-    query.mockRejectedValue(new Error("connection terminated"));
+    queryOne.mockImplementation(async (sql: string) => {
+      if (sql.includes("from rigs where agent_token_hash")) return RIG;
+      throw new Error("connection terminated");
+    });
 
     const response = await POST(post({ events: [{ type: "RIG_HEARTBEAT" }] }));
 

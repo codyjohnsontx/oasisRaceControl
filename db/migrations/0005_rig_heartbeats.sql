@@ -58,11 +58,23 @@ create table rig_heartbeats (
   payload jsonb not null default '{}'
 );
 
--- id breaks the tie between two heartbeats in one batch, which share now().
+-- id breaks a tie in received_at, so "latest" always names exactly one row.
 create index rig_heartbeats_rig_recent
   on rig_heartbeats (rig_id, received_at desc, id desc);
 
+-- One indexed lookup per rig, not `distinct on (rig_id)` over the whole table:
+-- that walks every retained row and throws all but one per rig away, which at
+-- 25 rigs and seven days of minute heartbeats is ~250,000 rows read (with their
+-- heap pages) on every evaluation to return 25. This form reads one index entry
+-- and one row per rig however much history is kept. A rig that has never sent
+-- a heartbeat has no row here, not a row of nulls.
 create view v_rig_latest_heartbeat as
-select distinct on (rig_id) *
-from rig_heartbeats
-order by rig_id, received_at desc, id desc;
+select latest.*
+from rigs r
+cross join lateral (
+  select h.*
+  from rig_heartbeats h
+  where h.rig_id = r.id
+  order by h.received_at desc, h.id desc
+  limit 1
+) latest;

@@ -150,8 +150,42 @@ export const agentEvent = z.discriminatedUnion("type", [
   lapCompletedEvent,
 ]);
 
+/**
+ * Largest request body the ingestion route will read, in bytes.
+ *
+ * Sized from the contract, not from the platform. A full outbox batch of 100
+ * laps with every string at its limit is about 75 KB, and about 260 KB in the
+ * worst case where the agent's JSON writer escapes every character of every
+ * name as \uXXXX (System.Text.Json escapes non-ASCII by default); a v2
+ * heartbeat is a few KB. 1 MiB clears the worst legitimate body four times
+ * over and still refuses an oversized one - zod strips unknown keys, so a
+ * megabyte of junk beside a valid heartbeat would otherwise parse - long
+ * before Vercel's own 4.5 MB ceiling.
+ */
+export const MAX_EVENTS_BODY_BYTES = 1024 * 1024;
+
 export const agentEventsBody = z.object({
-  events: z.array(agentEvent).min(1).max(100),
+  // 100 is the agent's outbox flush size. At most one of them may be a
+  // heartbeat: both producers send heartbeats one per request, and a batch of
+  // 100 would be 100 history rows written for one request.
+  events: z
+    .array(agentEvent)
+    .min(1)
+    .max(100)
+    .superRefine((events, ctx) => {
+      events.forEach((event, index) => {
+        if (
+          event.type === "RIG_HEARTBEAT" &&
+          events.findIndex((e) => e.type === "RIG_HEARTBEAT") !== index
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            message: "at most one RIG_HEARTBEAT per request",
+            path: [index],
+          });
+        }
+      });
+    }),
 });
 
 export type LapCompletedEvent = z.infer<typeof lapCompletedEvent>;
