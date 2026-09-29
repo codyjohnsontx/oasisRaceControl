@@ -29,6 +29,7 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
   useEffect(() => {
     let ticket = initialTicket;
     let refused = false;
+    let reopening = false;
 
     const payload = (closing: boolean) => {
       const feed = feedHealth();
@@ -38,6 +39,7 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
         feedOk: feed.ok,
         feedFailures: feed.failures,
         closing,
+        ...(reopening && !closing ? { reopened: true } : {}),
       });
     };
 
@@ -62,6 +64,7 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
         if (!res.ok) throw new Error(`status ${res.status}`);
         const answer = (await res.json()) as { ticket?: unknown };
         if (typeof answer.ticket === "string") ticket = answer.ticket;
+        reopening = false;
       } catch (error) {
         console.error("[tv] heartbeat failed", (error as Error).message);
       }
@@ -70,9 +73,12 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
     const onPageHide = () => {
       if (!refused) navigator.sendBeacon("/api/tv/heartbeat", payload(true));
     };
-    // Back from the back-forward cache: the goodbye went, so report at once.
+    // Back from the back-forward cache: the goodbye went, so report at once,
+    // and say so until the server has heard it - only that undoes a goodbye.
     const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) void beat();
+      if (!event.persisted) return;
+      reopening = true;
+      void beat();
     };
 
     window.addEventListener("pagehide", onPageHide);

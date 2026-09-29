@@ -25,6 +25,7 @@ const body = z.object({
   feedOk: z.boolean().nullable().optional(),
   feedFailures: z.number().int().min(0).max(1_000_000).optional(),
   closing: z.boolean().optional(),
+  reopened: z.boolean().optional(),
 });
 
 /** Two a minute per open board; this leaves room for a dozen behind one address. */
@@ -48,8 +49,9 @@ export async function POST(request: Request) {
   if (!board) return Response.json({ error: "invalid_ticket" }, { status: 401 });
 
   try {
-    // A heartbeat after a goodbye (the page restored from the back-forward
-    // cache) reopens the board: closed_at follows whichever came last.
+    // Only the page itself, restored from the back-forward cache, reopens a
+    // board after its goodbye. An ordinary heartbeat that was in flight as the
+    // tab closed can land after the beacon, and must not undo it.
     await query(
       `insert into board_heartbeats (board_id, mode, host, visible, feed_ok, feed_failures, closed_at)
        values ($1, $2, $3, $4, $5, $6, case when $7 then now() end)
@@ -58,7 +60,11 @@ export async function POST(request: Request) {
          visible = excluded.visible,
          feed_ok = excluded.feed_ok,
          feed_failures = excluded.feed_failures,
-         closed_at = excluded.closed_at`,
+         closed_at = case
+           when excluded.closed_at is not null then excluded.closed_at
+           when $8 then null
+           else board_heartbeats.closed_at
+         end`,
       [
         board.boardId,
         board.mode,
@@ -67,6 +73,7 @@ export async function POST(request: Request) {
         input.feedOk ?? null,
         input.feedFailures ?? 0,
         input.closing === true,
+        input.reopened === true,
       ],
     );
     if (input.closing) return Response.json({ ok: true });
