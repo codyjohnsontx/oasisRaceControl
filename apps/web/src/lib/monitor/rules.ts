@@ -1,4 +1,4 @@
-import { holdingSince, rigState, type Heartbeat } from "./rig-state";
+import { holdingSince, lastSent, rigState, type Heartbeat } from "./rig-state";
 
 /**
  * The rig monitor's rules: given what the database holds right now, which
@@ -57,6 +57,12 @@ export const SILENT_LOOKBACK_MS = 12 * 60 * 60_000;
  */
 export const CORRELATION_WINDOW_MS = 5 * 60_000;
 /**
+ * How far back `RigSnapshot.heard` reaches: far enough to see, for any rig
+ * still inside the lookback, the venue silence it went quiet into and the
+ * rigs that went quiet with it.
+ */
+export const HEARD_HISTORY_MS = SILENT_LOOKBACK_MS + CORRELATION_WINDOW_MS;
+/**
  * How long the venue note holds once the first rig is heard again, so rigs
  * still coming back from the same outage are not warned about one by one.
  * An offline agent backs its heartbeat off to HeartbeatSchedule.MaxInterval
@@ -99,6 +105,13 @@ export type RigSnapshot = {
    * fifteen minutes' and the latest one, with the few minutes before it.
    */
   heartbeats: Heartbeat[];
+  /**
+   * When the rig was heard over the last HEARD_HISTORY_MS, oldest first: each
+   * unbroken run of heartbeats (no gap over SILENT_AFTER_MS) from its first to
+   * its last. Rule 1 reads it to tell a venue-wide silence, and who came back
+   * from one, which `heartbeats` is too short to show.
+   */
+  heard: Array<{ from: number; to: number }>;
 };
 
 export type MonitorSnapshot = {
@@ -166,14 +179,41 @@ function silence(
     ({ rig, state }) => rig.lastSeenAt !== null && state?.shuttingDown !== true,
   );
   const quietFor = ({ rig }: Rig) => now - rig.lastSeenAt!;
-  const live = reporting.filter((r) => quietFor(r) <= SILENT_AFTER_MS);
-  const anyLive = live.length > 0;
+  const anyLive = reporting.some((r) => quietFor(r) <= SILENT_AFTER_MS);
   const silent = reporting.filter(
     (r) =>
       quietFor(r) > SILENT_AFTER_MS &&
       (quietFor(r) <= SILENT_LOOKBACK_MS || isOpen("rig_silent", rigSubject(r.rig.id))),
   );
 
+  // The venue was last heard again when the first rig came back from a venue
+  // silence: none heard for over SILENT_AFTER_MS, after two or more went quiet
+  // together - the note's own condition, so one rig's crash is not one. Every
+  // rig's runs count, including a rig that came back and is quiet again.
+  const runs = reporting.map(({ rig }) => heardRuns(rig));
+  const lastHeardBefore = (t: number) =>
+    runs
+      .map((own) => Math.max(...own.filter((run) => run.from < t).map((run) => Math.min(run.to, t))))
+      .filter((at) => at > -Infinity);
+  const afterVenueSilence = (t: number) => {
+    const words = lastHeardBefore(t);
+    const last = Math.max(...words);
+    return (
+      t - last > SILENT_AFTER_MS &&
+      words.filter((at) => last - at <= CORRELATION_WINDOW_MS).length >= 2
+    );
+  };
+  const heardAgainAt = Math.max(
+    ...runs
+      .flat()
+      .map((run) => run.from)
+      .filter((from) => now - from <= SILENT_LOOKBACK_MS && afterVenueSilence(from)),
+  );
+
+  // A rig whose last word came before that, and that has not been heard since,
+  // went dark with the venue - closed for the night, or cut off - and is not
+  // warned about on its own.
+  const dark: Rig[] = [];
   const unexplained: Rig[] = [];
   for (const r of silent) {
     const subject = rigSubject(r.rig.id);
@@ -181,6 +221,8 @@ function silence(
       findings.push(rigSilent(now, r, "urgent"));
     } else if (isOpen("rig_silent", subject)) {
       findings.push(rigSilent(now, r, "warning"));
+    } else if (r.rig.lastSeenAt! < heardAgainAt) {
+      dark.push(r);
     } else {
       unexplained.push(r);
     }
@@ -191,10 +233,13 @@ function silence(
     unexplained.length >= 2 &&
     Math.max(...lastSeen) - Math.min(...lastSeen) <= CORRELATION_WINDOW_MS;
   const venueOpen = isOpen("venue_silent", VENUE_SUBJECT);
-  const firstHeardAgain = Math.min(...live.map(({ rig }) => heardSince(rig)));
-  const venueRecovering = anyLive && venueOpen && now - firstHeardAgain < VENUE_RECOVERY_GRACE_MS;
+  const venueRecovering = anyLive && venueOpen && now - heardAgainAt < VENUE_RECOVERY_GRACE_MS;
+  // The note speaks for rigs that went quiet together, and holds for the rest
+  // until the venue is heard again; a rig heard since then is judged on its own.
+  const covered =
+    !anyLive && (together || (venueOpen && heardAgainAt === -Infinity)) ? unexplained : [];
   if ((!anyLive && (together || venueOpen)) || venueRecovering) {
-    const names = unexplained.map(({ rig }) => rig.name);
+    const names = [...dark, ...covered].map(({ rig }) => rig.name);
     findings.push({
       rule: "venue_silent",
       subject: VENUE_SUBJECT,
@@ -206,11 +251,10 @@ function silence(
         fields: [{ name: "Rigs", value: names.join(", ") || "-" }],
       },
     });
-    return findings;
   }
 
   for (const r of unexplained) {
-    if (quietFor(r) >= SILENT_AFTER_MS + CORRELATION_WINDOW_MS) {
+    if (!covered.includes(r) && quietFor(r) >= SILENT_AFTER_MS + CORRELATION_WINDOW_MS) {
       findings.push(rigSilent(now, r, "warning"));
     }
   }
@@ -218,19 +262,20 @@ function silence(
 }
 
 /**
- * When the rig was first heard in the unbroken run that ends at its last word
- * (`lastSeenAt`, which any request moves - a rig can come back by flushing its
- * laps before its backed-off heartbeat lands): after the last gap long enough
- * to be silence, or at its earliest heartbeat here.
+ * The rig's heard runs through its last word (`lastSeenAt`, which any request
+ * moves - a rig can come back by flushing its laps before its backed-off
+ * heartbeat lands, which starts a run of its own).
  */
-function heardSince(rig: RigSnapshot): number {
-  let since = rig.lastSeenAt!;
-  for (let i = rig.heartbeats.length - 1; i >= 0; i--) {
-    const receivedAt = rig.heartbeats[i]!.receivedAt;
-    if (since - receivedAt > SILENT_AFTER_MS) break;
-    since = Math.min(since, receivedAt);
+function heardRuns(rig: RigSnapshot): Array<{ from: number; to: number }> {
+  const runs = [...rig.heard];
+  const last = runs.at(-1);
+  const seen = rig.lastSeenAt!;
+  if (last && seen - last.to <= SILENT_AFTER_MS) {
+    runs[runs.length - 1] = { from: last.from, to: Math.max(last.to, seen) };
+  } else if (!last || seen > last.to) {
+    runs.push({ from: seen, to: seen });
   }
-  return since;
+  return runs;
 }
 
 function rigSilent(now: number, { rig, state }: Rig, severity: Severity): Finding {
@@ -298,7 +343,7 @@ function rigFindings(
   // not end them. They are judged on the rig's last live heartbeat; while the
   // standing state is a goodbye they only hold an alert already open, and the
   // goodbye neither opens nor clears one.
-  const live = state.shuttingDown ? lastLive(rig.heartbeats) : state;
+  const live = state.shuttingDown ? lastSent(rig.heartbeats, (h) => !h.shuttingDown) : state;
   if (live) {
     const properties = rigProperties(rig, live, fields, isOpen);
     findings.push(
@@ -384,7 +429,7 @@ function rigProperties(
   // The agent learns what iRacing publishes only while attached, and forgets
   // it whenever iRacing goes, so only an attached heartbeat is evidence; with
   // none in view an open alert holds.
-  const attached = rig.heartbeats.findLast((h) => !h.shuttingDown && h.simConnected === true);
+  const attached = lastSent(rig.heartbeats, (h) => !h.shuttingDown && h.simConnected === true);
   const missing = attached?.missingVariables ?? [];
   if (attached ? missing.length > 0 : isOpen("missing_variables", subject)) {
     findings.push(
@@ -425,10 +470,6 @@ function rigProperties(
   }
 
   return findings;
-}
-
-function lastLive(heartbeats: readonly Heartbeat[]): Heartbeat | null {
-  return heartbeats.findLast((h) => !h.shuttingDown) ?? null;
 }
 
 /**

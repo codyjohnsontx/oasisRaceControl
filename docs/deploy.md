@@ -74,7 +74,9 @@ The repo is a monorepo; the app lives in `apps/web`.
    |---|---|---|
    | `DATABASE_URL` | Neon **pooled** connection string | `-pooler` host, `sslmode=require`. Server-only — never `NEXT_PUBLIC_`. |
    | `SESSION_SECRET` | long random string | signs driver + staff cookies. Generate: `openssl rand -base64 48` |
-   | `DISCORD_WEBHOOK_URL`, `DISCORD_ALERT_USER_ID`, `CRON_SECRET` | see [monitoring.md](./monitoring.md) | the rig monitor. Optional: without them it logs instead of posting and the tick refuses every call. Production only, so a preview never posts to the venue |
+   | `DISCORD_WEBHOOK_URL` | the channel's webhook URL ([monitoring.md](./monitoring.md)) | the rig monitor's alerts. Optional: without it the monitor still evaluates, but logs each message instead of posting it. Production only, so a preview never posts to the venue |
+   | `DISCORD_ALERT_USER_ID` | the owner's Discord user id | optional: without it urgent alerts still post, with no @mention |
+   | `CRON_SECRET` | long random string | the bearer token `GET /api/monitor/tick` requires. Optional: without it the tick refuses every call, while rig heartbeats still run evaluations |
    | `GEMINI_API_KEY` (and optionally `DIAGNOSIS_PROVIDER`, `DIAGNOSIS_MODEL`, `ANTHROPIC_API_KEY`) | see [monitoring.md](./monitoring.md#ai-diagnosis-and-the-copy-paste-handoff) | the urgent alerts' AI diagnosis and handoff. Optional: without a key, alerts post without them. Production only |
 
    Both are read lazily on the request paths that use them — a missing
@@ -129,10 +131,11 @@ vars, which override the file):
 }
 ```
 
-- `rigQrToken` turns on walk-up mode: the rig asks for a name and a 4-digit
-  PIN, logs that driver in (or registers them) through the app's own sign-in
-  and check-in, posts their laps, and signs them out when they press Enter or
-  close the program. The same name and PIN bring a returning driver back to
+- `rigQrToken` turns on walk-up mode: the rig asks whether the driver has
+  raced here before, then for a name and a 4-digit PIN (twice for a new
+  driver), logs a returning driver in or registers a new one through the app's
+  own sign-in and check-in, posts their laps, and signs them out when they
+  press Enter or close the program. The same name and PIN bring a returning driver back to
   their own row on either rig, both days; five wrong PINs lock the name for 15
   minutes (`apps/rig-agent/README.md`, Walk-up mode).
   Leave it out to keep the staff console.

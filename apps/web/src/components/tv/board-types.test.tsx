@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
@@ -57,6 +57,31 @@ const row = (n: number, incident_delta: number | null) => ({
   incident_delta,
 });
 const asterisksIn = (html: string) => (html.match(/data-tv-asterisk/g) ?? []).length;
+
+/**
+ * What the tonight board asks the feed for. The event view promises every
+ * driver of the day, so it asks for all of them - it once asked for a
+ * 200-row ceiling and the 201st driver vanished while the board still read
+ * "200 drivers". The rotation's slide makes the request it always has.
+ */
+describe("tonight board feed request", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const requestedUrl = async (everyone: boolean) => {
+    const fetch = vi.fn(async () => Response.json({ rows: [row(1, 0)], combo }));
+    vi.stubGlobal("fetch", fetch);
+    await tonight.load({ everyone }, new AbortController().signal);
+    return (fetch.mock.calls[0] as unknown[])[0];
+  };
+
+  it("the event view asks for every driver of the day", async () => {
+    expect(await requestedUrl(true)).toBe("/api/leaderboard/tonight?limit=all");
+  });
+
+  it("the rotation's slide asks with no limit, as it always has", async () => {
+    expect(await requestedUrl(false)).toBe("/api/leaderboard/tonight");
+  });
+});
 
 describe("tonight board off-track mark", () => {
   it("marks the lap with an incident, not a clean lap or one with no count", () => {

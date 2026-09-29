@@ -9,11 +9,14 @@ namespace OasisRigAgent.Core;
 /// as they are, and a refusal is classified from the one thing every version
 /// of them shares - the route and the status code.
 ///
-/// One failed sign-in is one count. A login answering 401 is not a failure on
-/// its own: it is the same answer for a new name as for a wrong PIN, and the
-/// register call after it is what decides which. A request that never gets an
-/// answer counts as <see cref="SignInFailureKind.Unreachable"/>, and the
-/// exception still reaches the caller unchanged.
+/// One refused answer is one count. The rig asks whether the driver has raced
+/// here before, so the two sign-in routes are two separate paths: only a
+/// returning driver logs in, where a 401 is a wrong PIN for the name (or a
+/// name that is not theirs), and only a new driver registers, where a 409 is a
+/// name already taken. Both are <see cref="SignInFailureKind.WrongPinOrName"/>.
+/// A request that never gets an answer counts as
+/// <see cref="SignInFailureKind.Unreachable"/>, and the exception still reaches
+/// the caller unchanged.
 /// </summary>
 public sealed class SignInFailureWatch : DelegatingHandler
 {
@@ -52,9 +55,8 @@ public sealed class SignInFailureWatch : DelegatingHandler
         if (route.EndsWith("/api/auth/login", StringComparison.Ordinal))
             return code switch
             {
-                401 => null,
+                401 or 400 => SignInFailureKind.WrongPinOrName,
                 429 => SignInFailureKind.Locked,
-                400 => SignInFailureKind.WrongPinOrName,
                 _ => SignInFailureKind.Other,
             };
         if (route.EndsWith("/api/auth/register", StringComparison.Ordinal))
