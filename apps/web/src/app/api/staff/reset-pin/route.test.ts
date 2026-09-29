@@ -28,10 +28,15 @@ const { POST } = await import("./route");
 const DRIVER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OLD_HASH = bcrypt.hashSync("1111", 4);
 
-function post(body: unknown) {
+/** A request as the staff page's own fetch sends it: same origin, JSON. */
+function post(body: unknown, headers: Record<string, string> = {}) {
   return new Request("http://localhost/api/staff/reset-pin", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      origin: "http://localhost",
+      "content-type": "application/json",
+      ...headers,
+    },
     body: JSON.stringify(body),
   });
 }
@@ -69,6 +74,68 @@ beforeEach(() => {
 });
 
 describe("POST /api/staff/reset-pin", () => {
+  // This resets a credential, and the staff cookie is SameSite=Lax - which
+  // keeps it off other sites' requests but not off another origin on the same
+  // site. Each of these is refused before the session is even looked up.
+  it.each([
+    ["a foreign origin", { origin: "https://evil.example" }],
+    ["another origin on the same site", { origin: "http://staff-tools.localhost" }],
+    ["an opaque null origin", { origin: "null" }],
+    ["a text/plain form post", { "content-type": "text/plain" }],
+    ["a url-encoded form post", { "content-type": "application/x-www-form-urlencoded" }],
+  ])("refuses %s before looking at the session", async (_label, headers) => {
+    const response = await POST(
+      post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }, headers),
+    );
+
+    expect([403, 415]).toContain(response.status);
+    expect(getStaffUser).not.toHaveBeenCalled();
+    expect(withTransaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a request with no Origin header at all", async () => {
+    const request = new Request("http://localhost/api/staff/reset-pin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "cross_origin" });
+    expect(getStaffUser).not.toHaveBeenCalled();
+  });
+
+  it("names why a cross-origin request and a form post were refused", async () => {
+    const foreign = await POST(
+      post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }, {
+        origin: "https://evil.example",
+      }),
+    );
+    expect(foreign.status).toBe(403);
+    await expect(foreign.json()).resolves.toEqual({ error: "cross_origin" });
+
+    const form = await POST(
+      post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }, {
+        "content-type": "text/plain;charset=UTF-8",
+      }),
+    );
+    expect(form.status).toBe(415);
+    await expect(form.json()).resolves.toEqual({ error: "unsupported_media_type" });
+  });
+
+  it("accepts the staff page's own JSON request, charset and all", async () => {
+    const response = await POST(
+      post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }, {
+        "content-type": "application/json; charset=utf-8",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(withTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a caller with no staff session before touching the database", async () => {
     getStaffUser.mockResolvedValue(null);
 

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withTransaction } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
 import { pinSchema, hashPin } from "@/lib/driver-auth";
+import { refuseCrossOriginRequest } from "@/lib/http";
 
 // The PIN arrives twice because staff type it on the racer's say-so, and a
 // mistyped reset is the same lock-out it was meant to fix. Checked here as
@@ -14,6 +15,11 @@ const body = z
  * reset is the recovery path (discovery decision). The driver row keeps its id,
  * so every lap they have driven stays theirs. */
 export async function POST(request: Request) {
+  // This changes a credential, so the staff cookie alone is not enough proof
+  // the staff page sent it - see refuseCrossOriginRequest.
+  const refused = refuseCrossOriginRequest(request);
+  if (refused) return refused;
+
   const staff = await getStaffUser();
   if (!staff) return Response.json({ error: "forbidden" }, { status: 403 });
 

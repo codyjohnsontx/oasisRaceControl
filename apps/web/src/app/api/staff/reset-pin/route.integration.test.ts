@@ -72,10 +72,17 @@ function signInWith(displayName: string, pin: string) {
   );
 }
 
-function reset(driverId: string, newPin: string, confirmPin = newPin) {
+/** A reset as the staff page's own fetch sends it: same origin, JSON. */
+function reset(
+  driverId: string,
+  newPin: string,
+  confirmPin = newPin,
+  headers: Record<string, string> = {},
+) {
   return resetPin(
     new Request("http://localhost/api/staff/reset-pin", {
       method: "POST",
+      headers: { origin: "http://localhost", "content-type": "application/json", ...headers },
       body: JSON.stringify({ driverId, newPin, confirmPin }),
     }),
   );
@@ -155,6 +162,20 @@ describeDb("POST /api/staff/reset-pin against real Postgres", () => {
     const chuy = await seedRacer("chuy", "1111");
 
     const response = await reset(chuy, "4321");
+
+    expect(response.status).toBe(403);
+    expect((await signInWith("chuy", "1111")).status).toBe(200);
+    expect((await signInWith("chuy", "4321")).status).toBe(401);
+    expect(await auditRows()).toHaveLength(0);
+  });
+
+  it("refuses a staff session's request from another origin and leaves the PIN alone", async () => {
+    // The cookie rides along on a same-site request from another origin; the
+    // Origin header is what tells the route the staff page did not send it.
+    staffUser = await seedStaff();
+    const chuy = await seedRacer("chuy", "1111");
+
+    const response = await reset(chuy, "4321", "4321", { origin: "http://staff-tools.localhost" });
 
     expect(response.status).toBe(403);
     expect((await signInWith("chuy", "1111")).status).toBe(200);

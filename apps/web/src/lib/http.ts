@@ -14,3 +14,30 @@ export async function parseJsonBody<Schema extends z.ZodType>(
   }
   return parsed.data;
 }
+
+/**
+ * Refuses a state-changing request unless it is a JSON fetch from this site's
+ * own origin. The staff cookie is SameSite=Lax, which keeps it off requests
+ * from other sites but not from another origin on the same site, and
+ * `request.json()` will parse a text/plain HTML form body that happens to be
+ * valid JSON. Requiring a same-origin Origin header and a JSON content type
+ * closes both: a form cannot send application/json, and a cross-origin fetch
+ * that does is either preflighted and refused or carries a foreign Origin.
+ * Browsers send Origin on every POST, so a missing one is refused too - no
+ * browser-driven caller of these routes lacks it.
+ *
+ * Returns a ready-to-return response, or null when the request may proceed.
+ * Call it before anything else in the handler, so a refused request costs no
+ * session lookup, no hashing and no query.
+ */
+export function refuseCrossOriginRequest(request: Request): Response | null {
+  const origin = request.headers.get("origin");
+  if (origin === null || origin !== new URL(request.url).origin) {
+    return Response.json({ error: "cross_origin" }, { status: 403 });
+  }
+  const contentType = request.headers.get("content-type") ?? "";
+  if (contentType.split(";")[0]!.trim().toLowerCase() !== "application/json") {
+    return Response.json({ error: "unsupported_media_type" }, { status: 415 });
+  }
+  return null;
+}
