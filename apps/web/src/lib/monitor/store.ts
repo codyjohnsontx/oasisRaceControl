@@ -468,7 +468,9 @@ export type AlertToDiagnose = AlertForMessage & { subject: string; attempts: num
 /**
  * Claims the urgent alerts that need a diagnosis call: announced (so the
  * alert itself always goes first), still open, and never diagnosed, due a
- * retry, or claimed by a call that went quiet. One statement, and SKIP LOCKED,
+ * retry, or claimed by a call that went quiet. A rig alert whose detail does
+ * not say who was seated (stored before AlertDetail.driver existed) is never
+ * claimed, since its text may name a driver the redaction cannot know. One statement, and SKIP LOCKED,
  * so two evaluations cannot both call for one alert.
  */
 export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
@@ -482,6 +484,7 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
        select id from monitor_alerts
        where severity = 'urgent' and notified_at is not null and resolved_at is null
          and opened_at > now() - $1::interval
+         and (subject not like 'rig:%' or detail ? 'driver')
          and (diagnosis is null
            or (diagnosis->>'status' = 'retry' and (diagnosis->>'at')::timestamptz < now() - $2::interval)
            or (diagnosis->>'status' = 'pending' and (diagnosis->>'at')::timestamptz < now() - $3::interval))

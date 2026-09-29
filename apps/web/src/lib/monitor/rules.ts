@@ -131,10 +131,11 @@ export type AlertDetail = {
   /**
    * The seated driver's name when the text above uses it, so the AI
    * diagnosis can take it out before the prompt leaves (diagnosis/context.ts).
-   * Absent when nobody is seated or the name is under review, which the text
-   * never shows.
+   * Null when nobody is seated or the name is under review, which the text
+   * never shows. Every rig alert carries it; a rig alert stored without it
+   * may name a driver it cannot redact, so it is never diagnosed (store.ts).
    */
-  driver?: string;
+  driver?: string | null;
 };
 
 export type Finding = {
@@ -532,7 +533,7 @@ function finding(
       headline,
       where: rig.name,
       fields,
-      ...(rig.seated?.driverStatus === "active" ? { driver: rig.seated.driverName } : {}),
+      driver: rig.seated?.driverStatus === "active" ? rig.seated.driverName : null,
     },
   };
 }

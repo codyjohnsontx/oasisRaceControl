@@ -121,7 +121,7 @@ export function incidentContext(
 }
 
 /** Rewrites every string in a value: ids out, the driver's name out. */
-function redactor(driver: string | undefined) {
+function redactor(driver: string | null | undefined) {
   const name = driver?.trim()
     ? new RegExp(`(?<![\\p{L}\\p{N}])${escape(driver.trim())}(?![\\p{L}\\p{N}])`, "giu")
     : null;

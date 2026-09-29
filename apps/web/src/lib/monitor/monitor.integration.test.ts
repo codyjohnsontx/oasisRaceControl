@@ -554,6 +554,35 @@ describeDb("rig monitor against real Postgres", () => {
       expect(prompts).toHaveLength(1);
     });
 
+    it("never diagnoses a rig alert whose detail does not say who was seated", async () => {
+      const opened = async (subject: string, driver?: string) => {
+        const finding: Finding = {
+          rule: "rig_silent",
+          subject,
+          severity: "urgent",
+          level: 0,
+          detail: {
+            headline: "Rig 09 has been silent for 3 min with Matt G signed in",
+            where: "Rig 09",
+            fields: [{ name: "Driver", value: "Matt G (seated 18 min)" }],
+            ...(driver === undefined ? {} : { driver }),
+          },
+        };
+        await applyFindings(db(), [finding], []);
+      };
+      await opened("rig:00000000-0000-4000-8000-000000000001");
+      await opened("rig:00000000-0000-4000-8000-000000000002", "Matt G");
+      await testDb().query("update monitor_alerts set notified_at = now()");
+      geminiAnswers = ["answer"];
+
+      await nextEvaluation();
+
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain("Rig 09 has been silent for 3 min with driver-");
+      expect(prompts[0]).not.toContain("Matt G");
+      expect(await diagnosis()).toMatchObject([{ diagnosis: null }, { diagnosis: { status: "done" } }]);
+    });
+
     it("makes no call without a key, and posts the alert as before", async () => {
       vi.stubEnv("GEMINI_API_KEY", "");
       await seatedSilentRig();
