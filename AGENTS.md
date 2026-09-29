@@ -334,7 +334,8 @@ never sign back in with, and only staff SQL can change it (2026-09-28). The
 rig cannot tell a new name from a wrong PIN until login answers 401, so it
 asks the second PIN only then (`confirmNewPin` on `CheckInAsync`); a register
 409 after that means a wrong PIN for a registered name, worded that way, never
-"use a different name".
+"use a different name", and for the rest of that sign-in a login 401 for the
+name is a wrong PIN too, with no second PIN and no register.
 
 ## Local dev
 

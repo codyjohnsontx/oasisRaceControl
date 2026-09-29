@@ -18,12 +18,20 @@ public sealed record DriverCheckIn(
 /// <summary>A check-in the backend refused, in words the person at the rig can act on.</summary>
 public sealed class CheckInRefusedException : Exception
 {
-    public CheckInRefusedException(string message, bool retryPin = false) : base(message) => RetryPin = retryPin;
+    public CheckInRefusedException(string message, bool retryPin = false, bool nameRegistered = false) : base(message)
+    {
+        RetryPin = retryPin;
+        NameRegistered = nameRegistered;
+    }
 
     /// <summary>True when the name stands and only the PIN needs typing again:
     /// the name is registered to a different PIN, or a new PIN was not
     /// confirmed.</summary>
     public bool RetryPin { get; }
+
+    /// <summary>True when the backend has said the name is registered, so a
+    /// later wrong PIN for it is not a new name to sign up.</summary>
+    public bool NameRegistered { get; }
 }
 
 /// <summary>
@@ -71,9 +79,11 @@ public sealed class DriverCheckInClient
     /// login matched nobody, before anything is registered: a returning driver
     /// with the right PIN types it once. Answering null gives up (the program is
     /// closing) and throws <see cref="OperationCanceledException"/>; an empty
-    /// answer or a different PIN registers nothing.</summary>
+    /// answer or a different PIN registers nothing. Pass null for
+    /// <paramref name="confirmNewPin"/> once the name is known to be registered:
+    /// a login that fails is then a wrong PIN, and nothing is registered.</summary>
     public async Task<DriverCheckIn> CheckInAsync(
-        string name, string pin, Func<CancellationToken, Task<string?>> confirmNewPin, CancellationToken ct)
+        string name, string pin, Func<CancellationToken, Task<string?>>? confirmNewPin, CancellationToken ct)
     {
         if (!IsPin(pin)) throw new CheckInRefusedException("the PIN must be exactly 4 digits");
 
@@ -88,7 +98,7 @@ public sealed class DriverCheckInClient
     }
 
     private static async Task<(string DriverId, string DisplayName, bool Returning)> SignIn(
-        HttpClient http, string name, string pin, Func<CancellationToken, Task<string?>> confirmNewPin, CancellationToken ct)
+        HttpClient http, string name, string pin, Func<CancellationToken, Task<string?>>? confirmNewPin, CancellationToken ct)
     {
         using (var login = await http.PostAsJsonAsync("api/auth/login", new { displayName = name, pin }, ct))
         {
@@ -103,6 +113,7 @@ public sealed class DriverCheckInClient
             if (login.StatusCode != HttpStatusCode.Unauthorized)
                 throw new CheckInRefusedException($"the backend could not sign you in (HTTP {(int)login.StatusCode}) - try again");
         }
+        if (confirmNewPin is null) throw WrongPin(name);
 
         var again = await confirmNewPin(ct) ?? throw new OperationCanceledException(ct);
         if (again.Length == 0)
@@ -116,10 +127,7 @@ public sealed class DriverCheckInClient
         // The login above already said no to this name and PIN, so a taken
         // name means a wrong PIN for it. The backend does not say how many
         // tries are left, only when the name locks (MAX_FAILS in driver-auth.ts).
-        if (register.StatusCode == HttpStatusCode.Conflict)
-            throw new CheckInRefusedException(
-                $"the name \"{name}\" is already registered and that PIN does not match it - type your PIN again, or ask staff. Five wrong PINs in a row lock the name for 15 minutes.",
-                retryPin: true);
+        if (register.StatusCode == HttpStatusCode.Conflict) throw WrongPin(name);
         if ((int)register.StatusCode == 429)
             throw new CheckInRefusedException("too many sign-in attempts from this network in the last minute, across both rigs - wait a minute and try again");
         if (register.StatusCode == HttpStatusCode.BadRequest)
@@ -164,6 +172,10 @@ public sealed class DriverCheckInClient
             throw new CheckInRefusedException("the backend signed the name in but did not say who it is");
         return (driverId, displayName, returning);
     }
+
+    private static CheckInRefusedException WrongPin(string name) =>
+        new($"the name \"{name}\" is already registered and that PIN does not match it - type your PIN again, or ask staff. Five wrong PINs in a row lock the name for 15 minutes.",
+            retryPin: true, nameRegistered: true);
 
     private static CheckInRefusedException NameNotAllowed() =>
         new("that name is not allowed: 2 to 24 letters, numbers, spaces or . _ ' -");

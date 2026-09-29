@@ -247,6 +247,42 @@ public sealed class DriverPromptTests : IDisposable
         lock (backend.Calls) Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/register "));
     }
 
+    [Fact]
+    public async Task ANameFoundRegisteredIsNeverOfferedASignUpAgain()
+    {
+        var backend = new Backend();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
+        // The 2026-09-28 walk-through: a returning driver types a wrong PIN and
+        // confirms it, finds the name registered, types a different wrong PIN,
+        // then the right one.
+        var screen = new RecordingConsole("Mike", "1234", "1234", "5678", "4321", "");
+
+        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
+
+        var t = screen.Transcript;
+        var registered = screen.ScreenBefore(t.IndexOf("typed:5678"));
+        Assert.Contains(registered, l => l.StartsWith("Could not sign in:") && l.Contains("\"Mike\" is already registered and that PIN does not match it"));
+
+        // The second wrong PIN is worded as one, with no second PIN asked for.
+        var wrongAgain = screen.ScreenBefore(t.IndexOf("typed:4321"));
+        Assert.Contains(wrongAgain, l => l.StartsWith("Could not sign in:") && l.Contains("\"Mike\" is already registered and that PIN does not match it") && l.Contains("ask staff") && l.Contains("Five wrong PINs in a row lock the name for 15 minutes."));
+        Assert.Contains("Name: Mike", wrongAgain);
+        Assert.Contains(wrongAgain, l => l.StartsWith("Type your 4-digit PIN"));
+        Assert.DoesNotContain(t.Skip(t.LastIndexOf("typed:1234")), l => l.StartsWith("New here?") || l.StartsWith("No driver is signed up"));
+
+        var driving = screen.ScreenBefore(t.LastIndexOf("typed:"));
+        Assert.Contains("  RIG 01 - DRIVING: Mike", driving);
+        Assert.Contains("Welcome back. Your laps post automatically.", driving);
+
+        // Only the confirmed first PIN ever reached the register route.
+        lock (backend.Calls) Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/register "));
+    }
+
     /// <summary>Telemetry whose sim state the test flips, as iRacing does when
     /// a session loads or the driver exits to the menu.</summary>
     private sealed class SwitchableTelemetry : ITelemetrySource

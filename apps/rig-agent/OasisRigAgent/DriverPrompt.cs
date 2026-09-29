@@ -162,12 +162,15 @@ internal static class DriverPrompt
     /// <summary>Ask the typed name for its PIN and sign it in. A new name is
     /// asked for the PIN a second time before it is registered; a name that is
     /// already registered to a different PIN, or a new PIN that was not
-    /// confirmed, keeps the name and asks for the PIN again. Enter alone at the
-    /// PIN goes back to the name screen.</summary>
+    /// confirmed, keeps the name and asks for the PIN again. Once the backend
+    /// has said the name is registered, a later wrong PIN is worded as one and
+    /// never offered as a new sign-up. Enter alone at the PIN goes back to the
+    /// name screen.</summary>
     private static async Task<SignInOutcome> SignInAsync(
         AgentService agent, DriverCheckInClient checkIn, int rigNumber, WalkUpScreen screen, string name, CancellationToken quit)
     {
         string? pinNotice = null;
+        var nameRegistered = false;
         while (true)
         {
             var pin = await ReadPinAsync(screen, rigNumber, name, pinNotice, quit);
@@ -195,10 +198,11 @@ internal static class DriverPrompt
 
             try
             {
-                return new SignInOutcome(await checkIn.CheckInAsync(name, pin, ConfirmNewPin, quit), null, Quit: false);
+                return new SignInOutcome(await checkIn.CheckInAsync(name, pin, nameRegistered ? null : ConfirmNewPin, quit), null, Quit: false);
             }
             catch (CheckInRefusedException ex) when (ex.RetryPin)
             {
+                nameRegistered |= ex.NameRegistered;
                 pinNotice = $"Could not sign in: {ex.Message}";
             }
             catch (CheckInRefusedException ex)

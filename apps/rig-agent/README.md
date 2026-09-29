@@ -385,7 +385,8 @@ driver's.
   name at the 2026-09-28 event.
 - A name that is already registered with a different PIN is refused in those
   words: type the PIN again, or ask staff. The name stays on screen and only
-  the PIN is asked for again; Enter alone there goes back to the name. Names
+  the PIN is asked for again, once each from then on - the rig no longer
+  offers that name as a new sign-up; Enter alone there goes back to the name. Names
   are unique across everyone the app has ever stored, not only this event's
   drivers. There is no PIN reset on the rig.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
