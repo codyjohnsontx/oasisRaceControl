@@ -93,6 +93,21 @@ describe("rigState", () => {
     expect(rigState(rows)?.id).toBe("back");
   });
 
+  it("orders processes on the server's clock when the rig's clock moved between them", () => {
+    // The rig came back up with its clock a year slow.
+    const year = 365 * 24 * 3_600_000;
+    const rows = [
+      hb("bye", T, { sequence: 900, shuttingDown: true }),
+      hb("back", T + 120_000, {
+        sequence: 1,
+        processStartedAt: T + 110_000 - year,
+        sentAt: T + 120_000 - year,
+        clockSkewMs: year,
+      }),
+    ];
+    expect(rigState(rows)?.id).toBe("back");
+  });
+
   it("takes v1 heartbeats in arrival order, as before", () => {
     expect(rigState([v1("a", T), v1("b", T + 30_000)])?.id).toBe("b");
   });

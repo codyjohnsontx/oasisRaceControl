@@ -1,4 +1,4 @@
-import { holdingSince, rigState, type Heartbeat } from "./rig-state";
+import { holdingSince, rigState, startedAtOnServer, type Heartbeat } from "./rig-state";
 
 /**
  * The rig monitor's rules: given what the database holds right now, which
@@ -213,7 +213,8 @@ function rigFindings(
   const fields = rigFields(now, rig, state);
 
   // Rules 3a and 3b hold through a goodbye: the laps are still in the rig's
-  // outbox, and closing the agent does not deliver them.
+  // outbox, and closing the agent does not deliver them. So does rule 10: a
+  // restart loop says goodbye on every lap of it.
   if (state.rejectedLaps !== null && state.rejectedLaps > 0) {
     const n = state.rejectedLaps;
     findings.push({
@@ -241,26 +242,6 @@ function rigFindings(
     );
   }
 
-  // Everything below is about a running agent; a goodbye ended it.
-  if (state.shuttingDown) return findings;
-
-  if (rig.seated && state.telemetryMode === "iracing" && state.simConnected === false) {
-    const since = holdingSince(rig.heartbeats, state, (h) => h.simConnected === false)!;
-    const from = Math.max(since, rig.seated.startedAt);
-    if (now - from >= SIM_DISCONNECTED_AFTER_MS) {
-      findings.push(
-        finding(
-          "sim_disconnected",
-          rig,
-          "urgent",
-          `${rig.name}: iRacing not connected for ${duration(now - from)} while ` +
-            `${rig.seated.driverName} is signed in`,
-          fields,
-        ),
-      );
-    }
-  }
-
   const starts = recentStarts(now, rig.heartbeats);
   if (starts >= RESTARTS_TO_ALERT) {
     findings.push(
@@ -272,6 +253,26 @@ function rigFindings(
         [...fields, { name: "Starts", value: String(starts) }],
       ),
     );
+  }
+
+  // Everything below is about a running agent; a goodbye ended it.
+  if (state.shuttingDown) return findings;
+
+  if (rig.seated && state.telemetryMode === "iracing" && state.simConnected === false) {
+    const since = holdingSince(rig.heartbeats, state, (h) => h.simConnected === false)!;
+    const from = Math.max(since, rig.seated.startedAt);
+    if (state.receivedAt - from >= SIM_DISCONNECTED_AFTER_MS) {
+      findings.push(
+        finding(
+          "sim_disconnected",
+          rig,
+          "urgent",
+          `${rig.name}: iRacing not connected for ${duration(state.receivedAt - from)} while ` +
+            `${rig.seated.driverName} is signed in`,
+          fields,
+        ),
+      );
+    }
   }
 
   if (state.clockSkewMs !== null) {
@@ -334,7 +335,7 @@ function rigFindings(
     state,
     (h) => h.agentCpuPercent !== null && h.agentCpuPercent > FOOTPRINT_CPU_PERCENT,
   );
-  const cpuHigh = cpuSince !== null && now - cpuSince >= FOOTPRINT_CPU_FOR_MS;
+  const cpuHigh = cpuSince !== null && state.receivedAt - cpuSince >= FOOTPRINT_CPU_FOR_MS;
   const memoryHigh = state.agentMemoryMb !== null && state.agentMemoryMb > FOOTPRINT_MEMORY_MB;
   if (cpuHigh || memoryHigh) {
     const usage = [
@@ -376,15 +377,13 @@ function lapsStuck(heartbeats: readonly Heartbeat[], state: Heartbeat): boolean 
 
 /**
  * Rule 10: agent processes that started within RESTART_WINDOW_MS and lived to
- * send a heartbeat. Each process names its own start on every heartbeat; the
- * rig's clock is moved onto the server's with that heartbeat's own skew.
+ * send a heartbeat. Each process names its own start on every heartbeat.
  */
 function recentStarts(now: number, heartbeats: readonly Heartbeat[]): number {
   const starts = new Set<number>();
   for (const h of heartbeats) {
-    if (h.processStartedAt === null) continue;
-    const startedAt = h.processStartedAt + (h.clockSkewMs ?? 0);
-    if (now - startedAt <= RESTART_WINDOW_MS) starts.add(h.processStartedAt);
+    const startedAt = startedAtOnServer(h);
+    if (startedAt !== null && now - startedAt <= RESTART_WINDOW_MS) starts.add(h.processStartedAt!);
   }
   return starts.size;
 }

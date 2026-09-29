@@ -41,7 +41,7 @@ export async function probeDatabase(tag: string): Promise<DatabaseProbe> {
 
   const deadline = Date.now() + DATABASE_TIMEOUT_MS;
   try {
-    return { ok: true, appliedMigrations: await probe(deadline) };
+    return { ok: true, appliedMigrations: await probe(deadline, tag) };
   } catch (error) {
     console.error(`[${tag}] database probe failed`, detail(error));
     return { ok: false, reason: reasonFor(error) };
@@ -57,12 +57,12 @@ export async function probeDatabase(tag: string): Promise<DatabaseProbe> {
  * Destroying the client instead closes the socket, which frees the slot now
  * and makes Postgres drop the backend.
  */
-async function probe(deadline: number): Promise<number | null> {
+async function probe(deadline: number, tag: string): Promise<number | null> {
   const client = await acquire(deadline);
   let completed = false;
   try {
     await withDeadline(client.query("select 1"), deadline);
-    const applied = await countAppliedMigrations(client, deadline);
+    const applied = await countAppliedMigrations(client, deadline, tag);
     completed = true;
     return applied;
   } finally {
@@ -100,6 +100,7 @@ async function acquire(deadline: number): Promise<PoolClient> {
 async function countAppliedMigrations(
   client: PoolClient,
   deadline: number,
+  tag: string,
 ): Promise<number | null> {
   try {
     const { rows } = await withDeadline(
@@ -111,7 +112,7 @@ async function countAppliedMigrations(
     return rows[0]?.applied ?? null;
   } catch (error) {
     if (error instanceof DatabaseTimeout) throw error;
-    console.error("[ready] could not count applied migrations", detail(error));
+    console.error(`[${tag}] could not count applied migrations`, detail(error));
     return null;
   }
 }

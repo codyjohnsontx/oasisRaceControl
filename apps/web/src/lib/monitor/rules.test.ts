@@ -227,6 +227,13 @@ describe("rule 2: iRacing not connected while a driver is signed in", () => {
     expect(evaluate([rig(1, { seated: SEATED, heartbeats: none })])).toEqual([]);
   });
 
+  it("does not count the time since the rig went silent as time disconnected", () => {
+    const heartbeats = minutely(14 * MIN + 30 * S, 3 * MIN + 30 * S, (ago) => ({ simConnected: ago > 4 * MIN }));
+    expect(rulesOf(evaluate([rig(1, { seated: SEATED, heartbeats })]))).toEqual([
+      "rig_silent rig:rig-1 urgent",
+    ]);
+  });
+
   it("clears when iRacing connects", () => {
     const back = minutely(14 * MIN, 0, (ago) => ({ simConnected: ago > 10 * MIN || ago === 0 }));
     expect(evaluate([rig(1, { seated: SEATED, heartbeats: back })])).toEqual([]);
@@ -310,6 +317,17 @@ describe("rule 10: rig agent restarting repeatedly", () => {
     );
   });
 
+  it("holds while the rig's standing state is a goodbye from the loop", () => {
+    const loop = [
+      ...starts(12, 7),
+      hb(90 * S, { processStartedAt: NOW - 2 * MIN, sequence: 1 }),
+      hb(30 * S, { processStartedAt: NOW - 2 * MIN, sequence: 2, shuttingDown: true }),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats: loop })]))).toEqual([
+      "agent_restarting rig:rig-1 urgent",
+    ]);
+  });
+
   it("does not fire on two", () => {
     expect(evaluate([rig(1, { heartbeats: starts(7, 2) })])).toEqual([]);
   });
@@ -391,6 +409,11 @@ describe("rule 18: rig agent footprint", () => {
       "footprint_high rig:rig-1 warning",
     ]);
     expect(evaluate([rig(1, { heartbeats: busyFor(3 * MIN) })])).toEqual([]);
+  });
+
+  it("does not count the time since the rig went silent as time busy", () => {
+    const heartbeats = minutely(14 * MIN, 6 * MIN, (ago) => ({ agentCpuPercent: ago === 6 * MIN ? 4 : 0.2 }));
+    expect(only(evaluate([rig(1, { heartbeats })]), "footprint_high")).toBeUndefined();
   });
 
   it("clears when the latest heartbeat is back under both", () => {
