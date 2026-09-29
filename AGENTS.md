@@ -236,7 +236,9 @@ against the row's own `received_at`, never from a Vercel instance's clock. The
 producers are the .NET agent and `scripts/fake-rig.ts`; change them with it.
 A request carries at most one heartbeat and at most `MAX_EVENTS_BODY_BYTES`, and
 a rig over six stored heartbeats a minute gets `rate_limited` (still 200, still
-seen) - judged in the database so it holds across instances.
+seen) - judged in the database so it holds across instances. Goodbyes
+(`shuttingDown: true`) are exempt, always stored and never counted, because
+they are what tells a clean exit from a power cut.
 `v_rig_latest_heartbeat` is a per-rig `limit 1` lateral lookup on purpose: a
 `distinct on` over the table reads all seven days of history every evaluation,
 and an integration test counts the rows it reads.

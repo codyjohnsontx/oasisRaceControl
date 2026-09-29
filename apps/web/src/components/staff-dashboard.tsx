@@ -33,8 +33,10 @@ export type StaffLapRow = {
   rig_number: number | null;
 };
 
-/** Two and a half heartbeats at the agent's 60-second cadence, so one late
- *  heartbeat does not flicker the tile to offline. */
+/** The agent heartbeats every 60 s and the monitor calls a rig silent after
+ *  120 s - two missed heartbeats. This window is those two plus 30 s of margin,
+ *  so one late heartbeat never shows a rig offline here, and a tile does not
+ *  turn offline before the monitor would call the rig silent. */
 const AGENT_ONLINE_WINDOW_MS = 150_000;
 
 function agentStatus(lastSeenAt: string | null): "online" | "offline" {

@@ -140,14 +140,19 @@ function parseJson(text: string): unknown {
  * is judged in the database, against the rig's own recent rows through the
  * (rig_id, received_at) index, so it holds across every Vercel instance
  * without a second store.
+ *
+ * Goodbyes (`shuttingDown: true`) are exempt: always stored and never counted.
+ * A goodbye is what tells a clean exit from a power cut, and a rig in a fast
+ * crash loop is exactly the one whose every exit the monitor needs to see.
  */
 const HEARTBEAT_RATE_LIMIT = 6;
 const HEARTBEAT_RATE_WINDOW = "1 minute";
 
 /**
  * Stores one heartbeat as a `rig_heartbeats` row and marks the rig seen, in one
- * statement. Returns false when the rig is over its heartbeat rate: the row is
- * not stored, but the rig is still marked seen, because it did answer.
+ * statement. Returns false when the rig is over its heartbeat rate and this is
+ * not a goodbye: the row is not stored, but the rig is still marked seen,
+ * because it did answer.
  *
  * The fields the monitor's rules filter on get their own columns; every other
  * field lands in `payload` as validated, so a v1 heartbeat - `agentVersion` or
@@ -180,9 +185,10 @@ async function recordHeartbeat(
 
   const row = await queryOne<{ stored: boolean }>(
     `with admitted as (
-       select count(*) < $18 as ok
+       select $16::boolean or count(*) < $18 as ok
        from rig_heartbeats
-       where rig_id = $1 and received_at > now() - $19::interval
+       where rig_id = $1 and not shutting_down
+         and received_at > now() - $19::interval
      ),
      heartbeat as (
        insert into rig_heartbeats (

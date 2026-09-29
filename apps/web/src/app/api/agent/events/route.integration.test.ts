@@ -1058,6 +1058,25 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     expect(rows[0]!.last_seen_at).not.toBeNull();
   });
 
+  it("stores every goodbye from a rig in a fast crash loop, without counting them", async () => {
+    const rig = await seedRig(1);
+
+    const goodbyeStatuses: string[] = [];
+    for (let start = 0; start < 8; start++) {
+      await POST(post(rig, [{ type: "RIG_HEARTBEAT", startCount: start }]));
+      const goodbye = await POST(
+        post(rig, [{ type: "RIG_HEARTBEAT", startCount: start, shuttingDown: true }]),
+      );
+      goodbyeStatuses.push((await goodbye.json()).results[0].status);
+    }
+
+    expect(goodbyeStatuses).toEqual(Array(8).fill("ok"));
+    const stored = await heartbeatRows();
+    expect(stored.filter((row) => row.shutting_down)).toHaveLength(8);
+    // The ordinary heartbeats still get their full six: goodbyes use none of it.
+    expect(stored.filter((row) => !row.shutting_down)).toHaveLength(6);
+  });
+
   it("passes the read-only verify the owner runs after hand-applying 0005", async () => {
     // db/verify/0005_rig_heartbeats.sql pins fingerprints of every object the
     // migration creates; this database was built from the migration itself, so
