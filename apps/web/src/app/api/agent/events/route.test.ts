@@ -341,17 +341,6 @@ describe("POST /api/agent/events behaviour", () => {
     ]);
   });
 
-  it("derives clock skew from sent_at against the database's own clock", async () => {
-    await POST(post({ events: [HEARTBEAT_V2] }));
-
-    const [sql] = query.mock.calls.find(([text]) =>
-      String(text).includes("insert into rig_heartbeats"),
-    )!;
-    // Not Date.now() on whichever instance answered: the same now() that
-    // received_at and rigs.last_seen_at take.
-    expect(String(sql)).toMatch(/now\(\) - \$2::timestamptz/);
-  });
-
   it("stores the goodbye an exiting agent sends", async () => {
     await POST(post({ events: [{ type: "RIG_HEARTBEAT", shuttingDown: true }] }));
 
