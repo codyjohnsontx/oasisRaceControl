@@ -384,7 +384,8 @@ again gets no fresh tries - so a stranger cannot lock the real driver out
 PINs on the rig. "Per name" means per `DriverCheckInClient.NameKey`, which is
 deliberately coarser than the database's locale-dependent `citext` match, so
 no alias the backend folds together (`Mİke` for `Mike`) buys fresh tries; do
-not swap it back for a `StringComparer`. The website says the same in `driver-auth-refusal.ts`.
+not swap it back for a `StringComparer`. The website says the same in
+`driver-auth-refusal.ts`.
 
 ## Rig heartbeat
 

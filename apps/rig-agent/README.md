@@ -400,11 +400,11 @@ driver's.
   press Enter to try a different name." A name that has used its two tries
   gets the same message immediately if it is typed again, in any case or any
   look-alike spelling the backend reads as the same name (such as `Mİke` for
-  `Mike`), without asking the backend, until someone signs in. So one sign-in makes at most two
-  failed logins for a name, and someone typing a name that is not theirs
-  cannot lock the real driver out (the backend locks a name at five). This
-  path never registers anything. Staff reset a PIN on `/staff`; there is no
-  PIN reset on the rig.
+  `Mike`), without asking the backend, until someone signs in. So one sign-in
+  makes at most two failed logins for a name, and someone typing a name that
+  is not theirs cannot lock the real driver out (the backend locks a name at
+  five). This path never registers anything. Staff reset a PIN on `/staff`;
+  there is no PIN reset on the rig.
 - New (n): the PIN is typed twice, and two that differ are both asked for
   again on the rig, without a backend call. A PIN mistyped once at sign-up is
   one its owner can never sign back in with. A name that is already taken
