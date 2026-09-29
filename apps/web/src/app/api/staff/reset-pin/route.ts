@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { queryOne } from "@/lib/db";
-import { getStaffUser, writeAudit } from "@/lib/staff";
-import { pinSchema, hashPin, clearPinFailures } from "@/lib/driver-auth";
+import { withTransaction } from "@/lib/db";
+import { getStaffUser } from "@/lib/staff";
+import { pinSchema, hashPin } from "@/lib/driver-auth";
 
 // The PIN arrives twice because staff type it on the racer's say-so, and a
 // mistyped reset is the same lock-out it was meant to fix. Checked here as
@@ -29,30 +29,34 @@ export async function POST(request: Request) {
   const input = parsed.data;
 
   try {
-    const driver = await queryOne<{ id: string; display_name: string }>(
-      `update drivers
-       set pin_hash = $2, is_guest = false, updated_at = now()
-       where id = $1
-       returning id, display_name`,
-      [input.driverId, await hashPin(input.newPin)],
-    );
+    const pinHash = await hashPin(input.newPin);
+    const driver = await withTransaction(async (client) => {
+      const updated = await client.query<{ id: string; display_name: string }>(
+        `update drivers
+         set pin_hash = $2, is_guest = false, updated_at = now()
+         where id = $1
+         returning id, display_name`,
+        [input.driverId, pinHash],
+      );
+      const row = updated.rows[0];
+      if (!row) return null;
+
+      // A racer locked out by their own wrong guesses would otherwise stay
+      // locked for up to 15 minutes after staff gave them a PIN that works.
+      await client.query("delete from pin_attempts where driver_id = $1", [row.id]);
+      // Who and when come from the row itself (staff_user_id, created_at). The
+      // PIN - new or old - is never written anywhere but as the bcrypt hash.
+      await client.query(
+        `insert into audit_log (staff_user_id, action, target_type, target_id, detail)
+         values ($1, 'reset_pin', 'driver', $2, $3)`,
+        [staff.userId, row.id, { displayName: row.display_name }],
+      );
+      return row;
+    });
 
     if (!driver) {
       return Response.json({ error: "not_found" }, { status: 404 });
     }
-
-    // A racer locked out by their own wrong guesses would otherwise stay
-    // locked for up to 15 minutes after staff gave them a PIN that works.
-    await clearPinFailures(driver.id);
-    // Who and when come from the row itself (staff_user_id, created_at). The
-    // PIN - new or old - is never written anywhere but as the bcrypt hash.
-    await writeAudit({
-      staffUserId: staff.userId,
-      action: "reset_pin",
-      targetType: "driver",
-      targetId: driver.id,
-      detail: { displayName: driver.display_name },
-    });
 
     return Response.json({ ok: true, displayName: driver.display_name });
   } catch (error) {

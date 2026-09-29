@@ -13,18 +13,14 @@ import bcrypt from "bcryptjs";
  */
 
 const query = vi.fn();
-const queryOne = vi.fn();
-const writeAudit = vi.fn();
+const withTransaction = vi.fn();
 const getStaffUser = vi.fn();
 
 vi.mock("@/lib/db", () => ({
-  query: (...args: unknown[]) => query(...args),
-  queryOne: (...args: unknown[]) => queryOne(...args),
-  isUniqueViolation: () => false,
+  withTransaction: (fn: unknown) => withTransaction(fn),
 }));
 vi.mock("@/lib/staff", () => ({
   getStaffUser: () => getStaffUser(),
-  writeAudit: (...args: unknown[]) => writeAudit(...args),
 }));
 
 const { POST } = await import("./route");
@@ -40,20 +36,36 @@ function post(body: unknown) {
   });
 }
 
+/** Every statement the route ran inside its transaction. */
+function statements(): Array<[string, unknown[]]> {
+  return query.mock.calls.map(([sql, params]) => [String(sql), params as unknown[]]);
+}
+
 /** The pin_hash the update wrote, as the route passed it to the database. */
 function storedHash(): string {
-  const update = queryOne.mock.calls.find(([sql]) => String(sql).includes("update drivers"));
-  return update![1][1] as string;
+  return statements().find(([sql]) => sql.includes("update drivers"))![1][1] as string;
+}
+
+/** The audit_log insert's parameters. */
+function auditParams(): unknown[][] {
+  return statements()
+    .filter(([sql]) => sql.includes("insert into audit_log"))
+    .map(([, params]) => params);
 }
 
 beforeEach(() => {
   query.mockReset();
-  queryOne.mockReset();
-  writeAudit.mockReset();
+  withTransaction.mockReset();
   getStaffUser.mockReset();
   getStaffUser.mockResolvedValue({ userId: "staff-uuid", displayName: "Cody" });
-  queryOne.mockResolvedValue({ id: DRIVER_ID, display_name: "chuy" });
-  query.mockResolvedValue([]);
+  query.mockImplementation(async (sql: string) =>
+    sql.includes("update drivers")
+      ? { rows: [{ id: DRIVER_ID, display_name: "chuy" }] }
+      : { rows: [] },
+  );
+  withTransaction.mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
+    fn({ query }),
+  );
 });
 
 describe("POST /api/staff/reset-pin", () => {
@@ -63,9 +75,7 @@ describe("POST /api/staff/reset-pin", () => {
     const response = await POST(post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }));
 
     expect(response.status).toBe(403);
-    expect(queryOne).not.toHaveBeenCalled();
-    expect(query).not.toHaveBeenCalled();
-    expect(writeAudit).not.toHaveBeenCalled();
+    expect(withTransaction).not.toHaveBeenCalled();
   });
 
   it("changes nothing when the two PINs differ", async () => {
@@ -73,15 +83,14 @@ describe("POST /api/staff/reset-pin", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "pins_do_not_match" });
-    expect(queryOne).not.toHaveBeenCalled();
-    expect(writeAudit).not.toHaveBeenCalled();
+    expect(withTransaction).not.toHaveBeenCalled();
   });
 
   it("changes nothing when the confirmation is missing", async () => {
     const response = await POST(post({ driverId: DRIVER_ID, newPin: "4321" }));
 
     expect(response.status).toBe(400);
-    expect(queryOne).not.toHaveBeenCalled();
+    expect(withTransaction).not.toHaveBeenCalled();
   });
 
   it.each(["123", "12345", "12a4", ""])("refuses %j as a PIN", async (pin) => {
@@ -89,17 +98,17 @@ describe("POST /api/staff/reset-pin", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "invalid_input" });
-    expect(queryOne).not.toHaveBeenCalled();
+    expect(withTransaction).not.toHaveBeenCalled();
   });
 
   it("404s a driver that does not exist, and audits nothing", async () => {
-    queryOne.mockResolvedValue(null);
+    query.mockResolvedValue({ rows: [] });
 
     const response = await POST(post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }));
 
     expect(response.status).toBe(404);
-    expect(query).not.toHaveBeenCalled();
-    expect(writeAudit).not.toHaveBeenCalled();
+    expect(statements()).toHaveLength(1);
+    expect(auditParams()).toHaveLength(0);
   });
 
   it("stores a hash the new PIN passes and the old PIN does not", async () => {
@@ -114,31 +123,38 @@ describe("POST /api/staff/reset-pin", () => {
     expect(await bcrypt.compare("4321", hash)).toBe(true);
     expect(await bcrypt.compare("1111", hash)).toBe(false);
     // Updated in place by id - the racer keeps the row their laps point at.
-    expect(queryOne.mock.calls[0]![1][0]).toBe(DRIVER_ID);
+    expect(statements()[0]![1][0]).toBe(DRIVER_ID);
   });
 
   it("clears the driver's PIN lockout", async () => {
     await POST(post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }));
 
-    expect(query).toHaveBeenCalledWith("delete from pin_attempts where driver_id = $1", [
-      DRIVER_ID,
+    expect(statements()).toContainEqual([
+      "delete from pin_attempts where driver_id = $1",
+      [DRIVER_ID],
     ]);
   });
 
   it("audits the staff member, the driver and the action, never the PIN", async () => {
     await POST(post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }));
 
-    expect(writeAudit).toHaveBeenCalledTimes(1);
-    const entry = writeAudit.mock.calls[0]![0];
-    expect(entry).toEqual({
-      staffUserId: "staff-uuid",
-      action: "reset_pin",
-      targetType: "driver",
-      targetId: DRIVER_ID,
-      detail: { displayName: "chuy" },
-    });
-    const written = JSON.stringify(entry);
+    expect(auditParams()).toEqual([["staff-uuid", DRIVER_ID, { displayName: "chuy" }]]);
+    const written = JSON.stringify(auditParams());
     expect(written).not.toContain("4321");
     expect(written).not.toContain(storedHash());
+  });
+
+  it("reports a failure, not a reset, when the audit row cannot be written", async () => {
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes("insert into audit_log")) throw new Error("audit insert failed");
+      return sql.includes("update drivers")
+        ? { rows: [{ id: DRIVER_ID, display_name: "chuy" }] }
+        : { rows: [] };
+    });
+
+    const response = await POST(post({ driverId: DRIVER_ID, newPin: "4321", confirmPin: "4321" }));
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({ error: "server_error" });
   });
 });

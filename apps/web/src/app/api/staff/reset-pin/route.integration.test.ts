@@ -162,6 +162,29 @@ describeDb("POST /api/staff/reset-pin against real Postgres", () => {
     expect(await auditRows()).toHaveLength(0);
   });
 
+  it("leaves the PIN and the lockout alone when the audit row cannot be written", async () => {
+    // A session for a staff account that no longer exists: the audit_log
+    // foreign key refuses the row after the PIN update has run.
+    staffUser = { userId: "00000000-0000-4000-8000-000000000000", displayName: "Gone" };
+    const chuy = await seedRacer("chuy", "1111");
+    for (let attempt = 0; attempt < 5; attempt += 1) await signInWith("chuy", "2222");
+
+    const response = await reset(chuy, "4321");
+
+    expect(response.status).toBe(500);
+    expect(await auditRows()).toHaveLength(0);
+    const { rows: attempts } = await testDb().query(
+      "select * from pin_attempts where driver_id = $1",
+      [chuy],
+    );
+    expect(attempts).not.toHaveLength(0);
+    const { rows: stored } = await testDb().query<{ pin_hash: string }>(
+      "select pin_hash from drivers where id = $1",
+      [chuy],
+    );
+    expect(await bcrypt.compare("1111", stored[0]!.pin_hash)).toBe(true);
+  });
+
   it("leaves the PIN alone when the confirmation does not match", async () => {
     staffUser = await seedStaff();
     const chuy = await seedRacer("chuy", "1111");
