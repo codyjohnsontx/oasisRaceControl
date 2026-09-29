@@ -333,14 +333,17 @@ the rig and on the web's sign-up and guest "Save profile" forms
 never sign back in with, and only staff can fix it, with Reset PIN on
 `/staff` (2026-09-28). The
 rig cannot tell a new name from a wrong PIN until login answers 401, so it
-asks the second PIN only then (`confirmNewPin` on `CheckInAsync`); a register
-409 after that means a wrong PIN for a registered name - or a name that is
-someone else's, so the wording covers both and promises no count of tries
-left. The PIN is asked for once more after any failed login - its PIN
-confirmed, mismatched or answered with Enter at the confirm - with no second
-PIN and no register, and a second failed login sends the typist back to the
-name screen (`FailedLoginsBeforeName` in `DriverPrompt`), so a stranger cannot
-lock the real driver out from one sign-in.
+offers a sign-up only then. Its sign-in is one small state machine,
+`SignInState` in `DriverPrompt.cs`, over the client's separate login, register
+and check-in steps (`DriverSignIn`); the rules are documented on the enum and
+every sequence is a row of `EverySignInSequenceEndsWhereTheRulesSay`, so change
+a rule and its row together. The load-bearing ones: a confirming PIN that does
+not match is asked again on the rig, with no new login; a register 409 means a
+wrong PIN for a registered name or a name that is someone else's, so the
+wording covers both and promises no count of tries left; every failed login
+ends in a strike or back at the name, and two strikes go back to the name, so
+a stranger cannot lock the real driver out from one sign-in; and only a name
+the backend has said is taken is ever told to ask staff.
 
 ## Local dev
 

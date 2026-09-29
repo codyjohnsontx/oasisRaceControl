@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using OasisRigAgent.Core;
 using Xunit;
-using static OasisRigAgent.Tests.TestPins;
+using static OasisRigAgent.Tests.TestSignIn;
 
 namespace OasisRigAgent.Tests;
 
@@ -67,14 +67,16 @@ public sealed class DriverPromptTests : IDisposable
     }
 
     /// <summary>The deployed routes this flow reaches: Mike's PIN is 4321, so
-    /// any other PIN fails login and then finds the name taken; any other name
-    /// is new and registers. A check-in
+    /// any other PIN fails login and then finds the name taken; "Guest" is
+    /// taken but no PIN logs it in, as a guest's or a banned driver's name;
+    /// any other name is new and registers. A check-in
     /// while Mike's stint is still open answers with that same stint, as
     /// check_in_driver does; otherwise it opens a new one.</summary>
     private sealed class Backend : HttpMessageHandler
     {
         public readonly List<string?> Checkouts = new();
         public readonly List<string> Calls = new();
+        public readonly List<string> RegisteredPins = new();
         public volatile bool CheckoutUnreachable;
         public volatile bool RefuseLaps;
         public int AssignmentPolls;
@@ -88,12 +90,13 @@ public sealed class DriverPromptTests : IDisposable
             if (path == "/api/agent/assignment") Interlocked.Increment(ref AssignmentPolls);
             var text = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
             var body = string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
+            if (path == "/api/auth/register") lock (RegisteredPins) RegisteredPins.Add(body?["pin"]?.GetValue<string>() ?? "");
             var (status, answer) = path switch
             {
-                "/api/auth/login" when body?["pin"]?.GetValue<string>() == "4321" =>
+                "/api/auth/login" when body?["displayName"]?.GetValue<string>() == "Mike" && body?["pin"]?.GetValue<string>() == "4321" =>
                     (HttpStatusCode.OK, """{"driverId":"d-mike","displayName":"Mike"}"""),
                 "/api/auth/login" => (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}"""),
-                "/api/auth/register" when body?["displayName"]?.GetValue<string>() == "Mike" =>
+                "/api/auth/register" when body?["displayName"]?.GetValue<string>() is "Mike" or "Guest" =>
                     (HttpStatusCode.Conflict, """{"error":"name_taken"}"""),
                 "/api/auth/register" => (HttpStatusCode.OK, """{"driverId":"d-new","displayName":""" + $"\"{body?["displayName"]}\"" + "}"),
                 "/api/checkin" => CheckIn(),
@@ -210,8 +213,38 @@ public sealed class DriverPromptTests : IDisposable
     }
 
 
-    [Fact]
-    public async Task ANewNameIsSignedUpOnlyWhenItsPinIsTypedTheSameTwice()
+    private const string NameScreen = "Type your name and press Enter:";
+    private const string MikeTaken = "Could not sign in: the name \"Mike\" is already registered and that PIN does not match. If this is your name, type your PIN again or ask staff. If \"Mike\" is not you, press Enter to pick a different name.";
+    private const string MikeTwice = "The PIN for \"Mike\" did not match twice. If \"Mike\" is your name, ask staff to reset your PIN; if not, pick a different name.";
+
+    /// <summary>Every sign-in sequence, typed line by line: how many logins and
+    /// registrations it cost, how many times it offered a sign-up, where it
+    /// stood when the typing stopped and what that screen said, and whether
+    /// anyone was told to ask staff.</summary>
+    public static IEnumerable<object[]> SignInSequences => new[]
+    {
+        new object[] { "new name, first try", new[] { "Alex", "1234", "1234" }, 1, 1, 1, "driving", "  RIG 01 - DRIVING: Alex", false },
+        new object[] { "new name, confirm mismatch then match", new[] { "Alex", "1234", "1243", "1234" }, 1, 1, 2, "driving", "  RIG 01 - DRIVING: Alex", false },
+        new object[] { "new name, two confirm mismatches", new[] { "Alex", "1234", "1243", "1244" }, 1, 0, 2, "name", "The two PINs did not match, so nothing was signed up; type your name to start again.", false },
+        new object[] { "returning driver, right PIN", new[] { "Mike", "4321" }, 1, 0, 0, "driving", "  RIG 01 - DRIVING: Mike", false },
+        new object[] { "returning driver, wrong then right (2026-09-28)", new[] { "Mike", "1234", "1234", "4321" }, 2, 1, 1, "driving", "  RIG 01 - DRIVING: Mike", true },
+        new object[] { "returning driver, wrong once", new[] { "Mike", "1234", "1234" }, 1, 1, 1, "pin", MikeTaken, true },
+        new object[] { "stranger typing a registered name", new[] { "Mike", "1234", "1234", "5678" }, 2, 1, 1, "name", MikeTwice, true },
+        new object[] { "stranger declining the sign-up twice", new[] { "Mike", "1234", "", "5678", "" }, 2, 0, 2, "name", "No driver signed in as \"Mike\" with either PIN, and nothing was signed up. Type your name to start again.", false },
+        new object[] { "declined once, then the name turns out taken", new[] { "Mike", "1234", "", "5678", "5678" }, 2, 1, 2, "name", MikeTwice, true },
+        new object[] { "guest or banned name, no PIN logs in", new[] { "Guest", "4321", "4321", "4321" }, 2, 1, 1, "name", "The PIN for \"Guest\" did not match twice. If \"Guest\" is your name, ask staff to reset your PIN; if not, pick a different name.", true },
+        new object[] { "Enter at the name", new[] { "" }, 0, 0, 0, "name", NameScreen, false },
+        new object[] { "Enter at the first PIN", new[] { "Alex", "" }, 0, 0, 0, "pin", "The PIN is exactly 4 digits.", false },
+        new object[] { "Enter at the sign-up offer", new[] { "Alex", "1234", "" }, 1, 0, 1, "pin", "Nothing was signed up - type your PIN again.", false },
+        new object[] { "Enter at the re-asked confirm", new[] { "Alex", "1234", "1243", "" }, 1, 0, 2, "pin", "Nothing was signed up - type your PIN again.", false },
+        new object[] { "Enter at the re-asked PIN", new[] { "Mike", "1234", "1234", "" }, 1, 1, 1, "name", NameScreen, true },
+        new object[] { "Enter while driving", new[] { "Mike", "4321", "" }, 1, 0, 0, "name", "Thanks Mike, you are logged out.", false },
+    };
+
+    [Theory]
+    [MemberData(nameof(SignInSequences))]
+    public async Task EverySignInSequenceEndsWhereTheRulesSay(
+        string sequence, string[] typed, int logins, int registers, int offers, string endsAt, string shown, bool staffMentioned)
     {
         var backend = new Backend();
         using var queue = new EventQueue(_dbPath);
@@ -220,105 +253,65 @@ public sealed class DriverPromptTests : IDisposable
         await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
         agent.Start();
         var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
-        // Chuy mistypes the second PIN, then presses Enter alone to go back to
-        // the name, then signs up with the same PIN twice.
-        var screen = new RecordingConsole("Chuy", "1234", "1243", "", "Chuy", "1234", "1234", "");
+        var screen = new RecordingConsole(typed);
 
         await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
 
         var t = screen.Transcript;
+        lock (backend.Calls)
+        {
+            Assert.True(logins == backend.Calls.Count(c => c.StartsWith("/api/auth/login ")), $"{sequence}: logins");
+            Assert.True(registers == backend.Calls.Count(c => c.StartsWith("/api/auth/register ")), $"{sequence}: registrations");
+        }
+        Assert.True(offers == t.Count(l => l.StartsWith("New here?")), $"{sequence}: sign-up offers");
+        Assert.True(staffMentioned == t.Any(l => l.Contains("ask staff")), $"{sequence}: ask staff");
+
+        // Where the typing stopped. A driver is signed out as the input ends,
+        // so their DRIVING screen is somewhere before the last one.
+        var last = screen.ScreenBefore(t.Count);
+        switch (endsAt)
+        {
+            case "driving":
+                Assert.Contains(shown, t);
+                break;
+            case "name":
+                Assert.Contains(shown, last);
+                Assert.Contains(NameScreen, last);
+                break;
+            case "pin":
+                Assert.Contains(shown, last);
+                Assert.Contains(last, l => l.StartsWith("Type your 4-digit PIN"));
+                break;
+            default:
+                throw new ArgumentException(endsAt);
+        }
+    }
+
+    [Fact]
+    public async Task OnlyTheConfirmedPinIsRegistered()
+    {
+        var backend = new Backend();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
+        var screen = new RecordingConsole("Chuy", "1234", "1243", "1234", "");
+
+        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
+
+        // The mismatch was asked again on the rig, and every full PIN left the
+        // screen the moment Enter was pressed.
+        var t = screen.Transcript;
+        var reasked = screen.ScreenBefore(t.LastIndexOf("typed:1234"));
+        Assert.Contains("The two PINs did not match. Type the PIN you picked once more.", reasked);
+        Assert.Contains("Name: Chuy", reasked);
         Assert.Equal("<clear>", t[t.IndexOf("typed:1243") + 1]);
-
-        var mismatch = screen.ScreenBefore(t.IndexOf("typed:", t.IndexOf("typed:1243") + 1));
-        Assert.Contains(mismatch, l => l.StartsWith("Could not sign in:") && l.Contains("the two PINs did not match, so nothing was signed up"));
-        Assert.Contains("Name: Chuy", mismatch);
-        Assert.Contains("Type your 4-digit PIN and press Enter (Enter alone goes back to the name):", mismatch);
-
-        // Enter alone went back to the name screen.
-        var backToName = screen.ScreenBefore(t.LastIndexOf("typed:Chuy"));
-        Assert.Contains("Type your name and press Enter:", backToName);
-
-        var driving = screen.ScreenBefore(t.LastIndexOf("typed:"));
-        Assert.Contains("  RIG 01 - DRIVING: Chuy", driving);
-        Assert.Contains(driving, l => l.StartsWith("You are signed up."));
-
-        // Only the confirmed PIN ever reached the register route.
-        lock (backend.Calls) Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/register "));
-    }
-
-    [Fact]
-    public async Task ANameFoundRegisteredIsNeverOfferedASignUpAgainAndASecondWrongPinGoesBackToTheName()
-    {
-        var backend = new Backend();
-        using var queue = new EventQueue(_dbPath);
-        using var http = new HttpClient(backend);
-        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
-        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
-        agent.Start();
-        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
-        // The 2026-09-28 walk-through: a returning driver types a wrong PIN and
-        // confirms it, finds the name registered, types a different wrong PIN,
-        // is sent back to the name, then types the name and the right PIN.
-        var screen = new RecordingConsole("Mike", "1234", "1234", "5678", "Mike", "4321", "");
-
-        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
-
-        var t = screen.Transcript;
-        var registered = screen.ScreenBefore(t.IndexOf("typed:5678"));
-        Assert.Contains(registered, l => l.StartsWith("Could not sign in:")
-            && l.Contains("\"Mike\" is already registered and that PIN does not match.")
-            && l.Contains("If this is your name, type your PIN again or ask staff.")
-            && l.Contains("If \"Mike\" is not you, press Enter to pick a different name."));
-        Assert.Contains("Name: Mike", registered);
-        Assert.Contains(registered, l => l.StartsWith("Type your 4-digit PIN"));
-
-        // The second wrong PIN is not asked for twice and not offered as a
-        // sign-up; it goes back to the name screen, saying why.
-        var backToName = screen.ScreenBefore(t.LastIndexOf("typed:Mike"));
-        Assert.Contains("The PIN for \"Mike\" did not match twice. If \"Mike\" is your name, ask staff to reset your PIN; if not, pick a different name.", backToName);
-        Assert.Contains("Type your name and press Enter:", backToName);
-        Assert.DoesNotContain(t.Skip(t.LastIndexOf("typed:1234")), l => l.StartsWith("New here?") || l.StartsWith("No driver is signed up"));
-
-        var driving = screen.ScreenBefore(t.LastIndexOf("typed:"));
-        Assert.Contains("  RIG 01 - DRIVING: Mike", driving);
-        Assert.Contains("Welcome back. Your laps post automatically.", driving);
-
-        // Only the confirmed first PIN ever reached the register route.
-        lock (backend.Calls)
-        {
-            Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/register "));
-            Assert.Equal(3, backend.Calls.Count(c => c.StartsWith("/api/auth/login ")));
-        }
-    }
-
-    [Fact]
-    public async Task EnterAtTheSignUpPromptStillCountsTowardsGoingBackToTheName()
-    {
-        var backend = new Backend();
-        using var queue = new EventQueue(_dbPath);
-        using var http = new HttpClient(backend);
-        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
-        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
-        agent.Start();
-        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
-        // Someone who thinks "Mike" is theirs: a PIN that fails, Enter at the
-        // sign-up prompt as a returning driver is told to, then another PIN
-        // that fails.
-        var screen = new RecordingConsole("Mike", "1234", "", "5678");
-
-        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
-
-        var t = screen.Transcript;
-        Assert.Single(t, l => l.StartsWith("New here?"));
-        var backToName = screen.ScreenBefore(t.Count);
-        Assert.Contains("The PIN for \"Mike\" did not match twice. If \"Mike\" is your name, ask staff to reset your PIN; if not, pick a different name.", backToName);
-        Assert.Contains("Type your name and press Enter:", backToName);
-
-        lock (backend.Calls)
-        {
-            Assert.Equal(2, backend.Calls.Count(c => c.StartsWith("/api/auth/login ")));
-            Assert.DoesNotContain(backend.Calls, c => c.StartsWith("/api/auth/register "));
-        }
+        Assert.Equal("<clear>", t[t.LastIndexOf("typed:1234") + 1]);
+        Assert.Contains(t, l => l.StartsWith("You are signed up."));
+        lock (backend.Calls) Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/register ") && c.Contains("d-new"));
+        lock (backend.RegisteredPins) Assert.Equal("1234", backend.RegisteredPins.Single());
     }
 
     /// <summary>Telemetry whose sim state the test flips, as iRacing does when
@@ -635,12 +628,12 @@ public sealed class DriverPromptTests : IDisposable
         // Mike logs out, then the window is closed from the sign-in screen. A
         // stint opened on the rig since (staff, a phone) must survive the close.
         await DriverPrompt.RunAsync(agent, checkIn, 2, new WalkUpScreen(new RecordingConsole("Mike", "4321", ""), agent), CancellationToken.None);
-        await checkIn.CheckInAsync("Mike", "4321", SamePinAgain("4321"), CancellationToken.None);
+        await CheckInAsync(checkIn, "Mike", "4321");
         await DriverPrompt.SignOutOnExitAsync(agent);
         lock (backend.Checkouts) Assert.Equal(new string?[] { null, MikeAssignmentId }, backend.Checkouts);
 
         // Closed while driving: the seated driver's own stint is ended, by name.
-        var seated = await checkIn.CheckInAsync("Mike", "4321", SamePinAgain("4321"), CancellationToken.None);
+        var seated = await CheckInAsync(checkIn, "Mike", "4321");
         agent.SeatCheckedInDriver(seated);
         await DriverPrompt.SignOutOnExitAsync(agent);
         lock (backend.Checkouts) Assert.Equal(new string?[] { null, MikeAssignmentId, seated.AssignmentId }, backend.Checkouts);
@@ -666,7 +659,7 @@ public sealed class DriverPromptTests : IDisposable
             OnInputEnded = async () =>
             {
                 await DriverPrompt.SignOutOnExitAsync(agent);
-                newer = (await checkIn.CheckInAsync("Mike", "4321", SamePinAgain("4321"), CancellationToken.None)).AssignmentId;
+                newer = (await CheckInAsync(checkIn, "Mike", "4321")).AssignmentId;
             },
         };
 
@@ -676,7 +669,7 @@ public sealed class DriverPromptTests : IDisposable
         Assert.NotEqual(MikeAssignmentId, newer);
         lock (backend.Checkouts) Assert.Equal(new string?[] { null, MikeAssignmentId }, backend.Checkouts);
         // The newer stint is still the one open: checking in again rejoins it.
-        Assert.Equal(newer, (await checkIn.CheckInAsync("Mike", "4321", SamePinAgain("4321"), CancellationToken.None)).AssignmentId);
+        Assert.Equal(newer, (await CheckInAsync(checkIn, "Mike", "4321")).AssignmentId);
     }
 
     public void Dispose()

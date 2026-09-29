@@ -377,23 +377,27 @@ agent only ever stamps a lap with a stint its own check-in created, so a lap
 driven before anyone signs in on this run is nobody's, never the last
 driver's.
 
-- A name and PIN that match nobody ask for the PIN a second time, and only a
-  second PIN that matches the first registers the name; a mismatch registers
-  nothing and asks for the PIN again. A returning driver with the right PIN
-  types it once. A PIN mistyped at sign-up is one its owner can never sign
-  back in with, which is how a returning driver was locked out of their own
-  name at the 2026-09-28 event.
+- A name and PIN that match nobody offer a sign-up: type the same PIN again
+  and only then is the name registered. A returning driver with the right PIN
+  types it once. A second PIN that does not match is asked for again on the
+  rig, without another login; a second mismatch registers nothing and goes
+  back to the name screen. A PIN mistyped at sign-up is one its owner can
+  never sign back in with, which is how a returning driver was locked out of
+  their own name at the 2026-09-28 event.
+- Enter at "New here?" (raced here before) registers nothing and asks for the
+  PIN again.
 - A name that is already registered with a different PIN is refused in those
   words: if the name is yours, type the PIN again or ask staff; if it is not
-  you, press Enter to pick a different name. The name stays on screen and only
-  the PIN is asked for again, once - the rig no longer offers that name as a
-  new sign-up. A second failed login in one sign-in - wrong PIN, second PIN
-  that did not match, or Enter at "New here?" - goes back to the name screen,
-  saying the PIN did not match twice, so someone typing a name that is not
-  theirs cannot lock the real driver out from one sign-in. A PIN that is not
-  4 digits never reaches the backend and does not count. Names are unique across everyone the
-  app has ever stored, not only this event's drivers. There is no PIN reset on
-  the rig; staff reset a PIN on `/staff`.
+  you, press Enter to pick a different name. The rig no longer offers that name
+  as a new sign-up.
+- A failed login that ends in a taken name or in Enter at "New here?" is a
+  strike; two strikes in one sign-in go back to the name screen, so someone
+  typing a name that is not theirs cannot lock the real driver out from one
+  sign-in. The notice says to ask staff only when the backend has said the
+  name is registered. A PIN that is not 4 digits never reaches the backend and
+  does not count. Names are unique across everyone the app has ever stored, not
+  only this event's drivers. There is no PIN reset on the rig; staff reset a
+  PIN on `/staff`.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
 - The PIN is exactly 4 digits; anything else asks for it again. An empty name
   asks again.
