@@ -118,13 +118,25 @@ least a minute later tries once more; if that fails too, the handoff is
 posted anyway with "no diagnosis" in place of the model's lines. Nothing is
 diagnosed twice, and a post Discord refused is retried like an alert's.
 
-**No driver's name or id leaves.** Before the call, the seated driver's
-display name becomes `driver-<4 hex>` and every uuid becomes `<id>`; the
-prompt carries only the alert's own text, the rig's name, named heartbeat
-fields, the agent's notices and the deployed commit (`diagnosis/context.ts`).
-The handoff is built from the same redacted text, because it is meant to be
-pasted elsewhere. The alert message above it still names the driver, as it
-always has: that is the staff channel.
+**Nothing a rig typed leaves.** A heartbeat's strings - session names,
+agent notices, variable names - are whatever the rig, or anyone holding its
+token, sent, and no filter can promise they hold no name, address, path or
+instruction. So the prompt and the handoff carry only what the server can
+vouch for (`diagnosis/context.ts`): the heartbeats' numbers, true/false
+flags and enum values; the agent version only when it has a version's
+shape; agent notices only as codes of the notices the agent is known to
+raise, counted, with a fixed summary; and the alert's own words - the rule,
+the rig's name and the headline and numbers the rules wrote, with the seated
+driver's name replaced by `driver-<4 hex>`. The alert message above still
+names the driver, as it always has: that is the staff channel.
+
+**The handoff keeps its shape.** The model read rig data, so its answer is
+treated as untrusted too: the prompt marks the incident as data, never
+instructions; every field of the answer is flattened to one line with links,
+mentions, code fences and the handoff's own labels (such as `Rules:`)
+neutralized; and `whereToLook` can only name the repository paths listed in
+the prompt. The handoff has one `Rules:` line, second from the top, and
+labels the model's three lines AI.
 
 | Variable | What it is |
 |---|---|
@@ -134,7 +146,7 @@ always has: that is the staff channel.
 | `DIAGNOSIS_MODEL` | optional; defaults to `gemini-2.5-flash`, or `claude-haiku-4-5-20251001` for `anthropic`. It names a model of the chosen provider, so clear it when switching |
 
 Production only, like the webhook. Google may use free-tier prompts to
-improve its products, which is why the redaction above is not optional.
+improve its products, which is why the allowlist above is not optional.
 
 ## The outside clock
 
