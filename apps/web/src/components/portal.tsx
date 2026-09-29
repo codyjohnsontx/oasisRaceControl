@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
 import type { PortalLap } from "@/lib/laps";
-import { newPinRefusal } from "@/lib/new-pin";
+import { submitGuestClaim } from "@/lib/driver-auth-submit";
 
 export type { PortalLap };
 
@@ -84,21 +84,12 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
   }
 
   async function claim() {
-    const refusal = newPinRefusal(pin, pinAgain);
-    setClaimMessage(refusal);
-    if (refusal) return;
     setClaimState("busy");
-    try {
-      const res = await fetch("/api/auth/claim", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ pin }),
-      });
-      setClaimState(res.ok ? "done" : "idle");
-      if (res.ok) router.refresh();
-    } catch {
-      setClaimState("idle");
-    }
+    setClaimMessage(null);
+    const result = await submitGuestClaim({ pin, pinAgain });
+    setClaimState(result.ok ? "done" : "idle");
+    if (result.ok) router.refresh();
+    else setClaimMessage(result.message);
   }
 
   return (

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { newPinRefusal } from "@/lib/new-pin";
-import { driverAuthRefusal, type DriverAuthMode as Mode } from "@/lib/driver-auth-refusal";
+import type { DriverAuthMode as Mode } from "@/lib/driver-auth-refusal";
+import { submitDriverAuth } from "@/lib/driver-auth-submit";
 
 type Props = {
   /** Called after the driver is signed in (any mode). */
@@ -21,36 +21,12 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
   const [message, setMessage] = useState<string | null>(null);
 
   async function submit() {
-    if (mode === "register") {
-      const refusal = newPinRefusal(pin, pinAgain);
-      if (refusal) {
-        setMessage(refusal);
-        return;
-      }
-    }
     setBusy(true);
     setMessage(null);
-    const endpoint =
-      mode === "guest" ? "/api/auth/guest" : mode === "login" ? "/api/auth/login" : "/api/auth/register";
-    const body = mode === "guest" ? { displayName: name } : { displayName: name, pin };
-
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        onSignedIn(String(data.displayName ?? name));
-        return;
-      }
-      setMessage(driverAuthRefusal(mode, data.error, data.suggestion));
-    } catch {
-      setMessage("Network problem — try again");
-    } finally {
-      setBusy(false);
-    }
+    const result = await submitDriverAuth(mode, { name, pin, pinAgain });
+    setBusy(false);
+    if (result.ok) onSignedIn(result.displayName);
+    else setMessage(result.message);
   }
 
   const tab = (m: Mode, label: string) => (
