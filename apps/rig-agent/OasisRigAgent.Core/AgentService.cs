@@ -362,7 +362,7 @@ public sealed class AgentService : IAsyncDisposable
             {
                 delivered = await SendHeartbeatAsync(shuttingDown: false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
                 return;
             }
@@ -696,7 +696,7 @@ public sealed class AgentService : IAsyncDisposable
             SetConnection(ConnectionState.Online);
             return result;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
         {
             throw;
         }
@@ -732,7 +732,7 @@ public sealed class AgentService : IAsyncDisposable
             await tick(_cts.Token);
             return true;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
         {
             return false;
         }

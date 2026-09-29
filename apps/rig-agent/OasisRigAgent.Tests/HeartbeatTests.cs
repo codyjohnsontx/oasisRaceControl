@@ -291,6 +291,27 @@ public sealed class HeartbeatTests : IDisposable
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(3), clock.Elapsed.ToString());
     }
 
+    /// <summary>An HTTP timeout arrives as a cancellation the agent did not
+    /// ask for: the rig reads as offline, and the heartbeat and the poll both
+    /// carry on once the backend answers again.</summary>
+    [Fact]
+    public async Task ABackendThatTimesOutLeavesTheRigOfflineNotSilent()
+    {
+        var backend = new RecordingBackend { Hang = true, Assignment = AssignmentId };
+        using var queue = new EventQueue(_dbPath);
+        var http = new HttpClient(backend) { Timeout = TimeSpan.FromMilliseconds(200) };
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
+        agent.Start();
+        await Eventually(() => agent.CurrentStatus().Connection == ConnectionState.Offline);
+        Assert.False(await agent.SendHeartbeatAsync(shuttingDown: false));
+
+        backend.Hang = false;
+        Assert.True(await agent.SendHeartbeatAsync(shuttingDown: false));
+        Assert.Equal(ConnectionState.Online, agent.CurrentStatus().Connection);
+        await Eventually(() => agent.CurrentStatus().Assignment is not null, TimeSpan.FromSeconds(15));
+    }
+
     /// <summary>The wire takes ten notices of two hundred characters; the
     /// newest are the ones kept, and a long one is clipped rather than
     /// costing the rig its heartbeat.</summary>
@@ -354,9 +375,9 @@ public sealed class HeartbeatTests : IDisposable
     private static List<string> Strings(JsonNode node, string key)
         => node[key]!.AsArray().Select(n => n!.GetValue<string>()).ToList();
 
-    private static async Task Eventually(Func<bool> condition)
+    private static async Task Eventually(Func<bool> condition, TimeSpan? within = null)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(10);
+        var deadline = DateTime.UtcNow + (within ?? TimeSpan.FromSeconds(10));
         while (!condition())
         {
             if (DateTime.UtcNow > deadline) throw new TimeoutException("never happened");
