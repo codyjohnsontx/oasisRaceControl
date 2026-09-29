@@ -1,7 +1,10 @@
 /**
  * Screenshots `/tv` and proves the QR code in the corner is fully on screen
  * and overlaps nothing: not a board row, not the board's header, not the rest
- * of the footer. Then it waits for the rotation to move and checks and
+ * of the footer. It also decodes the hydrated code and fails unless it opens
+ * the view's target - the Oasis website on the event view, the page's own
+ * `/leaderboards` on the rotation - which no server-side test can see, since
+ * the rotation's code is only drawn once the browser knows its origin. Then it waits for the rotation to move and checks and
  * screenshots the next boards too, so the corner is proven on more than the
  * board that happened to be up.
  *
@@ -25,6 +28,8 @@
  */
 import { chromium, type Page } from "playwright-core";
 import { tvMode } from "../src/lib/tv-rotation";
+import { decodeQrMarkup } from "../src/test/decode-qr-markup";
+import { OASIS_WEBSITE_URL, STANDINGS_PATH } from "../src/components/tv/phone-standings-qr";
 
 type Box = { x: number; y: number; width: number; height: number };
 
@@ -116,6 +121,14 @@ async function main() {
 
     await check(page, "board 1");
     const eventView = tvMode(new URL(url).searchParams.get("event") ?? undefined) === "event";
+    // Where a phone that scans the hydrated code lands: the Oasis website on
+    // the event view, this page's own leaderboard on the rotation.
+    const target = eventView ? OASIS_WEBSITE_URL : `${new URL(page.url()).origin}${STANDINGS_PATH}`;
+    const scanned = decodeQrMarkup(await page.locator("#tv-phone-qr").evaluate((el) => el.outerHTML));
+    if (scanned !== target) {
+      throw new Error(`corner code opens ${scanned ?? "nothing readable"}, expected ${target}`);
+    }
+    console.log(`corner code opens: ${scanned}`);
     const menuShown = await page.getByRole("button", { name: "Open screen menu" }).isVisible();
     if (menuShown === eventView) {
       throw new Error(`Screens button is ${menuShown ? "shown" : "hidden"} on the ${eventView ? "event view" : "rotation"}`);

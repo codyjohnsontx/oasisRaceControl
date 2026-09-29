@@ -133,7 +133,9 @@ then waits for the rotation to move and checks the next board too.
 see what an off-site screen shows, and `--url http://localhost:3000/tv?event=1`
 to check the event view (one board, so it does not wait for a second). It
 also fails if the app's Screens button is shown on the event view, or hidden
-on the rotation.
+on the rotation, and if the corner code does not decode to the view's target:
+the Oasis website on the event view, the page's own `/leaderboards` on the
+rotation.
 
 `npm run tv:scroll-check` does the same kind of thing for the event view's
 hand scrolling: against `/tv?event=1` it swipes the list with a finger, turns
