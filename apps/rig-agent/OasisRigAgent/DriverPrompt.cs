@@ -162,7 +162,9 @@ internal static class DriverPrompt
     /// them goes straight to <see cref="PinRefused"/> without a login - so one
     /// sign-in makes at most <c>LoginsPerName</c> failed logins for a name, and
     /// a stranger cannot run a real name into the backend's lockout (five).
-    /// Names compare without case, as the backend's do. Never registers
+    /// Names are counted under <see cref="DriverCheckInClient.NameKey"/>, so
+    /// no spelling the backend reads as the same driver gets fresh tries -
+    /// not another case, and not a look-alike letter such as İ. Never registers
     /// anything.</item>
     /// <item><see cref="PinRefused"/>: says to ask staff for a PIN reset; Enter
     /// goes back to the name.</item>
@@ -185,8 +187,9 @@ internal static class DriverPrompt
         var state = SignInState.AskRacedBefore;
         var returning = false;
         var name = "";
+        var nameKey = "";
         var pin = "";
-        var misses = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var misses = new Dictionary<string, int>();
 
         while (true)
         {
@@ -227,8 +230,9 @@ internal static class DriverPrompt
                         break;
                     }
                     name = typed;
+                    nameKey = DriverCheckInClient.NameKey(name);
                     state = !returning ? SignInState.AskNewPin
-                        : misses.GetValueOrDefault(name) >= LoginsPerName ? SignInState.PinRefused
+                        : misses.GetValueOrDefault(nameKey) >= LoginsPerName ? SignInState.PinRefused
                         : SignInState.AskPin;
                     break;
 
@@ -295,7 +299,7 @@ internal static class DriverPrompt
                             notice = $"The name \"{name}\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
                             state = SignInState.AskName;
                         }
-                        else if ((misses[name] = misses.GetValueOrDefault(name) + 1) < LoginsPerName)
+                        else if ((misses[nameKey] = misses.GetValueOrDefault(nameKey) + 1) < LoginsPerName)
                         {
                             notice = $"That PIN does not match \"{name}\". Type it again.";
                             state = SignInState.AskPin;

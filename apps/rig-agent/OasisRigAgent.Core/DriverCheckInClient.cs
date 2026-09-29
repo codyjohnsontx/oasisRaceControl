@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json.Nodes;
 
 namespace OasisRigAgent.Core;
@@ -68,6 +69,46 @@ public sealed class DriverCheckInClient
 
     /// <summary>The backend's PIN rule: exactly four digits.</summary>
     public static bool IsPin(string pin) => pin.Length == 4 && pin.All(char.IsAsciiDigit);
+
+    /// <summary>
+    /// The key a typed name is counted under for the rig's own login budget.
+    /// Two names the backend would treat as one driver always get the same
+    /// key, so no spelling of a name buys a fresh set of tries.
+    /// <para>The backend trims a name (JavaScript's trim, which also takes
+    /// U+FEFF) and matches it as <c>citext</c>: equal after the database's
+    /// <c>lower()</c>, which follows its locale and so cannot be copied here.
+    /// So this key is deliberately coarser rather than a copy: each character
+    /// becomes <c>lower(upper(lower(c)))</c>, which depends only on the
+    /// character's lowercase, so anything a locale lowers to the same letter
+    /// shares a key (Kelvin sign and k, ẞ and ß, Σ and ς). .NET's invariant
+    /// casing leaves out the dotted and dotless i, which Postgres lowers
+    /// (İ to i, and I to ı in a Turkish locale), so both are folded to i by
+    /// hand, and the combining dot above that an ICU locale lowers İ to
+    /// (i then U+0307) is dropped. .NET 8's Unicode tables are older than the
+    /// database's, so a letter .NET does not know becomes one placeholder, and
+    /// the two newer capitals whose lowercase it does know (U+A7CB, U+A7DC)
+    /// are folded by hand. A key coarser than the backend's identity can only
+    /// cost a look-alike name its tries on this rig; one finer than it is what
+    /// let Mike, Mİke, MiKe and MİKe run one driver into the lockout.</para>
+    /// </summary>
+    public static string NameKey(string name)
+    {
+        var key = new StringBuilder(name.Length);
+        foreach (var c in name.Replace("\uFEFF", "").Trim().EnumerateRunes())
+        {
+            if (c.Value == 0x307) continue;
+            var folded = c.Value switch
+            {
+                0x130 or 0x131 => new Rune('i'),
+                0xA7CB => new Rune(0x264),
+                0xA7DC => new Rune(0x19B),
+                _ when Rune.GetUnicodeCategory(c) == UnicodeCategory.OtherNotAssigned => Rune.ReplacementChar,
+                _ => Rune.ToLowerInvariant(Rune.ToUpperInvariant(Rune.ToLowerInvariant(c))),
+            };
+            key.Append(folded.ToString());
+        }
+        return key.ToString();
+    }
 
     /// <summary>Log a returning driver in and seat them. Null when the name and
     /// PIN match nobody (401) - the same answer, by design, for a wrong PIN, an

@@ -381,7 +381,10 @@ together. The load-bearing ones: the returning path never registers and makes
 at most two failed logins per name for the whole sign-in - typing the name
 again gets no fresh tries - so a stranger cannot lock the real driver out
 (the backend locks at five) from one sign-in; the new path never logs in, and compares its two
-PINs on the rig. The website says the same in `driver-auth-refusal.ts`.
+PINs on the rig. "Per name" means per `DriverCheckInClient.NameKey`, which is
+deliberately coarser than the database's locale-dependent `citext` match, so
+no alias the backend folds together (`Mİke` for `Mike`) buys fresh tries; do
+not swap it back for a `StringComparer`. The website says the same in `driver-auth-refusal.ts`.
 
 ## Rig heartbeat
 

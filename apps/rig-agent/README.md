@@ -398,8 +398,9 @@ driver's.
 - Returning (y): the PIN is asked once, and a wrong one once more. After the
   second wrong PIN: "That PIN does not match. Ask staff to reset your PIN, or
   press Enter to try a different name." A name that has used its two tries
-  gets the same message immediately if it is typed again, in any case, without
-  asking the backend, until someone signs in. So one sign-in makes at most two
+  gets the same message immediately if it is typed again, in any case or any
+  look-alike spelling the backend reads as the same name (such as `Mİke` for
+  `Mike`), without asking the backend, until someone signs in. So one sign-in makes at most two
   failed logins for a name, and someone typing a name that is not theirs
   cannot lock the real driver out (the backend locks a name at five). This
   path never registers anything. Staff reset a PIN on `/staff`; there is no

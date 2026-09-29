@@ -250,6 +250,9 @@ public sealed class DriverPromptTests : IDisposable
         // after it are answered on the rig and never reach the backend, whose
         // lockout comes at five.
         new object[] { "stranger typing the name again gets no more logins", new[] { "y", "Mike", "1234", "5678", "", "Mike", "1111", "mike", "2222" }, 2, 0, ReturningName, ReturningName },
+        // Nor does a spelling the backend's citext reads as the same driver
+        // (İ and the Kelvin sign K lower to i and k in a UTF-8 locale).
+        new object[] { "stranger typing a look-alike spelling gets no more logins", new[] { "y", "Mike", "1234", "5678", "", "M\u0130ke", "1111", "Mi\u212Ae", "2222", "M\u0130\u212Ae", "3333" }, 2, 0, ReturningName, ReturningName },
         new object[] { "a used-up name leaves another name its own two", new[] { "y", "Mike", "1234", "5678", "", "Guest", "1234", "5678" }, 4, 0, PinRefused, "Name: Guest" },
         new object[] { "guest or banned name, no PIN logs in", new[] { "y", "Guest", "4321", "4321" }, 2, 0, PinRefused, "Name: Guest" },
         new object[] { "not 4 digits, never sent", new[] { "y", "Mike", "12" }, 0, 0, AskPin, "The PIN is exactly 4 digits." },
