@@ -132,7 +132,7 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
             Set a 4-digit PIN and “{displayName}” becomes your permanent driver
             profile — laps included.
           </p>
-          <div className="flex gap-2 mt-3">
+          <div className="flex flex-wrap gap-2 mt-3">
             <input
               value={pin}
               onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
@@ -153,7 +153,7 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
               type="button"
               disabled={pin.length !== 4 || pinAgain.length !== 4 || claimState === "busy"}
               onClick={() => void claim()}
-              className="bg-accent text-bg rounded-lg px-4 py-2 font-bold uppercase tracking-wider text-sm disabled:opacity-40"
+              className="basis-full sm:basis-auto bg-accent text-bg rounded-lg px-4 py-2 font-bold uppercase tracking-wider text-sm disabled:opacity-40"
             >
               Save profile
             </button>
