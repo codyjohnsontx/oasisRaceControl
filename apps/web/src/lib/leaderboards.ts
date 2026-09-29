@@ -34,15 +34,17 @@ export type BoardRow = {
 export type BoardWindow = "alltime" | "tonight";
 
 /**
- * Rows the `/api/leaderboard/tonight` feed returns when no `limit` is asked
- * for - what it has always returned: the wall's tonight board draws ten slots
- * and the phone a little more. The event view of `/tv` asks for `limit=all`
- * instead, because it promises every driver with a lap today and a fixed
- * ceiling would drop the next one silently. Lives here, rather than in the
- * route, because a Next route file may export only its handlers and the
- * route's tests need it too.
+ * Row caps on a numeric `limit` to the `/api/leaderboard/tonight` feed. The
+ * default is what the feed has always returned when no `limit` is asked for:
+ * the wall's tonight board draws ten slots and the phone a little more. The
+ * maximum is the public numeric contract the feed has always had. The event
+ * view of `/tv` asks for neither - it asks for `limit=all`, because it promises
+ * every driver with a lap today and any fixed ceiling would drop the next one
+ * silently. Both live here, rather than in the route, because a Next route
+ * file may export only its handlers and the route's tests need them too.
  */
 export const TONIGHT_FEED_DEFAULT_ROWS = 15;
+export const TONIGHT_FEED_MAX_ROWS = 200;
 
 // ---- Pure helpers (unit-tested; no DB) ------------------------------------
 

@@ -1,25 +1,26 @@
 import { z } from "zod";
 import { query, queryOne } from "@/lib/db";
-import { TONIGHT_FEED_DEFAULT_ROWS } from "@/lib/leaderboards";
+import { TONIGHT_FEED_DEFAULT_ROWS, TONIGHT_FEED_MAX_ROWS } from "@/lib/leaderboards";
 import { venueToday } from "@/lib/venue";
 
 /**
  * `limit` is optional: unset means the cap the feed has always had, a whole
- * positive number means that many rows, and `all` - what the event view of
- * `/tv` asks for - means every row, so no driver of the day can fall off the
- * end of that board unannounced. Anything else is refused rather than guessed
- * at.
+ * number from 1 to `TONIGHT_FEED_MAX_ROWS` means that many rows, and `all` -
+ * what the event view of `/tv` asks for - means every row, so no driver of the
+ * day can fall off the end of that board unannounced. Anything else, a number
+ * past the maximum included, is refused rather than clamped, so a caller asking
+ * for more than a number can give finds out instead of silently getting fewer.
  *
- * There is no ceiling because the view already is one: `v_fastest_tonight`
- * holds one row per driver with a valid lap in today's venue day, so the most
- * this feed can return is today's own leaderboard, which is public anyway -
- * never the laps table. Nor does leaving the `limit` off cost the query much:
- * the view ranks every driver of the day before any limit applies, and what
- * the extra rows add is one indexed incident lookup each.
+ * `all` needs no ceiling of its own because the view already is one:
+ * `v_fastest_tonight` holds one row per driver with a valid lap in today's
+ * venue day, so the most this feed can return is today's own leaderboard,
+ * which is public anyway - never the laps table. Nor does it cost the query
+ * much: the view ranks every driver of the day before any limit applies, and
+ * what the extra rows add is one indexed incident lookup each.
  */
 const querySchema = z.object({
   limit: z
-    .union([z.literal("all"), z.coerce.number().int().min(1)])
+    .union([z.literal("all"), z.coerce.number().int().min(1).max(TONIGHT_FEED_MAX_ROWS)])
     .default(TONIGHT_FEED_DEFAULT_ROWS),
 });
 

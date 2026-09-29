@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TONIGHT_FEED_DEFAULT_ROWS } from "@/lib/leaderboards";
+import { TONIGHT_FEED_DEFAULT_ROWS, TONIGHT_FEED_MAX_ROWS } from "@/lib/leaderboards";
 
 /**
  * The feed's row cap, without a database: the default when nobody asks, a
- * number when one is asked for, no cap at all for the `all` the event view of
- * `/tv` asks for, and a refusal for anything else.
+ * number up to the maximum when one is asked for, no cap at all for the `all`
+ * the event view of `/tv` asks for, and a refusal for anything else.
  * The SQL itself is exercised against a real database by the integration suite
  * (`route.integration.test.ts`, which pins which lap's incident count comes
  * back) and by every wall that has ever polled this route.
@@ -37,10 +37,10 @@ describe("GET /api/leaderboard/tonight", () => {
     expect(limitUsed()).toEqual([TONIGHT_FEED_DEFAULT_ROWS]);
   });
 
-  it("returns as many rows as asked for, with no ceiling", async () => {
-    const res = await get("?limit=5000");
+  it("returns up to the numeric maximum when asked", async () => {
+    const res = await get(`?limit=${TONIGHT_FEED_MAX_ROWS}`);
     expect(res.status).toBe(200);
-    expect(limitUsed()).toEqual([5000]);
+    expect(limitUsed()).toEqual([TONIGHT_FEED_MAX_ROWS]);
   });
 
   it("returns every row for limit=all, which the event view asks for", async () => {
@@ -50,7 +50,19 @@ describe("GET /api/leaderboard/tonight", () => {
     expect(limitUsed()).toEqual([null]);
   });
 
-  it.each(["0", "-5", "2.5", "ALL", "everyone", "", "9007199254740992", "99999999999999999999", "1e21"])(
+  it.each([
+    `${TONIGHT_FEED_MAX_ROWS + 1}`,
+    "5000",
+    "0",
+    "-5",
+    "2.5",
+    "ALL",
+    "everyone",
+    "",
+    "9007199254740992",
+    "99999999999999999999",
+    "1e21",
+  ])(
     "refuses limit=%s instead of clamping it",
     async (limit) => {
       const res = await get(`?limit=${limit}`);
