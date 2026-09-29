@@ -1,0 +1,27 @@
+{
+  "id": "msg_fixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_fixture",
+      "name": "report_diagnosis",
+      "input": {
+        "summary": "Rig 02 keeps sending heartbeats but its queued laps are not being stored; the site answers the lap posts with a server error.",
+        "likelyCause": "The lap ingestion route is failing on this rig's batch while heartbeats still succeed, so the outbox cannot drain.",
+        "causeClass": "software",
+        "suggestedChange": "Reproduce with fake-rig against a local build using the same session strings, find the 500 in the events route and fix the failing insert.",
+        "whereToLook": [
+          "apps/web/src/app/api/agent/events/route.ts",
+          "apps/rig-agent/OasisRigAgent.Core/BackendClient.cs"
+        ],
+        "confidence": "medium"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 1402, "output_tokens": 188 }
+}
