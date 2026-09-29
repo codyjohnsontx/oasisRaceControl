@@ -397,12 +397,13 @@ driver's.
   were told to use a different name.
 - Returning (y): the PIN is asked once, and a wrong one once more. After the
   second wrong PIN: "That PIN does not match. Ask staff to reset your PIN, or
-  press Enter to try a different name." A name that has had its two goes
-  says the same at once if it is typed again, in any case, without asking the
-  backend - until someone signs in. So one sign-in makes at most two failed
-  logins for a name, and someone typing a name that is not theirs cannot lock
-  the real driver out (the backend locks a name at five). This path never registers anything. Staff
-  reset a PIN on `/staff`; there is no PIN reset on the rig.
+  press Enter to try a different name." A name that has used its two tries
+  gets the same message immediately if it is typed again, in any case, without
+  asking the backend, until someone signs in. So one sign-in makes at most two
+  failed logins for a name, and someone typing a name that is not theirs
+  cannot lock the real driver out (the backend locks a name at five). This
+  path never registers anything. Staff reset a PIN on `/staff`; there is no
+  PIN reset on the rig.
 - New (n): the PIN is typed twice, and two that differ are both asked for
   again on the rig, without a backend call. A PIN mistyped once at sign-up is
   one its owner can never sign back in with. A name that is already taken
