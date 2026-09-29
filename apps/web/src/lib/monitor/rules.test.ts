@@ -213,9 +213,14 @@ describe("rule 1: rig silent", () => {
       expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
     });
 
-    it("warns about each rig still quiet once the window after the first one back has passed", () => {
-      const findings = evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
-      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning", "rig_silent rig:rig-3 warning"]);
+    it("lets the note clear once the window after the first one back has passed, warning about no rig still dark", () => {
+      expect(evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open)).toEqual([]);
+    });
+
+    it("judges a rig that went quiet after the venue came back as before", () => {
+      const cameBackThenDied = rig(2, { heartbeats: [...minutely(30 * MIN, 25 * MIN), ...minutely(20 * MIN, 8 * MIN)] });
+      const findings = evaluate([back(1, 25 * MIN, 20 * MIN), cameBackThenDied, quiet(3, 25 * MIN)]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning"]);
     });
 
     it("still alerts at once for a seated rig that has not come back", () => {
@@ -227,6 +232,59 @@ describe("rule 1: rig silent", () => {
         "rig_silent rig:rig-2 urgent",
         `venue_silent ${VENUE_SUBJECT} warning`,
       ]);
+    });
+  });
+
+  describe("the morning after a close with no goodbyes", () => {
+    const open = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
+    const HOUR = 60 * MIN;
+    /**
+     * Twenty empty rigs went quiet together at 23:00 and are booted one a
+     * minute from 10:00, one hour `into` the opening past 10:00. A booted rig
+     * holds the fifteen minutes of history the snapshot carries.
+     */
+    const opening = (into: number) => {
+      const closedAgo = 11 * HOUR + into;
+      return Array.from({ length: 20 }, (_, i) => {
+        const bootedAgo = into - i * 4 * MIN;
+        return bootedAgo >= 0
+          ? rig(i + 1, { heartbeats: minutely(Math.min(bootedAgo, 14 * MIN)) })
+          : quiet(i + 1, closedAgo);
+      });
+    };
+    const perRig = (findings: Finding[]) => findings.filter((f) => f.rule === "rig_silent");
+
+    it("warns about no rig still switched off while they are booted one by one", () => {
+      for (let into = 0; into <= 75 * MIN; into += MIN) {
+        const findings = evaluate(opening(into), into < 7 * MIN ? open : []);
+        expect(perRig(findings), `${into / MIN} min into the opening`).toEqual([]);
+      }
+    });
+
+    it("resolves the note once rigs are live and the grace has passed", () => {
+      expect(rulesOf(evaluate(opening(3 * MIN), open))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+      expect(evaluate(opening(8 * MIN), open)).toEqual([]);
+    });
+
+    it("warns about none when the note never opened overnight because evaluations stopped", () => {
+      for (const into of [0, 10 * MIN, 45 * MIN]) {
+        expect(evaluate(opening(into)), `${into / MIN} min into the opening`).toEqual([]);
+      }
+    });
+
+    it("warns about none still dark past the twelve-hour lookback", () => {
+      const lateOpening = [rig(1), ...Array.from({ length: 19 }, (_, i) => quiet(i + 2, 13 * HOUR))];
+      expect(evaluate(lateOpening)).toEqual([]);
+    });
+
+    it("keeps a seated rig's urgent alert while it is still dark", () => {
+      const findings = evaluate([rig(1), quiet(2, 11 * HOUR, { seated: SEATED }), quiet(3, 11 * HOUR)]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 urgent"]);
+    });
+
+    it("alerts normally for a rig that came back and then went quiet", () => {
+      const findings = evaluate([rig(1), quiet(2, 8 * MIN), quiet(3, 11 * HOUR)]);
+      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning"]);
     });
   });
 

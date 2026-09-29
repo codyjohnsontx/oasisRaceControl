@@ -58,7 +58,7 @@ export const SILENT_LOOKBACK_MS = 12 * 60 * 60_000;
 export const CORRELATION_WINDOW_MS = 5 * 60_000;
 /**
  * How long the venue note holds once the first rig is heard again, so rigs
- * still coming back from the same outage are not warned about one by one.
+ * still coming back from the same outage are counted back before it clears.
  * An offline agent backs its heartbeat off to HeartbeatSchedule.MaxInterval
  * (300 s) with Jitter (10%) in apps/rig-agent/OasisRigAgent.Core/Heartbeat.cs,
  * so the last rig back can land 330 s after the first; the rest is slack for
@@ -167,6 +167,11 @@ function silence(
       (quietFor(r) <= SILENT_LOOKBACK_MS || isOpen("rig_silent", rigSubject(r.rig.id))),
   );
 
+  // The venue was first heard again when the earliest live rig's run began.
+  // A rig that has not been heard since before then went dark with the venue
+  // - closed for the night, or cut off - and is not warned about on its own.
+  const firstHeardAgain = Math.min(...live.map(({ rig }) => heardSince(rig)));
+  const dark: Rig[] = [];
   const unexplained: Rig[] = [];
   for (const r of silent) {
     const subject = rigSubject(r.rig.id);
@@ -174,6 +179,8 @@ function silence(
       findings.push(rigSilent(now, r, "urgent"));
     } else if (isOpen("rig_silent", subject)) {
       findings.push(rigSilent(now, r, "warning"));
+    } else if (anyLive && r.rig.lastSeenAt! < firstHeardAgain) {
+      dark.push(r);
     } else {
       unexplained.push(r);
     }
@@ -184,10 +191,9 @@ function silence(
     unexplained.length >= 2 &&
     Math.max(...lastSeen) - Math.min(...lastSeen) <= CORRELATION_WINDOW_MS;
   const venueOpen = isOpen("venue_silent", VENUE_SUBJECT);
-  const firstHeardAgain = Math.min(...live.map(({ rig }) => heardSince(rig)));
   const venueRecovering = anyLive && venueOpen && now - firstHeardAgain < VENUE_RECOVERY_GRACE_MS;
   if ((!anyLive && (together || venueOpen)) || venueRecovering) {
-    const names = unexplained.map(({ rig }) => rig.name);
+    const names = [...dark, ...unexplained].map(({ rig }) => rig.name);
     findings.push({
       rule: "venue_silent",
       subject: VENUE_SUBJECT,
