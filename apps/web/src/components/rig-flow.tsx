@@ -24,7 +24,7 @@ import { formatLapTime } from "@/lib/time";
 
 const W = 960;
 const HEADER = 22;
-const LANE_H = 46;
+const LANE_H = 50;
 const RIG_R = 8;
 const SHARED_R = 14;
 const X = {
@@ -49,6 +49,12 @@ const COLUMNS: Array<[keyof typeof X, string]> = [
 const LANE_REASON_CHARS = 74;
 const SHARED_REASON_CHARS = 62;
 const LINE_H = 13;
+/**
+ * A dot's label baseline, above the dot: high enough that its glyphs clear a
+ * rig node's ring when the dot passes one, and low enough to stay below the
+ * reason line of the lane above.
+ */
+const LABEL_Y = -13;
 
 const WINDOW_S = TRAFFIC_WINDOW_MS / 1000;
 
@@ -71,7 +77,7 @@ const STYLE = `
 .flow-reason[data-state="yellow"] { fill: var(--gold); }
 .flow-dot, .flow-held { offset-rotate: 0deg; color: var(--accent); }
 .flow-dot circle, .flow-held circle { fill: currentColor; filter: drop-shadow(0 0 3px currentColor); }
-.flow-dot text, .flow-held text { fill: currentColor; font-size: 10px; text-anchor: middle; font-family: var(--font-geist-mono), monospace; }
+.flow-dot text, .flow-held text { fill: currentColor; font-size: 10px; text-anchor: middle; font-family: var(--font-geist-mono), monospace; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; paint-order: stroke; }
 .flow-dot[data-goodbye] circle { fill: none; stroke: currentColor; stroke-width: 1.5; }
 [data-status="accepted"] { color: var(--valid); }
 [data-status="invalid"] { color: var(--sunset); }
@@ -217,17 +223,19 @@ function Dot({ traveller: t, y, sharedY }: { traveller: Traveller; y: number; sh
       </g>
     );
   }
-  // Only a lap still clear of its rig's neighbours is labelled: where the
-  // lanes converge on the server, and on the shared line past it, every
-  // rig's lap times would print over each other.
-  const curve = curveLength(y, sharedY);
+  // Only a lap on its rig's own straight lane is labelled: on the curves
+  // into the server, and on the shared line past it, every rig's lap times
+  // would print over each other and over the converging edges.
   const length =
-    X.network - X.iracing + curve + (X.database - X.server) + (t.status === "accepted" ? X.feed - X.database : 0);
-  const labelled = at * length < X.network - X.iracing + curve / 2;
+    X.network - X.iracing +
+    curveLength(y, sharedY) +
+    (X.database - X.server) +
+    (t.status === "accepted" ? X.feed - X.database : 0);
+  const labelled = at * length <= X.network - X.iracing;
   return (
     <g className="flow-dot" data-kind="lap" data-status={t.status} style={style}>
       <circle r={4.5} />
-      {labelled && <text y={-8}>{formatLapTime(t.lapTimeMs)}</text>}
+      {labelled && <text y={LABEL_Y}>{formatLapTime(t.lapTimeMs)}</text>}
     </g>
   );
 }
@@ -238,7 +246,7 @@ function Held({ held, y, sharedY }: { held: HeldLaps; y: number; sharedY: number
   return (
     <g className="flow-held" data-status={held.status} transform={`translate(${cx} ${cy})`}>
       <circle r={4.5} />
-      <text y={-8}>
+      <text y={LABEL_Y}>
         {held.count} {held.status}
       </text>
     </g>

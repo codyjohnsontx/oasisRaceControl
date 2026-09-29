@@ -194,16 +194,18 @@ export function StaffRigHealth({
       )}
 
       {flow.lanes.length > 0 && (
-        <section>
-          <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">Data flow</h2>
-          <div className="bg-surface border border-edge rounded-xl p-3 overflow-x-auto">
+        // One card, title and legend inside its padding: this panel is the
+        // picture people share, so nothing in it sits flush with its edge.
+        <section className="bg-surface border border-edge rounded-xl p-4 flex flex-col gap-3">
+          <h2 className="text-muted font-bold uppercase tracking-wider text-sm">Data flow</h2>
+          <div className="overflow-x-auto">
             <RigFlow model={flow} />
           </div>
-          <ul className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-muted text-xs">
+          <ul className="flex flex-wrap gap-x-4 gap-y-1 text-muted text-xs">
             {LEGEND.map(([colour, label, small]) => (
               <li key={label} className="flex items-center gap-1.5">
                 <span
-                  className={`inline-block rounded-full ${small ? "size-1.5" : "size-2.5"}`}
+                  className={`inline-block shrink-0 rounded-full ${small ? "size-1.5" : "size-2.5"}`}
                   style={{ background: `var(--${colour})` }}
                 />
                 {label}

@@ -53,6 +53,7 @@ describe("RigFlow", () => {
             { kind: "heartbeat", id: "h1", ageMs: 30_000, goodbye: false },
             { kind: "lap", id: "l1", ageMs: 60_000, lapTimeMs: 137_217, status: "accepted" },
             { kind: "lap", id: "l2", ageMs: 540_000, lapTimeMs: 140_001, status: "invalid" },
+            { kind: "lap", id: "l3", ageMs: 240_000, lapTimeMs: 138_000, status: "accepted" },
           ],
         }),
         lane({
@@ -92,14 +93,17 @@ describe("RigFlow", () => {
   });
 
   it("labels a lap with its status and its time while it is on its rig's lane", () => {
-    expect(html).toMatch(/data-kind="lap" data-status="accepted"[^>]*><circle r="4.5"><\/circle><text y="-8">2:17.217</);
-    // Nine minutes on, it has joined the shared line, where times would overprint.
+    expect(html).toMatch(/data-kind="lap" data-status="accepted"[^>]*><circle r="4.5"><\/circle><text y="-13">2:17.217</);
+    // Past its network node - four minutes on, curving into the server, or
+    // nine, on the shared line - its time would print over other rigs' laps
+    // and the converging edges, so it is not labelled.
     expect(html).toMatch(/data-status="invalid"[^>]*><circle r="4.5"><\/circle><\/g>/);
     expect(html).not.toContain("2:20.001");
+    expect(html).not.toContain("2:18.000");
   });
 
   it("shows laps held on the rig", () => {
-    expect(html).toMatch(/class="flow-held" data-status="queued"[^>]*><circle r="4.5"><\/circle><text y="-8">3 queued</);
+    expect(html).toMatch(/class="flow-held" data-status="queued"[^>]*><circle r="4.5"><\/circle><text y="-13">3 queued</);
   });
 
   it("writes a shared break's reason under the shared nodes", () => {
