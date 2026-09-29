@@ -2,7 +2,7 @@ import { clip, DISCORD_LIMITS, type DiscordMessage } from "./discord";
 import type { IncidentContext } from "./diagnosis/context";
 import type { Diagnosis, DiagnosisResult } from "./diagnosis";
 import type { ProviderName } from "./diagnosis/provider";
-import { RULES } from "./rules";
+import { duration, RULES } from "./rules";
 import { VENUE_TIMEZONE } from "@/lib/venue";
 
 /**
@@ -82,6 +82,49 @@ export function diagnosisMessage(
     ],
     allowed_mentions: { parse: [] },
   };
+}
+
+/** GitHub's own limit on an issue title. */
+const ISSUE_TITLE_MAX = 256;
+
+/**
+ * The rig-alert issue (plan section 11): the handoff, and the redacted
+ * heartbeat rows it was written from, for the coding harness to read. Built
+ * from the same redacted context as the handoff, since the repository is
+ * public.
+ */
+export function rigAlertIssue(context: IncidentContext, handoff: string): { title: string; body: string } {
+  return {
+    title: clip(`[rig-alert] ${context.rule.title} - ${context.where}`, ISSUE_TITLE_MAX),
+    body: `Filed by the rig monitor for alert #${context.alertId} (docs/monitoring.md). Close this issue when the fix has merged; a recovery only comments.\n\n${incidentSection(context, handoff)}`,
+  };
+}
+
+/** A later alert on the same rule and rig, commented on the open issue instead of filing another. */
+export function refireComment(context: IncidentContext, handoff: string): string {
+  return `Fired again as alert #${context.alertId}.\n\n${incidentSection(context, handoff)}`;
+}
+
+export function recoveryComment(alert: { id: string; openedAt: number; resolvedAt: number | null }): string {
+  const after = alert.resolvedAt === null ? "" : ` after ${duration(alert.resolvedAt - alert.openedAt)}`;
+  return `Alert #${alert.id} recovered${after}. The issue stays open for the fix; close it when that has merged.`;
+}
+
+function incidentSection(context: IncidentContext, handoff: string): string {
+  const rows = JSON.stringify(context.heartbeats, null, 2).replaceAll("```", "'''");
+  return [
+    "```text",
+    handoff,
+    "```",
+    "",
+    "<details><summary>Latest heartbeats (redacted, oldest first)</summary>",
+    "",
+    "```json",
+    rows,
+    "```",
+    "",
+    "</details>",
+  ].join("\n");
 }
 
 function heartbeatSummary(context: IncidentContext): string {

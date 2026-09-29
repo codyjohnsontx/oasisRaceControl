@@ -3,9 +3,17 @@ import { diagnose, diagnosisConfig, diagnosisSchema, type DiagnosisConfig } from
 import { incidentContext } from "./diagnosis/context";
 import type { ProviderName } from "./diagnosis/provider";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
-import { diagnosisMessage, handoffMessage, handoffText } from "./handoff";
+import { commentOnIssue, githubConfigured, openIssue, type GitHubResult } from "./github";
+import {
+  diagnosisMessage,
+  handoffMessage,
+  handoffText,
+  recoveryComment,
+  refireComment,
+  rigAlertIssue,
+} from "./handoff";
 import { alertMessage, recoveryMessage, type AlertForMessage } from "./messages";
-import { evaluateRules } from "./rules";
+import { evaluateRules, RULES } from "./rules";
 import {
   alertsById,
   applyFindings,
@@ -13,6 +21,8 @@ import {
   claimDiagnoses,
   claimDiagnosisPostRetries,
   claimEvaluation,
+  claimIssueRecoveries,
+  claimIssues,
   claimRecoveryRetries,
   loadSnapshot,
   markAnnounced,
@@ -20,13 +30,20 @@ import {
   markRecoveryAnnounced,
   pruneHeartbeats,
   recentHeartbeats,
+  recordIssue,
   saveDiagnosis,
   type AlertToDiagnose,
+  type AlertToFile,
   type DiagnosisState,
 } from "./store";
 
 /** Calls per alert: the first, and one retry (plan section 10). */
 export const DIAGNOSIS_ATTEMPTS = 2;
+
+/** Rules where software is a plausible cause: their urgent alerts always get an issue. */
+const SOFTWARE_RULES = Object.entries(RULES)
+  .filter(([, rule]) => rule.software)
+  .map(([key]) => key);
 
 /**
  * One monitor evaluation, end to end: claim it, read the snapshot, run the
@@ -76,6 +93,18 @@ export async function runMonitor(): Promise<MonitorRun> {
     }
   }
 
+  // The rig-alert issue comes last: it carries the handoff written above, and
+  // a slow GitHub delays no Discord post. Without a token nothing is claimed
+  // and the Discord handoff is the whole story.
+  if (githubConfigured()) {
+    for (const alert of await claimIssues(SOFTWARE_RULES)) await fileIssue(alert);
+    for (const alert of await claimIssueRecoveries()) {
+      const sent = await commentOnIssue(alert.issue, recoveryComment(alert));
+      if (sent.status === "sent") await markDiagnosisPosted(alert.id, "issueRecoveryCommentedAt");
+      else logFailedIssue(alert.id, sent);
+    }
+  }
+
   const pruned = await pruneHeartbeats();
   if (pruned !== null) console.log(`[monitor] pruned ${pruned} heartbeat(s) past retention`);
 
@@ -112,11 +141,7 @@ async function deliver(
  * wants something to paste. Returns whether a diagnosis was made.
  */
 async function diagnoseAlert(alert: AlertToDiagnose, config: DiagnosisConfig): Promise<boolean> {
-  const context = incidentContext(
-    alert,
-    await recentHeartbeats(alert.subject),
-    process.env.VERCEL_GIT_COMMIT_SHA?.trim() || null,
-  );
+  const context = await contextOf(alert);
   const base = { provider: config.provider, model: config.model };
   // Past the attempts only when a claimed call never reported back.
   const result =
@@ -156,6 +181,44 @@ async function postDiagnosis(alert: AlertForMessage, state: DiagnosisState, hand
     if (sent.status !== "sent") return logFailedPost(alert.id, sent);
     await markDiagnosisPosted(alert.id, "handoffPostedAt");
   }
+}
+
+/**
+ * Opens the alert's rig-alert issue, or - when an earlier alert on the same
+ * rule and rig opened one within a day - comments on that one instead, so a
+ * flapping rig makes one issue. A failure is retried by a later evaluation.
+ */
+async function fileIssue(alert: AlertToFile): Promise<void> {
+  const context = await contextOf(alert);
+  if (alert.refireOf !== null) {
+    const sent = await commentOnIssue(alert.refireOf, refireComment(context, alert.handoff));
+    if (sent.status !== "sent") return logFailedIssue(alert.id, sent);
+    return recordIssue(alert.id, alert.refireOf);
+  }
+  const opened = await openIssue(rigAlertIssue(context, alert.handoff));
+  if (opened.status !== "sent") return logFailedIssue(alert.id, opened);
+  if (!opened.labelled) {
+    console.error(
+      `[monitor] issue #${opened.number} for alert #${alert.id} was filed without the rig-alert label; ` +
+        "create the label (docs/monitoring.md) or nothing picks the issue up",
+    );
+  }
+  await recordIssue(alert.id, opened.number);
+}
+
+function logFailedIssue(id: string, result: GitHubResult): void {
+  if (result.status === "failed") {
+    console.error(`[monitor] GitHub refused or missed the issue update for alert #${id}: ${result.reason}`);
+  }
+}
+
+/** The redacted incident a diagnosis, handoff and issue are written from. */
+async function contextOf(alert: AlertForMessage & { subject: string }) {
+  return incidentContext(
+    alert,
+    await recentHeartbeats(alert.subject),
+    process.env.VERCEL_GIT_COMMIT_SHA?.trim() || null,
+  );
 }
 
 function logFailedPost(id: string, result: Awaited<ReturnType<typeof postDiscord>>): void {

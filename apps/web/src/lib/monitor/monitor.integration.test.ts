@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
+import commentCreated from "./fixtures/github-comment-created.json";
+import issueCreated from "./fixtures/github-issue-created.json";
 import { runMonitor } from "./run";
 import { applyFindings, type OpenAlert } from "./store";
 import type { Finding } from "./rules";
@@ -375,6 +377,7 @@ describeDb("rig monitor against real Postgres", () => {
       const driver = await seedDriver("Matt G");
       await openAssignment(rig.id, driver.id);
       for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) await heartbeat(rig, ago);
+      return rig;
     }
 
     it("posts the alert alone when the model times out, retries once, then posts diagnosis and handoff", async () => {
@@ -469,6 +472,139 @@ describeDb("rig monitor against real Postgres", () => {
       expect(posts).toHaveLength(3);
       expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #/);
       expect(prompts).toHaveLength(1);
+    });
+
+    describe("the rig-alert GitHub issue", () => {
+      const GITHUB = "https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues";
+      let calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+      let githubAnswers: number[] = [];
+
+      beforeEach(() => {
+        calls = [];
+        githubAnswers = [];
+        vi.stubEnv("GITHUB_RIG_ALERT_TOKEN", "github_pat_test");
+        const others = globalThis.fetch;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string, init: RequestInit) => {
+            if (!url.startsWith(GITHUB)) return others(url, init);
+            const status = githubAnswers.shift() ?? 201;
+            if (status !== 201) return Response.json({ message: "Server Error" }, { status });
+            calls.push({ url, body: JSON.parse(init.body as string) as Record<string, unknown> });
+            return Response.json(url.endsWith("/comments") ? commentCreated : issueCreated, { status });
+          }),
+        );
+      });
+
+      async function issueNumbers() {
+        const { rows } = await testDb().query<{ n: number | null }>(
+          "select github_issue_number as n from monitor_alerts order by id",
+        );
+        return rows.map((r) => r.n);
+      }
+
+      /** The rig heartbeats again, and two evaluations resolve its alert. */
+      async function recover(rig: SeededRig) {
+        await heartbeat(rig, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+      }
+
+      /** And goes silent again: its latest heartbeat is the 3-minute-old one once more. */
+      async function silentAgain(rig: SeededRig) {
+        await testDb().query("delete from rig_heartbeats where received_at > now() - interval '60 seconds'");
+        await testDb().query("update rigs set last_seen_at = now() - interval '180 seconds' where id = $1", [rig.id]);
+      }
+
+      it("opens one issue when the diagnosis says software, comments a re-fire and a recovery, and never closes it", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+
+        await nextEvaluation();
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.url).toBe(GITHUB);
+        expect(calls[0]!.body).toMatchObject({
+          title: "[rig-alert] Rig silent - Rig 02",
+          labels: ["rig-alert"],
+        });
+        const body = calls[0]!.body.body as string;
+        expect(body).toMatch(/```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 02\)\n/);
+        expect(body).toContain("<details><summary>Latest heartbeats (redacted, oldest first)</summary>");
+        expect(body).not.toContain("Matt G");
+        expect(body).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
+        expect(await issueNumbers()).toEqual([42]);
+
+        // Nothing more while it stays open.
+        await nextEvaluation();
+        expect(calls).toHaveLength(1);
+
+        await recover(rig);
+        expect(calls).toHaveLength(2);
+        expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
+        expect(calls[1]!.body.body).toMatch(/^Alert #\d+ recovered after \d+ s\. The issue stays open/);
+
+        // The same rule on the same rig within a day: a comment, not a second issue.
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(calls).toHaveLength(3);
+        expect(calls[2]!.url).toBe(`${GITHUB}/42/comments`);
+        expect(calls[2]!.body.body).toMatch(/^Fired again as alert #\d+\.\n\n```text\nOasis rig alert #/);
+        expect(await issueNumbers()).toEqual([42, 42]);
+
+        // Every call filed or commented; none closed anything.
+        expect(calls.every((c) => !("state" in c.body))).toBe(true);
+      });
+
+      it("retries an issue GitHub refused on a later evaluation, once", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = [500];
+
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([null]);
+        await nextEvaluation();
+        expect(calls).toHaveLength(0);
+
+        await testDb().query(
+          "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now() - interval '90 seconds')",
+        );
+        await nextEvaluation();
+        await nextEvaluation();
+        expect(calls).toHaveLength(1);
+        expect(await issueNumbers()).toEqual([42]);
+      });
+
+      it("opens no issue when neither the rule nor the diagnosis says software", async () => {
+        await seatedSilentRig();
+        const text = geminiAnswer.candidates[0]!.content.parts[0]!.text.replace('"software"', '"operational"');
+        const operational = structuredClone(geminiAnswer);
+        operational.candidates[0]!.content.parts[0]!.text = text;
+        const gemini = globalThis.fetch;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string, init: RequestInit) =>
+            url.startsWith("https://generativelanguage.googleapis.com/") ? Response.json(operational) : gemini(url, init),
+          ),
+        );
+
+        await nextEvaluation();
+        expect(posts).toHaveLength(3);
+        expect(calls).toHaveLength(0);
+        expect(await issueNumbers()).toEqual([null]);
+      });
+
+      it("files nothing without a token, and Discord still gets the alert, diagnosis and handoff", async () => {
+        vi.stubEnv("GITHUB_RIG_ALERT_TOKEN", "");
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+
+        await nextEvaluation();
+        await nextEvaluation();
+        expect(calls).toHaveLength(0);
+        expect(posts).toHaveLength(3);
+        expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #/);
+        expect(await issueNumbers()).toEqual([null]);
+      });
     });
 
     it("makes no call without a key, and posts the alert as before", async () => {

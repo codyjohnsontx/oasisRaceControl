@@ -22,18 +22,25 @@ import { holdingSince, rigState, type Heartbeat } from "./rig-state";
 
 export type Severity = "urgent" | "warning";
 
+/**
+ * `software`: a code defect is a plausible cause (the plan's "handoff" column,
+ * decision D8), so an urgent alert on this rule opens a rig-alert GitHub issue
+ * for the coding harness (github.ts). A rule without it opens one only when the
+ * AI diagnosis classifies the cause as software - an unplugged rig must not
+ * start a fix worker.
+ */
 export const RULES = {
-  rig_silent: { number: "1", title: "Rig silent" },
-  venue_silent: { number: "1", title: "Every rig went quiet" },
-  sim_disconnected: { number: "2", title: "iRacing not connected while a driver is signed in" },
-  laps_stuck: { number: "3a", title: "Laps queued but not reaching the site" },
-  laps_refused: { number: "3b", title: "Laps refused by the site" },
-  agent_restarting: { number: "10", title: "Rig agent restarting repeatedly" },
-  clock_skew: { number: "12", title: "Rig clock is off" },
-  telemetry_faulted: { number: "15", title: "Lap reading stopped" },
-  checkout_not_saved: { number: "16", title: "Sign-out not saved" },
-  missing_variables: { number: "17", title: "iRacing build missing variables" },
-  footprint_high: { number: "18", title: "Rig agent footprint high" },
+  rig_silent: { number: "1", title: "Rig silent", software: false },
+  venue_silent: { number: "1", title: "Every rig went quiet", software: false },
+  sim_disconnected: { number: "2", title: "iRacing not connected while a driver is signed in", software: false },
+  laps_stuck: { number: "3a", title: "Laps queued but not reaching the site", software: true },
+  laps_refused: { number: "3b", title: "Laps refused by the site", software: true },
+  agent_restarting: { number: "10", title: "Rig agent restarting repeatedly", software: true },
+  clock_skew: { number: "12", title: "Rig clock is off", software: false },
+  telemetry_faulted: { number: "15", title: "Lap reading stopped", software: true },
+  checkout_not_saved: { number: "16", title: "Sign-out not saved", software: true },
+  missing_variables: { number: "17", title: "iRacing build missing variables", software: true },
+  footprint_high: { number: "18", title: "Rig agent footprint high", software: true },
 } as const;
 
 export type RuleKey = keyof typeof RULES;

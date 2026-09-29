@@ -122,6 +122,35 @@ above it still names the driver, as it always has: that is the staff channel.
 Production only, like the webhook. Google may use free-tier prompts to
 improve its products, which is why the redaction above is not optional.
 
+## The rig-alert GitHub issue
+
+When software may be to blame, the handoff also becomes a GitHub issue on
+this repository, labelled `rig-alert`, for the coding harness to pick up and
+turn into a pull request; the owner still approves every merge. The Discord
+handoff stays either way, as the fallback when the harness is offline.
+
+- **Which alerts:** an urgent alert whose rule names software as a plausible
+  cause (3a, 3b, 10, 15; `software` in `rules.ts`), or any urgent alert the
+  diagnosis classes as `software`. An unplugged rig or a closed iRacing files
+  nothing.
+- **The issue:** titled `[rig-alert] <rule> - <rig>`, its body is the handoff
+  plus the redacted heartbeat rows it was written from, in a `<details>` block.
+  The number is stored in `monitor_alerts.github_issue_number`.
+- **A re-fire** of the same rule on the same rig within 24 hours comments on
+  that issue instead of opening another.
+- **A recovery** comments on the issue and leaves it open: closing it would
+  cancel a fix in progress. Close it yourself when the fix has merged.
+- A call GitHub refuses is retried like a Discord post.
+
+| Variable | What it is |
+|---|---|
+| `GITHUB_RIG_ALERT_TOKEN` | a fine-grained personal access token: github.com > Settings > Developer settings > Personal access tokens > Fine-grained tokens > Generate new token. Resource owner: you. Repository access: Only select repositories > `oasisRaceControl`. Permissions: Repository > Issues > Read and write, nothing else. Expiration: 1 year, with the renewal date in your calendar. Without it no issue is filed and the Discord handoff is the whole story |
+
+Production only, like the webhook. Create the label once, before the first
+issue: `gh label create rig-alert --color B60205 --description "Opened by the
+rig monitor; a fix worker picks it up"`. The monitor logs an error if GitHub
+files an issue without it.
+
 ## The outside clock
 
 `GET /api/monitor/tick` evaluates and answers

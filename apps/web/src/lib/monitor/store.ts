@@ -366,6 +366,10 @@ export async function countOpenAlerts(): Promise<number> {
  * `attempts` counts calls; `diagnosisPostedAt` and `handoffPostedAt` record
  * the two messages separately, so a post that fails half way is finished
  * later without the half that got through being posted twice.
+ *
+ * The rig-alert issue is filed from the handoff, so its claims live here too:
+ * `issueAttemptedAt` claims filing it (the number itself is
+ * github_issue_number), and `issueRecovery*` the recovery comment.
  */
 export type DiagnosisState = {
   status: "pending" | "retry" | "done";
@@ -376,6 +380,9 @@ export type DiagnosisState = {
   result?: unknown;
   diagnosisPostedAt?: string;
   handoffPostedAt?: string;
+  issueAttemptedAt?: string;
+  issueRecoveryAttemptedAt?: string;
+  issueRecoveryCommentedAt?: string;
 };
 
 /** A call that never reported back (its function died) is retried after this. */
@@ -445,7 +452,7 @@ export async function saveDiagnosis(id: string, state: DiagnosisState, handoff: 
 
 export async function markDiagnosisPosted(
   id: string,
-  which: "diagnosisPostedAt" | "handoffPostedAt",
+  which: "diagnosisPostedAt" | "handoffPostedAt" | "issueRecoveryCommentedAt",
 ): Promise<void> {
   await query(
     "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object($2::text, now()) where id = $1",
@@ -468,4 +475,71 @@ export async function claimDiagnosisPostRetries(): Promise<DiagnosisToPost[]> {
     [RETRY_AFTER, RETRY_FOR],
   );
   return rows.map((row) => ({ id: row.id, diagnosis: row.diagnosis, handoff: row.handoff, alert: toAlert(row) }));
+}
+
+/** A re-fire of the same rule and subject this soon comments on the earlier alert's issue. */
+const REFIRE_WINDOW = "24 hours";
+
+export type AlertToFile = AlertForMessage & {
+  subject: string;
+  handoff: string;
+  /** The issue an earlier alert on this rule and subject opened within REFIRE_WINDOW. */
+  refireOf: number | null;
+};
+
+/**
+ * Claims the urgent alerts whose handoff should become a rig-alert issue: a
+ * rule where software is a plausible cause, or a diagnosis that says it is
+ * (decision D8). Claimed as the Discord retries are, so two evaluations
+ * cannot both file one, and a failure is retried after RETRY_AFTER for
+ * RETRY_FOR.
+ */
+export async function claimIssues(softwareRules: readonly string[]): Promise<AlertToFile[]> {
+  const rows = await query<AlertRow & { subject: string; handoff: string; refire_of: number | null }>(
+    `update monitor_alerts a
+     set diagnosis = a.diagnosis || jsonb_build_object('issueAttemptedAt', now())
+     where a.id in (
+       select id from monitor_alerts
+       where severity = 'urgent' and diagnosis->>'status' = 'done' and handoff is not null
+         and github_issue_number is null
+         and (rule = any($1::text[]) or diagnosis->'result'->>'causeClass' = 'software')
+         and coalesce((diagnosis->>'issueAttemptedAt')::timestamptz, '-infinity') < now() - $2::interval
+         and opened_at > now() - $3::interval
+       order by id
+       for update skip locked)
+     returning ${ALERT_COLUMNS}, subject, handoff,
+       (select p.github_issue_number from monitor_alerts p
+        where p.rule = a.rule and p.subject = a.subject and p.id < a.id
+          and p.github_issue_number is not null and p.opened_at > a.opened_at - $4::interval
+        order by p.id desc limit 1) as refire_of`,
+    [softwareRules, RETRY_AFTER, RETRY_FOR, REFIRE_WINDOW],
+  );
+  return rows.map((row) => ({
+    ...toAlert(row),
+    subject: row.subject,
+    handoff: row.handoff,
+    refireOf: row.refire_of,
+  }));
+}
+
+export async function recordIssue(id: string, number: number): Promise<void> {
+  await query("update monitor_alerts set github_issue_number = $2 where id = $1", [id, number]);
+}
+
+/**
+ * Claims the recovered alerts whose issue has not had its recovery comment.
+ * The issue is never closed: closing it would cancel a fix in progress.
+ */
+export async function claimIssueRecoveries(): Promise<Array<AlertForMessage & { issue: number }>> {
+  const rows = await query<AlertRow & { github_issue_number: number }>(
+    `update monitor_alerts
+     set diagnosis = diagnosis || jsonb_build_object('issueRecoveryAttemptedAt', now())
+     where resolved_at is not null and github_issue_number is not null
+       and diagnosis->>'issueRecoveryCommentedAt' is null
+       and coalesce((diagnosis->>'issueRecoveryAttemptedAt')::timestamptz, '-infinity') < now() - $1::interval
+       and resolved_at > now() - $2::interval
+     returning ${ALERT_COLUMNS}, github_issue_number`,
+    [RETRY_AFTER, RETRY_FOR],
+  );
+  return rows.map((row) => ({ ...toAlert(row), issue: row.github_issue_number }));
 }

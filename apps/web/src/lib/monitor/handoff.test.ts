@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { incidentContext, type HeartbeatRow } from "./diagnosis/context";
 import type { Diagnosis } from "./diagnosis";
-import { diagnosisMessage, handoffMessage, handoffText } from "./handoff";
+import {
+  diagnosisMessage,
+  handoffMessage,
+  handoffText,
+  recoveryComment,
+  refireComment,
+  rigAlertIssue,
+} from "./handoff";
 import { DISCORD_LIMITS } from "./discord";
 
 const OPENED = Date.parse("2026-10-04T21:14:00Z");
@@ -108,5 +115,31 @@ describe("diagnosisMessage", () => {
     const embed = diagnosisMessage({ id: "1", rule: "laps_stuck" }, long, "anthropic").embeds![0]!;
     expect(embed.description!.length).toBeLessThanOrEqual(DISCORD_LIMITS.embedDescription);
     expect(embed.title).toBe("Likely cause (Claude, confidence medium)");
+  });
+});
+
+describe("the rig-alert issue", () => {
+  const handoff = handoffText(CONTEXT, { ok: true, diagnosis: DIAGNOSIS });
+
+  it("is titled for the rule and rig, and carries the handoff and the redacted heartbeat rows", () => {
+    const issue = rigAlertIssue(CONTEXT, handoff);
+    expect(issue.title).toBe("[rig-alert] Laps queued but not reaching the site - Rig 02");
+    expect(issue.body).toContain(`\`\`\`text\n${handoff}\n\`\`\``);
+    expect(issue.body).toContain("<details><summary>Latest heartbeats (redacted, oldest first)</summary>");
+    const rows = issue.body.match(/```json\n([\s\S]*?)\n```/)![1]!;
+    expect(JSON.parse(rows)).toEqual(CONTEXT.heartbeats);
+    expect(issue.body.match(/```/g)).toHaveLength(4);
+  });
+
+  it("keeps its code blocks whole when a heartbeat string carries a fence", () => {
+    const context = { ...CONTEXT, heartbeats: [{ receivedAt: OPENED, clockSkewMs: 0, session: "```x" }] };
+    expect(rigAlertIssue(context, handoff).body.match(/```/g)).toHaveLength(4);
+  });
+
+  it("comments a re-fire with the new alert's handoff, and a recovery without closing", () => {
+    expect(refireComment(CONTEXT, handoff)).toMatch(/^Fired again as alert #123\.\n\n```text\nOasis rig alert #123/);
+    expect(recoveryComment({ id: "123", openedAt: OPENED, resolvedAt: OPENED + 4 * 60_000 })).toBe(
+      "Alert #123 recovered after 4 min. The issue stays open for the fix; close it when that has merged.",
+    );
   });
 });
