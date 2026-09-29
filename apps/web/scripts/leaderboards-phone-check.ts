@@ -1,9 +1,9 @@
 /**
- * Screenshots `/leaderboards` at phone size - the page the `/tv` corner code
- * opens - and proves a spectator can read it: every driver name is shown in
- * full (wrapped if need be, never cut to an ellipsis), and nothing, the
- * floating Screens button included, sits on top of the LEADERBOARDS heading,
- * and the page does not scroll sideways.
+ * Screenshots `/leaderboards` at phone size - the page the shop rotation's
+ * `/tv` corner code opens - and proves a spectator can read it: every driver
+ * name is shown in full (wrapped if need be, never cut to an ellipsis), and
+ * nothing, the floating Screens button included, sits on top of the
+ * LEADERBOARDS heading, and the page does not scroll sideways.
  *
  * The rows are the script's own, served in place of `/api/leaderboards/board`,
  * so the names are long ones whoever has driven. The page still needs one

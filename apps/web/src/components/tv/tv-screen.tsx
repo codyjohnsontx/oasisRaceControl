@@ -38,9 +38,8 @@ type Props = {
   initialBoards: Board[];
   /**
    * Which rotation list to play (`lib/tv-rotation.ts`). The event view is a
-   * one-slide list, so the engine below runs it unchanged - the only things
-   * that know the mode here are the list builder, the re-read of which boards
-   * exist (there is nothing to re-read), and the footer's board counter.
+   * one-slide list, so the engine below runs it unchanged; each place that
+   * reads `mode` says what the event view does differently there.
    */
   mode: TvMode;
   /**

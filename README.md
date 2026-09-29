@@ -126,9 +126,9 @@ Neither suite says anything about the venue's width. That measurement is a separ
 
 Nor does either look at the wall. `npm run tv:check` (from `apps/web`, against a
 running server) opens `/tv` in the machine's own Google Chrome through
-`playwright-core`, screenshots it, and fails if the phone-standings QR code in
-the corner is clipped or overlaps a board row, the board header, or the rest of
-the footer - then waits for the rotation to move and checks the next board too.
+`playwright-core`, screenshots it, and fails if the QR code in the corner is
+clipped or overlaps a board row, the board header, or the rest of the footer -
+then waits for the rotation to move and checks the next board too.
 `--viewport 1272x601` is the venue wall and the default; pass a laptop size to
 see what an off-site screen shows, and `--url http://localhost:3000/tv?event=1`
 to check the event view (one board, so it does not wait for a second).
@@ -142,10 +142,10 @@ twenty seconds after the last interaction - not while a mouse button is still
 held on it. The featured combo needs enough laps today for the list to
 overflow the screen. It takes a little over two minutes.
 
-`npm run leaderboards:check` does the same for the page that code opens: it
-loads `/leaderboards` at 390x844 (`--viewport` for another phone) with long
-driver names of its own in place of the board's rows, and fails if any name is
-truncated, the page scrolls sideways, or anything covers the LEADERBOARDS
+`npm run leaderboards:check` does the same for the page the shop rotation's
+code opens: it loads `/leaderboards` at 390x844 (`--viewport` for another
+phone) with long driver names of its own in place of the board's rows, and
+fails if any name is truncated, the page scrolls sideways, or anything covers the LEADERBOARDS
 heading. The server needs at least one lap so there is a board to show.
 
 Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Check in **first**: like the real agent, the fake rig polls `GET /api/agent/assignment` and stamps each lap with the assignment that was open when it was driven, and the ingestion API attributes from that stamp rather than crediting the lap to whoever is checked in when it arrives (`docs/plan.md`, event model). Laps driven before you check in are stored *unattributed* - kept, unrankable, and listed on `/staff` under **Unclaimed laps**. They are never backfilled onto you once you do check in. Staff dashboard is at `/staff`. To try league night, open a round from `/staff` against the combo the fake rig drives, then watch `/league` and the round's page fill up.

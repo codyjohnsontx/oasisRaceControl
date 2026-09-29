@@ -1,9 +1,9 @@
 /**
- * Screenshots `/tv` and proves the phone-standings QR code in the corner is
- * fully on screen and overlaps nothing: not a board row, not the board's
- * header, not the rest of the footer. Then it waits for the rotation to move
- * and checks and screenshots the next boards too, so the corner is proven on
- * more than the board that happened to be up.
+ * Screenshots `/tv` and proves the QR code in the corner is fully on screen
+ * and overlaps nothing: not a board row, not the board's header, not the rest
+ * of the footer. Then it waits for the rotation to move and checks and
+ * screenshots the next boards too, so the corner is proven on more than the
+ * board that happened to be up.
  *
  * Runs against a live server in the system's Google Chrome through
  * `playwright-core` - no browser download, and nothing in `npm test` needs a
