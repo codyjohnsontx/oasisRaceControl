@@ -9,7 +9,7 @@
  *     --pace <base lap ms>         default: 138500
  *     --metrics <path>             append one JSON line per request (off by default)
  *
- * Sends a heartbeat every 30s and a LAP_COMPLETED every interval, with
+ * Sends a v2 heartbeat every 30s and a LAP_COMPLETED every interval, with
  * jittered lap times around the pace, ~15% dirty laps (incidentDelta > 0),
  * and an occasional deliberate duplicate eventId to prove idempotency.
  *
@@ -31,10 +31,9 @@
 
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
-import { z } from "zod";
-import { heartbeatEvent, type LapCompletedEvent } from "../src/lib/events";
+import { uptime } from "node:os";
+import type { HeartbeatEvent, LapCompletedEvent } from "../src/lib/events";
 
-type HeartbeatEvent = z.infer<typeof heartbeatEvent>;
 type AgentEvent = HeartbeatEvent | LapCompletedEvent;
 
 const arg = (name: string, fallback: string): string => {
@@ -107,6 +106,7 @@ const RIG_TAG = randomUUID().slice(0, 8);
 
 let lapNumber = 0;
 let lastEventId: string | null = null;
+
 /**
  * The rig's open assignment as last polled: a string id, or null when the poll
  * came back saying nobody is checked in. It stays `undefined` until a poll has
@@ -162,6 +162,60 @@ async function pollAssignment(): Promise<void> {
   }
 }
 
+const PROCESS_STARTED_AT = new Date().toISOString();
+/** Laps posted whose answer has not come back - the nearest thing this
+ *  simulator has to the agent's outbox. */
+let lapsInFlight = 0;
+/** Laps the backend refused as invalid input, which the agent would park. A
+ *  401 or a proxy's error page names no lap and is not a refusal. */
+let rejectedLaps = 0;
+let lastLapCapturedAt: string | null = null;
+let lastLapPostedAt: string | null = null;
+let cpuMark = { usage: process.cpuUsage(), at: performance.now() };
+
+/**
+ * The v2 heartbeat (heartbeatEvent in src/lib/events.ts), filled with what a
+ * simulator can honestly say. iRacing is always "connected" in the fixed combo
+ * because the laps below are always driven in it, and the footprint is this
+ * process's own, measured the way the agent measures its own.
+ */
+function heartbeat(): HeartbeatEvent {
+  const now = performance.now();
+  const usage = process.cpuUsage(cpuMark.usage);
+  const cpuPercent = ((usage.user + usage.system) / 1000 / (now - cpuMark.at)) * 100;
+  cpuMark = { usage: process.cpuUsage(), at: now };
+
+  return {
+    type: "RIG_HEARTBEAT",
+    agentVersion: "fake-rig/0.3",
+    sentAt: new Date().toISOString(),
+    processStartedAt: PROCESS_STARTED_AT,
+    startCount: 1,
+    osUptimeS: Math.round(uptime()),
+    telemetryMode: "simulated",
+    simConnected: true,
+    telemetryFaulted: false,
+    missingVariables: [],
+    session: COMBO,
+    // Omitted rather than null until a poll has answered, as the agent does:
+    // null would claim nobody is checked in.
+    ...(assignmentId === undefined ? {} : { assignmentId }),
+    assignmentKnown: assignmentId !== undefined,
+    pendingLaps: lapsInFlight,
+    oldestPendingAgeS: null,
+    rejectedLaps,
+    checkout: "none",
+    lastLapCapturedAt,
+    lastLapPostedAt,
+    signInFailures: 0,
+    signInFailureKinds: [],
+    notices: [],
+    agentCpuPercent: Math.round(Math.max(0, cpuPercent) * 100) / 100,
+    agentMemoryMb: Math.round(process.memoryUsage().rss / 1_048_576),
+    shuttingDown: false,
+  };
+}
+
 async function post(events: AgentEvent[]): Promise<void> {
   const kind = events[0]?.type === "LAP_COMPLETED" ? "lap" : "heartbeat";
   const sent = events.flatMap((e) => (e.type === "LAP_COMPLETED" ? [e.eventId] : []));
@@ -173,6 +227,7 @@ async function post(events: AgentEvent[]): Promise<void> {
   if (sent.length > 0) record({ kind: "attempt", sent });
   const startedAt = Date.now();
   inFlight += 1;
+  lapsInFlight += sent.length;
   try {
     const res = await fetch(`${BASE}/api/agent/events`, {
       method: "POST",
@@ -200,12 +255,17 @@ async function post(events: AgentEvent[]): Promise<void> {
       results: body?.results ?? [],
       ...(res.ok && body === null ? { error: "unreadable events body" } : {}),
     });
+    if (sent.length > 0) {
+      if (res.ok) lastLapPostedAt = new Date().toISOString();
+      else if (res.status === 400) rejectedLaps += sent.length;
+    }
     console.log(`[fake-rig] ${res.status}`, JSON.stringify(body));
   } catch (error) {
     record({ kind, ms: Date.now() - startedAt, sent, error: (error as Error).message });
     console.error(`[fake-rig] request failed:`, (error as Error).message);
   } finally {
     inFlight -= 1;
+    lapsInFlight -= sent.length;
     exitWhenDrained();
   }
 }
@@ -213,6 +273,7 @@ async function post(events: AgentEvent[]): Promise<void> {
 /** Only called once a poll has succeeded, so assignmentId is a real answer. */
 function nextLap(assignment: string | null): LapCompletedEvent {
   lapNumber += 1;
+  lastLapCapturedAt = new Date().toISOString();
 
   // ~7%: resend the previous event verbatim to prove duplicates are dropped.
   if (lastEventId && Math.random() < 0.07) {
@@ -249,14 +310,11 @@ console.log(`[fake-rig] driving ${COMBO.trackName} / ${COMBO.carName}`);
 console.log(`[fake-rig] api=${BASE} lap every ${INTERVAL_MS / 1000}s — Ctrl+C to stop`);
 
 void pollAssignment();
-void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]);
+void post([heartbeat()]);
 
 const timers = [
   setInterval(() => void pollAssignment(), POLL_MS),
-  setInterval(
-    () => void post([{ type: "RIG_HEARTBEAT", agentVersion: "fake-rig/0.2" }]),
-    30_000,
-  ),
+  setInterval(() => void post([heartbeat()]), 30_000),
   setInterval(() => {
     // The real agent queues these laps unresolved and stamps them once a poll
     // gets through; a simulator with no outbox just waits for the answer rather

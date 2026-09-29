@@ -85,8 +85,9 @@ that live in Postgres - the `event_id` idempotency key, the
 one-open-assignment-per-rig/driver partial unique indexes, the
 `checkin_driver()` function, the sign-out that closes only the stint it names
 and only on the calling rig, the check constraints that keep an unattributed
-lap unrankable and make it say why, and the upgrade path of a migration onto a
-database that already holds laps - are covered by a separate suite that needs a
+lap unrankable and make it say why, every rig heartbeat (v1 or v2) kept as a
+row with its clock skew worked out by the database, and the upgrade path of a
+migration onto a database that already holds laps - are covered by a separate suite that needs a
 real database:
 
 ```bash

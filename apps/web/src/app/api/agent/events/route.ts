@@ -4,6 +4,7 @@ import {
   agentEventsBody,
   statesCaptureTimeAttribution,
   type AgentEventsBody,
+  type HeartbeatEvent,
   type LapCompletedEvent,
 } from "@/lib/events";
 import type { UnattributedCause } from "@/lib/unattributed-cause";
@@ -64,13 +65,9 @@ export async function POST(request: Request) {
 
     for (const [index, event] of parsed.data.events.entries()) {
       if (event.type === "RIG_HEARTBEAT") {
-        await query(
-          `update rigs set last_seen_at = now(),
-             agent_version = coalesce($2, agent_version)
-           where id = $1`,
-          [rig.id, event.agentVersion ?? null],
-        );
-        results.push({ type: event.type, status: "ok" });
+        const { type, ...heartbeat } = event;
+        await recordHeartbeat(rig.id, heartbeat);
+        results.push({ type, status: "ok" });
       } else {
         const attribution = attributeLap(event, index, matches);
         if (attribution.kind === "unattributed") causes.push(attribution.cause);
@@ -89,6 +86,78 @@ export async function POST(request: Request) {
     console.error("[agent/events] batch failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });
   }
+}
+
+/**
+ * Stores one heartbeat as a `rig_heartbeats` row and marks the rig seen, in one
+ * statement.
+ *
+ * The fields the monitor's rules filter on get their own columns; every other
+ * field lands in `payload` as validated, so a v1 heartbeat - `agentVersion` or
+ * nothing at all - stores a row with an empty payload rather than being
+ * refused. Clock skew is worked out here against the database's own now(), the
+ * same instant `received_at` takes, so the two always agree and every rig is
+ * compared with one server clock rather than whichever Vercel instance
+ * answered.
+ */
+async function recordHeartbeat(
+  rigId: string,
+  heartbeat: Omit<HeartbeatEvent, "type">,
+): Promise<void> {
+  const {
+    agentVersion,
+    sentAt,
+    processStartedAt,
+    startCount,
+    simConnected,
+    telemetryFaulted,
+    session,
+    assignmentId,
+    pendingLaps,
+    rejectedLaps,
+    checkout,
+    signInFailures,
+    shuttingDown,
+    ...payload
+  } = heartbeat;
+
+  await query(
+    `with heartbeat as (
+       insert into rig_heartbeats (
+         rig_id, sent_at, clock_skew_ms, agent_version, process_started_at,
+         start_count, sim_connected, telemetry_faulted,
+         session_track, session_config, session_car,
+         assignment_id, pending_laps, rejected_laps, checkout,
+         sign_in_failures, shutting_down, payload
+       ) values (
+         $1, $2::timestamptz,
+         round(extract(epoch from now() - $2::timestamptz) * 1000)::bigint,
+         $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+       )
+     )
+     update rigs set last_seen_at = now(),
+       agent_version = coalesce($3, agent_version)
+     where id = $1`,
+    [
+      rigId,
+      sentAt ?? null,
+      agentVersion ?? null,
+      processStartedAt ?? null,
+      startCount ?? null,
+      simConnected ?? null,
+      telemetryFaulted ?? null,
+      session?.trackName ?? null,
+      session?.trackConfig ?? null,
+      session?.carName ?? null,
+      assignmentId ?? null,
+      pendingLaps ?? null,
+      rejectedLaps ?? null,
+      checkout ?? null,
+      signInFailures ?? null,
+      shuttingDown ?? false,
+      payload,
+    ],
+  );
 }
 
 type StampedAssignment = { id: string; driver_id: string };

@@ -274,6 +274,72 @@ consequences follow:
 - An unrelated production hotfix attempted before the migration is applied
   needs `SKIP_MIGRATION_CHECK=1` on that build.
 
+### Applying 0005_rig_heartbeats.sql
+
+`0005_rig_heartbeats.sql` stores every rig heartbeat for the rig monitor. It is
+additive - one table, one index, one view, nothing existing altered - and the
+code that writes to it refuses to deploy until it is there, so apply it to Neon
+**before merging** the change that adds it. A heartbeat that reaches the old
+deployment in the meantime is unaffected: that code never touches the table.
+
+1. Point at production exactly as in
+   [step 2 of the recovery runbook](#2-point-at-production-and-prove-it): the
+   Neon pooled URL in `apps/web/.env.local`, then the `export` line from that
+   step so `psql` reads the same value.
+2. From `apps/web`: `npm run db:check`. Read the target line, then expect
+   exactly one missing file, `0005_rig_heartbeats.sql`. Anything more and stop:
+   the database is behind by more than this change, which is the recovery
+   runbook's job.
+3. `npm run db:migrate`. Read the `migrating <host>/<database>` line once more;
+   expect `applied 0005_rig_heartbeats.sql` and `skip` for the rest.
+
+   Pasting into Neon's SQL Editor instead works only if the bookkeeping row goes
+   in with it - paste the whole file, then
+   `insert into schema_migrations (version) values ('0005_rig_heartbeats.sql');`
+   in the same run. Without that row the build gate keeps refusing to deploy
+   and a later `db:migrate` fails on the table that is already there. The
+   verify below checks both, so run it whichever way you applied it.
+4. Verify. Read-only by construction - the transaction cannot write - so it is
+   safe to paste into `psql` or the SQL Editor at any time:
+
+   ```bash
+   psql "$DATABASE_URL" <<'SQL'
+   begin transaction read only;
+
+   select version from schema_migrations where version = '0005_rig_heartbeats.sql';
+   -- expect 1 row
+
+   select c.relname, c.relkind
+   from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public'
+     and c.relname in ('rig_heartbeats', 'rig_heartbeats_rig_recent', 'v_rig_latest_heartbeat')
+   order by 1;
+   -- expect 3 rows: rig_heartbeats r, rig_heartbeats_rig_recent i, v_rig_latest_heartbeat v
+
+   select column_name, data_type from information_schema.columns
+   where table_name = 'rig_heartbeats' and column_name in ('clock_skew_ms', 'payload')
+   order by 1;
+   -- expect clock_skew_ms bigint, payload jsonb
+
+   commit;
+   SQL
+   ```
+
+   `npm run db:check` should now say every migration is applied.
+5. After the merge deploys, the first heartbeat from each running rig (within
+   30 seconds on today's agent) proves the write path. Same read-only
+   transaction:
+
+   ```sql
+   begin transaction read only;
+   select r.display_name, h.received_at, h.agent_version, h.clock_skew_ms,
+          h.payload = '{}'::jsonb as sends_v1
+   from v_rig_latest_heartbeat h join rigs r on r.id = h.rig_id
+   order by r.rig_number;
+   commit;
+   -- one row per rig that is on; sends_v1 true until the rig runs rig-agent/0.4-monitor
+   ```
+
 ---
 
 ## Recovering a database that is behind the code

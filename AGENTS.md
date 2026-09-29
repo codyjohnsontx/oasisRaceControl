@@ -223,6 +223,18 @@ retried - quarantining on it would retire a whole venue's night over a config
 change. Parked laps are counted and displayed apart from the queued ones, so the
 rig's status line does not read the way it read while it was wedged.
 
+## Rig heartbeats
+
+Every `RIG_HEARTBEAT` is stored as a row in `rig_heartbeats`
+(`db/migrations/0005_rig_heartbeats.sql`) for the rig monitor; `rigs.last_seen_at`
+still moves, so nothing that reads `v_rig_status` changed. The contract is
+`heartbeatEvent` in `apps/web/src/lib/events.ts`: v1 (`agentVersion` or nothing)
+must keep working, so every v2 field stays optional, and its bounds are the
+agent's to clamp to - the body is validated whole, so a heartbeat over one is
+a 400 and the rig reads as silent. Clock skew is computed by the database
+against the row's own `received_at`, never from a Vercel instance's clock. The
+producers are the .NET agent and `scripts/fake-rig.ts`; change them with it.
+
 ## The twenty-rig soak
 
 The venue has 20-25 sims and the platform had only ever been driven by one rig

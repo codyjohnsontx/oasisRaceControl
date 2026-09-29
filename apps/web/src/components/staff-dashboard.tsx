@@ -33,7 +33,9 @@ export type StaffLapRow = {
   rig_number: number | null;
 };
 
-const AGENT_ONLINE_WINDOW_MS = 90_000;
+/** Two and a half heartbeats at the agent's 60-second cadence, so one late
+ *  heartbeat does not flicker the tile to offline. */
+const AGENT_ONLINE_WINDOW_MS = 150_000;
 
 function agentStatus(lastSeenAt: string | null): "online" | "offline" {
   if (!lastSeenAt) return "offline";

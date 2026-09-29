@@ -35,7 +35,7 @@ export async function closeTestDb(): Promise<void> {
  */
 export async function resetDb(): Promise<void> {
   await testDb().query(`
-    truncate laps, rig_assignments, sim_sessions, rig_qr_tokens,
+    truncate laps, rig_heartbeats, rig_assignments, sim_sessions, rig_qr_tokens,
              pin_attempts, audit_log, featured_combos, leagues,
              rigs, drivers, staff_users
     restart identity cascade
