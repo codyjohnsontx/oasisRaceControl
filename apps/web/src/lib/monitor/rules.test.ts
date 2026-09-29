@@ -8,6 +8,7 @@ import {
   type MonitorSnapshot,
   type RigSnapshot,
   type RuleKey,
+  SILENT_AFTER_MS,
 } from "./rules";
 
 /**
@@ -61,6 +62,17 @@ function minutely(
   return rows;
 }
 
+/** The heartbeats' unbroken runs, as the snapshot's `heard` holds them. */
+function runsOf(heartbeats: Heartbeat[]): RigSnapshot["heard"] {
+  const runs: RigSnapshot["heard"] = [];
+  for (const { receivedAt } of heartbeats) {
+    const last = runs.at(-1);
+    if (last && receivedAt - last.to <= SILENT_AFTER_MS) last.to = receivedAt;
+    else runs.push({ from: receivedAt, to: receivedAt });
+  }
+  return runs;
+}
+
 function rig(number: number, overrides: Partial<RigSnapshot> = {}): RigSnapshot {
   const heartbeats = overrides.heartbeats ?? minutely(14 * MIN);
   return {
@@ -70,6 +82,7 @@ function rig(number: number, overrides: Partial<RigSnapshot> = {}): RigSnapshot 
     lastSeenAt: heartbeats.at(-1)?.receivedAt ?? null,
     seated: null,
     heartbeats,
+    heard: runsOf(heartbeats),
     ...overrides,
   };
 }
@@ -220,17 +233,12 @@ describe("rule 1: rig silent", () => {
     });
 
     it("lets the note clear once the window after the first one back has passed, warning about no rig still dark", () => {
-      expect(evaluate([back(1, 20 * MIN, 8 * MIN), quiet(2, 20 * MIN), quiet(3, 20 * MIN)], open)).toEqual([]);
-    });
-
-    it("warns about each rig still quiet after an outage too short for their own warnings to fall inside it", () => {
-      const findings = evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
-      expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning", "rig_silent rig:rig-3 warning"]);
+      expect(evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open)).toEqual([]);
     });
 
     it("judges a rig that went quiet after the venue came back as before", () => {
-      const cameBackThenDied = rig(2, { heartbeats: [...minutely(35 * MIN, 30 * MIN), ...minutely(20 * MIN, 8 * MIN)] });
-      const findings = evaluate([back(1, 30 * MIN, 20 * MIN), cameBackThenDied, quiet(3, 30 * MIN)]);
+      const cameBackThenDied = rig(2, { heartbeats: [...minutely(30 * MIN, 25 * MIN), ...minutely(20 * MIN, 8 * MIN)] });
+      const findings = evaluate([back(1, 25 * MIN, 20 * MIN), cameBackThenDied, quiet(3, 25 * MIN)]);
       expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning"]);
     });
 
@@ -249,18 +257,20 @@ describe("rule 1: rig silent", () => {
   describe("the morning after a close with no goodbyes", () => {
     const open = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
     const HOUR = 60 * MIN;
+    /** Heard until the close `closedAgo` ago, then from `bootedAgo` ago until `until` ago. */
+    const closed = (number: number, closedAgo: number, bootedAgo: number, until = 0) =>
+      rig(number, {
+        heartbeats: [...minutely(closedAgo + 10 * MIN, closedAgo), ...minutely(bootedAgo, until)],
+      });
     /**
-     * Twenty empty rigs went quiet together at 23:00 and are booted one a
-     * minute from 10:00, one hour `into` the opening past 10:00. A booted rig
-     * holds the fifteen minutes of history the snapshot carries.
+     * Twenty empty rigs went quiet together at 23:00 and are booted one every
+     * four minutes from 10:00, `into` the opening past 10:00.
      */
     const opening = (into: number) => {
       const closedAgo = 11 * HOUR + into;
       return Array.from({ length: 20 }, (_, i) => {
         const bootedAgo = into - i * 4 * MIN;
-        return bootedAgo >= 0
-          ? rig(i + 1, { heartbeats: minutely(Math.min(bootedAgo, 14 * MIN)) })
-          : quiet(i + 1, closedAgo);
+        return bootedAgo >= 0 ? closed(i + 1, closedAgo, bootedAgo) : quiet(i + 1, closedAgo);
       });
     };
     const perRig = (findings: Finding[]) => findings.filter((f) => f.rule === "rig_silent");
@@ -294,24 +304,39 @@ describe("rule 1: rig silent", () => {
     });
 
     it("alerts normally for a rig that came back and then went quiet", () => {
-      const findings = evaluate([rig(1), quiet(2, 8 * MIN), quiet(3, 11 * HOUR)]);
+      const findings = evaluate([
+        closed(1, 11 * HOUR, 30 * MIN),
+        closed(2, 11 * HOUR, 25 * MIN, 8 * MIN),
+        quiet(3, 11 * HOUR),
+      ]);
       expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning"]);
     });
 
-    const stillOff = Array.from({ length: 18 }, (_, i) => quiet(i + 3, 11 * HOUR));
+    const stillOff = (closedAgo: number) =>
+      Array.from({ length: 18 }, (_, i) => quiet(i + 3, closedAgo));
 
     it("warns about the first rig booted when it fails before the next is booted", () => {
-      const first = rig(1, { heartbeats: minutely(10 * MIN, 7 * MIN) });
-      expect(rulesOf(evaluate([first, ...stillOff], open))).toEqual([
+      const first = closed(1, 11 * HOUR, 10 * MIN, 7 * MIN);
+      expect(rulesOf(evaluate([first, ...stillOff(11 * HOUR)], open))).toEqual([
         "rig_silent rig:rig-1 warning",
         `venue_silent ${VENUE_SUBJECT} warning`,
       ]);
     });
 
     it("still warns about it once the next rig is booted", () => {
-      const first = rig(1, { heartbeats: minutely(20 * MIN, 17 * MIN) });
-      const second = rig(2, { heartbeats: minutely(10 * MIN) });
-      expect(rulesOf(evaluate([first, second, ...stillOff]))).toEqual(["rig_silent rig:rig-1 warning"]);
+      const first = closed(1, 11 * HOUR, 20 * MIN, 17 * MIN);
+      const second = closed(2, 11 * HOUR, 10 * MIN);
+      expect(rulesOf(evaluate([first, second, ...stillOff(11 * HOUR)]))).toEqual([
+        "rig_silent rig:rig-1 warning",
+      ]);
+    });
+
+    it("warns about the first rig booted after a close more than twelve hours ago when it fails", () => {
+      const first = closed(1, 13 * HOUR, 10 * MIN, 7 * MIN);
+      expect(rulesOf(evaluate([first, ...stillOff(13 * HOUR)], open))).toEqual([
+        "rig_silent rig:rig-1 warning",
+        `venue_silent ${VENUE_SUBJECT} warning`,
+      ]);
     });
   });
 

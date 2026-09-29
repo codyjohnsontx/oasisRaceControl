@@ -376,6 +376,21 @@ describeDb("rig monitor against real Postgres", () => {
     expect(await alerts()).toMatchObject([{ rule: "laps_refused", level: 3, resolved: false }]);
   });
 
+  it("keeps the last rig still off after a close dark, from runs older than the recent history", async () => {
+    const [off, booted] = [await seedRig(1), await seedRig(2)];
+    const closedS = 11 * 3600;
+    for (const rig of [off, booted]) {
+      for (const agoS of [closedS + 120, closedS + 60, closedS]) await heartbeat(rig, agoS);
+    }
+    // Booted half an hour ago: its pre-close run is out of the rules' recent
+    // history, and only the heard runs show it went quiet with rig 1.
+    for (let agoS = 1800; agoS >= 0; agoS -= 60) await heartbeat(booted, agoS);
+
+    await nextEvaluation();
+
+    expect(await alerts()).toEqual([]);
+  });
+
   it("prunes heartbeats past seven days at most once a day", async () => {
     const rig = await seedRig(1);
     await heartbeat(rig, 8 * 86_400);

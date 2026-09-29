@@ -2,7 +2,15 @@ import type { QueryResult, QueryResultRow } from "pg";
 import { query, queryOne } from "@/lib/db";
 import type { AlertForMessage } from "./messages";
 import type { Heartbeat } from "./rig-state";
-import type { AlertDetail, Finding, MonitorSnapshot, RigSnapshot, Severity } from "./rules";
+import {
+  HEARD_HISTORY_MS,
+  SILENT_AFTER_MS,
+  type AlertDetail,
+  type Finding,
+  type MonitorSnapshot,
+  type RigSnapshot,
+  type Severity,
+} from "./rules";
 
 /**
  * The monitor's database side: the evaluation throttle, the snapshot the rules
@@ -96,7 +104,7 @@ export async function loadSnapshot(
   now: number,
 ): Promise<MonitorSnapshot & { openAlerts: OpenAlert[] }> {
   // One client runs one statement at a time; these queue on it in order.
-  const [rigRows, heartbeatRows, openAlerts] = await Promise.all([
+  const [rigRows, heartbeatRows, heardRows, openAlerts] = await Promise.all([
     rows<{
       id: string;
       rig_number: number;
@@ -137,6 +145,26 @@ export async function loadSnapshot(
        order by h.rig_id, h.received_at, h.id`,
       [HISTORY, BEFORE_LATEST],
     ),
+    // Each rig's unbroken runs of heartbeats over HEARD_HISTORY_MS: an index
+    // range per rig, folded in the database so only the runs come back.
+    rows<{ rig_id: string; heard_from: Date; heard_to: Date }>(
+      db,
+      `select rig_id, min(received_at) as heard_from, max(received_at) as heard_to
+       from (
+         select rig_id, received_at,
+                sum(case when received_at - previous > $2::interval then 1 else 0 end)
+                  over (partition by rig_id order by received_at) as run
+         from (
+           select h.rig_id, h.received_at,
+                  lag(h.received_at) over (partition by h.rig_id order by h.received_at) as previous
+           from rigs r
+           join rig_heartbeats h on h.rig_id = r.id and h.received_at >= now() - $1::interval
+         ) gaps
+       ) runs
+       group by rig_id, run
+       order by rig_id, heard_from`,
+      [`${HEARD_HISTORY_MS / 1000} seconds`, `${SILENT_AFTER_MS / 1000} seconds`],
+    ),
     rows<OpenAlert>(
       db,
       "select id::text, rule, subject from monitor_alerts where resolved_at is null",
@@ -148,6 +176,13 @@ export async function loadSnapshot(
     const list = byRig.get(row.rig_id) ?? [];
     list.push(toHeartbeat(row));
     byRig.set(row.rig_id, list);
+  }
+
+  const heardByRig = new Map<string, RigSnapshot["heard"]>();
+  for (const row of heardRows) {
+    const list = heardByRig.get(row.rig_id) ?? [];
+    list.push({ from: row.heard_from.getTime(), to: row.heard_to.getTime() });
+    heardByRig.set(row.rig_id, list);
   }
 
   const rigs: RigSnapshot[] = rigRows.map((row) => ({
@@ -164,6 +199,7 @@ export async function loadSnapshot(
           }
         : null,
     heartbeats: byRig.get(row.id) ?? [],
+    heard: heardByRig.get(row.id) ?? [],
   }));
 
   return { now, rigs, openAlerts };
