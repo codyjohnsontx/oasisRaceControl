@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { RigFlow } from "./rig-flow";
+import type { FlowModel } from "@/lib/monitor/flow";
 import type { RigTile, TileColour } from "@/lib/monitor/rig-health";
 import type { Severity } from "@/lib/monitor/rules";
 
@@ -42,12 +44,23 @@ const TILE_TEXT: Record<TileColour, string> = {
   grey: "text-muted",
 };
 
+/** The data-flow view's dots, in rig-flow.tsx's colours. */
+const LEGEND: Array<[colour: string, label: string, small?: boolean]> = [
+  ["accent", "heartbeat", true],
+  ["valid", "lap that ranks"],
+  ["sunset", "invalid lap"],
+  ["purple", "lap with nobody signed in"],
+  ["gold", "queued on the rig"],
+  ["invalid", "refused by the site"],
+];
+
 function severityText(severity: Severity): string {
   return severity === "urgent" ? "text-invalid" : "text-gold";
 }
 
 export function StaffRigHealth({
   staffName,
+  flow,
   tiles,
   venueProblems,
   event,
@@ -56,6 +69,7 @@ export function StaffRigHealth({
   alerts,
 }: {
   staffName: string;
+  flow: FlowModel;
   tiles: RigTile[];
   venueProblems: Array<{ severity: Severity; headline: string }>;
   event: { on: boolean; line: string; override: "on" | "off" | null };
@@ -175,6 +189,27 @@ export function StaffRigHealth({
                 {p.headline}
               </li>
             ))}
+          </ul>
+        </section>
+      )}
+
+      {flow.lanes.length > 0 && (
+        <section>
+          <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">Data flow</h2>
+          <div className="bg-surface border border-edge rounded-xl p-3 overflow-x-auto">
+            <RigFlow model={flow} />
+          </div>
+          <ul className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-muted text-xs">
+            {LEGEND.map(([colour, label, small]) => (
+              <li key={label} className="flex items-center gap-1.5">
+                <span
+                  className={`inline-block rounded-full ${small ? "size-1.5" : "size-2.5"}`}
+                  style={{ background: `var(--${colour})` }}
+                />
+                {label}
+              </li>
+            ))}
+            <li>Last 10 minutes: the further along, the older</li>
           </ul>
         </section>
       )}

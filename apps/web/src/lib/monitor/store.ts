@@ -1,5 +1,6 @@
 import { query, queryOne } from "@/lib/db";
 import type { BoardMode, BoardSnapshot, EventModeOverride } from "./event-mode";
+import { TRAFFIC_WINDOW_MS, type FlowLap } from "./flow";
 import type { AlertForMessage } from "./messages";
 import type { Heartbeat } from "./rig-state";
 import type {
@@ -573,12 +574,53 @@ export async function loadRoutineFacts(): Promise<RoutineFacts> {
 
 /** When each rig's latest lap today was completed, by rig id. */
 export async function lastLapAtByRig(): Promise<Map<string, number>> {
-  const rows = await query<{ rig_id: string; last_lap_at: Date }>(
-    `select rig_id, max(completed_at) as last_lap_at from laps
-     where completed_at >= ${VENUE_DAY_START} group by rig_id`,
-  );
-  return new Map(rows.map((row) => [row.rig_id, row.last_lap_at.getTime()]));
+  return (await rigLaps()).lastLapAt;
 }
+
+/**
+ * Today's laps as the Rig health page shows them, in one read: when each
+ * rig's latest was completed (the tiles), and every lap the site stored in
+ * the last TRAFFIC_WINDOW_MS (the data-flow view's traffic).
+ */
+export async function rigLaps(): Promise<{ lastLapAt: Map<string, number>; recent: FlowLap[] }> {
+  const rows = await query<{ rig_id: string; last_lap_at: Date; recent: RecentLapRow[] }>(
+    `select rig_id, max(completed_at) as last_lap_at,
+            coalesce(json_agg(json_build_object(
+                       'id', id,
+                       'received_ms', (extract(epoch from created_at) * 1000)::float8,
+                       'lap_time_ms', lap_time_ms,
+                       'is_valid', is_valid,
+                       'unattributed', driver_id is null)
+                     order by created_at)
+                     filter (where created_at >= now() - $1 * interval '1 millisecond'),
+                     '[]') as recent
+     from laps
+     where completed_at >= ${VENUE_DAY_START}
+     group by rig_id`,
+    [TRAFFIC_WINDOW_MS],
+  );
+  return {
+    lastLapAt: new Map(rows.map((row) => [row.rig_id, row.last_lap_at.getTime()])),
+    recent: rows.flatMap((row) =>
+      row.recent.map((lap) => ({
+        id: lap.id,
+        rigId: row.rig_id,
+        receivedAt: lap.received_ms,
+        lapTimeMs: lap.lap_time_ms,
+        valid: lap.is_valid,
+        unattributed: lap.unattributed,
+      })),
+    ),
+  };
+}
+
+type RecentLapRow = {
+  id: string;
+  received_ms: number;
+  lap_time_ms: number;
+  is_valid: boolean;
+  unattributed: boolean;
+};
 
 /**
  * The database's clock, which every rule judges by, and when the monitor last

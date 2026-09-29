@@ -18,6 +18,17 @@ alerts use, so a tile and the channel can never disagree.
 refreshes every 15 s. It reads the monitor's snapshot and runs `evaluateRules`
 on it without claiming an evaluation, so opening it posts nothing.
 
+- **Data flow** (`lib/monitor/flow.ts`, drawn by `components/rig-flow.tsx`):
+  each rig as the pipeline its laps travel - iRacing, rig agent, network,
+  then the server, database, feed and TV board every rig shares. Each rule's
+  finding is placed on its node or edge (`RULE_PLACE`), coloured as the tile
+  is; the first red edge walking downstream (else the first yellow) is drawn
+  thick with the finding's headline under it, and only a red one fades what
+  lies past it, since nothing there can be judged. Heartbeats and laps from
+  the last 10 minutes ride their routes, placed by age (fresh at the start,
+  10 minutes old at the end) and moving between refreshes with CSS alone;
+  laps carry their time and status, and laps queued on the rig or refused by
+  the site sit where they stopped. Under reduced motion the dots stay still.
 - **A tile per rig** (`lib/monitor/rig-health.ts`): red when a rule finds
   something urgent on the rig, yellow for a warning, and the finding's
   headline on the tile. With no finding it is green while the rig is running,

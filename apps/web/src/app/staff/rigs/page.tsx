@@ -2,13 +2,14 @@ import { redirect } from "next/navigation";
 import { StaffRigHealth, type RigHealthAlert } from "@/components/staff-rig-health";
 import { boardName, boardState, boardsToday, eventMode } from "@/lib/monitor/event-mode";
 import { eventModeLine, venueDate, venueTime } from "@/lib/monitor/messages";
+import { flowModel } from "@/lib/monitor/flow";
 import { rigTiles } from "@/lib/monitor/rig-health";
 import { duration, evaluateRules, rigSubject, RULES } from "@/lib/monitor/rules";
 import {
-  lastLapAtByRig,
   loadSnapshot,
   monitorClock,
   recentAlerts,
+  rigLaps,
   type RecentAlert,
 } from "@/lib/monitor/store";
 import { getStaffUser } from "@/lib/staff";
@@ -27,9 +28,9 @@ export default async function RigHealthPage() {
   // Failures throw to the error boundary: an empty page that is really a
   // failed query would read as a venue with nothing wrong.
   const clock = await monitorClock();
-  const [snapshot, lastLaps, alerts] = await Promise.all([
+  const [snapshot, laps, alerts] = await Promise.all([
     loadSnapshot(clock.now),
-    lastLapAtByRig(),
+    rigLaps(),
     recentAlerts(),
   ]);
   const findings = evaluateRules(snapshot);
@@ -41,7 +42,11 @@ export default async function RigHealthPage() {
   return (
     <StaffRigHealth
       staffName={staff.displayName}
-      tiles={rigTiles(snapshot, findings, lastLaps)}
+      flow={flowModel(snapshot, findings, {
+        laps: laps.recent,
+        lastEvaluatedAt: clock.lastEvaluatedAt,
+      })}
+      tiles={rigTiles(snapshot, findings, laps.lastLapAt)}
       venueProblems={findings
         .filter((f) => !rigSubjects.has(f.subject))
         .map((f) => ({ severity: f.severity, headline: f.detail.headline }))}

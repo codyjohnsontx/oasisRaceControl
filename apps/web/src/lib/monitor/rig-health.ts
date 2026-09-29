@@ -65,7 +65,7 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
   const state = rigState(rig.heartbeats);
   const neverSeen = rig.lastSeenAt === null && state === null;
   const quiet = rig.lastSeenAt === null ? null : now - rig.lastSeenAt;
-  const running = !neverSeen && !state?.shuttingDown && quiet !== null && quiet <= SILENT_AFTER_MS;
+  const running = isRunning(now, rig, state);
   const oldAgent = state !== null && isOldAgent(state);
 
   const urgent = mine.some((f) => f.severity === "urgent");
@@ -79,7 +79,7 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
 
   return {
     id: rig.id,
-    label: `R${String(rig.number).padStart(2, "0")}`,
+    label: rigLabel(rig),
     colour,
     status: neverSeen
       ? "never seen"
@@ -109,6 +109,21 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
     heartbeat: state === null ? "no heartbeat" : `heartbeat ${duration(now - state.receivedAt)} ago`,
     oldAgent,
   };
+}
+
+/** "R01": how the tiles and the data-flow view name a rig. */
+export function rigLabel(rig: Pick<RigSnapshot, "number">): string {
+  return `R${String(rig.number).padStart(2, "0")}`;
+}
+
+/**
+ * The rig reached the site within SILENT_AFTER_MS and its standing state is
+ * not a goodbye: an agent that is up and reporting.
+ */
+export function isRunning(now: number, rig: RigSnapshot, state: Heartbeat | null): boolean {
+  return (
+    rig.lastSeenAt !== null && !state?.shuttingDown && now - rig.lastSeenAt <= SILENT_AFTER_MS
+  );
 }
 
 /** A v1 heartbeat: the rules that need its fields cannot fire on this rig. */

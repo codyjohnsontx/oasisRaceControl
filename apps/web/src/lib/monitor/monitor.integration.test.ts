@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flowModel } from "./flow";
 import { runMonitor } from "./run";
 import { rigTiles } from "./rig-health";
 import {
@@ -10,6 +11,7 @@ import {
   monitorClock,
   nextVenueMidnightSql,
   recentAlerts,
+  rigLaps,
   type OpenAlert,
 } from "./store";
 import { evaluateRules, type Finding } from "./rules";
@@ -372,6 +374,57 @@ describeDb("rig monitor against real Postgres", () => {
         githubIssueNumber: 57,
       },
     ]);
+  });
+
+  it("gives the data-flow view the last ten minutes of laps, aged by when the site stored them", async () => {
+    const rig = await seedRig(3);
+    const driver = await seedDriver("Matt G");
+    const assignment = await openAssignment(rig.id, driver.id);
+    for (const ago of [540, 480, 420, 360, 300, 240, 180, 120, 60, 0]) await heartbeat(rig, ago);
+    // [completed, stored] seconds ago: a lap an outbox held for a while is
+    // aged by when it arrived, not when it was driven.
+    const laps: Array<[number, number, boolean, boolean]> = [
+      [900, 890, true, true], // before the window: counts for the tile only
+      [500, 60, true, true],
+      [200, 190, false, true],
+      [100, 95, false, false],
+    ];
+    for (const [completed, stored, valid, attributed] of laps) {
+      await testDb().query(
+        `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name, car_name,
+           lap_time_ms, is_valid, invalid_reason, unattributed_cause, completed_at, created_at)
+         values (gen_random_uuid()::text, $1, $2, $3, 'Spa', 'Porsche', 137217, $4, $5, $6,
+           now() - make_interval(secs => $7), now() - make_interval(secs => $8))`,
+        [
+          rig.id,
+          attributed ? assignment : null,
+          attributed ? driver.id : null,
+          valid,
+          valid ? null : attributed ? "OFF_TRACK" : "UNATTRIBUTED",
+          attributed ? null : "nobody_checked_in",
+          completed,
+          stored,
+        ],
+      );
+    }
+
+    const clock = await monitorClock();
+    const snapshot = await loadSnapshot(clock.now);
+    const { lastLapAt, recent } = await rigLaps();
+    expect(clock.now - lastLapAt.get(rig.id)!).toBeCloseTo(100_000, -3);
+    const [lane] = flowModel(snapshot, evaluateRules(snapshot), {
+      laps: recent,
+      lastEvaluatedAt: clock.now,
+    }).lanes;
+    expect(lane!.broken).toBeNull();
+    expect(lane!.nodes.agent.state).toBe("green");
+    const lapTraffic = lane!.traffic.filter((t) => t.kind === "lap");
+    expect(lapTraffic.map((t) => [t.status, Math.round(t.ageMs / 1000)])).toEqual([
+      ["invalid", 190],
+      ["unattributed", 95],
+      ["accepted", 60],
+    ]);
+    expect(lane!.traffic.filter((t) => t.kind === "heartbeat")).toHaveLength(10);
   });
 
   it("passes the read-only verify the owner runs after hand-applying 0006", async () => {
