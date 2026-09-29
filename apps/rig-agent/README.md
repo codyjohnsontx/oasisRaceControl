@@ -415,8 +415,10 @@ publish, the assignment laps are being stamped with, queued and parked lap
 counts with the age of the oldest queued lap, whether a sign-out is still
 owed, when the last lap was captured and posted, walk-up sign-in failures and
 agent notices since the previous heartbeat, the agent's own CPU and memory,
-and a `sequence` number counting up from 1 in each process. It carries no
-driver name: the server knows the driver from the assignment.
+and a `sequence` number counting up from 1 in each process. The server does
+not use `sequence` yet: PR 38 (heartbeat storage) stays as it is and strips
+it, and the next monitoring PR (PR 3, the evaluator) will accept it. It
+carries no driver name: the server knows the driver from the assignment.
 
 **What it costs.** It is built from state the agent already holds; the only
 file it reads is the outbox counts. No new thread and no new timer: the
@@ -448,11 +450,14 @@ window's close button, a Windows shutdown - sends one last heartbeat with
 three-second bound, so a rig that was closed reads differently from one that
 lost power. Pulling the plug sends nothing, which is the case the monitor's
 silence rule is for. The goodbye is the last heartbeat the process sends: only
-one heartbeat is ever on the wire, an ordinary one already in flight gets half
-the budget to finish before it is cancelled, and none starts once the goodbye
-has begun. A cancelled request may still have reached the server, so the
-server must order a rig's heartbeats by `processStartedAt` and `sequence`, not
-by arrival, and ignore an older heartbeat that lands after a goodbye.
+one heartbeat is ever on the wire, the agent awaits an ordinary one already
+in flight and cancels it once half the budget has gone, and none starts once
+the goodbye has begun. A cancelled request may still have reached the server
+and be stored after the goodbye. The server does not order heartbeats by
+`sequence` yet - PR 38 (heartbeat storage) stays as it is and strips it -
+and that ordering arrives with the next monitoring PR (PR 3, the evaluator),
+which will accept `sequence` and ignore an ordinary heartbeat that arrives
+after a goodbye with a lower sequence.
 
 **Sign-in failures** are counted from the answers the check-in routes give
 (`SignInFailureWatch`, handed to `DriverCheckInClient` as its HTTP handler), not

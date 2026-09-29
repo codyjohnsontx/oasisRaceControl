@@ -53,9 +53,10 @@ public sealed record HeartbeatReport
     public required bool ShuttingDown { get; init; }
 
     /// <summary>This report's place among the ones this process has built,
-    /// from 1. Together with <see cref="ProcessStartedAt"/> it orders a rig's
-    /// heartbeats however the network delivered them: one that lands after a
-    /// higher number from the same process is older news.</summary>
+    /// from 1. The server does not use it yet: PR 38 (heartbeat storage)
+    /// strips it, and server-side ordering arrives with the next monitoring
+    /// PR (PR 3, the evaluator), which will accept it and ignore an ordinary
+    /// heartbeat that arrives after a goodbye with a lower sequence.</summary>
     public long Sequence { get; init; }
 
     /// <summary>The event as it goes on the wire. A count the outbox could not

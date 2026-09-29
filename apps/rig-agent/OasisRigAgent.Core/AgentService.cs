@@ -473,13 +473,16 @@ public sealed class AgentService : IAsyncDisposable
     /// Bounded by <paramref name="limit"/> because it runs on the way out,
     /// where a backend that does not answer must not hold the window open;
     /// no heartbeat follows it.</summary>
-    ///
-    /// It goes after any heartbeat already in flight, never beside it (see
-    /// <see cref="SendHeartbeatAsync(bool)"/>). That one gets half the budget
-    /// to finish and is then cancelled, so a backend that is slow to answer it
-    /// still leaves the goodbye time to go; the sequence number on every
-    /// report lets the server put the two in order if the cancelled one
-    /// reached it anyway.</summary>
+    /// <remarks>It goes after any heartbeat already in flight, never beside it
+    /// (see <see cref="SendHeartbeatAsync(bool)"/>): the agent awaits that one
+    /// and, past half the budget, cancels it, so a backend that is slow to
+    /// answer it still leaves the goodbye time to go. A cancelled one may
+    /// still have reached the server. Every report carries a sequence number
+    /// for that case, but the server does not use it yet: PR 38 (heartbeat
+    /// storage) stays as it is and strips it, and server-side ordering arrives
+    /// with the next monitoring PR (PR 3, the evaluator), which will accept
+    /// the sequence and ignore an ordinary heartbeat that arrives after a
+    /// goodbye with a lower sequence.</remarks>
     public async Task SendGoodbyeAsync(TimeSpan limit)
     {
         _shuttingDown = true;
