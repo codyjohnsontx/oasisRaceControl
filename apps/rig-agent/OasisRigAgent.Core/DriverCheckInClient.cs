@@ -18,20 +18,12 @@ public sealed record DriverCheckIn(
 /// <summary>A check-in the backend refused, in words the person at the rig can act on.</summary>
 public sealed class CheckInRefusedException : Exception
 {
-    public CheckInRefusedException(string message, bool retryPin = false, bool nameRegistered = false) : base(message)
-    {
-        RetryPin = retryPin;
-        NameRegistered = nameRegistered;
-    }
+    public CheckInRefusedException(string message, bool retryPin = false) : base(message) => RetryPin = retryPin;
 
     /// <summary>True when the name stands and only the PIN needs typing again:
     /// the name is registered to a different PIN, or a new PIN was not
-    /// confirmed.</summary>
+    /// confirmed. Every such refusal follows a login the backend refused.</summary>
     public bool RetryPin { get; }
-
-    /// <summary>True when the backend has said the name is registered, so a
-    /// later wrong PIN for it is not a new name to sign up.</summary>
-    public bool NameRegistered { get; }
 }
 
 /// <summary>
@@ -80,8 +72,9 @@ public sealed class DriverCheckInClient
     /// with the right PIN types it once. Answering null gives up (the program is
     /// closing) and throws <see cref="OperationCanceledException"/>; an empty
     /// answer or a different PIN registers nothing. Pass null for
-    /// <paramref name="confirmNewPin"/> once the name is known to be registered:
-    /// a login that fails is then a wrong PIN, and nothing is registered.</summary>
+    /// <paramref name="confirmNewPin"/> when no sign-up is to be offered: a
+    /// login that fails is then refused as a wrong PIN, and nothing is
+    /// registered.</summary>
     public async Task<DriverCheckIn> CheckInAsync(
         string name, string pin, Func<CancellationToken, Task<string?>>? confirmNewPin, CancellationToken ct)
     {
@@ -175,7 +168,7 @@ public sealed class DriverCheckInClient
 
     private static CheckInRefusedException WrongPin(string name) =>
         new($"the name \"{name}\" is already registered and that PIN does not match. If this is your name, type your PIN again or ask staff. If \"{name}\" is not you, press Enter to pick a different name.",
-            retryPin: true, nameRegistered: true);
+            retryPin: true);
 
     private static CheckInRefusedException NameNotAllowed() =>
         new("that name is not allowed: 2 to 24 letters, numbers, spaces or . _ ' -");

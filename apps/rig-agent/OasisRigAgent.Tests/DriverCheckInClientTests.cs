@@ -179,7 +179,6 @@ public sealed class DriverCheckInClientTests
         // someone the name does not belong to. The backend reports no tries
         // left, so none are promised.
         Assert.True(ex.RetryPin);
-        Assert.True(ex.NameRegistered);
         Assert.Contains("\"chuy\" is already registered and that PIN does not match.", ex.Message);
         Assert.Contains("If this is your name, type your PIN again or ask staff.", ex.Message);
         Assert.Contains("If \"chuy\" is not you, press Enter to pick a different name.", ex.Message);

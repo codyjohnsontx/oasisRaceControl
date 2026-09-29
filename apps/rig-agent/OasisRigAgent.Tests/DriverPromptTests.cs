@@ -291,6 +291,36 @@ public sealed class DriverPromptTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task EnterAtTheSignUpPromptStillCountsTowardsGoingBackToTheName()
+    {
+        var backend = new Backend();
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
+        // Someone who thinks "Mike" is theirs: a PIN that fails, Enter at the
+        // sign-up prompt as a returning driver is told to, then another PIN
+        // that fails.
+        var screen = new RecordingConsole("Mike", "1234", "", "5678");
+
+        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
+
+        var t = screen.Transcript;
+        Assert.Single(t, l => l.StartsWith("New here?"));
+        var backToName = screen.ScreenBefore(t.Count);
+        Assert.Contains("The PIN for \"Mike\" did not match twice. If \"Mike\" is your name, ask staff to reset your PIN; if not, pick a different name.", backToName);
+        Assert.Contains("Type your name and press Enter:", backToName);
+
+        lock (backend.Calls)
+        {
+            Assert.Equal(2, backend.Calls.Count(c => c.StartsWith("/api/auth/login ")));
+            Assert.DoesNotContain(backend.Calls, c => c.StartsWith("/api/auth/register "));
+        }
+    }
+
     /// <summary>Telemetry whose sim state the test flips, as iRacing does when
     /// a session loads or the driver exits to the menu.</summary>
     private sealed class SwitchableTelemetry : ITelemetrySource

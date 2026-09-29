@@ -62,7 +62,7 @@ internal sealed class SystemPromptConsole : IPromptConsole
 internal static class DriverPrompt
 {
     private const int EmptySeatAttempts = 5;
-    private const int WrongPinsBeforeName = 2;
+    private const int FailedLoginsBeforeName = 2;
     private static readonly TimeSpan EmptySeatRetryGap = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ExitSignOutLimit = TimeSpan.FromSeconds(3);
     private static readonly string Rule = new('=', 60);
@@ -163,17 +163,16 @@ internal static class DriverPrompt
     /// <summary>Ask the typed name for its PIN and sign it in. A new name is
     /// asked for the PIN a second time before it is registered; a name that is
     /// already registered to a different PIN, or a new PIN that was not
-    /// confirmed, keeps the name and asks for the PIN again. Once the backend
-    /// has said the name is registered, a later wrong PIN is worded as one and
-    /// never offered as a new sign-up, and a second wrong PIN goes back to the
-    /// name screen, so someone typing a name that is not theirs cannot run the
-    /// real driver into the lockout from one sign-in. Enter alone at the PIN
-    /// goes back to the name screen.</summary>
+    /// confirmed, keeps the name and asks for the PIN again, once. A second
+    /// failed login, however the first ended, goes back to the name screen
+    /// without offering a sign-up, so someone typing a name that is not theirs
+    /// cannot run the real driver into the lockout from one sign-in. Enter
+    /// alone at the PIN goes back to the name screen.</summary>
     private static async Task<SignInOutcome> SignInAsync(
         AgentService agent, DriverCheckInClient checkIn, int rigNumber, WalkUpScreen screen, string name, CancellationToken quit)
     {
         string? pinNotice = null;
-        var wrongPins = 0;
+        var failedLogins = 0;
         while (true)
         {
             var pin = await ReadPinAsync(screen, rigNumber, name, pinNotice, quit);
@@ -201,11 +200,11 @@ internal static class DriverPrompt
 
             try
             {
-                return new SignInOutcome(await checkIn.CheckInAsync(name, pin, wrongPins > 0 ? null : ConfirmNewPin, quit), null, Quit: false);
+                return new SignInOutcome(await checkIn.CheckInAsync(name, pin, failedLogins > 0 ? null : ConfirmNewPin, quit), null, Quit: false);
             }
             catch (CheckInRefusedException ex) when (ex.RetryPin)
             {
-                if (ex.NameRegistered && ++wrongPins == WrongPinsBeforeName)
+                if (++failedLogins == FailedLoginsBeforeName)
                     return new SignInOutcome(null,
                         $"The PIN for \"{name}\" did not match twice. If \"{name}\" is your name, ask staff to reset your PIN; if not, pick a different name.",
                         Quit: false);

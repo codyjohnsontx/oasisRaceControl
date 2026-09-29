@@ -387,9 +387,11 @@ driver's.
   words: if the name is yours, type the PIN again or ask staff; if it is not
   you, press Enter to pick a different name. The name stays on screen and only
   the PIN is asked for again, once - the rig no longer offers that name as a
-  new sign-up. A second wrong PIN goes back to the name screen, saying the PIN
-  did not match twice, so someone typing a name that is not theirs cannot lock
-  the real driver out from one sign-in. Names are unique across everyone the
+  new sign-up. A second failed login in one sign-in - wrong PIN, second PIN
+  that did not match, or Enter at "New here?" - goes back to the name screen,
+  saying the PIN did not match twice, so someone typing a name that is not
+  theirs cannot lock the real driver out from one sign-in. A PIN that is not
+  4 digits never reaches the backend and does not count. Names are unique across everyone the
   app has ever stored, not only this event's drivers. There is no PIN reset on
   the rig; staff reset a PIN on `/staff`.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
