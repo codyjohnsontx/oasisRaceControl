@@ -4,9 +4,9 @@
  * of the footer. It also decodes the hydrated code and fails unless it opens
  * the view's target - the Oasis website on the event view, the page's own
  * `/leaderboards` on the rotation - which no server-side test can see, since
- * the rotation's code is only drawn once the browser knows its origin. Then it waits for the rotation to move and checks and
- * screenshots the next boards too, so the corner is proven on more than the
- * board that happened to be up.
+ * the rotation's code is only drawn once the browser knows its origin. Then it
+ * waits for the rotation to move and checks and screenshots the next boards
+ * too, so the corner is proven on more than the board that happened to be up.
  *
  * Runs against a live server in the system's Google Chrome through
  * `playwright-core` - no browser download, and nothing in `npm test` needs a
