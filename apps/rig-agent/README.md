@@ -426,18 +426,16 @@ the agent both want the CPU the scheduler gives it to iRacing. The telemetry
 thread keeps waiting on iRacing's data event as before; the lap detector
 already tolerates a late tick.
 
-**Offline.** Only the heartbeat backs off, and only from its second failure in
-a row: one missed heartbeat still waits 60 s, then 120, 240 and at most 300
-seconds between attempts, each within 10% jitter, back to 60 on the first
-heartbeat that gets through. The assignment poll and lap flush keep their
-intervals, because they carry the laps and the sign-out - and when either of
-them brings the link back after a heartbeat failed, the heartbeat is retried
-at once, so a blip never outlasts the monitor's two-minute silence rule. That
-early retry happens once per streak of failures and does not reset the
-backoff, so a backend that answers the poll but keeps failing the heartbeat
-is still asked two, four, then five minutes apart. A heartbeat the backend
-answers with an error leaves the rig online; only a backend that cannot be
-reached marks it offline. Notices and sign-in failures raised while the
+**Offline.** Only the heartbeat backs off. Every 60 s while it gets through;
+after one that does not - unreachable, timed out, or answered with any error
+- it is retried once 10 s later, so a blip stays well inside the monitor's
+two-minute silence rule. If that fails too, the gaps are 120, 240 and then at
+most 300 seconds, each within 10% jitter, back to 60 on the first heartbeat
+that gets through. The heartbeat keeps this schedule on its own: its outcome
+never changes the connection status, which the assignment poll and lap flush
+own and which therefore cannot flap on a heartbeat's answer. The poll and
+flush keep their intervals, because they carry the laps and the sign-out.
+Notices and sign-in failures raised while the
 backend is away are kept (the newest ten notices) and arrive with the first
 heartbeat that gets through. A backend that refuses the report as invalid input
 gets the bare `{type, agentVersion}` heartbeat instead, so a schema mismatch
@@ -514,9 +512,9 @@ the rest from `dotnet-counters` (`System.Runtime`, 5-second samples).
 - Each heartbeat was 720 bytes on the wire (596 before the first poll).
 - Offline, the heartbeat backed off: after the last answer at 601 s, the next
   that got through was at 1019 s, about 100 s after the backend came back,
-  instead of one a minute. That run predates the wake on the backend's return;
-  the agent now sends a heartbeat within one poll interval (10 s) of it,
-  pinned by `ThePollReachingTheBackendAgainSendsTheNextHeartbeatAtOnce`.
+  instead of one a minute. That run predates the current schedule (one retry
+  after 10 s, then 120, 240, 300 s); after a long outage the next heartbeat
+  can still land up to 300 s (plus 10%) after the backend returns.
 - SIGTERM with the backend up sent the goodbye (`shuttingDown: true`) after
   the queued laps had drained, and the process exited 0.
 

@@ -28,10 +28,10 @@ public sealed class HeartbeatTests : IDisposable
     }
 
     [Fact]
-    public void TheHeartbeatIsEveryMinuteAndDoublesToFiveMinutesOnceTwoInARowFail()
+    public void TheHeartbeatIsEveryMinuteRetriesOnceAfterTenSecondsThenDoublesToFiveMinutes()
     {
         Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(0, 0.5));
-        Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(1, 0.5));
+        Assert.Equal(TimeSpan.FromSeconds(10), HeartbeatSchedule.Delay(1, 0.5));
         Assert.Equal(TimeSpan.FromSeconds(120), HeartbeatSchedule.Delay(2, 0.5));
         Assert.Equal(TimeSpan.FromSeconds(240), HeartbeatSchedule.Delay(3, 0.5));
         Assert.Equal(TimeSpan.FromSeconds(300), HeartbeatSchedule.Delay(4, 0.5));
@@ -39,42 +39,60 @@ public sealed class HeartbeatTests : IDisposable
     }
 
     [Fact]
-    public void BackoffIsJitteredByTenPercentButTheMinuteIsNot()
+    public void BackoffIsJitteredByTenPercentButTheMinuteAndTheRetryAreNot()
     {
         Assert.Equal(TimeSpan.FromSeconds(108), HeartbeatSchedule.Delay(2, 0));
         Assert.Equal(132, HeartbeatSchedule.Delay(2, 0.999999).TotalSeconds, precision: 3);
         Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(0, 0));
         Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(0, 0.999999));
-        Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(1, 0));
-        Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(1, 0.999999));
+        Assert.Equal(TimeSpan.FromSeconds(10), HeartbeatSchedule.Delay(1, 0));
+        Assert.Equal(TimeSpan.FromSeconds(10), HeartbeatSchedule.Delay(1, 0.999999));
     }
 
-    /// <summary>A heartbeat lost to a blip must not outlast the monitor's
-    /// two-minute silence rule: the poll reaching the backend again sends the
-    /// next heartbeat at once rather than a minute or two later.</summary>
+    /// <summary>A heartbeat lost to a one-off server error must not outlast
+    /// the monitor's two-minute silence rule: it is retried about ten seconds
+    /// later rather than a minute or two.</summary>
     [Fact]
-    public async Task ThePollReachingTheBackendAgainSendsTheNextHeartbeatAtOnce()
+    public async Task ASingleFailedHeartbeatIsRetriedAboutTenSecondsLater()
     {
-        var backend = new RecordingBackend { Offline = true };
+        var backend = new RecordingBackend { HeartbeatErrorsLeft = 1 };
+        using var queue = new EventQueue(_dbPath);
+        var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
+        var clock = Stopwatch.StartNew();
+        agent.Start();
+
+        await Eventually(() => backend.Heartbeats.Count >= 1, TimeSpan.FromSeconds(15));
+
+        Assert.Equal(2, backend.EventPosts);
+        Assert.InRange(clock.Elapsed.TotalSeconds, 9, 15);
+    }
+
+    /// <summary>A heartbeat that keeps failing gets its one early retry and
+    /// then waits out the backoff, not one attempt per poll.</summary>
+    [Fact]
+    public async Task APersistentlyFailingHeartbeatRetriesOnceThenBacksOff()
+    {
+        var backend = new RecordingBackend { HeartbeatStatus = HttpStatusCode.InternalServerError };
         using var queue = new EventQueue(_dbPath);
         var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
         await using var agent = new AgentService(Config(), client, queue, new FakeSim());
         agent.Start();
-        await Eventually(() => backend.EventPosts >= 1 && agent.CurrentStatus().Connection == ConnectionState.Offline);
 
-        backend.Offline = false;
-        var clock = Stopwatch.StartNew();
-        await Eventually(() => backend.Heartbeats.Count >= 1, TimeSpan.FromSeconds(15));
-        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(15), clock.Elapsed.ToString());
+        await Eventually(() => backend.EventPosts >= 2, TimeSpan.FromSeconds(15));
+        var polls = backend.AssignmentPolls;
+        await Eventually(() => backend.AssignmentPolls >= polls + 2, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(2, backend.EventPosts);
     }
 
-    /// <summary>A backend that answers the poll but fails every heartbeat
-    /// with an error is reachable: the rig stays online, and the heartbeat
-    /// waits out its schedule instead of going again on every poll.</summary>
+    /// <summary>A rotated rig token refuses everything. The poll marks the
+    /// rig offline, and the heartbeat's own refusals must not flip it back
+    /// and forth: its outcome publishes no connection change at all.</summary>
     [Fact]
-    public async Task AHeartbeatAnsweredWithAnErrorLeavesTheRigOnlineAndIsNotRetriedEveryPoll()
+    public async Task ARefusedHeartbeatDoesNotFlapTheStatusLine()
     {
-        var backend = new RecordingBackend { FailHeartbeats = true };
+        var backend = new RecordingBackend { Unauthorized = true };
         using var queue = new EventQueue(_dbPath);
         var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
         await using var agent = new AgentService(Config(), client, queue, new FakeSim());
@@ -82,29 +100,15 @@ public sealed class HeartbeatTests : IDisposable
         agent.StatusChanged += s => { lock (connections) connections.Add(s.Connection); };
         agent.Start();
 
-        await Eventually(() => backend.AssignmentPolls >= 3, TimeSpan.FromSeconds(30));
-
-        Assert.Equal(1, backend.EventPosts);
-        lock (connections) Assert.DoesNotContain(ConnectionState.Offline, connections);
+        await Eventually(() => backend.EventPosts >= 2 && backend.AssignmentPolls >= 2, TimeSpan.FromSeconds(15));
         Assert.False(await agent.SendHeartbeatAsync(shuttingDown: false));
-        Assert.Equal(ConnectionState.Online, agent.CurrentStatus().Connection);
-    }
 
-    /// <summary>A heartbeat that cannot reach the backend while the poll
-    /// can gets one early retry for the streak, not one per poll; after that
-    /// it backs off on the schedule.</summary>
-    [Fact]
-    public async Task AStreakOfLostHeartbeatsGetsOneEarlyRetryNotOnePerPoll()
-    {
-        var backend = new RecordingBackend { DropHeartbeats = true };
-        using var queue = new EventQueue(_dbPath);
-        var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
-        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
-        agent.Start();
-
-        await Eventually(() => backend.AssignmentPolls >= 4, TimeSpan.FromSeconds(40));
-
-        Assert.Equal(2, backend.EventPosts);
+        lock (connections)
+        {
+            Assert.Contains(ConnectionState.Offline, connections);
+            Assert.DoesNotContain(ConnectionState.Online, connections);
+        }
+        Assert.Equal(ConnectionState.Offline, agent.CurrentStatus().Connection);
     }
 
     [Fact]
@@ -369,8 +373,8 @@ public sealed class HeartbeatTests : IDisposable
 
         backend.Hang = false;
         Assert.True(await agent.SendHeartbeatAsync(shuttingDown: false));
-        Assert.Equal(ConnectionState.Online, agent.CurrentStatus().Connection);
         await Eventually(() => agent.CurrentStatus().Assignment is not null, TimeSpan.FromSeconds(15));
+        Assert.Equal(ConnectionState.Online, agent.CurrentStatus().Connection);
     }
 
     /// <summary>The wire takes ten notices of two hundred characters; the
@@ -482,8 +486,9 @@ public sealed class HeartbeatTests : IDisposable
         public volatile bool Offline;
         public volatile bool RefuseReports;
         public volatile bool Hang;
-        public volatile bool FailHeartbeats;
-        public volatile bool DropHeartbeats;
+        public volatile bool Unauthorized;
+        public HttpStatusCode? HeartbeatStatus;
+        public int HeartbeatErrorsLeft;
 
         private int _eventPosts;
         private int _assignmentPolls;
@@ -497,13 +502,15 @@ public sealed class HeartbeatTests : IDisposable
             var path = request.RequestUri!.AbsolutePath;
             var isEvents = path.EndsWith("/events");
             if (isEvents) Interlocked.Increment(ref _eventPosts);
+            if (path.EndsWith("/assignment")) Interlocked.Increment(ref _assignmentPolls);
             if (Hang) await Task.Delay(Timeout.Infinite, ct);
             if (Offline) throw new HttpRequestException("venue network is down");
-            if (isEvents && DropHeartbeats) throw new HttpRequestException("the write never arrived");
-            if (isEvents && FailHeartbeats) return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+            if (Unauthorized) return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+            if (isEvents && HeartbeatStatus is { } status) return new HttpResponseMessage(status);
+            if (isEvents && Interlocked.Decrement(ref HeartbeatErrorsLeft) >= 0)
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
             if (path.EndsWith("/assignment"))
             {
-                Interlocked.Increment(ref _assignmentPolls);
                 return Json(Assignment is null
                     ? """{"assignment":null}"""
                     : "{\"assignment\":{\"id\":\"" + Assignment + "\",\"startedAt\":\"2026-07-12T00:00:00Z\",\"driver\":{\"id\":\"d-mike\",\"displayName\":\"Mike\"}}}");

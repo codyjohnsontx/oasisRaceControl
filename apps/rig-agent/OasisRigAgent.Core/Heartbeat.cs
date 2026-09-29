@@ -123,17 +123,15 @@ public sealed record HeartbeatReport
 }
 
 /// <summary>
-/// When the next heartbeat goes. Once a minute while the backend answers -
+/// When the next heartbeat goes. Once a minute while the backend takes it -
 /// the owner's cadence, and what the monitor's two-minute silence rule is
-/// sized against. One heartbeat the backend did not receive still waits the
-/// minute, so a blip cannot outlast that rule. From the second in a row the
-/// gap doubles (two, four, then five minutes at most) with a little jitter,
-/// so an offline rig spends nothing on a network that is not there and a
-/// whole venue coming back does not knock in step. The first heartbeat that
-/// gets through puts it straight back to a minute. The poll or the flush
-/// bringing the link back wakes the heartbeat at once, once per streak of
-/// failures, without resetting the count (see
-/// <c>AgentService.HeartbeatLoop</c>).
+/// sized against. After one that did not get through, for any reason, it is
+/// retried once ten seconds later, so a blip stays well inside that rule.
+/// From the second failure in a row the gap doubles (two, four, then five
+/// minutes at most) with a little jitter, so an offline rig spends nothing
+/// on a network that is not there and a whole venue coming back does not
+/// knock in step. The first heartbeat that gets through puts it straight
+/// back to a minute.
 ///
 /// Only the heartbeat backs off. The assignment poll and the lap flush keep
 /// their intervals, because they carry the laps and the sign-out and have to
@@ -142,6 +140,7 @@ public sealed record HeartbeatReport
 public static class HeartbeatSchedule
 {
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(60);
+    public static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(10);
     public static readonly TimeSpan MaxInterval = TimeSpan.FromSeconds(300);
     public const double Jitter = 0.10;
 
@@ -151,7 +150,8 @@ public static class HeartbeatSchedule
     /// fixed in tests.</param>
     public static TimeSpan Delay(int consecutiveFailures, double jitterUnit)
     {
-        if (consecutiveFailures <= 1) return Interval;
+        if (consecutiveFailures <= 0) return Interval;
+        if (consecutiveFailures == 1) return RetryDelay;
         // Capped before it is doubled any further, so a night-long outage
         // cannot overflow the shift.
         var doubled = Interval.TotalSeconds * Math.Pow(2, Math.Min(consecutiveFailures - 1, 8));

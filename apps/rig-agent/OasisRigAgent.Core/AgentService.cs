@@ -9,8 +9,10 @@ namespace OasisRigAgent.Core;
 /// (<see cref="HeartbeatReport"/>): built from state this class already
 /// holds, once a minute, and nothing on the rig decides whether it is healthy.
 /// Exposes a StatusChanged event the UI renders, and a Notice event for
-/// one-line problems the host prints. All backend calls funnel through
-/// RunBackend so one place owns the online/offline state transition.
+/// one-line problems the host prints. Every backend call but the heartbeat
+/// funnels through RunBackend so one place owns the online/offline state
+/// transition; the heartbeat keeps its own schedule and leaves that state
+/// alone.
 /// </summary>
 public sealed class AgentService : IAsyncDisposable
 {
@@ -28,11 +30,6 @@ public sealed class AgentService : IAsyncDisposable
     private readonly List<Task> _loops = new();
 
     private ConnectionState _connection = ConnectionState.Connecting;
-
-    // Completed when a backend call brings the connection back from offline.
-    // Replaced by the heartbeat loop before each send, so it only ever says
-    // "the backend returned since this heartbeat was attempted".
-    private TaskCompletionSource _backendReturned = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Written by the assignment poll and by SwitchDriverAsync, read by the
     // telemetry thread when it stamps a lap. volatile so a captured lap is
@@ -353,28 +350,19 @@ public sealed class AgentService : IAsyncDisposable
         return Task.CompletedTask;
     }
 
-    /// <summary>One heartbeat now, then one a minute - further apart while the
-    /// backend does not answer (<see cref="HeartbeatSchedule"/>). A Task.Delay
-    /// between sends rather than a timer: nothing wakes in between, and the
-    /// gap can grow. After a heartbeat that did not get through, the poll or
-    /// the flush reaching the backend again ends the wait once, so the rig is
-    /// seen again within seconds of the link returning. Only a heartbeat that
-    /// gets through ends the backoff, and a streak of failures gets one such
-    /// early retry, so a backend that answers the poll but not the heartbeat
-    /// is still asked two, four, then five minutes apart. Ends when the agent
-    /// is disposed or a goodbye has gone.</summary>
+    /// <summary>One heartbeat now, then one a minute - sooner once after a
+    /// failure, then further apart while the backend does not take it
+    /// (<see cref="HeartbeatSchedule"/>). A Task.Delay between sends rather
+    /// than a timer: nothing wakes in between, and the gap can grow. Ends when
+    /// the agent is disposed or a goodbye has gone.</summary>
     private async Task HeartbeatLoop()
     {
         var failures = 0;
-        var wokeThisStreak = false;
         while (!_cts.IsCancellationRequested && !_shuttingDown)
         {
-            var backendReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            Volatile.Write(ref _backendReturned, backendReturned);
-            bool? delivered;
             try
             {
-                delivered = await SendHeartbeatAsync(shuttingDown: false);
+                failures = await SendHeartbeatAsync(shuttingDown: false) ? 0 : failures + 1;
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
@@ -385,49 +373,43 @@ public sealed class AgentService : IAsyncDisposable
                 // Building the report failed locally; that is no reason to
                 // back off from a backend that may be answering fine.
                 RaiseNotice($"[agent] tick failed: {ex.Message}");
-                delivered = null;
-            }
-            if (delivered == true)
-            {
-                failures = 0;
-                wokeThisStreak = false;
-            }
-            else if (delivered == false)
-            {
-                failures++;
             }
 
-            using var wait = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-            var delay = Task.Delay(HeartbeatSchedule.Delay(failures, Random.Shared.NextDouble()), wait.Token);
-            var woke = await Task.WhenAny(delay, failures > 0 && !wokeThisStreak ? backendReturned.Task : delay);
-            wait.Cancel();
-            if (_cts.IsCancellationRequested) return;
-            if (woke != delay) wokeThisStreak = true;
+            try
+            {
+                await Task.Delay(HeartbeatSchedule.Delay(failures, Random.Shared.NextDouble()), _cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
         }
     }
 
     /// <summary>Send one heartbeat. True once the backend has it (the full
-    /// report or, if it refused that, the bare one), false when it could not be
-    /// reached or answered with an error. An error answer still comes from a
-    /// backend that is there, so it leaves the rig online rather than turning
-    /// every poll into a "back online". What it reported is forgotten only
-    /// once delivered, so a notice or a sign-in failure from an outage arrives
-    /// with the first heartbeat that gets through.</summary>
+    /// report or, if it refused that, the bare one), false when it did not:
+    /// unreachable, timed out, or answered with an error. The heartbeat keeps
+    /// its own schedule and leaves the connection status to the poll and the
+    /// flush, so its outcome never makes the status line flap. What it
+    /// reported is forgotten only once delivered, so a notice or a sign-in
+    /// failure from an outage arrives with the first heartbeat that gets
+    /// through.</summary>
     internal async Task<bool> SendHeartbeatAsync(bool shuttingDown)
     {
         var (report, reportedUpTo) = BuildHeartbeat(shuttingDown);
-        var sent = await RunBackend(async token =>
+        bool full;
+        try
         {
-            try
-            {
-                return (Ok: true, Full: await _client.HeartbeatAsync(report, token));
-            }
-            catch (HttpRequestException ex) when (ex.StatusCode is not null)
-            {
-                return (Ok: false, Full: false);
-            }
-        });
-        if (!sent.Ok) return false;
+            full = await _client.HeartbeatAsync(report, _cts.Token);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
 
         lock (_reportLock)
         {
@@ -436,7 +418,7 @@ public sealed class AgentService : IAsyncDisposable
             // again every minute, and the report would never get through.
             _unreportedNotices.RemoveAll(n => n.Seq <= reportedUpTo);
             _unreportedSignInFailures.RemoveAll(f => f.Seq <= reportedUpTo);
-            if (sent.Full || _reportedBareHeartbeat) return true;
+            if (full || _reportedBareHeartbeat) return true;
             _reportedBareHeartbeat = true;
         }
         RaiseNotice("[agent] the backend refused this rig's status report and got the bare heartbeat instead - "
@@ -778,10 +760,8 @@ public sealed class AgentService : IAsyncDisposable
     private void SetConnection(ConnectionState state)
     {
         if (_connection == state) return;
-        var returned = _connection == ConnectionState.Offline && state == ConnectionState.Online;
         _connection = state;
         PublishStatus();
-        if (returned) Volatile.Read(ref _backendReturned).TrySetResult();
     }
 
     private void PublishStatus()
