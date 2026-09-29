@@ -2,8 +2,8 @@
  * A PIN chosen for a new profile is typed twice, and only the same four
  * digits twice are sent. A PIN mistyped once at sign-up is one its owner can
  * never sign back in with - that is how a returning driver was locked out of
- * their own name at the 2026-09-28 event - and nothing but staff SQL can
- * change it afterwards. The rig console asks the same way
+ * their own name at the 2026-09-28 event - and only staff can fix it
+ * afterwards, with Reset PIN on /staff. The rig console asks the same way
  * (`DriverCheckInClient` in apps/rig-agent).
  */
 
