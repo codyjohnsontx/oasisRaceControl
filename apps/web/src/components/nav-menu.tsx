@@ -85,7 +85,14 @@ const SCREEN_GROUPS: ScreenGroup[] = [
 const FOCUSABLE =
   'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-/** Interview-ready screen index shared by every route in the application. */
+/**
+ * Interview-ready screen index shared by every route in the application.
+ *
+ * Every page renders it, the `/tv` event view included; that view hides it
+ * with CSS (`data-screen-menu` in `globals.css`), because it runs on a touch
+ * display the public walks up to at an off-site event and the index would
+ * hand any visitor every other screen, the staff sign-in included.
+ */
 export function NavMenu() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
@@ -136,7 +143,7 @@ export function NavMenu() {
   }, [open]);
 
   return (
-    <>
+    <div data-screen-menu className="contents">
       <button
         ref={triggerRef}
         type="button"
@@ -272,6 +279,6 @@ export function NavMenu() {
           </p>
         </footer>
       </aside>
-    </>
+    </div>
   );
 }

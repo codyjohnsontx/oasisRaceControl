@@ -9,6 +9,9 @@ import { renderToStaticMarkup } from "react-dom/server";
  * the lock stays total. Synthetic touch events skip `touch-action`, which is
  * why this is pinned on the markup rather than trusted to a gesture test.
  *
+ * The same `main` carries `data-tv-mode`, which is what hides the app-wide
+ * Screens menu on the event view (`globals.css`, `nav-menu.test.tsx`).
+ *
  * `next/image` is stubbed: the server render here has no Next runtime, and
  * the footer's images are not what is under test.
  */
@@ -23,12 +26,13 @@ vi.mock("next/image", () => ({
 
 const { TvScreen } = await import("./tv-screen");
 
-const mainClasses = (mode: "event" | "rotation") => {
+const renderMain = (mode: "event" | "rotation") => {
   const html = renderToStaticMarkup(<TvScreen initialBoards={[]} mode={mode} hostLogo={null} />);
-  const main = html.match(/<main class="([^"]*)"/);
+  const main = html.match(/<main data-tv-mode="([^"]*)" class="([^"]*)"/);
   expect(main).not.toBeNull();
-  return main![1].split(/\s+/);
+  return { mode: main![1], classes: main![2].split(/\s+/) };
 };
+const mainClasses = (mode: "event" | "rotation") => renderMain(mode).classes;
 
 describe("TvScreen touch lock", () => {
   it("lets the event view pan vertically, on the list's own ancestor", () => {
@@ -41,5 +45,15 @@ describe("TvScreen touch lock", () => {
     const classes = mainClasses("rotation");
     expect(classes).toContain("touch-none");
     expect(classes).not.toContain("touch-pan-y");
+  });
+});
+
+describe("TvScreen Screens-menu marker", () => {
+  it("marks the event view, which hides the menu", () => {
+    expect(renderMain("event").mode).toBe("event");
+  });
+
+  it("marks the rotation as the rotation, which keeps the menu", () => {
+    expect(renderMain("rotation").mode).toBe("rotation");
   });
 });
