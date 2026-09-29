@@ -67,7 +67,7 @@ public sealed class NameLoopIntegrationTests
         // seat stays with the driver who is in it.
         var wrong = await Assert.ThrowsAsync<CheckInRefusedException>(
             () => checkIn.CheckInAsync($"Loop A {tag}", "0000", SamePinAgain("0000"), CancellationToken.None));
-        Assert.Contains("is already registered and that PIN does not match it", wrong.Message);
+        Assert.Contains("is already registered and that PIN does not match.", wrong.Message);
         Assert.Equal(again.AssignmentId, (await backend.GetAssignmentAsync(CancellationToken.None)).Assignment!.Id);
 
         // A different name registers separately, and the takeover is confirmed

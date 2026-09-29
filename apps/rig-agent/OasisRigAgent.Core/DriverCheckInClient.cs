@@ -174,7 +174,7 @@ public sealed class DriverCheckInClient
     }
 
     private static CheckInRefusedException WrongPin(string name) =>
-        new($"the name \"{name}\" is already registered and that PIN does not match it - type your PIN again, or ask staff. Five wrong PINs in a row lock the name for 15 minutes.",
+        new($"the name \"{name}\" is already registered and that PIN does not match. If this is your name, type your PIN again or ask staff. If \"{name}\" is not you, press Enter to pick a different name.",
             retryPin: true, nameRegistered: true);
 
     private static CheckInRefusedException NameNotAllowed() =>

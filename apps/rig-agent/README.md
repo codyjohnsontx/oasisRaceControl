@@ -384,11 +384,14 @@ driver's.
   back in with, which is how a returning driver was locked out of their own
   name at the 2026-09-28 event.
 - A name that is already registered with a different PIN is refused in those
-  words: type the PIN again, or ask staff. The name stays on screen and only
-  the PIN is asked for again, once each from then on - the rig no longer
-  offers that name as a new sign-up; Enter alone there goes back to the name. Names
-  are unique across everyone the app has ever stored, not only this event's
-  drivers. There is no PIN reset on the rig.
+  words: if the name is yours, type the PIN again or ask staff; if it is not
+  you, press Enter to pick a different name. The name stays on screen and only
+  the PIN is asked for again, once - the rig no longer offers that name as a
+  new sign-up. A second wrong PIN goes back to the name screen, saying the PIN
+  did not match twice, so someone typing a name that is not theirs cannot lock
+  the real driver out from one sign-in. Names are unique across everyone the
+  app has ever stored, not only this event's drivers. There is no PIN reset on
+  the rig; staff reset a PIN on `/staff`.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
 - The PIN is exactly 4 digits; anything else asks for it again. An empty name
   asks again.

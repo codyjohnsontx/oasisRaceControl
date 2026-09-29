@@ -174,13 +174,16 @@ public sealed class DriverCheckInClientTests
         var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("chuy", "9999", SamePinAgain("9999"), CancellationToken.None));
 
         // The 2026-09-28 event: a returning driver whose PIN did not match was
-        // told to "use a different name". The name is theirs; the PIN is what
-        // to try again, and staff are who to ask.
+        // told to "use a different name". If the name is theirs the PIN is what
+        // to try again, and staff are who to ask; a different name is only for
+        // someone the name does not belong to. The backend reports no tries
+        // left, so none are promised.
         Assert.True(ex.RetryPin);
-        Assert.Contains("\"chuy\" is already registered and that PIN does not match it", ex.Message);
-        Assert.Contains("type your PIN again, or ask staff", ex.Message);
-        Assert.Contains("Five wrong PINs in a row lock the name for 15 minutes", ex.Message);
-        Assert.DoesNotContain("different name", ex.Message);
+        Assert.True(ex.NameRegistered);
+        Assert.Contains("\"chuy\" is already registered and that PIN does not match.", ex.Message);
+        Assert.Contains("If this is your name, type your PIN again or ask staff.", ex.Message);
+        Assert.Contains("If \"chuy\" is not you, press Enter to pick a different name.", ex.Message);
+        Assert.DoesNotContain("Five wrong PINs", ex.Message);
         Assert.Equal(new[] { "/api/auth/login", "/api/auth/register" }, Paths(backend));
     }
 

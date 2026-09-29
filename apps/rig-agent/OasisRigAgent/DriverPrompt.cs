@@ -62,6 +62,7 @@ internal sealed class SystemPromptConsole : IPromptConsole
 internal static class DriverPrompt
 {
     private const int EmptySeatAttempts = 5;
+    private const int WrongPinsBeforeName = 2;
     private static readonly TimeSpan EmptySeatRetryGap = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ExitSignOutLimit = TimeSpan.FromSeconds(3);
     private static readonly string Rule = new('=', 60);
@@ -164,13 +165,15 @@ internal static class DriverPrompt
     /// already registered to a different PIN, or a new PIN that was not
     /// confirmed, keeps the name and asks for the PIN again. Once the backend
     /// has said the name is registered, a later wrong PIN is worded as one and
-    /// never offered as a new sign-up. Enter alone at the PIN goes back to the
-    /// name screen.</summary>
+    /// never offered as a new sign-up, and a second wrong PIN goes back to the
+    /// name screen, so someone typing a name that is not theirs cannot run the
+    /// real driver into the lockout from one sign-in. Enter alone at the PIN
+    /// goes back to the name screen.</summary>
     private static async Task<SignInOutcome> SignInAsync(
         AgentService agent, DriverCheckInClient checkIn, int rigNumber, WalkUpScreen screen, string name, CancellationToken quit)
     {
         string? pinNotice = null;
-        var nameRegistered = false;
+        var wrongPins = 0;
         while (true)
         {
             var pin = await ReadPinAsync(screen, rigNumber, name, pinNotice, quit);
@@ -198,11 +201,14 @@ internal static class DriverPrompt
 
             try
             {
-                return new SignInOutcome(await checkIn.CheckInAsync(name, pin, nameRegistered ? null : ConfirmNewPin, quit), null, Quit: false);
+                return new SignInOutcome(await checkIn.CheckInAsync(name, pin, wrongPins > 0 ? null : ConfirmNewPin, quit), null, Quit: false);
             }
             catch (CheckInRefusedException ex) when (ex.RetryPin)
             {
-                nameRegistered |= ex.NameRegistered;
+                if (ex.NameRegistered && ++wrongPins == WrongPinsBeforeName)
+                    return new SignInOutcome(null,
+                        $"The PIN for \"{name}\" did not match twice. If \"{name}\" is your name, ask staff to reset your PIN; if not, pick a different name.",
+                        Quit: false);
                 pinNotice = $"Could not sign in: {ex.Message}";
             }
             catch (CheckInRefusedException ex)

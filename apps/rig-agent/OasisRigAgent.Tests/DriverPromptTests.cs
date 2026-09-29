@@ -182,8 +182,7 @@ public sealed class DriverPromptTests : IDisposable
         // says so plainly and asks for the PIN again, the name kept.
         var refusedScreen = screen.ScreenBefore(t.IndexOf("typed:4321"));
         Assert.Contains("  OASIS RACE CONTROL - RIG 02 - SIGN IN", refusedScreen);
-        Assert.Contains(refusedScreen, l => l.StartsWith("Could not sign in:") && l.Contains("is already registered and that PIN does not match it"));
-        Assert.DoesNotContain(refusedScreen, l => l.Contains("different name"));
+        Assert.Contains(refusedScreen, l => l.StartsWith("Could not sign in:") && l.Contains("is already registered and that PIN does not match."));
         Assert.Contains("Name: Mike", refusedScreen);
         Assert.Contains(refusedScreen, l => l.StartsWith("Type your 4-digit PIN"));
 
@@ -248,7 +247,7 @@ public sealed class DriverPromptTests : IDisposable
     }
 
     [Fact]
-    public async Task ANameFoundRegisteredIsNeverOfferedASignUpAgain()
+    public async Task ANameFoundRegisteredIsNeverOfferedASignUpAgainAndASecondWrongPinGoesBackToTheName()
     {
         var backend = new Backend();
         using var queue = new EventQueue(_dbPath);
@@ -259,20 +258,25 @@ public sealed class DriverPromptTests : IDisposable
         var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
         // The 2026-09-28 walk-through: a returning driver types a wrong PIN and
         // confirms it, finds the name registered, types a different wrong PIN,
-        // then the right one.
-        var screen = new RecordingConsole("Mike", "1234", "1234", "5678", "4321", "");
+        // is sent back to the name, then types the name and the right PIN.
+        var screen = new RecordingConsole("Mike", "1234", "1234", "5678", "Mike", "4321", "");
 
         await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
 
         var t = screen.Transcript;
         var registered = screen.ScreenBefore(t.IndexOf("typed:5678"));
-        Assert.Contains(registered, l => l.StartsWith("Could not sign in:") && l.Contains("\"Mike\" is already registered and that PIN does not match it"));
+        Assert.Contains(registered, l => l.StartsWith("Could not sign in:")
+            && l.Contains("\"Mike\" is already registered and that PIN does not match.")
+            && l.Contains("If this is your name, type your PIN again or ask staff.")
+            && l.Contains("If \"Mike\" is not you, press Enter to pick a different name."));
+        Assert.Contains("Name: Mike", registered);
+        Assert.Contains(registered, l => l.StartsWith("Type your 4-digit PIN"));
 
-        // The second wrong PIN is worded as one, with no second PIN asked for.
-        var wrongAgain = screen.ScreenBefore(t.IndexOf("typed:4321"));
-        Assert.Contains(wrongAgain, l => l.StartsWith("Could not sign in:") && l.Contains("\"Mike\" is already registered and that PIN does not match it") && l.Contains("ask staff") && l.Contains("Five wrong PINs in a row lock the name for 15 minutes."));
-        Assert.Contains("Name: Mike", wrongAgain);
-        Assert.Contains(wrongAgain, l => l.StartsWith("Type your 4-digit PIN"));
+        // The second wrong PIN is not asked for twice and not offered as a
+        // sign-up; it goes back to the name screen, saying why.
+        var backToName = screen.ScreenBefore(t.LastIndexOf("typed:Mike"));
+        Assert.Contains("The PIN for \"Mike\" did not match twice. If \"Mike\" is your name, ask staff to reset your PIN; if not, pick a different name.", backToName);
+        Assert.Contains("Type your name and press Enter:", backToName);
         Assert.DoesNotContain(t.Skip(t.LastIndexOf("typed:1234")), l => l.StartsWith("New here?") || l.StartsWith("No driver is signed up"));
 
         var driving = screen.ScreenBefore(t.LastIndexOf("typed:"));
@@ -280,7 +284,11 @@ public sealed class DriverPromptTests : IDisposable
         Assert.Contains("Welcome back. Your laps post automatically.", driving);
 
         // Only the confirmed first PIN ever reached the register route.
-        lock (backend.Calls) Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/register "));
+        lock (backend.Calls)
+        {
+            Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/register "));
+            Assert.Equal(3, backend.Calls.Count(c => c.StartsWith("/api/auth/login ")));
+        }
     }
 
     /// <summary>Telemetry whose sim state the test flips, as iRacing does when
