@@ -50,7 +50,7 @@ describe("GET /api/leaderboard/tonight", () => {
     expect(limitUsed()).toEqual([null]);
   });
 
-  it.each(["0", "-5", "2.5", "ALL", "everyone", ""])(
+  it.each(["0", "-5", "2.5", "ALL", "everyone", "", "9007199254740992", "99999999999999999999", "1e21"])(
     "refuses limit=%s instead of clamping it",
     async (limit) => {
       const res = await get(`?limit=${limit}`);
