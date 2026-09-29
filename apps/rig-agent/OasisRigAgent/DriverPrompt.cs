@@ -167,7 +167,8 @@ internal static class DriverPrompt
     /// same PIN twice goes to <see cref="Register"/>.</item>
     /// <item><see cref="Register"/>: a new driver is signed in. A taken name
     /// (409) goes back to the name, saying to answer y if it is theirs. Never
-    /// logs in.</item>
+    /// logs in; a check-in that fails after the sign-up goes back to the name
+    /// on the returning path, since the name is theirs now.</item>
     /// </list>
     /// </summary>
     private enum SignInState { AskRacedBefore, AskName, AskPin, LogIn, PinRefused, AskNewPin, AskNewPinAgain, Register }
@@ -256,6 +257,15 @@ internal static class DriverPrompt
                         driver = state == SignInState.LogIn
                             ? await checkIn.CheckInReturningAsync(name, pin, quit)
                             : await checkIn.CheckInNewAsync(name, pin, quit);
+                    }
+                    catch (SignedUpButNotCheckedInException ex)
+                    {
+                        returning = true;
+                        notice = ex.InnerException is CheckInRefusedException
+                            ? $"You are signed up as \"{name}\", but could not be checked in: {ex.Message}. Type your name and PIN to check in."
+                            : $"You are signed up as \"{name}\", but the backend could not be reached to check you in ({ex.Message}). Type your name and PIN to check in.";
+                        state = SignInState.AskName;
+                        break;
                     }
                     catch (CheckInRefusedException ex)
                     {

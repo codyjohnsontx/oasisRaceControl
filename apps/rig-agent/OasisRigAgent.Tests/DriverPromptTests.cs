@@ -77,6 +77,8 @@ public sealed class DriverPromptTests : IDisposable
         public readonly List<string> Calls = new();
         public readonly List<string> RegisteredPins = new();
         public volatile bool CheckoutUnreachable;
+        public volatile bool FailNextCheckIn;
+        private readonly Dictionary<string, string> _pins = new() { ["Mike"] = "4321" };
         public volatile bool RefuseLaps;
         public int AssignmentPolls;
         private volatile string? _open;
@@ -89,15 +91,17 @@ public sealed class DriverPromptTests : IDisposable
             if (path == "/api/agent/assignment") Interlocked.Increment(ref AssignmentPolls);
             var text = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
             var body = string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
-            if (path == "/api/auth/register") lock (RegisteredPins) RegisteredPins.Add(body?["pin"]?.GetValue<string>() ?? "");
+            var name = body?["displayName"]?.GetValue<string>() ?? "";
+            var pin = body?["pin"]?.GetValue<string>() ?? "";
+            if (path == "/api/auth/register") lock (RegisteredPins) RegisteredPins.Add(pin);
+            var identity = """{"driverId":""" + $"\"{(name == "Mike" ? "d-mike" : "d-new")}\",\"displayName\":\"{name}\"" + "}";
             var (status, answer) = path switch
             {
-                "/api/auth/login" when body?["displayName"]?.GetValue<string>() == "Mike" && body?["pin"]?.GetValue<string>() == "4321" =>
-                    (HttpStatusCode.OK, """{"driverId":"d-mike","displayName":"Mike"}"""),
+                "/api/auth/login" when Knows(name, pin) => (HttpStatusCode.OK, identity),
                 "/api/auth/login" => (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}"""),
-                "/api/auth/register" when body?["displayName"]?.GetValue<string>() is "Mike" or "Guest" =>
-                    (HttpStatusCode.Conflict, """{"error":"name_taken"}"""),
-                "/api/auth/register" => (HttpStatusCode.OK, """{"driverId":"d-new","displayName":""" + $"\"{body?["displayName"]}\"" + "}"),
+                "/api/auth/register" when !SignUp(name, pin) => (HttpStatusCode.Conflict, """{"error":"name_taken"}"""),
+                "/api/auth/register" => (HttpStatusCode.OK, identity),
+                "/api/checkin" when FailNextCheckIn => FailCheckIn(),
                 "/api/checkin" => CheckIn(),
                 "/api/agent/checkout" => Checkout(body?["assignmentId"]?.GetValue<string>()),
                 "/api/agent/events" when RefuseLaps && body?["events"]?.AsArray().Any(e => e?["type"]?.GetValue<string>() == "LAP_COMPLETED") == true =>
@@ -126,6 +130,24 @@ public sealed class DriverPromptTests : IDisposable
                 });
             }
             return new JsonObject { ["results"] = results }.ToJsonString();
+        }
+
+        private bool Knows(string name, string pin)
+        {
+            lock (_pins) return _pins.TryGetValue(name, out var known) && known == pin;
+        }
+
+        /// <summary>"Guest" is taken but has no PIN, as a guest's or a banned
+        /// driver's name.</summary>
+        private bool SignUp(string name, string pin)
+        {
+            lock (_pins) return name != "Guest" && _pins.TryAdd(name, pin);
+        }
+
+        private (HttpStatusCode, string) FailCheckIn()
+        {
+            FailNextCheckIn = false;
+            return (HttpStatusCode.Conflict, """{"error":"conflict"}""");
         }
 
         private (HttpStatusCode, string) CheckIn()
@@ -278,6 +300,36 @@ public sealed class DriverPromptTests : IDisposable
         var last = screen.ScreenBefore(t.Count);
         Assert.True(last.Contains(endsAt), $"{sequence}: ends at {endsAt}\n{string.Join("\n", last)}");
         Assert.True(last.Contains(shown), $"{sequence}: shows {shown}\n{string.Join("\n", last)}");
+    }
+
+    [Fact]
+    public async Task ANewDriverWhoseCheckInFailsAfterSigningUpRetriesAsReturning()
+    {
+        var backend = new Backend { FailNextCheckIn = true };
+        using var queue = new EventQueue(_dbPath);
+        using var http = new HttpClient(backend);
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 1, RigQrToken = "qr-rig-1" };
+        await using var agent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
+        agent.Start();
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-1", () => backend);
+        var screen = new RecordingConsole("n", "Alex", "1234", "1234", "Alex", "1234");
+
+        await DriverPrompt.RunAsync(agent, checkIn, 1, new WalkUpScreen(screen, agent), CancellationToken.None);
+
+        // The sign-up stood, so the retry is a returning driver's: the name
+        // and the PIN once, logged in, never "that name is already registered".
+        var t = screen.Transcript;
+        var retry = screen.ScreenBefore(t.LastIndexOf("typed:Alex"));
+        Assert.Contains(retry, l => l.StartsWith("You are signed up as \"Alex\", but could not be checked in: someone else checked in at the same moment"));
+        Assert.Contains(ReturningName, retry);
+        Assert.Contains(AskPin, screen.ScreenBefore(t.LastIndexOf("typed:1234")));
+        Assert.Contains("  RIG 01 - DRIVING: Alex", t);
+        Assert.DoesNotContain(t, l => l.Contains("already registered"));
+        lock (backend.Calls)
+        {
+            Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/register "));
+            Assert.Single(backend.Calls, c => c.StartsWith("/api/auth/login "));
+        }
     }
 
     [Fact]

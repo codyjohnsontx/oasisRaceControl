@@ -401,7 +401,9 @@ driver's.
 - New (n): the PIN is typed twice, and two that differ are both asked for
   again on the rig, without a backend call. A PIN mistyped once at sign-up is
   one its owner can never sign back in with. A name that is already taken
-  says so, and says to answer y if it is theirs. This path never logs in.
+  says so, and says to answer y if it is theirs. This path never logs in. A
+  check-in that fails after the sign-up says the driver is signed up and goes
+  back to the name as a returning driver, so the retry logs in.
   Names are unique across everyone the app has ever stored, not only this
   event's drivers.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.

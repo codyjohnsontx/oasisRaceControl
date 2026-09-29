@@ -182,6 +182,25 @@ public sealed class DriverCheckInClientTests
         Assert.Empty(backend.Requests);
     }
 
+    [Fact]
+    public async Task ACheckInThatFailsAfterASignUpSaysTheSignUpStood()
+    {
+        var (client, backend) = Build();
+        backend.Answer = (path, _) => path == "/api/auth/register"
+            ? (HttpStatusCode.OK, """{"driverId":"d-2","displayName":"Alex"}""", Session)
+            : (HttpStatusCode.Conflict, """{"error":"conflict"}""", null);
+
+        var refused = await Assert.ThrowsAsync<SignedUpButNotCheckedInException>(() => client.CheckInNewAsync("Alex", "1234", CancellationToken.None));
+        Assert.IsType<CheckInRefusedException>(refused.InnerException);
+        Assert.Contains("same moment", refused.Message);
+
+        backend.Answer = (path, _) => path == "/api/auth/register"
+            ? (HttpStatusCode.OK, """{"driverId":"d-2","displayName":"Alex"}""", Session)
+            : throw new HttpRequestException("venue wifi is down");
+        var offline = await Assert.ThrowsAsync<SignedUpButNotCheckedInException>(() => client.CheckInNewAsync("Alex", "1234", CancellationToken.None));
+        Assert.IsType<HttpRequestException>(offline.InnerException);
+    }
+
     [Theory]
     [InlineData(true, "/api/auth/login", 400, "not allowed")]
     [InlineData(true, "/api/auth/login", 500, "HTTP 500")]
@@ -201,10 +220,12 @@ public sealed class DriverCheckInClientTests
             : path is "/api/auth/login" or "/api/auth/register"
                 ? (HttpStatusCode.OK, """{"driverId":"d","displayName":"X"}""", "oasis_driver=j; Path=/")
                 : (HttpStatusCode.OK, CheckedIn, null);
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => returning
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => returning
             ? client.CheckInReturningAsync("Some Name", "1234", CancellationToken.None)
             : client.CheckInNewAsync("Some Name", "1234", CancellationToken.None));
         Assert.Contains(expected, ex.Message);
+        // A new driver refused at the check-in has already been signed up.
+        Assert.IsType(!returning && failingPath == "/api/checkin" ? typeof(SignedUpButNotCheckedInException) : typeof(CheckInRefusedException), ex);
     }
 
     [Fact]

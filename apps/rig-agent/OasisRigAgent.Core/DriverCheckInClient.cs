@@ -21,6 +21,14 @@ public sealed class CheckInRefusedException : Exception
     public CheckInRefusedException(string message) : base(message) { }
 }
 
+/// <summary>A new driver was registered but the check-in after it failed
+/// (<see cref="Exception.InnerException"/> says how). The name and PIN now
+/// belong to them, so the retry is a returning driver's sign-in.</summary>
+public sealed class SignedUpButNotCheckedInException : Exception
+{
+    public SignedUpButNotCheckedInException(Exception inner) : base(inner.Message, inner) { }
+}
+
 /// <summary>
 /// Signs a walk-up driver in on this rig from the rig PC itself, using the
 /// backend's existing name + PIN routes as an HTTP client. A returning driver
@@ -38,7 +46,7 @@ public sealed class CheckInRefusedException : Exception
 /// A name and PIN are the driver's across both event days, so a returning
 /// driver's laps accumulate on one leaderboard row. Logging in is repeatable,
 /// so a check-in that fails after the sign-in is retried by typing the same
-/// name and PIN again.
+/// name and PIN again - as a returning driver, even after a sign-up.
 ///
 /// Every check-in gets a fresh cookie jar, so one person's session never
 /// leaks into the next: the rig is the shared phone here. Every answer that is
@@ -82,7 +90,8 @@ public sealed class DriverCheckInClient
     }
 
     /// <summary>Register a new driver and seat them. Null when the name is
-    /// already taken (409). The backend does not say how many tries a taken
+    /// already taken (409). A check-in that fails once the driver is registered
+    /// throws <see cref="SignedUpButNotCheckedInException"/>. The backend does not say how many tries a taken
     /// name has left, only when it locks (MAX_FAILS in driver-auth.ts).</summary>
     public async Task<DriverCheckIn?> CheckInNewAsync(string name, string pin, CancellationToken ct)
     {
@@ -97,7 +106,14 @@ public sealed class DriverCheckInClient
             throw NameNotAllowed();
         if (!register.IsSuccessStatusCode)
             throw new CheckInRefusedException($"the backend could not sign you up (HTTP {(int)register.StatusCode}) - try again");
-        return await CheckIn(http, Identify(body, returning: false), ct);
+        try
+        {
+            return await CheckIn(http, Identify(body, returning: false), ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            throw new SignedUpButNotCheckedInException(ex);
+        }
     }
 
     private HttpClient NewHttpClient() => new(_handlerFactory(), disposeHandler: true)
