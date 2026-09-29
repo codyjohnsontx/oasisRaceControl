@@ -343,6 +343,60 @@ public sealed class HeartbeatTests : IDisposable
         Assert.True(agent.BuildHeartbeat(shuttingDown: false).Report.ShuttingDown);
     }
 
+    /// <summary>The goodbye must be the last word. An ordinary heartbeat
+    /// already on the wire when the program closes is finished first, and the
+    /// goodbye goes after it - never beside it, where a slow ordinary one
+    /// could land second and read as the rig coming back.</summary>
+    [Fact]
+    public async Task AHeartbeatInFlightAtShutdownLandsBeforeTheGoodbyeNeverAfterIt()
+    {
+        var backend = new RecordingBackend();
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        backend.HoldOrdinaryHeartbeats = hold;
+        using var queue = new EventQueue(_dbPath);
+        var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
+        agent.Start();
+        await backend.OrdinaryHeartbeatHeld.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var goodbye = agent.SendGoodbyeAsync(TimeSpan.FromSeconds(3));
+        await Task.Delay(200);
+        Assert.False(goodbye.IsCompleted);
+        Assert.Empty(backend.Heartbeats);
+
+        hold.SetResult();
+        await goodbye;
+
+        var delivered = backend.Heartbeats;
+        Assert.Equal([false, true], delivered.Select(h => h["shuttingDown"]!.GetValue<bool>()));
+        Assert.True(delivered[0]["sequence"]!.GetValue<long>() < delivered[1]["sequence"]!.GetValue<long>());
+    }
+
+    /// <summary>An ordinary heartbeat the backend never answers still leaves
+    /// the goodbye its turn: it is cut off at half the budget, and the
+    /// goodbye goes out inside the limit.</summary>
+    [Fact]
+    public async Task AHeartbeatStuckInFlightIsCutShortSoTheGoodbyeStillGoes()
+    {
+        var backend = new RecordingBackend
+        {
+            HoldOrdinaryHeartbeats = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        using var queue = new EventQueue(_dbPath);
+        var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
+        agent.Start();
+        await backend.OrdinaryHeartbeatHeld.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var clock = Stopwatch.StartNew();
+        await agent.SendGoodbyeAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), clock.Elapsed.ToString());
+        var goodbye = Assert.Single(backend.Heartbeats);
+        Assert.True(goodbye["shuttingDown"]!.GetValue<bool>());
+        Assert.True(goodbye["sequence"]!.GetValue<long>() > 1);
+    }
+
     [Fact]
     public async Task TheGoodbyeGivesUpWithinItsLimitWhenTheBackendDoesNotAnswer()
     {
@@ -490,6 +544,12 @@ public sealed class HeartbeatTests : IDisposable
         public HttpStatusCode? HeartbeatStatus;
         public int HeartbeatErrorsLeft;
 
+        /// <summary>When set, an ordinary heartbeat that has reached the
+        /// backend is held here - body read, not yet answered or recorded -
+        /// until the test completes it: a request still in flight.</summary>
+        public volatile TaskCompletionSource? HoldOrdinaryHeartbeats;
+        public readonly TaskCompletionSource OrdinaryHeartbeatHeld = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private int _eventPosts;
         private int _assignmentPolls;
 
@@ -521,6 +581,11 @@ public sealed class HeartbeatTests : IDisposable
             var events = body["events"]!.AsArray();
             if (events[0]!["type"]!.GetValue<string>() != "RIG_HEARTBEAT") return Json("""{"results":[]}""");
             var heartbeat = events[0]!.AsObject();
+            if (HoldOrdinaryHeartbeats is { } hold && heartbeat["shuttingDown"]?.GetValue<bool>() == false)
+            {
+                OrdinaryHeartbeatHeld.TrySetResult();
+                await hold.Task.WaitAsync(ct);
+            }
             if (RefuseReports && heartbeat.ContainsKey("sentAt"))
                 return new HttpResponseMessage(HttpStatusCode.BadRequest)
                 {

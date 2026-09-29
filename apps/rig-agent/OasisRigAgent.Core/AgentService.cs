@@ -93,6 +93,12 @@ public sealed class AgentService : IAsyncDisposable
     private readonly List<(long Seq, string Text)> _unreportedNotices = new();
     private readonly List<(long Seq, SignInFailureKind Kind)> _unreportedSignInFailures = new();
     private volatile bool _shuttingDown;
+    // One heartbeat on the wire at a time, the goodbye last (SendHeartbeatAsync).
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
+    // The scheduled send in flight, so a goodbye can cut it short; guarded by _reportLock.
+    private CancellationTokenSource? _scheduledSend;
+    // Numbers every report this process builds, for the server to order them by.
+    private long _heartbeatSequence;
     private bool _reportedBareHeartbeat;
 
     // A sign-in failure count is a number, so unlike the notices it is not
@@ -354,7 +360,7 @@ public sealed class AgentService : IAsyncDisposable
     /// failure, then further apart while the backend does not take it
     /// (<see cref="HeartbeatSchedule"/>). A Task.Delay between sends rather
     /// than a timer: nothing wakes in between, and the gap can grow. Ends when
-    /// the agent is disposed or a goodbye has gone.</summary>
+    /// the agent is disposed or a goodbye has begun.</summary>
     private async Task HeartbeatLoop()
     {
         var failures = 0;
@@ -362,9 +368,20 @@ public sealed class AgentService : IAsyncDisposable
         {
             try
             {
-                failures = await SendHeartbeatAsync(shuttingDown: false) ? 0 : failures + 1;
+                // Its own token, so a goodbye can cut a send that is taking
+                // too long without stopping the rest of the agent.
+                using var send = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+                lock (_reportLock) _scheduledSend = send;
+                try
+                {
+                    failures = await SendHeartbeatAsync(shuttingDown: false, send.Token) ? 0 : failures + 1;
+                }
+                finally
+                {
+                    lock (_reportLock) _scheduledSend = null;
+                }
             }
-            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested || _shuttingDown)
             {
                 return;
             }
@@ -393,14 +410,39 @@ public sealed class AgentService : IAsyncDisposable
     /// flush, so its outcome never makes the status line flap. What it
     /// reported is forgotten only once delivered, so a notice or a sign-in
     /// failure from an outage arrives with the first heartbeat that gets
-    /// through.</summary>
-    internal async Task<bool> SendHeartbeatAsync(bool shuttingDown)
+    /// through.
+    ///
+    /// One heartbeat is on the wire at a time. The goodbye has to be the last
+    /// thing the backend hears from this process, and the monitor reads a
+    /// rig's latest heartbeat as its state: an ordinary one still in flight
+    /// that landed after the goodbye would read as the rig coming back, then
+    /// going silent - the alert the goodbye exists to prevent. So every send
+    /// holds the gate, and an ordinary send that gets the gate once a goodbye
+    /// has begun sends nothing.</summary>
+    internal Task<bool> SendHeartbeatAsync(bool shuttingDown) => SendHeartbeatAsync(shuttingDown, _cts.Token);
+
+    private async Task<bool> SendHeartbeatAsync(bool shuttingDown, CancellationToken ct)
     {
+        await _sendGate.WaitAsync(ct);
+        try
+        {
+            if (!shuttingDown && _shuttingDown) return false;
+            return await SendHeldHeartbeatAsync(shuttingDown, ct);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
+    }
+
+    private async Task<bool> SendHeldHeartbeatAsync(bool shuttingDown, CancellationToken ct)
+    {
+        // Built under the gate, so the sequence numbers go out in order.
         var (report, reportedUpTo) = BuildHeartbeat(shuttingDown);
         bool full;
         try
         {
-            full = await _client.HeartbeatAsync(report, _cts.Token);
+            full = await _client.HeartbeatAsync(report, ct);
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested)
         {
@@ -431,12 +473,22 @@ public sealed class AgentService : IAsyncDisposable
     /// Bounded by <paramref name="limit"/> because it runs on the way out,
     /// where a backend that does not answer must not hold the window open;
     /// no heartbeat follows it.</summary>
+    ///
+    /// It goes after any heartbeat already in flight, never beside it (see
+    /// <see cref="SendHeartbeatAsync(bool)"/>). That one gets half the budget
+    /// to finish and is then cancelled, so a backend that is slow to answer it
+    /// still leaves the goodbye time to go; the sequence number on every
+    /// report lets the server put the two in order if the cancelled one
+    /// reached it anyway.</summary>
     public async Task SendGoodbyeAsync(TimeSpan limit)
     {
         _shuttingDown = true;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        budget.CancelAfter(limit);
+        lock (_reportLock) _scheduledSend?.CancelAfter(limit / 2);
         try
         {
-            await SendHeartbeatAsync(shuttingDown: true).WaitAsync(limit);
+            await SendHeartbeatAsync(shuttingDown: true, budget.Token);
         }
         catch (Exception)
         {
@@ -521,6 +573,7 @@ public sealed class AgentService : IAsyncDisposable
                 // being built says so too: it may land after the goodbye, and
                 // must not read as the rig coming back.
                 ShuttingDown = shuttingDown || _shuttingDown,
+                Sequence = ++_heartbeatSequence,
             };
             return (report, _reportSequence);
         }

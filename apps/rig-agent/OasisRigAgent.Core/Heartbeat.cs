@@ -52,6 +52,12 @@ public sealed record HeartbeatReport
     public double? AgentMemoryMb { get; init; }
     public required bool ShuttingDown { get; init; }
 
+    /// <summary>This report's place among the ones this process has built,
+    /// from 1. Together with <see cref="ProcessStartedAt"/> it orders a rig's
+    /// heartbeats however the network delivered them: one that lands after a
+    /// higher number from the same process is older news.</summary>
+    public long Sequence { get; init; }
+
     /// <summary>The event as it goes on the wire. A count the outbox could not
     /// answer is left out rather than guessed, so a failing disk still sends
     /// the heartbeat that says the rig is alive.</summary>
@@ -104,6 +110,7 @@ public sealed record HeartbeatReport
         if (AgentCpuPercent is { } cpu) json["agentCpuPercent"] = cpu;
         if (AgentMemoryMb is { } memory) json["agentMemoryMb"] = memory;
         json["shuttingDown"] = ShuttingDown;
+        if (Sequence > 0) json["sequence"] = Sequence;
         return json;
     }
 

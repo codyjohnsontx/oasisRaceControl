@@ -414,8 +414,9 @@ whether lap reading stopped and which variables the iRacing build does not
 publish, the assignment laps are being stamped with, queued and parked lap
 counts with the age of the oldest queued lap, whether a sign-out is still
 owed, when the last lap was captured and posted, walk-up sign-in failures and
-agent notices since the previous heartbeat, and the agent's own CPU and memory.
-It carries no driver name: the server knows the driver from the assignment.
+agent notices since the previous heartbeat, the agent's own CPU and memory,
+and a `sequence` number counting up from 1 in each process. It carries no
+driver name: the server knows the driver from the assignment.
 
 **What it costs.** It is built from state the agent already holds; the only
 file it reads is the outbox counts. No new thread and no new timer: the
@@ -446,7 +447,12 @@ window's close button, a Windows shutdown - sends one last heartbeat with
 `shuttingDown: true`, in parallel with the walk-up sign-out and under the same
 three-second bound, so a rig that was closed reads differently from one that
 lost power. Pulling the plug sends nothing, which is the case the monitor's
-silence rule is for.
+silence rule is for. The goodbye is the last heartbeat the process sends: only
+one heartbeat is ever on the wire, an ordinary one already in flight gets half
+the budget to finish before it is cancelled, and none starts once the goodbye
+has begun. A cancelled request may still have reached the server, so the
+server must order a rig's heartbeats by `processStartedAt` and `sequence`, not
+by arrival, and ignore an older heartbeat that lands after a goodbye.
 
 **Sign-in failures** are counted from the answers the check-in routes give
 (`SignInFailureWatch`, handed to `DriverCheckInClient` as its HTTP handler), not
