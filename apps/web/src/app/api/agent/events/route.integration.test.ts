@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterAll, beforeEach, expect, it } from "vitest";
 import { POST } from "./route";
 import { UNATTRIBUTED_CAUSES } from "@/lib/unattributed-cause";
@@ -51,6 +53,33 @@ const LAP = {
     return new Date().toISOString();
   },
 };
+
+const REPO_ROOT = join(__dirname, "..", "..", "..", "..", "..", "..", "..");
+
+/** Sum of "Actual Rows" over every plan node that scans `relation`, from an
+ *  EXPLAIN (ANALYZE, FORMAT JSON) plan: how many of its rows the query read. */
+function sumActualRows(plan: unknown, relation: string): number {
+  let total = 0;
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (record["Relation Name"] === relation) {
+      total += Number(record["Actual Rows"]) * Number(record["Actual Loops"] ?? 1);
+    }
+    Object.values(record).forEach(visit);
+  };
+  visit(plan);
+  return total;
+}
+
+/** Every stored heartbeat, oldest first. */
+async function heartbeatRows() {
+  const { rows } = await testDb().query<Record<string, unknown> & { received_at: Date }>(
+    "select * from rig_heartbeats order by id",
+  );
+  return rows;
+}
 
 function post(rig: SeededRig, events: unknown[]) {
   return new Request("http://localhost/api/agent/events", {
@@ -835,6 +864,261 @@ describeDb("POST /api/agent/events against real Postgres", () => {
     // Rig 2 was never touched by rig 1's token.
     expect(rows[1]).toMatchObject({ rig_number: 2, agent_version: null });
     expect(rows[1]!.last_seen_at).toBeNull();
+  });
+
+  it("stores a v1 heartbeat as a row with an empty payload", async () => {
+    const rig = await seedRig(1);
+
+    const response = await POST(
+      post(rig, [{ type: "RIG_HEARTBEAT", agentVersion: "rig-agent/0.3-event" }]),
+    );
+
+    expect(response.status).toBe(200);
+    const rows = await heartbeatRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      rig_id: rig.id,
+      agent_version: "rig-agent/0.3-event",
+      sent_at: null,
+      clock_skew_ms: null,
+      sim_connected: null,
+      assignment_id: null,
+      shutting_down: false,
+      payload: {},
+    });
+  });
+
+  it("stores a v2 heartbeat's fields in their columns and the rest in payload", async () => {
+    const rig = await seedRig(1);
+    const driver = await seedDriver("Cody J");
+    const assignmentId = await openAssignment(rig.id, driver.id);
+
+    await POST(
+      post(rig, [
+        {
+          type: "RIG_HEARTBEAT",
+          agentVersion: "rig-agent/0.4-monitor",
+          sentAt: new Date().toISOString(),
+          processStartedAt: "2026-10-04T14:02:11Z",
+          startCount: 3,
+          osUptimeS: 26_120,
+          telemetryMode: "iracing",
+          simConnected: true,
+          telemetryFaulted: false,
+          missingVariables: [],
+          session: {
+            trackName: "Circuit of the Americas",
+            trackConfig: null,
+            carName: "FIA F4",
+          },
+          assignmentId,
+          assignmentKnown: true,
+          pendingLaps: 2,
+          oldestPendingAgeS: 95,
+          rejectedLaps: 0,
+          checkout: "none",
+          signInFailures: 1,
+          signInFailureKinds: ["wrong_pin_or_name"],
+          notices: ["[agent] sign-in refused"],
+          agentCpuPercent: 0.1,
+          agentMemoryMb: 38.5,
+        },
+      ]),
+    );
+
+    const [row] = await heartbeatRows();
+    expect(row).toMatchObject({
+      agent_version: "rig-agent/0.4-monitor",
+      process_started_at: new Date("2026-10-04T14:02:11Z"),
+      start_count: 3,
+      sim_connected: true,
+      telemetry_faulted: false,
+      session_track: "Circuit of the Americas",
+      session_config: null,
+      session_car: "FIA F4",
+      assignment_id: assignmentId,
+      pending_laps: 2,
+      rejected_laps: 0,
+      checkout: "none",
+      sign_in_failures: 1,
+      shutting_down: false,
+      payload: {
+        osUptimeS: 26_120,
+        telemetryMode: "iracing",
+        missingVariables: [],
+        assignmentKnown: true,
+        oldestPendingAgeS: 95,
+        signInFailureKinds: ["wrong_pin_or_name"],
+        notices: ["[agent] sign-in refused"],
+        agentCpuPercent: 0.1,
+        agentMemoryMb: 38.5,
+      },
+    });
+    // The rig row still moves, so /staff and v_rig_status read what they did.
+    const { rows } = await testDb().query<{
+      last_seen_at: Date | null;
+      agent_version: string;
+    }>("select last_seen_at, agent_version from rigs where id = $1", [rig.id]);
+    expect(rows[0]!.agent_version).toBe("rig-agent/0.4-monitor");
+    expect(rows[0]!.last_seen_at).not.toBeNull();
+  });
+
+  it("derives clock skew server-side, positive when the rig's clock is behind", async () => {
+    const rig = await seedRig(1);
+    const tenMinutesBehind = new Date(Date.now() - 10 * 60_000).toISOString();
+    // A rig whose CMOS battery died boots years in the past; that skew must
+    // store, not overflow the column and 500 the heartbeat.
+    const yearsBehind = "2000-01-01T00:00:00Z";
+
+    await POST(post(rig, [{ type: "RIG_HEARTBEAT", sentAt: tenMinutesBehind }]));
+    await POST(post(rig, [{ type: "RIG_HEARTBEAT", sentAt: yearsBehind }]));
+
+    const [behind, ancient] = await heartbeatRows();
+    expect(Number(behind!.clock_skew_ms)).toBeGreaterThan(10 * 60_000 - 5_000);
+    expect(Number(behind!.clock_skew_ms)).toBeLessThan(10 * 60_000 + 5_000);
+    expect(Number(ancient!.clock_skew_ms)).toBeGreaterThan(20 * 365 * 86_400_000);
+  });
+
+  it("answers the latest heartbeat per rig from v_rig_latest_heartbeat", async () => {
+    const rigOne = await seedRig(1);
+    const rigTwo = await seedRig(2);
+    await seedRig(3); // never heartbeated: no row, not a row of nulls
+
+    await POST(post(rigOne, [{ type: "RIG_HEARTBEAT", pendingLaps: 1 }]));
+    await POST(post(rigOne, [{ type: "RIG_HEARTBEAT", pendingLaps: 2 }]));
+    await POST(post(rigTwo, [{ type: "RIG_HEARTBEAT", pendingLaps: 5 }]));
+    await POST(post(rigTwo, [{ type: "RIG_HEARTBEAT", pendingLaps: 6, shuttingDown: true }]));
+    // Two rows sharing a received_at: id decides, so "latest" is still one row.
+    await testDb().query(
+      `insert into rig_heartbeats (rig_id, received_at, pending_laps)
+       select rig_id, received_at, 7 from rig_heartbeats
+       where rig_id = $1 order by id desc limit 1`,
+      [rigOne.id],
+    );
+
+    const { rows } = await testDb().query<{
+      rig_id: string;
+      pending_laps: number;
+      shutting_down: boolean;
+    }>("select rig_id, pending_laps, shutting_down from v_rig_latest_heartbeat");
+
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.rig_id === rigOne.id)).toMatchObject({ pending_laps: 7 });
+    expect(rows.find((r) => r.rig_id === rigTwo.id)).toMatchObject({
+      pending_laps: 6,
+      shutting_down: true,
+    });
+  });
+
+  it("reads one row per rig for the latest heartbeat, however much history is kept", async () => {
+    // The monitor reads this view on every evaluation, so its cost must not
+    // grow with retention. distinct on (rig_id) over the table reads every
+    // retained row; the per-rig indexed lookup reads one. Counted from the
+    // executor's own statistics rather than timed, so it is not flaky.
+    const rigs = await Promise.all([1, 2, 3, 4, 5].map((n) => seedRig(n)));
+    await testDb().query(
+      `insert into rig_heartbeats (rig_id, received_at)
+       select r.id, now() - make_interval(mins => g)
+       from unnest($1::uuid[]) as r (id), generate_series(1, 2000) as g`,
+      [rigs.map((rig) => rig.id)],
+    );
+    await testDb().query("analyze rig_heartbeats");
+
+    const { rows } = await testDb().query<{ "QUERY PLAN": unknown }>(
+      "explain (analyze, format json) select * from v_rig_latest_heartbeat",
+    );
+    const heartbeatRowsRead = sumActualRows(rows[0]!["QUERY PLAN"], "rig_heartbeats");
+
+    // 10,000 rows retained; one per rig is all it may touch.
+    expect(heartbeatRowsRead).toBe(rigs.length);
+  });
+
+  it("stores at most six heartbeats a minute per rig, and still marks it seen", async () => {
+    const rig = await seedRig(1);
+    const other = await seedRig(2);
+
+    const statuses: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const response = await POST(post(rig, [{ type: "RIG_HEARTBEAT", pendingLaps: i }]));
+      statuses.push((await response.json()).results[0].status);
+    }
+    const otherResponse = await POST(post(other, [{ type: "RIG_HEARTBEAT" }]));
+
+    expect(statuses).toEqual([...Array(6).fill("ok"), "rate_limited", "rate_limited"]);
+    // Another rig's allowance is its own.
+    await expect(otherResponse.json()).resolves.toMatchObject({
+      results: [{ status: "ok" }],
+    });
+    const stored = await heartbeatRows();
+    expect(stored.filter((row) => row.rig_id === rig.id)).toHaveLength(6);
+    const { rows } = await testDb().query<{ last_seen_at: Date | null }>(
+      "select last_seen_at from rigs where id = $1",
+      [rig.id],
+    );
+    expect(rows[0]!.last_seen_at).not.toBeNull();
+  });
+
+  it("stores every goodbye from a rig in a fast crash loop, without counting them", async () => {
+    const rig = await seedRig(1);
+
+    const goodbyeStatuses: string[] = [];
+    for (let start = 0; start < 8; start++) {
+      await POST(post(rig, [{ type: "RIG_HEARTBEAT", startCount: start }]));
+      const goodbye = await POST(
+        post(rig, [{ type: "RIG_HEARTBEAT", startCount: start, shuttingDown: true }]),
+      );
+      goodbyeStatuses.push((await goodbye.json()).results[0].status);
+    }
+
+    expect(goodbyeStatuses).toEqual(Array(8).fill("ok"));
+    const stored = await heartbeatRows();
+    expect(stored.filter((row) => row.shutting_down)).toHaveLength(8);
+    // The ordinary heartbeats still get their full six: goodbyes use none of it.
+    expect(stored.filter((row) => !row.shutting_down)).toHaveLength(6);
+  });
+
+  it("passes the read-only verify the owner runs after hand-applying 0005", async () => {
+    // db/verify/0005_rig_heartbeats.sql pins fingerprints of every object the
+    // migration creates; this database was built from the migration itself, so
+    // any row not ok means the migration and its verify have drifted apart.
+    // The suite applies migrations without the runner's bookkeeping, so the
+    // row the runner would have written is added for the duration.
+    const verify = readFileSync(
+      join(REPO_ROOT, "db", "verify", "0005_rig_heartbeats.sql"),
+      "utf8",
+    );
+    const client = await testDb().connect();
+    try {
+      await client.query(
+        `create temporary table schema_migrations (version text primary key);
+         insert into schema_migrations values ('0005_rig_heartbeats.sql')`,
+      );
+      const results = (await client.query(verify)) as unknown as Array<{
+        command: string;
+        rows: Array<{ check_name: string; ok: boolean; actual: string | null }>;
+      }>;
+      const checks = results.find((result) => result.command === "SELECT")!.rows;
+
+      expect(checks.map((check) => check.check_name)).toHaveLength(7);
+      expect(checks.filter((check) => !check.ok)).toEqual([]);
+    } finally {
+      await client.query("drop table if exists pg_temp.schema_migrations");
+      client.release();
+    }
+  });
+
+  it("stores a heartbeat naming an assignment the database does not know", async () => {
+    // The agent can be wrong - a stale outbox against a rebuilt database - and
+    // a heartbeat saying so is what the monitor wants to see, not a refusal.
+    const rig = await seedRig(1);
+    const unknown = "33333333-3333-4333-8333-333333333333";
+
+    const response = await POST(
+      post(rig, [{ type: "RIG_HEARTBEAT", assignmentId: unknown }]),
+    );
+
+    expect(response.status).toBe(200);
+    expect((await heartbeatRows())[0]).toMatchObject({ assignment_id: unknown });
   });
 
   it("does not let one rig's token write a lap onto another rig's assignment", async () => {
