@@ -110,7 +110,9 @@ An **urgent** alert is followed by two more messages, both quiet:
    suggested change and where to look. The frame is fixed text the monitor
    fills in (`handoff.ts`); the model only writes those three lines.
 
-The alert itself always goes first and never waits for the model. A call
+The alert itself always goes first and never waits for the model, and the
+tick answers its clock before the model is called: the diagnosis runs in
+`after()` once the evaluation has answered (`runDiagnoses` in `run.ts`). A call
 that fails or takes over 20 s leaves a retry marker, and an evaluation at
 least a minute later tries once more; if that fails too, the handoff is
 posted anyway with "no diagnosis" in place of the model's lines. Nothing is

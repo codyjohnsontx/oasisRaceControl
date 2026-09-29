@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/lib/db";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
-import { runMonitor } from "./run";
+import { runDiagnoses, runMonitor } from "./run";
 import { applyFindings, claimEvaluation, type OpenAlert } from "./store";
 import type { Finding } from "./rules";
 import {
@@ -45,10 +45,14 @@ const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
 let consoleError: ReturnType<typeof vi.spyOn>;
 let consoleLog: ReturnType<typeof vi.spyOn>;
 
-/** Lets the next runMonitor() past the throttle, as if 20 s had passed. */
+/**
+ * Lets the next runMonitor() past the throttle, as if 20 s had passed, and
+ * runs the diagnosis stage after it the way both callers do.
+ */
 async function nextEvaluation() {
   await testDb().query("update monitor_state set last_evaluated_at = null");
-  return runMonitor();
+  const run = await runMonitor();
+  return run.evaluated ? { ...run, diagnosed: await runDiagnoses() } : run;
 }
 
 /**
