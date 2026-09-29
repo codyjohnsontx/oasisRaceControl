@@ -198,8 +198,23 @@ describe("rule 1: rig silent", () => {
       expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
     });
 
+    it("waits out the slowest backed-off heartbeat: the last of twenty back 330 s after the first", () => {
+      const rigs = [
+        back(1, 15 * MIN, 330 * S),
+        ...Array.from({ length: 18 }, (_, i) => back(i + 2, 15 * MIN, (300 - i * 15) * S)),
+        quiet(20, 15 * MIN),
+      ];
+      expect(rulesOf(evaluate(rigs, open))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+    });
+
+    it("counts a rig back when its laps land before its next heartbeat", () => {
+      const flushed = rig(1, { heartbeats: minutely(22 * MIN, 12 * MIN), lastSeenAt: NOW - 10 * S });
+      const findings = evaluate([flushed, quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
+      expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+    });
+
     it("warns about each rig still quiet once the window after the first one back has passed", () => {
-      const findings = evaluate([back(1, 12 * MIN, 6 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
+      const findings = evaluate([back(1, 12 * MIN, 8 * MIN), quiet(2, 12 * MIN), quiet(3, 12 * MIN)], open);
       expect(rulesOf(findings)).toEqual(["rig_silent rig:rig-2 warning", "rig_silent rig:rig-3 warning"]);
     });
 
@@ -472,6 +487,50 @@ describe("rules 12, 17 and 18 across a restart", () => {
       ...minutely(MIN, 0, () => ({ processStartedAt: NOW - 90 * S, sequence: 1 })),
     ];
     expect(evaluate([rig(1, { heartbeats })], open)).toEqual([]);
+  });
+
+  /** What the agent really sends before iRacing attaches, and after it goes. */
+  const detached = { simConnected: false, missingVariables: [] };
+
+  it("holds 17 through the next process's heartbeats from before iRacing attaches", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, 5 * MIN, () => ({ missingVariables: ["PlayerCarIdx"] })),
+      hb(4 * MIN, { missingVariables: ["PlayerCarIdx"], shuttingDown: true }),
+      ...minutely(MIN, 0, () => ({ ...detached, processStartedAt: NOW - 90 * S, sequence: 1 })),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })], open))).toEqual([
+      "missing_variables rig:rig-1 warning",
+    ]);
+    const attachedClean = [...heartbeats, hb(0, { processStartedAt: NOW - 90 * S, sequence: 3 })];
+    expect(evaluate([rig(1, { heartbeats: attachedClean })], open)).toEqual([]);
+  });
+
+  it("holds 17 when iRacing closes, and while no attached heartbeat is in view", () => {
+    const closed = [
+      ...minutely(14 * MIN, 2 * MIN, () => ({ missingVariables: ["PlayerCarIdx"] })),
+      ...minutely(MIN, 0, () => detached),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats: closed })], open))).toEqual([
+      "missing_variables rig:rig-1 warning",
+    ]);
+    const neverAttached = minutely(14 * MIN, 0, () => detached);
+    const [held] = evaluate([rig(1, { heartbeats: neverAttached })], open);
+    expect(held!.detail.headline).toBe(
+      "Rig 01: this iRacing build does not publish some variables the agent reads",
+    );
+    expect(evaluate([rig(1, { heartbeats: neverAttached })])).toEqual([]);
+  });
+
+  it("holds 18 on CPU over the line without a fresh five-minute run, as after a restart", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, 3 * MIN),
+      hb(2 * MIN, { shuttingDown: true }),
+      ...minutely(MIN, 0, () => ({ ...detached, agentCpuPercent: 4, processStartedAt: NOW - 90 * S, sequence: 1 })),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })], open))).toEqual([
+      "footprint_high rig:rig-1 warning",
+    ]);
+    expect(evaluate([rig(1, { heartbeats })])).toEqual([]);
   });
 });
 

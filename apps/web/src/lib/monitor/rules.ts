@@ -53,11 +53,18 @@ export const SILENT_LOOKBACK_MS = 12 * 60 * 60_000;
  * as the venue closing rather than as that many broken rigs - one quiet note
  * instead of a warning per rig. A lone rig nobody is seated on is warned about
  * only once this has passed, because until then it may be the first of a
- * closing. A seated rig never waits: someone is mid-session on it. It is also
- * how long the venue note holds once the first rig is heard again, so rigs
- * still coming back from the same outage are not warned about one by one.
+ * closing. A seated rig never waits: someone is mid-session on it.
  */
 export const CORRELATION_WINDOW_MS = 5 * 60_000;
+/**
+ * How long the venue note holds once the first rig is heard again, so rigs
+ * still coming back from the same outage are not warned about one by one.
+ * An offline agent backs its heartbeat off to HeartbeatSchedule.MaxInterval
+ * (300 s) with Jitter (10%) in apps/rig-agent/OasisRigAgent.Core/Heartbeat.cs,
+ * so the last rig back can land 330 s after the first; the rest is slack for
+ * the evaluation that notices it.
+ */
+export const VENUE_RECOVERY_GRACE_MS = 7 * 60_000;
 /** iRacing hides its telemetry while a session loads, for about a minute. */
 export const SIM_DISCONNECTED_AFTER_MS = 3 * 60_000;
 export const LAP_STUCK_AFTER_S = 120;
@@ -177,8 +184,8 @@ function silence(
     unexplained.length >= 2 &&
     Math.max(...lastSeen) - Math.min(...lastSeen) <= CORRELATION_WINDOW_MS;
   const venueOpen = isOpen("venue_silent", VENUE_SUBJECT);
-  const firstHeardAgain = Math.min(...live.map(({ rig }) => heardSince(rig.heartbeats)));
-  const venueRecovering = anyLive && venueOpen && now - firstHeardAgain < CORRELATION_WINDOW_MS;
+  const firstHeardAgain = Math.min(...live.map(({ rig }) => heardSince(rig)));
+  const venueRecovering = anyLive && venueOpen && now - firstHeardAgain < VENUE_RECOVERY_GRACE_MS;
   if ((!anyLive && (together || venueOpen)) || venueRecovering) {
     const names = unexplained.map(({ rig }) => rig.name);
     findings.push({
@@ -204,15 +211,19 @@ function silence(
 }
 
 /**
- * When the rig was first heard in the unbroken run of heartbeats that ends at
- * its latest: after its last gap long enough to be silence, or its earliest
- * heartbeat here. Never for a rig with none.
+ * When the rig was first heard in the unbroken run that ends at its last word
+ * (`lastSeenAt`, which any request moves - a rig can come back by flushing its
+ * laps before its backed-off heartbeat lands): after the last gap long enough
+ * to be silence, or at its earliest heartbeat here.
  */
-function heardSince(heartbeats: readonly Heartbeat[]): number {
-  let i = heartbeats.length - 1;
-  if (i < 0) return -Infinity;
-  while (i > 0 && heartbeats[i]!.receivedAt - heartbeats[i - 1]!.receivedAt <= SILENT_AFTER_MS) i--;
-  return heartbeats[i]!.receivedAt;
+function heardSince(rig: RigSnapshot): number {
+  let since = rig.lastSeenAt!;
+  for (let i = rig.heartbeats.length - 1; i >= 0; i--) {
+    const receivedAt = rig.heartbeats[i]!.receivedAt;
+    if (since - receivedAt > SILENT_AFTER_MS) break;
+    since = Math.min(since, receivedAt);
+  }
+  return since;
 }
 
 function rigSilent(now: number, { rig, state }: Rig, severity: Severity): Finding {
@@ -363,13 +374,18 @@ function rigProperties(
     }
   }
 
-  if (live.missingVariables.length > 0) {
+  // The agent learns what iRacing publishes only while attached, and forgets
+  // it whenever iRacing goes, so only an attached heartbeat is evidence; with
+  // none in view an open alert holds.
+  const attached = rig.heartbeats.findLast((h) => !h.shuttingDown && h.simConnected === true);
+  const missing = attached?.missingVariables ?? [];
+  if (attached ? missing.length > 0 : isOpen("missing_variables", subject)) {
     findings.push(
       finding(
         "missing_variables",
         rig,
         "warning",
-        `${rig.name}: this iRacing build does not publish ${live.missingVariables.join(", ")}`,
+        `${rig.name}: this iRacing build does not publish ${missing.length > 0 ? missing.join(", ") : "some variables the agent reads"}`,
         fields,
       ),
     );
@@ -380,7 +396,10 @@ function rigProperties(
     live,
     (h) => h.agentCpuPercent !== null && h.agentCpuPercent > FOOTPRINT_CPU_PERCENT,
   );
-  const cpuHigh = cpuSince !== null && live.receivedAt - cpuSince >= FOOTPRINT_CPU_FOR_MS;
+  // Once open, CPU over the line holds it without a fresh five-minute run.
+  const cpuHigh =
+    cpuSince !== null &&
+    (isOpen("footprint_high", subject) || live.receivedAt - cpuSince >= FOOTPRINT_CPU_FOR_MS);
   const memoryHigh = live.agentMemoryMb !== null && live.agentMemoryMb > FOOTPRINT_MEMORY_MB;
   if (cpuHigh || memoryHigh) {
     const usage = [
