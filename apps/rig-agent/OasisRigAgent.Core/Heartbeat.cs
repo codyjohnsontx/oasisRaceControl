@@ -125,10 +125,14 @@ public sealed record HeartbeatReport
 /// <summary>
 /// When the next heartbeat goes. Once a minute while the backend answers -
 /// the owner's cadence, and what the monitor's two-minute silence rule is
-/// sized against. While it does not, the gap doubles (two, four, then five
-/// minutes at most) with a little jitter, so an offline rig spends nothing
-/// on a network that is not there and a whole venue coming back does not
-/// knock in step. The first answer puts it straight back to a minute.
+/// sized against. One heartbeat the backend did not receive still waits the
+/// minute, so a blip cannot outlast that rule. From the second in a row the
+/// gap doubles (two, four, then five minutes at most) with a little jitter,
+/// so an offline rig spends nothing on a network that is not there and a
+/// whole venue coming back does not knock in step. The first answer puts it
+/// straight back to a minute - and any backend call that brings the link
+/// back, the poll or the flush, wakes the heartbeat at once (see
+/// <c>AgentService.HeartbeatLoop</c>).
 ///
 /// Only the heartbeat backs off. The assignment poll and the lap flush keep
 /// their intervals, because they carry the laps and the sign-out and have to
@@ -146,10 +150,10 @@ public static class HeartbeatSchedule
     /// fixed in tests.</param>
     public static TimeSpan Delay(int consecutiveFailures, double jitterUnit)
     {
-        if (consecutiveFailures <= 0) return Interval;
+        if (consecutiveFailures <= 1) return Interval;
         // Capped before it is doubled any further, so a night-long outage
         // cannot overflow the shift.
-        var doubled = Interval.TotalSeconds * Math.Pow(2, Math.Min(consecutiveFailures, 8));
+        var doubled = Interval.TotalSeconds * Math.Pow(2, Math.Min(consecutiveFailures - 1, 8));
         var seconds = Math.Min(doubled, MaxInterval.TotalSeconds);
         return TimeSpan.FromSeconds(seconds * (1 + (jitterUnit * 2 - 1) * Jitter));
     }

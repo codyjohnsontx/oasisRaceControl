@@ -28,22 +28,44 @@ public sealed class HeartbeatTests : IDisposable
     }
 
     [Fact]
-    public void TheHeartbeatIsEveryMinuteAndDoublesToFiveMinutesWhileTheBackendIsAway()
+    public void TheHeartbeatIsEveryMinuteAndDoublesToFiveMinutesOnceTwoInARowFail()
     {
         Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(0, 0.5));
-        Assert.Equal(TimeSpan.FromSeconds(120), HeartbeatSchedule.Delay(1, 0.5));
-        Assert.Equal(TimeSpan.FromSeconds(240), HeartbeatSchedule.Delay(2, 0.5));
-        Assert.Equal(TimeSpan.FromSeconds(300), HeartbeatSchedule.Delay(3, 0.5));
+        Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(1, 0.5));
+        Assert.Equal(TimeSpan.FromSeconds(120), HeartbeatSchedule.Delay(2, 0.5));
+        Assert.Equal(TimeSpan.FromSeconds(240), HeartbeatSchedule.Delay(3, 0.5));
+        Assert.Equal(TimeSpan.FromSeconds(300), HeartbeatSchedule.Delay(4, 0.5));
         Assert.Equal(TimeSpan.FromSeconds(300), HeartbeatSchedule.Delay(10_000, 0.5));
     }
 
     [Fact]
-    public void BackoffIsJitteredByTenPercentButTheHealthyMinuteIsNot()
+    public void BackoffIsJitteredByTenPercentButTheMinuteIsNot()
     {
-        Assert.Equal(TimeSpan.FromSeconds(108), HeartbeatSchedule.Delay(1, 0));
-        Assert.Equal(132, HeartbeatSchedule.Delay(1, 0.999999).TotalSeconds, precision: 3);
+        Assert.Equal(TimeSpan.FromSeconds(108), HeartbeatSchedule.Delay(2, 0));
+        Assert.Equal(132, HeartbeatSchedule.Delay(2, 0.999999).TotalSeconds, precision: 3);
         Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(0, 0));
         Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(0, 0.999999));
+        Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(1, 0));
+        Assert.Equal(TimeSpan.FromSeconds(60), HeartbeatSchedule.Delay(1, 0.999999));
+    }
+
+    /// <summary>A heartbeat lost to a blip must not outlast the monitor's
+    /// two-minute silence rule: the poll reaching the backend again sends the
+    /// next heartbeat at once rather than a minute or two later.</summary>
+    [Fact]
+    public async Task ThePollReachingTheBackendAgainSendsTheNextHeartbeatAtOnce()
+    {
+        var backend = new RecordingBackend { Offline = true };
+        using var queue = new EventQueue(_dbPath);
+        var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
+        agent.Start();
+        await Eventually(() => backend.EventPosts >= 1 && agent.CurrentStatus().Connection == ConnectionState.Offline);
+
+        backend.Offline = false;
+        var clock = Stopwatch.StartNew();
+        await Eventually(() => backend.Heartbeats.Count >= 1, TimeSpan.FromSeconds(15));
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(15), clock.Elapsed.ToString());
     }
 
     [Fact]
@@ -422,10 +444,14 @@ public sealed class HeartbeatTests : IDisposable
         public volatile bool RefuseReports;
         public volatile bool Hang;
 
+        private int _eventPosts;
+
         public IReadOnlyList<JsonObject> Heartbeats { get { lock (_heartbeats) return _heartbeats.ToList(); } }
+        public int EventPosts => Volatile.Read(ref _eventPosts);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/events")) Interlocked.Increment(ref _eventPosts);
             if (Hang) await Task.Delay(Timeout.Infinite, ct);
             if (Offline) throw new HttpRequestException("venue network is down");
             var path = request.RequestUri!.AbsolutePath;

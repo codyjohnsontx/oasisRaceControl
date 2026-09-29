@@ -426,10 +426,13 @@ the agent both want the CPU the scheduler gives it to iRacing. The telemetry
 thread keeps waiting on iRacing's data event as before; the lap detector
 already tolerates a late tick.
 
-**Offline.** Only the heartbeat backs off: 60 s, then 120, 240 and at most 300
+**Offline.** Only the heartbeat backs off, and only from its second failure in
+a row: one missed heartbeat still waits 60 s, then 120, 240 and at most 300
 seconds between attempts, each within 10% jitter, back to 60 on the first
 answer. The assignment poll and lap flush keep their intervals, because they
-carry the laps and the sign-out. Notices and sign-in failures raised while the
+carry the laps and the sign-out - and when either of them reaches the backend
+again after a heartbeat failed, the heartbeat goes at once, so a blip never
+outlasts the monitor's two-minute silence rule. Notices and sign-in failures raised while the
 backend is away are kept (the newest ten notices) and arrive with the first
 heartbeat that gets through. A backend that refuses the report as invalid input
 gets the bare `{type, agentVersion}` heartbeat instead, so a schema mismatch
@@ -504,9 +507,11 @@ the rest from `dotnet-counters` (`System.Runtime`, 5-second samples).
   of them gen 2.
 - Process nice value 10 (below normal) throughout.
 - Each heartbeat was 720 bytes on the wire (596 before the first poll).
-- Offline, the heartbeat backed off as designed: after the last answer at
-  601 s, the next that got through was at 1019 s, about 100 s after the
-  backend came back, instead of one a minute.
+- Offline, the heartbeat backed off: after the last answer at 601 s, the next
+  that got through was at 1019 s, about 100 s after the backend came back,
+  instead of one a minute. That run predates the wake on the backend's return;
+  the agent now sends a heartbeat within one poll interval (10 s) of it,
+  pinned by `ThePollReachingTheBackendAgainSendsTheNextHeartbeatAtOnce`.
 - SIGTERM with the backend up sent the goodbye (`shuttingDown: true`) after
   the queued laps had drained, and the process exited 0.
 

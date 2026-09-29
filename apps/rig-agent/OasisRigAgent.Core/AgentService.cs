@@ -29,6 +29,11 @@ public sealed class AgentService : IAsyncDisposable
 
     private ConnectionState _connection = ConnectionState.Connecting;
 
+    // Completed when a backend call brings the connection back from offline.
+    // Replaced by the heartbeat loop before each send, so it only ever says
+    // "the backend returned since this heartbeat was attempted".
+    private TaskCompletionSource _backendReturned = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     // Written by the assignment poll and by SwitchDriverAsync, read by the
     // telemetry thread when it stamps a lap. volatile so a captured lap is
     // stamped against a current view of the assignment, not a cached one.
@@ -351,12 +356,17 @@ public sealed class AgentService : IAsyncDisposable
     /// <summary>One heartbeat now, then one a minute - further apart while the
     /// backend does not answer (<see cref="HeartbeatSchedule"/>). A Task.Delay
     /// between sends rather than a timer: nothing wakes in between, and the
-    /// gap can grow. Ends when the agent is disposed or a goodbye has gone.</summary>
+    /// gap can grow. After a heartbeat that did not get through, the poll or
+    /// the flush reaching the backend again ends the wait and the backoff, so
+    /// the rig is seen again within seconds of the link returning. Ends when
+    /// the agent is disposed or a goodbye has gone.</summary>
     private async Task HeartbeatLoop()
     {
         var failures = 0;
         while (!_cts.IsCancellationRequested && !_shuttingDown)
         {
+            var backendReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _backendReturned, backendReturned);
             bool? delivered;
             try
             {
@@ -375,14 +385,12 @@ public sealed class AgentService : IAsyncDisposable
             }
             if (delivered is { } ok) failures = ok ? 0 : failures + 1;
 
-            try
-            {
-                await Task.Delay(HeartbeatSchedule.Delay(failures, Random.Shared.NextDouble()), _cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            var delay = Task.Delay(HeartbeatSchedule.Delay(failures, Random.Shared.NextDouble()), wait.Token);
+            var woke = await Task.WhenAny(delay, failures > 0 ? backendReturned.Task : delay);
+            wait.Cancel();
+            if (_cts.IsCancellationRequested) return;
+            if (woke != delay) failures = 0;
         }
     }
 
@@ -746,8 +754,10 @@ public sealed class AgentService : IAsyncDisposable
     private void SetConnection(ConnectionState state)
     {
         if (_connection == state) return;
+        var returned = _connection == ConnectionState.Offline && state == ConnectionState.Online;
         _connection = state;
         PublishStatus();
+        if (returned) Volatile.Read(ref _backendReturned).TrySetResult();
     }
 
     private void PublishStatus()
