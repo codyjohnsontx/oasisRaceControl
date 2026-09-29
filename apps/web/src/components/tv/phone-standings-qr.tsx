@@ -8,11 +8,10 @@ import type { TvMode } from "@/lib/tv-rotation";
  * The QR code in the corner of `/tv`. On the shop's rotation it opens the
  * phone leaderboard; on the event view it opens the Oasis website instead.
  *
- * The wall is sometimes a laptop on a table at an off-site event, and the
- * people looking at it want the same standings on their own phones without
- * typing a hosted URL. So every board carries a small code that opens
- * `/leaderboards` on whatever origin is serving the wall - the hosted site, a
- * preview deploy, or a laptop on a venue's wifi - with nothing to configure.
+ * People looking at the shop's wall want the same standings on their own
+ * phones without typing a hosted URL. So every rotation board carries a small
+ * code that opens `/leaderboards` on whatever origin is serving the wall - the
+ * hosted site or a preview deploy - with nothing to configure.
  *
  * Encoding is `uqr`: MIT, no dependencies, ~80KB unpacked, pure ESM, still
  * published this year, and it hands back the module matrix rather than a
