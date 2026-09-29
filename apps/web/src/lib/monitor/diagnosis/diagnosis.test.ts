@@ -258,7 +258,6 @@ describe("the model's answer is inert where it lands", () => {
     const lines = handoffText(incidentContext(ALERT, HEARTBEATS, null), { ok: true, diagnosis: d }).split("\n");
     expect(lines.map((line) => line.replace(/:.*$/, ""))).toEqual([
       "Oasis rig alert #123 - rule 3a",
-      "Rules",
       "Opened 2026-10-04 21",
       "Site commit",
       "What the monitor saw",
@@ -267,8 +266,9 @@ describe("the model's answer is inert where it lands", () => {
       "Likely cause (AI, confidence high)",
       "Suggested change (AI)",
       "Where to look (AI)",
+      "Rules",
     ]);
-    expect(lines[1]).toBe(HANDOFF_RULES);
+    expect(lines.at(-1)).toBe(HANDOFF_RULES);
     expect(lines.join("\n")).not.toContain("../../.env");
   });
 

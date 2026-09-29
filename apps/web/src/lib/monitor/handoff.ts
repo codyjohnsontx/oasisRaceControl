@@ -17,7 +17,7 @@ import { VENUE_TIMEZONE } from "@/lib/venue";
  * holds only what the server can vouch for - no rig's own words, no driver's
  * name - and from a diagnosis whose every string was made one inert line
  * (modelText in diagnosis/index.ts). So the handoff keeps its fixed shape,
- * with one Rules line, whatever a rig or the model wrote.
+ * closed by one Rules line, whatever a rig or the model wrote.
  */
 
 export const REPOSITORY = "codyjohnsontx/oasisRaceControl";
@@ -37,7 +37,6 @@ export function handoffText(context: IncidentContext, outcome: DiagnosisResult):
   const latest = context.heartbeats.at(-1);
   const lines = [
     `Oasis rig alert #${context.alertId} - rule ${context.rule.number}: ${context.rule.title} (${context.where})`,
-    HANDOFF_RULES,
     `Opened ${utc(context.openedAt)} (${venueClock(context.openedAt)} venue) · agent ${latest?.agentVersion ?? "unknown"}`,
     `Site commit: ${context.commit ? context.commit.slice(0, 7) : "unknown"} · repo ${REPOSITORY}`,
     `What the monitor saw: ${clip(context.headline, 300)}`,
@@ -57,7 +56,8 @@ export function handoffText(context: IncidentContext, outcome: DiagnosisResult):
     lines.push(`Likely cause (AI): no diagnosis (${outcome.error})`);
   }
   // A fence inside the text would end the code block early.
-  return clip(lines.join("\n").replaceAll("```", "'''"), HANDOFF_MAX);
+  const body = clip(lines.join("\n").replaceAll("```", "'''"), HANDOFF_MAX - HANDOFF_RULES.length - 1);
+  return `${body}\n${HANDOFF_RULES}`;
 }
 
 /** The copy-paste message: the handoff alone, in one block, pinging no one. */

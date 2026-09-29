@@ -135,8 +135,8 @@ treated as untrusted too: the prompt marks the incident as data, never
 instructions; every field of the answer is flattened to one line with links,
 mentions, code fences and the handoff's own labels (such as `Rules:`)
 neutralized; and `whereToLook` can only name the repository paths listed in
-the prompt. The handoff has one `Rules:` line, second from the top, and
-labels the model's three lines AI.
+the prompt. The handoff ends with its one `Rules:` line, which
+the length clip never cuts, and labels the model's three lines AI.
 
 | Variable | What it is |
 |---|---|
