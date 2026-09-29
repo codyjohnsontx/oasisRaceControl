@@ -18,7 +18,12 @@ public sealed record DriverCheckIn(
 /// <summary>A check-in the backend refused, in words the person at the rig can act on.</summary>
 public sealed class CheckInRefusedException : Exception
 {
-    public CheckInRefusedException(string message) : base(message) { }
+    public CheckInRefusedException(string message, bool retryPin = false) : base(message) => RetryPin = retryPin;
+
+    /// <summary>True when the name stands and only the PIN needs typing again:
+    /// the name is registered to a different PIN, or a new PIN was not
+    /// confirmed.</summary>
+    public bool RetryPin { get; }
 }
 
 /// <summary>
@@ -26,7 +31,9 @@ public sealed class CheckInRefusedException : Exception
 /// backend's existing name + PIN routes as an HTTP client: `POST
 /// /api/auth/login` with the typed name and PIN, and when that name and PIN
 /// match nobody, `POST /api/auth/register` to create the driver (either sets
-/// the driver session cookie); then `POST /api/checkin` with the rig's QR
+/// the driver session cookie) - but only once the PIN has been typed a second
+/// time and matches, because a PIN mistyped at sign-up is one its owner can
+/// never sign back in with; then `POST /api/checkin` with the rig's QR
 /// token, confirming the takeover of whoever was checked in before. Nothing
 /// on the server changes - the request shapes are the ones the deployed
 /// sign-in and check-in pages send (served at 695e080 and on main alike).
@@ -58,8 +65,15 @@ public sealed class DriverCheckInClient
     /// <summary>Log the name in with its PIN (or register it when that name and
     /// PIN match nobody) and put that driver in this rig's seat. Throws
     /// <see cref="CheckInRefusedException"/> for every answer the backend gives
-    /// that is not a check-in, and lets transport failures propagate.</summary>
-    public async Task<DriverCheckIn> CheckInAsync(string name, string pin, CancellationToken ct)
+    /// that is not a check-in, and lets transport failures propagate.
+    ///
+    /// <paramref name="confirmNewPin"/> is asked for the PIN again only when the
+    /// login matched nobody, before anything is registered: a returning driver
+    /// with the right PIN types it once. Answering null gives up (the program is
+    /// closing) and throws <see cref="OperationCanceledException"/>; an empty
+    /// answer or a different PIN registers nothing.</summary>
+    public async Task<DriverCheckIn> CheckInAsync(
+        string name, string pin, Func<CancellationToken, Task<string?>> confirmNewPin, CancellationToken ct)
     {
         if (!IsPin(pin)) throw new CheckInRefusedException("the PIN must be exactly 4 digits");
 
@@ -68,13 +82,13 @@ public sealed class DriverCheckInClient
             BaseAddress = _baseUri,
             Timeout = TimeSpan.FromSeconds(15),
         };
-        var (driverId, displayName, returning) = await SignIn(http, name, pin, ct);
+        var (driverId, displayName, returning) = await SignIn(http, name, pin, confirmNewPin, ct);
         var assignmentId = await CheckIn(http, ct);
         return new DriverCheckIn(displayName, returning, driverId, assignmentId);
     }
 
     private static async Task<(string DriverId, string DisplayName, bool Returning)> SignIn(
-        HttpClient http, string name, string pin, CancellationToken ct)
+        HttpClient http, string name, string pin, Func<CancellationToken, Task<string?>> confirmNewPin, CancellationToken ct)
     {
         using (var login = await http.PostAsJsonAsync("api/auth/login", new { displayName = name, pin }, ct))
         {
@@ -90,11 +104,22 @@ public sealed class DriverCheckInClient
                 throw new CheckInRefusedException($"the backend could not sign you in (HTTP {(int)login.StatusCode}) - try again");
         }
 
+        var again = await confirmNewPin(ct) ?? throw new OperationCanceledException(ct);
+        if (again.Length == 0)
+            throw new CheckInRefusedException("nothing was signed up - type your PIN again", retryPin: true);
+        if (again != pin)
+            throw new CheckInRefusedException("the two PINs did not match, so nothing was signed up - type your PIN again", retryPin: true);
+
         using var register = await http.PostAsJsonAsync("api/auth/register", new { displayName = name, pin }, ct);
         var registered = await ReadJson(register, ct);
         if (register.IsSuccessStatusCode) return Identify(registered, returning: false);
+        // The login above already said no to this name and PIN, so a taken
+        // name means a wrong PIN for it. The backend does not say how many
+        // tries are left, only when the name locks (MAX_FAILS in driver-auth.ts).
         if (register.StatusCode == HttpStatusCode.Conflict)
-            throw new CheckInRefusedException($"the name \"{name}\" already exists with a different PIN - type the PIN again, or use a different name");
+            throw new CheckInRefusedException(
+                $"the name \"{name}\" is already registered and that PIN does not match it - type your PIN again, or ask staff. Five wrong PINs in a row lock the name for 15 minutes.",
+                retryPin: true);
         if ((int)register.StatusCode == 429)
             throw new CheckInRefusedException("too many sign-in attempts from this network in the last minute, across both rigs - wait a minute and try again");
         if (register.StatusCode == HttpStatusCode.BadRequest)

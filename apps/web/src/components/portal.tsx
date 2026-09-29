@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
 import type { PortalLap } from "@/lib/laps";
+import { newPinRefusal } from "@/lib/new-pin";
 
 export type { PortalLap };
 
@@ -21,6 +22,8 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
   const [trackFilter, setTrackFilter] = useState("");
   const [carFilter, setCarFilter] = useState("");
   const [pin, setPin] = useState("");
+  const [pinAgain, setPinAgain] = useState("");
+  const [claimMessage, setClaimMessage] = useState<string | null>(null);
   const [claimState, setClaimState] = useState<"idle" | "busy" | "done">("idle");
 
   // Live laps: poll while the page is open so laps appear seconds after
@@ -81,6 +84,9 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
   }
 
   async function claim() {
+    const refusal = newPinRefusal(pin, pinAgain);
+    setClaimMessage(refusal);
+    if (refusal) return;
     setClaimState("busy");
     try {
       const res = await fetch("/api/auth/claim", {
@@ -131,18 +137,28 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
               value={pin}
               onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
               placeholder="4-digit PIN"
+              aria-label="4-digit PIN"
               inputMode="numeric"
-              className="laptime flex-1 bg-bg border border-edge rounded-lg px-3 py-2 outline-none focus:border-accent"
+              className="laptime min-w-0 flex-1 bg-bg border border-edge rounded-lg px-3 py-2 outline-none focus:border-accent"
+            />
+            <input
+              value={pinAgain}
+              onChange={(e) => setPinAgain(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="PIN again"
+              aria-label="Type the PIN again"
+              inputMode="numeric"
+              className="laptime min-w-0 flex-1 bg-bg border border-edge rounded-lg px-3 py-2 outline-none focus:border-accent"
             />
             <button
               type="button"
-              disabled={pin.length !== 4 || claimState === "busy"}
+              disabled={pin.length !== 4 || pinAgain.length !== 4 || claimState === "busy"}
               onClick={() => void claim()}
               className="bg-accent text-bg rounded-lg px-4 py-2 font-bold uppercase tracking-wider text-sm disabled:opacity-40"
             >
               Save profile
             </button>
           </div>
+          {claimMessage && <p className="text-invalid text-sm mt-2">{claimMessage}</p>}
         </section>
       )}
 

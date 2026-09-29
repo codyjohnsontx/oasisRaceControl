@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { newPinRefusal } from "@/lib/new-pin";
 
 type Mode = "guest" | "login" | "register";
 
@@ -16,10 +17,18 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
   const [mode, setMode] = useState<Mode>(showGuest ? defaultMode : "login");
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
+  const [pinAgain, setPinAgain] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   async function submit() {
+    if (mode === "register") {
+      const refusal = newPinRefusal(pin, pinAgain);
+      if (refusal) {
+        setMessage(refusal);
+        return;
+      }
+    }
     setBusy(true);
     setMessage(null);
     const endpoint =
@@ -120,10 +129,33 @@ export function AuthForms({ onSignedIn, defaultMode = "guest", showGuest = true 
             />
           </>
         )}
+        {mode === "register" && (
+          <>
+            <label htmlFor="driver-pin-again" className="sr-only">
+              Type the PIN again
+            </label>
+            <input
+              id="driver-pin-again"
+              value={pinAgain}
+              onChange={(e) => setPinAgain(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="Type the PIN again"
+              inputMode="numeric"
+              autoComplete="new-password"
+              required
+              pattern="\d{4}"
+              className="bg-surface border border-edge rounded-lg px-4 py-3 text-lg outline-none focus:border-accent laptime"
+            />
+          </>
+        )}
         {message && <p className="text-invalid text-sm">{message}</p>}
         <button
           type="submit"
-          disabled={busy || name.trim().length < 2 || (mode !== "guest" && pin.length !== 4)}
+          disabled={
+            busy ||
+            name.trim().length < 2 ||
+            (mode !== "guest" && pin.length !== 4) ||
+            (mode === "register" && pinAgain.length !== 4)
+          }
           className="bg-accent text-bg glow-cyan rounded-lg py-3 font-bold uppercase tracking-wider disabled:opacity-40"
         >
           {busy ? "…" : mode === "guest" ? "Drive as guest" : mode === "login" ? "Sign in" : "Create profile"}

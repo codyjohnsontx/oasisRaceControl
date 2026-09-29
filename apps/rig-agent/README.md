@@ -354,8 +354,8 @@ attempt at a fast time lands on one leaderboard row.
 
 How it works, with nothing new on the server: the name and PIN are logged in
 through the backend's own driver sign-in (`POST /api/auth/login`), and when
-they match nobody a new driver is registered with them
-(`POST /api/auth/register`); then `POST /api/checkin` with this rig's QR token
+they match nobody and the PIN is typed the same a second time, a new driver is
+registered with them (`POST /api/auth/register`); then `POST /api/checkin` with this rig's QR token
 and the takeover confirmed - the same requests the phone pages send, so it
 runs against the deployed app as it is. The next lap is stamped with the new
 stint at once. Logging out goes through the agent's existing
@@ -377,17 +377,25 @@ agent only ever stamps a lap with a stint its own check-in created, so a lap
 driven before anyone signs in on this run is nobody's, never the last
 driver's.
 
-- A new name registers with the PIN typed. A name that already exists with a
-  different PIN is refused: type the PIN again, or pick a different name.
-  Names are unique across everyone the app has ever stored, not only this
-  event's drivers.
+- A name and PIN that match nobody ask for the PIN a second time, and only a
+  second PIN that matches the first registers the name; a mismatch registers
+  nothing and asks for the PIN again. A returning driver with the right PIN
+  types it once. A PIN mistyped at sign-up is one its owner can never sign
+  back in with, which is how a returning driver was locked out of their own
+  name at the 2026-09-28 event.
+- A name that is already registered with a different PIN is refused in those
+  words: type the PIN again, or ask staff. The name stays on screen and only
+  the PIN is asked for again; Enter alone there goes back to the name. Names
+  are unique across everyone the app has ever stored, not only this event's
+  drivers. There is no PIN reset on the rig.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
 - The PIN is exactly 4 digits; anything else asks for it again. An empty name
   asks again.
 - The backend allows about ten sign-in attempts a minute per network
   address, and the two event rigs share one. Every new name counts, and so
-  does every wrong PIN (a login that fails is followed by a registration
-  attempt), so a run of wrong PINs on either rig can make both wait a minute.
+  does every wrong PIN typed a second time (a confirmed PIN that fails login
+  is followed by a registration attempt), so a run of wrong PINs on either
+  rig can make both wait a minute.
 - Names are 2 to 24 characters: letters, numbers, spaces and `. _ ' -`.
 - A rig whose QR token is not registered says so at the first name and asks
   again; fix `rigQrToken`.

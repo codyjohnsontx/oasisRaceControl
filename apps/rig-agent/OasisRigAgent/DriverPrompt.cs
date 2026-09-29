@@ -37,7 +37,8 @@ internal sealed class SystemPromptConsole : IPromptConsole
 
 /// <summary>
 /// The walk-up loop on the rig PC, as two screens. SIGN IN asks for a name and
-/// a 4-digit PIN; the PIN shows as it is typed, and the screen is cleared the
+/// a 4-digit PIN (twice for a name that matches nobody, before it is
+/// registered); the PIN shows as it is typed, and the screen is cleared the
 /// moment Enter is pressed so it is gone before the next person sits down.
 /// DRIVING shows only the signed-in name and "Press Enter to log out", with the
 /// driver's laps printed below it - queued, then posted once the backend has
@@ -120,38 +121,17 @@ internal static class DriverPrompt
             notice = null;
             if (name.Length == 0) continue;
 
-            var pin = await ReadPinAsync(screen, rigNumber, name, quit);
-            if (pin is null) return;
-            screen.Transition($"Signing in {name}...");
-
-            if (!await agent.SettlePendingCheckoutAsync())
+            var outcome = await SignInAsync(agent, checkIn, rigNumber, screen, name, quit);
+            if (outcome.Quit) return;
+            if (outcome.CheckIn is null)
             {
-                notice = "Could not reach the backend to finish the last log-out. Check the network and try again.";
+                notice = outcome.Notice;
                 continue;
             }
 
-            DriverCheckIn session;
-            try
-            {
-                session = await checkIn.CheckInAsync(name, pin, quit);
-            }
-            catch (CheckInRefusedException ex)
-            {
-                notice = $"Could not sign in: {ex.Message}";
-                continue;
-            }
-            catch (OperationCanceledException) when (quit.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                notice = $"Could not reach the backend ({ex.Message}). Check the network and try again.";
-                continue;
-            }
-
-            agent.SeatCheckedInDriver(session);
-            ShowDriving(screen, rigNumber, session);
+            var driver = outcome.CheckIn;
+            agent.SeatCheckedInDriver(driver);
+            ShowDriving(screen, rigNumber, driver);
 
             var done = await screen.ReadLineAsync(quit);
             // Input ending is the program closing, and a signal handler may
@@ -163,14 +143,75 @@ internal static class DriverPrompt
                 : await agent.SwitchDriverAsync();
             notice = result switch
             {
-                SwitchDriverResult.Ended or SwitchDriverResult.NoActiveSession => $"Thanks {session.DisplayName}, you are logged out.",
-                SwitchDriverResult.EndedPendingSync => $"Thanks {session.DisplayName}, logged out here; the backend will be told when the connection returns.",
-                _ => $"Thanks {session.DisplayName}, logged out here; the backend could not be reached - the next name's check-in will take the seat over.",
+                SwitchDriverResult.Ended or SwitchDriverResult.NoActiveSession => $"Thanks {driver.DisplayName}, you are logged out.",
+                SwitchDriverResult.EndedPendingSync => $"Thanks {driver.DisplayName}, logged out here; the backend will be told when the connection returns.",
+                _ => $"Thanks {driver.DisplayName}, logged out here; the backend could not be reached - the next name's check-in will take the seat over.",
             };
             if (done is null)
             {
                 screen.Transition(notice);
                 return;
+            }
+        }
+    }
+
+    /// <summary>What asking one name for its PIN came to: a driver to seat, or
+    /// a notice for the name screen, or the program closing.</summary>
+    private readonly record struct SignInOutcome(DriverCheckIn? CheckIn, string? Notice, bool Quit);
+
+    /// <summary>Ask the typed name for its PIN and sign it in. A new name is
+    /// asked for the PIN a second time before it is registered; a name that is
+    /// already registered to a different PIN, or a new PIN that was not
+    /// confirmed, keeps the name and asks for the PIN again. Enter alone at the
+    /// PIN goes back to the name screen.</summary>
+    private static async Task<SignInOutcome> SignInAsync(
+        AgentService agent, DriverCheckInClient checkIn, int rigNumber, WalkUpScreen screen, string name, CancellationToken quit)
+    {
+        string? pinNotice = null;
+        while (true)
+        {
+            var pin = await ReadPinAsync(screen, rigNumber, name, pinNotice, quit);
+            if (pin is null) return new SignInOutcome(null, null, Quit: true);
+            if (pin.Length == 0) return new SignInOutcome(null, null, Quit: false);
+            screen.Transition($"Signing in {name}...");
+
+            if (!await agent.SettlePendingCheckoutAsync())
+                return new SignInOutcome(null, "Could not reach the backend to finish the last log-out. Check the network and try again.", Quit: false);
+
+            var inputEnded = false;
+            async Task<string?> ConfirmNewPin(CancellationToken ct)
+            {
+                ShowSignIn(screen, rigNumber, $"No driver is signed up as \"{name}\" with that PIN.", name,
+                    "New here? Type the same PIN again to sign up (raced here before? press Enter to type your PIN again):");
+                var typed = await screen.ReadLineAsync(quit);
+                if (typed is null)
+                {
+                    inputEnded = true;
+                    return null;
+                }
+                screen.Transition($"Signing up {name}...");
+                return typed.Trim();
+            }
+
+            try
+            {
+                return new SignInOutcome(await checkIn.CheckInAsync(name, pin, ConfirmNewPin, quit), null, Quit: false);
+            }
+            catch (CheckInRefusedException ex) when (ex.RetryPin)
+            {
+                pinNotice = $"Could not sign in: {ex.Message}";
+            }
+            catch (CheckInRefusedException ex)
+            {
+                return new SignInOutcome(null, $"Could not sign in: {ex.Message}", Quit: false);
+            }
+            catch (OperationCanceledException) when (quit.IsCancellationRequested || inputEnded)
+            {
+                return new SignInOutcome(null, null, Quit: true);
+            }
+            catch (Exception ex)
+            {
+                return new SignInOutcome(null, $"Could not reach the backend ({ex.Message}). Check the network and try again.", Quit: false);
             }
         }
     }
@@ -266,19 +307,24 @@ internal static class DriverPrompt
         }
     }
 
-    /// <summary>Ask for the PIN until it is four digits. A wrong one is cleared
-    /// off the screen before asking again, the name staying in view.</summary>
-    private static async Task<string?> ReadPinAsync(WalkUpScreen screen, int rigNumber, string name, CancellationToken quit)
+    /// <summary>Ask for the PIN until it is four digits, or empty to go back to
+    /// the name. A wrong one is cleared off the screen before asking again, the
+    /// name staying in view. <paramref name="notice"/> opens a fresh screen with
+    /// it; without one the prompt goes under the name just typed.</summary>
+    private static async Task<string?> ReadPinAsync(
+        WalkUpScreen screen, int rigNumber, string name, string? notice, CancellationToken quit)
     {
         const string prompt = "Type your 4-digit PIN and press Enter (new here? pick one and remember it):";
-        string? notice = null;
+        const string again = "Type your 4-digit PIN and press Enter (Enter alone goes back to the name):";
+        var retrying = notice is not null;
         while (true)
         {
-            if (notice is not null) ShowSignIn(screen, rigNumber, notice, name, prompt);
+            if (notice is not null) ShowSignIn(screen, rigNumber, notice, name, retrying ? again : prompt);
             else screen.Append(prompt);
             var typed = await screen.ReadLineAsync(quit);
             if (typed is null) return null;
             var pin = typed.Trim();
+            if (pin.Length == 0 && retrying) return "";
             if (DriverCheckInClient.IsPin(pin)) return pin;
             notice = "The PIN is exactly 4 digits.";
         }

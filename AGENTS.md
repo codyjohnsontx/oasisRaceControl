@@ -327,6 +327,15 @@ loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
 test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
 `OASIS_TEST_BACKEND_URL`).
 
+A PIN chosen for a new name is typed twice before anything is registered, on
+the rig and on the web's sign-up and guest "Save profile" forms
+(`apps/web/src/lib/new-pin.ts`): a PIN mistyped once is one its owner can
+never sign back in with, and only staff SQL can change it (2026-09-28). The
+rig cannot tell a new name from a wrong PIN until login answers 401, so it
+asks the second PIN only then (`confirmNewPin` on `CheckInAsync`); a register
+409 after that means a wrong PIN for a registered name, worded that way, never
+"use a different name".
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which

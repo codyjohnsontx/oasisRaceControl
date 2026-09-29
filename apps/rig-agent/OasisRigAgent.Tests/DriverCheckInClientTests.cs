@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using Xunit;
+using static OasisRigAgent.Tests.TestPins;
 using OasisRigAgent.Core;
 
 namespace OasisRigAgent.Tests;
@@ -79,7 +80,8 @@ public sealed class DriverCheckInClientTests
             _ => (HttpStatusCode.NotFound, "{}", null),
         };
 
-        var result = await client.CheckInAsync("mike", "1234", CancellationToken.None);
+        var result = await client.CheckInAsync("mike", "1234",
+            _ => throw new InvalidOperationException("a returning driver is asked for the PIN once"), CancellationToken.None);
 
         Assert.Equal(new DriverCheckIn("Mike", true, "d-1", "a-1"), result);
         Assert.Equal(new[] { "/api/auth/login", "/api/checkin" }, Paths(backend));
@@ -94,7 +96,7 @@ public sealed class DriverCheckInClientTests
     }
 
     [Fact]
-    public async Task ANameAndPinThatMatchNobodyRegisterANewDriver()
+    public async Task ANameAndPinThatMatchNobodyRegisterANewDriverOnceThePinIsTypedTwice()
     {
         var (client, backend) = Build();
         backend.Answer = (path, _) => path switch
@@ -105,16 +107,61 @@ public sealed class DriverCheckInClientTests
             _ => (HttpStatusCode.NotFound, "{}", null),
         };
 
-        var result = await client.CheckInAsync("Mike", "1234", CancellationToken.None);
+        var askedAfter = -1;
+        var result = await client.CheckInAsync("Mike", "1234", _ =>
+        {
+            askedAfter = backend.Requests.Count;
+            return Task.FromResult<string?>("1234");
+        }, CancellationToken.None);
 
+        // The PIN is asked for again after the login matched nobody and before
+        // anything is registered.
+        Assert.Equal(1, askedAfter);
         Assert.Equal(new DriverCheckIn("Mike", false, "d-2", "a-1"), result);
         Assert.Equal(new[] { "/api/auth/login", "/api/auth/register", "/api/checkin" }, Paths(backend));
         Assert.Equal("1234", backend.Requests[1].Body?["pin"]?.GetValue<string>());
         Assert.Equal("oasis_driver=jwt-abc", backend.Requests[2].Cookie);
     }
 
+    [Theory]
+    [InlineData("1243")]
+    [InlineData("")]
+    public async Task ANewPinNotTypedTheSameTwiceRegistersNothing(string second)
+    {
+        var (client, backend) = Build();
+        backend.Answer = (path, _) => path == "/api/auth/login"
+            ? (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}""", null)
+            : (HttpStatusCode.OK, """{"driverId":"d-2","displayName":"Chuy"}""", Session);
+        var asked = 0;
+
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Chuy", "1234", _ =>
+        {
+            asked++;
+            return Task.FromResult<string?>(second);
+        }, CancellationToken.None));
+
+        Assert.Equal(1, asked);
+        Assert.True(ex.RetryPin);
+        Assert.Contains("nothing was signed up", ex.Message);
+        Assert.Equal(new[] { "/api/auth/login" }, Paths(backend));
+    }
+
     [Fact]
-    public async Task AnExistingNameWithTheWrongPinIsRefusedWithoutBeingRenamed()
+    public async Task ClosingTheProgramAtTheSecondPinRegistersNothing()
+    {
+        var (client, backend) = Build();
+        backend.Answer = (path, _) => path == "/api/auth/login"
+            ? (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}""", null)
+            : (HttpStatusCode.OK, """{"driverId":"d-2","displayName":"Chuy"}""", Session);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.CheckInAsync("Chuy", "1234", _ => Task.FromResult<string?>(null), CancellationToken.None));
+
+        Assert.Equal(new[] { "/api/auth/login" }, Paths(backend));
+    }
+
+    [Fact]
+    public async Task AnExistingNameWithTheWrongPinSaysSoPlainlyAndKeepsTheName()
     {
         var (client, backend) = Build();
         backend.Answer = (path, _) => path switch
@@ -124,9 +171,16 @@ public sealed class DriverCheckInClientTests
             _ => (HttpStatusCode.OK, CheckedIn, null),
         };
 
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", "9999", CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("chuy", "9999", SamePinAgain("9999"), CancellationToken.None));
 
-        Assert.Contains("\"Mike\" already exists with a different PIN", ex.Message);
+        // The 2026-09-28 event: a returning driver whose PIN did not match was
+        // told to "use a different name". The name is theirs; the PIN is what
+        // to try again, and staff are who to ask.
+        Assert.True(ex.RetryPin);
+        Assert.Contains("\"chuy\" is already registered and that PIN does not match it", ex.Message);
+        Assert.Contains("type your PIN again, or ask staff", ex.Message);
+        Assert.Contains("Five wrong PINs in a row lock the name for 15 minutes", ex.Message);
+        Assert.DoesNotContain("different name", ex.Message);
         Assert.Equal(new[] { "/api/auth/login", "/api/auth/register" }, Paths(backend));
     }
 
@@ -137,7 +191,7 @@ public sealed class DriverCheckInClientTests
         backend.Answer = (_, _) =>
             (HttpStatusCode.TooManyRequests, """{"error":"locked","lockedUntil":"2026-09-27T18:15:00.000Z"}""", null);
 
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", "1234", CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", "1234", SamePinAgain("1234"), CancellationToken.None));
 
         Assert.Contains("locked after five wrong PINs", ex.Message);
         Assert.Contains(DateTimeOffset.Parse("2026-09-27T18:15:00Z").ToLocalTime().ToString("HH:mm"), ex.Message);
@@ -152,7 +206,7 @@ public sealed class DriverCheckInClientTests
             ? (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}""", null)
             : (HttpStatusCode.TooManyRequests, """{"error":"rate_limited"}""", null);
 
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", "1234", CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", "1234", SamePinAgain("1234"), CancellationToken.None));
 
         Assert.Contains("too many sign-in attempts from this network", ex.Message);
         Assert.Contains("wait a minute", ex.Message);
@@ -170,7 +224,7 @@ public sealed class DriverCheckInClientTests
         backend.Answer = (_, _) => (HttpStatusCode.OK, CheckedIn, null);
 
         Assert.False(DriverCheckInClient.IsPin(pin));
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", pin, CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Mike", pin, SamePinAgain(pin), CancellationToken.None));
 
         Assert.Contains("4 digits", ex.Message);
         Assert.Empty(backend.Requests);
@@ -197,7 +251,7 @@ public sealed class DriverCheckInClientTests
                 : path == "/api/auth/register"
                     ? (HttpStatusCode.OK, """{"driverId":"d","displayName":"X"}""", "oasis_driver=j; Path=/")
                     : (HttpStatusCode.OK, CheckedIn, null);
-        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Some Name", "1234", CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.CheckInAsync("Some Name", "1234", SamePinAgain("1234"), CancellationToken.None));
         Assert.Contains(expected, ex.Message);
     }
 
@@ -206,7 +260,7 @@ public sealed class DriverCheckInClientTests
     {
         var (client, backend) = Build();
         backend.Answer = (_, _) => throw new HttpRequestException("connection refused");
-        await Assert.ThrowsAsync<HttpRequestException>(() => client.CheckInAsync("Mike", "1234", CancellationToken.None));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.CheckInAsync("Mike", "1234", SamePinAgain("1234"), CancellationToken.None));
     }
 
     [Fact]
@@ -218,8 +272,8 @@ public sealed class DriverCheckInClientTests
         backend.Answer = (path, _) => path == "/api/auth/login"
             ? (HttpStatusCode.OK, """{"driverId":"d","displayName":"X"}""", "oasis_driver=first; Path=/")
             : (HttpStatusCode.OK, CheckedIn, null);
-        await client.CheckInAsync("First", "1111", CancellationToken.None);
-        await client.CheckInAsync("Second", "2222", CancellationToken.None);
+        await client.CheckInAsync("First", "1111", SamePinAgain("1111"), CancellationToken.None);
+        await client.CheckInAsync("Second", "2222", SamePinAgain("2222"), CancellationToken.None);
         // The second sign-in carries no cookie from the first person.
         Assert.Null(backend.Requests[2].Cookie);
     }
