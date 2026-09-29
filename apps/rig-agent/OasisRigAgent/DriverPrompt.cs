@@ -243,64 +243,64 @@ internal static class DriverPrompt
 
                 case SignInState.LogIn:
                 case SignInState.Register:
-                {
-                    screen.Transition(state == SignInState.LogIn ? $"Signing in {name}..." : $"Signing up {name}...");
-                    DriverCheckIn? driver;
-                    try
                     {
-                        if (!await agent.SettlePendingCheckoutAsync())
+                        screen.Transition(state == SignInState.LogIn ? $"Signing in {name}..." : $"Signing up {name}...");
+                        DriverCheckIn? driver;
+                        try
                         {
-                            notice = "Could not reach the backend to finish the last log-out. Check the network and try again.";
+                            if (!await agent.SettlePendingCheckoutAsync())
+                            {
+                                notice = "Could not reach the backend to finish the last log-out. Check the network and try again.";
+                                state = SignInState.AskName;
+                                break;
+                            }
+                            driver = state == SignInState.LogIn
+                                ? await checkIn.CheckInReturningAsync(name, pin, quit)
+                                : await checkIn.CheckInNewAsync(name, pin, quit);
+                        }
+                        catch (SignedUpButNotCheckedInException ex)
+                        {
+                            returning = true;
+                            notice = ex.InnerException is CheckInRefusedException
+                                ? $"You are signed up as \"{name}\", but could not be checked in: {ex.Message}. Type your name and PIN to check in."
+                                : $"You are signed up as \"{name}\", but the backend could not be reached to check you in ({ex.Message}). Type your name and PIN to check in.";
                             state = SignInState.AskName;
                             break;
                         }
-                        driver = state == SignInState.LogIn
-                            ? await checkIn.CheckInReturningAsync(name, pin, quit)
-                            : await checkIn.CheckInNewAsync(name, pin, quit);
-                    }
-                    catch (SignedUpButNotCheckedInException ex)
-                    {
-                        returning = true;
-                        notice = ex.InnerException is CheckInRefusedException
-                            ? $"You are signed up as \"{name}\", but could not be checked in: {ex.Message}. Type your name and PIN to check in."
-                            : $"You are signed up as \"{name}\", but the backend could not be reached to check you in ({ex.Message}). Type your name and PIN to check in.";
-                        state = SignInState.AskName;
-                        break;
-                    }
-                    catch (CheckInRefusedException ex)
-                    {
-                        notice = $"Could not sign in: {ex.Message}";
-                        state = SignInState.AskName;
-                        break;
-                    }
-                    catch (OperationCanceledException) when (quit.IsCancellationRequested)
-                    {
-                        return null;
-                    }
-                    catch (Exception ex)
-                    {
-                        notice = $"Could not reach the backend ({ex.Message}). Check the network and try again.";
-                        state = SignInState.AskName;
-                        break;
-                    }
-                    if (driver is not null) return driver;
+                        catch (CheckInRefusedException ex)
+                        {
+                            notice = $"Could not sign in: {ex.Message}";
+                            state = SignInState.AskName;
+                            break;
+                        }
+                        catch (OperationCanceledException) when (quit.IsCancellationRequested)
+                        {
+                            return null;
+                        }
+                        catch (Exception ex)
+                        {
+                            notice = $"Could not reach the backend ({ex.Message}). Check the network and try again.";
+                            state = SignInState.AskName;
+                            break;
+                        }
+                        if (driver is not null) return driver;
 
-                    if (state == SignInState.Register)
-                    {
-                        notice = $"The name \"{name}\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
-                        state = SignInState.AskName;
+                        if (state == SignInState.Register)
+                        {
+                            notice = $"The name \"{name}\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
+                            state = SignInState.AskName;
+                        }
+                        else if (++misses < LoginsPerName)
+                        {
+                            notice = $"That PIN does not match \"{name}\". Type it again.";
+                            state = SignInState.AskPin;
+                        }
+                        else
+                        {
+                            state = SignInState.PinRefused;
+                        }
+                        break;
                     }
-                    else if (++misses < LoginsPerName)
-                    {
-                        notice = $"That PIN does not match \"{name}\". Type it again.";
-                        state = SignInState.AskPin;
-                    }
-                    else
-                    {
-                        state = SignInState.PinRefused;
-                    }
-                    break;
-                }
 
                 case SignInState.PinRefused:
                     typed = await AskAsync(screen, rigNumber, null, name,
