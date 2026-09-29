@@ -67,14 +67,17 @@ async function heartbeat(
     sequence?: number;
     sentAgoS?: number;
     rejectedLaps?: number;
+    agentVersion?: string;
+    assignmentId?: string;
   } = {},
 ) {
+  // The route's column layout: the fields rules filter on have columns, the rest is payload.
   await testDb().query(
     `insert into rig_heartbeats (rig_id, received_at, sent_at, clock_skew_ms,
        process_started_at, sim_connected, telemetry_faulted, pending_laps, rejected_laps,
-       checkout, shutting_down, payload)
+       checkout, shutting_down, payload, agent_version, assignment_id)
      values ($1, now() - make_interval(secs => $2), now() - make_interval(secs => $3), 0,
-       $4, true, false, 0, $5, 'none', $6, $7)`,
+       $4, true, false, 0, $5, 'none', $6, $7, $8, $9)`,
     [
       rig.id,
       agoS,
@@ -83,6 +86,8 @@ async function heartbeat(
       fields.rejectedLaps ?? 0,
       fields.shuttingDown ?? false,
       fields.sequence === undefined ? {} : { sequence: fields.sequence, telemetryMode: "iracing" },
+      fields.agentVersion ?? null,
+      fields.assignmentId ?? null,
     ],
   );
   await testDb().query(
@@ -581,6 +586,29 @@ describeDb("rig monitor against real Postgres", () => {
       expect(prompts[0]).toContain("Rig 09 has been silent for 3 min with driver-");
       expect(prompts[0]).not.toContain("Matt G");
       expect(await diagnosis()).toMatchObject([{ diagnosis: null }, { diagnosis: { status: "done" } }]);
+    });
+
+    it("hands the model and the handoff the rig state stored in heartbeat columns", async () => {
+      const rig = await seedRig(2);
+      const driver = await seedDriver("Matt G");
+      const assignmentId = await openAssignment(rig.id, driver.id);
+      for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) {
+        await heartbeat(rig, ago, { agentVersion: "1.4.2", assignmentId });
+      }
+      geminiAnswers = ["answer"];
+
+      await nextEvaluation();
+
+      expect(posts).toHaveLength(3);
+      const handoff = posts[2]!.content!;
+      expect(handoff).toContain("· agent 1.4.2\n");
+      expect(handoff).toMatch(/Rig state \(last 3 heartbeats\): \d\d:\d\d:\d\d, sim connected, pending 0, skew \+0\.0 s;/);
+      const heartbeats = JSON.parse(prompts[0]!).contents[0].parts[0].text;
+      expect(heartbeats).toContain('"agentVersion": "1.4.2"');
+      expect(heartbeats).toContain('"simConnected": true');
+      expect(heartbeats).toContain('"pendingLaps": 0');
+      expect(heartbeats).toContain('"driverSeated": true');
+      expect(heartbeats).not.toContain(assignmentId);
     });
 
     it("makes no call without a key, and posts the alert as before", async () => {

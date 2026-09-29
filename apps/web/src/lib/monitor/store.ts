@@ -497,13 +497,36 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
   return rows.map((row) => ({ ...toAlert(row), subject: row.subject, attempts: row.attempts }));
 }
 
-/** A rig's latest heartbeats, newest first, for the diagnosis to read. */
+/**
+ * A rig's latest heartbeats, newest first, for the diagnosis to read. The
+ * ingestion route stores the fields the rules filter on in their own columns
+ * and only the rest in `payload`, so the columns are put back under their
+ * wire names here. A null column is a field the heartbeat did not carry,
+ * except `assignment_id`: a current agent always says whether anyone is
+ * seated (`assignmentKnown`), so there null means nobody.
+ */
 export async function recentHeartbeats(subject: string): Promise<DiagnosisHeartbeat[]> {
   const rigId = subject.match(/^rig:([0-9a-f-]{36})$/i)?.[1];
   if (!rigId) return [];
   const rows = await query<{ received_ms: number; clock_skew_ms: number | null; payload: Record<string, unknown> }>(
     `select (extract(epoch from received_at) * 1000)::float8 as received_ms,
-            clock_skew_ms::float8 as clock_skew_ms, payload
+            clock_skew_ms::float8 as clock_skew_ms,
+            payload || jsonb_strip_nulls(jsonb_build_object(
+              'agentVersion', agent_version,
+              'processStartedAt', process_started_at,
+              'startCount', start_count,
+              'simConnected', sim_connected,
+              'telemetryFaulted', telemetry_faulted,
+              'session', case when session_track is not null then jsonb_build_object(
+                'trackName', session_track, 'trackConfig', session_config, 'carName', session_car) end,
+              'pendingLaps', pending_laps,
+              'rejectedLaps', rejected_laps,
+              'checkout', checkout,
+              'signInFailures', sign_in_failures,
+              'shuttingDown', case when shutting_down then true end))
+            || case when assignment_id is not null or (payload->>'assignmentKnown')::boolean
+                    then jsonb_build_object('assignmentId', assignment_id) else '{}'::jsonb end
+              as payload
      from rig_heartbeats where rig_id = $1 order by received_at desc, id desc limit 15`,
     [rigId],
   );
