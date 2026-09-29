@@ -7,7 +7,7 @@ import type { TvMode, TvSlide } from "@/lib/tv-rotation";
 import type { TvHostLogo } from "@/lib/tv-host-logo";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
-import { PhoneStandingsQr } from "./phone-standings-qr";
+import { TvCornerQr } from "./phone-standings-qr";
 
 /**
  * The `/tv` rotation engine.
@@ -29,8 +29,9 @@ import { PhoneStandingsQr } from "./phone-standings-qr";
  *  - Nothing here reacts to input, except the event view's list, which a hand
  *    on a touch screen can take over for a while (`auto-scroll.tsx`). The
  *    board disallows every touch gesture but that vertical pan, so a tap on a
- *    projected screen cannot zoom or flash-select it; the app-wide Screens
- *    button is outside it.
+ *    projected screen cannot zoom or flash-select it. The app-wide Screens
+ *    button is outside it on the rotation, and hidden on the event view
+ *    (`data-tv-mode`, below).
  */
 
 type Props = {
@@ -38,9 +39,8 @@ type Props = {
   initialBoards: Board[];
   /**
    * Which rotation list to play (`lib/tv-rotation.ts`). The event view is a
-   * one-slide list, so the engine below runs it unchanged - the only things
-   * that know the mode here are the list builder, the re-read of which boards
-   * exist (there is nothing to re-read), and the footer's board counter.
+   * one-slide list, so the engine below runs it unchanged; each place that
+   * reads `mode` says what the event view does differently there.
    */
   mode: TvMode;
   /**
@@ -293,6 +293,9 @@ export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
       // panned by hand, and a browser honours the list's `touch-action` only
       // if no ancestor forbids that gesture, so there the lock keeps zoom out
       // but lets vertical panning through (`tv-screen.test.tsx` pins both).
+      // `data-tv-mode` is what hides the app-wide Screens menu on the event
+      // view (`globals.css`).
+      data-tv-mode={mode}
       className={`tv-scale relative flex h-dvh ${
         mode === "event" ? "touch-pan-y" : "touch-none"
       } flex-col overflow-hidden p-[2.5em] select-none`}
@@ -388,9 +391,10 @@ export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
           <Wordmark stale={stale || offline} />
           {/* In the footer's flow rather than pinned over the board, so the
               rows above give it room by construction and it never covers one.
-              It reads the origin after hydration, so the server paint has no
-              code - the footer grows to fit it a moment later. */}
-          <PhoneStandingsQr />
+              Off the event view it reads the origin after hydration, so the
+              server paint has no code - the footer grows to fit it a moment
+              later. */}
+          <TvCornerQr mode={mode} />
         </div>
       </footer>
     </main>

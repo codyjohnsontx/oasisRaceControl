@@ -39,14 +39,28 @@ the rest, which is how rows came to overlap and the car column to render
 varies are `fr` tracks, and rows carry a `min-h` tied to their own text so they
 can stretch but never collapse.
 
-Every board also carries the phone-standings QR code (`phone-standings-qr.tsx`),
-which opens `/leaderboards` on the page's own origin - nothing configured, so
-it is right on the hosted site, a preview, and a laptop at an off-site event.
-Open `/tv` on the hosted address, or on the laptop's LAN IP in the fallback -
-never `localhost`, because the code encodes the page's own origin.
+Every board also carries a corner QR code (`phone-standings-qr.tsx`). On the
+shop rotation it opens `/leaderboards` on the page's own origin - nothing
+configured, so it is right on the hosted site and a preview; open `/tv` on
+the hosted address, never `localhost`, because that code encodes the page's
+own origin. On the event view it opens the Oasis website
+(`OASIS_WEBSITE_URL`) instead: the owner asked for that after the 2026-09-27
+event, because the leaderboard's site menu hands the public every other
+screen including the staff login. Do not make that target a query parameter.
 It sits in the footer's flow rather than pinned over the board, which is what
 makes it unable to cover a row; `npm run tv:check` screenshots `/tv` and fails
 on any overlap (root README, Integration tests).
+
+For the same reason the event view shows no app-wide Screens menu: nothing on
+it may navigate to another screen of the app, since any visitor can tap a
+touch display. The menu lives in the root layout, which cannot see the query,
+so it is in every page's server HTML and the `/tv` page hides it - its `main`
+carries `data-tv-mode`, and a `body:has(...)` rule in `globals.css` sets the
+menu's `data-screen-menu` root to `display: none`. Do not make the menu read
+the query string instead: `useSearchParams` in the root layout needs a
+Suspense boundary that takes the menu out of every prerendered page's HTML.
+`npm run tv:check` fails if the button shows on the event view or not on the
+rotation.
 
 A board can also take the wall over rather than take a turn on it, without any
 engine change: renew the contract's `hold()` on every refresh while the takeover
@@ -59,8 +73,7 @@ a real scroll container the whole time, and the first touch, press or wheel
 converts the animation's current offset into a native scroll position on a
 single copy of the list (`auto-scroll.tsx`), resuming from the leader's hold
 after `IDLE_RESUME_MS` untouched. The frame allows only vertical panning and
-`main` disallows every other touch gesture; the app-wide Screens button lives
-in the root layout, outside `main`, which is why that does not reach it.
+`main` disallows every other touch gesture.
 A mouse or pen press-and-drag scrolls it too (`drag-scroll.ts`), because the
 event laptop is a Mac, where an external touch display reports a finger as a
 mouse and nothing pans natively; real touch stays with the browser.

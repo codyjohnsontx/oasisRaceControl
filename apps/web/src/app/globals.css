@@ -131,6 +131,17 @@ body {
   font-size: min(1.4815dvh, 0.8333vw);
 }
 
+/* /tv event view: no Screens menu. It runs on a touch display the public
+   walks up to at an off-site event, and the root layout's screen index would
+   hand any visitor every other screen, the staff sign-in included. The page
+   is the only thing that knows its mode on the server, so it marks its `main`
+   with `data-tv-mode` and this hides the menu from the first paint, while
+   every other page, the shop's /tv among them, keeps the menu in its server
+   HTML. display:none, so it is neither tappable nor in the tab order. */
+body:has([data-tv-mode="event"]) [data-screen-menu] {
+  display: none;
+}
+
 /* /tv slide timer: fills across the top edge over one board's hold. The
    component passes only the duration, as --tv-slide-duration, so the timing
    stays single-sourced from SLIDE_MS while the animation itself lives here. */

@@ -13,7 +13,7 @@ The Wednesday in-house league. Staff open a round from `/staff` against one trac
 - `/league` — season standings across every round, with each driver's per-round breakdown and a strip of rounds to tap into. Open rounds are included, so the board moves while the night is running.
 - `/league/[roundId]` — one round's full field ranked by fastest valid lap; tap a driver to expand all of their laps. Phone-first, this is the post-race comparison.
 - `/tv` — the front-of-store TV carries a league standings board in its rotation, and while a round is open that board takes the screen over: league night owns the wall, the arcade boards have it the rest of the week. Nobody has to take the kiosk off rotation.
-- `/tv?event=1` - the event view for a laptop at an off-site event: one leaderboard of every driver with a lap today in the featured combo, scrolling through itself, with no rotation to other boards. `/tv` itself is unchanged. It can be scrolled by hand on a touch screen, with a wheel, or by dragging it with the mouse (what a touch display on a Mac sends), and goes back to scrolling itself after twenty seconds untouched. `&host=cadillac` puts the event host's logo lockup, crest and wordmark, in the footer (`apps/web/src/lib/tv-host-logo.ts`). On both it and the wall's Fastest tonight board, a time with an asterisk is a lap that had an incident (any iRacing incident); there is no legend, by the owner's choice. Only valid laps rank, and validity is judged once, when the lap arrives, against the featured combo's `incident_limit` at that moment (`computeValidity`), so an incident lap is on the board only if the limit admitted it then; changing the limit later neither ranks nor removes laps already stored. `/staff` writes 0.
+- `/tv?event=1` - the event view for a laptop at an off-site event: one leaderboard of every driver with a lap today in the featured combo, scrolling through itself, with no rotation to other boards. `/tv` itself is unchanged. It can be scrolled by hand on a touch screen, with a wheel, or by dragging it with the mouse (what a touch display on a Mac sends), and goes back to scrolling itself after twenty seconds untouched. `&host=cadillac` puts the event host's logo lockup, crest and wordmark, in the footer (`apps/web/src/lib/tv-host-logo.ts`). Its corner QR code opens the Oasis Sim Racing website rather than the phone leaderboard, so the public at an event never lands on a page whose menu reaches the staff login; `/tv` keeps the leaderboard code. For the same reason the event view shows no Screens menu. On both it and the wall's Fastest tonight board, a time with an asterisk is a lap that had an incident (any iRacing incident); there is no legend, by the owner's choice. Only valid laps rank, and validity is judged once, when the lap arrives, against the featured combo's `incident_limit` at that moment (`computeValidity`), so an incident lap is on the board only if the limit admitted it then; changing the limit later neither ranks nor removes laps already stored. `/staff` writes 0.
 - `/staff` — open a round against a combo, close it when the night is over, and at the turn of the month end the season and start the next one (named for the month, in one step, refused while a round is still open).
 
 **Opening a round also sets that day's featured combo to the round's combo**, because lap validity is judged against the featured combo when a lap is ingested; closing the round puts the previous combo back. Laps already logged keep the validity they were given.
@@ -86,9 +86,11 @@ one-open-assignment-per-rig/driver partial unique indexes, the
 `checkin_driver()` function, the sign-out that closes only the stint it names
 and only on the calling rig, the check constraints that keep an unattributed
 lap unrankable and make it say why, every rig heartbeat (v1 or v2) kept as a
-row with its clock skew worked out by the database, and the upgrade path of a
-migration onto a database that already holds laps - are covered by a separate
-suite that needs a real database:
+row with its clock skew worked out by the database, the upgrade path of a
+migration onto a database that already holds laps, and the staff PIN reset
+judged through the driver sign-in it repairs (new PIN in, old PIN out,
+lockout gone, laps kept, audit row written) - are covered by a separate suite
+that needs a real database:
 
 ```bash
 docker start oasis-pg   # or: docker run -d --name oasis-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
@@ -127,12 +129,16 @@ Neither suite says anything about the venue's width. That measurement is a separ
 
 Nor does either look at the wall. `npm run tv:check` (from `apps/web`, against a
 running server) opens `/tv` in the machine's own Google Chrome through
-`playwright-core`, screenshots it, and fails if the phone-standings QR code in
-the corner is clipped or overlaps a board row, the board header, or the rest of
-the footer - then waits for the rotation to move and checks the next board too.
+`playwright-core`, screenshots it, and fails if the QR code in the corner is
+clipped or overlaps a board row, the board header, or the rest of the footer -
+then waits for the rotation to move and checks the next board too.
 `--viewport 1272x601` is the venue wall and the default; pass a laptop size to
 see what an off-site screen shows, and `--url http://localhost:3000/tv?event=1`
-to check the event view (one board, so it does not wait for a second).
+to check the event view (one board, so it does not wait for a second). It
+also fails if the app's Screens button is shown on the event view, or hidden
+on the rotation, and if the corner code does not decode to the view's target:
+the Oasis website on the event view, the page's own `/leaderboards` on the
+rotation.
 
 `npm run tv:scroll-check` does the same kind of thing for the event view's
 hand scrolling: against `/tv?event=1` it swipes the list with a finger, turns
@@ -143,11 +149,12 @@ twenty seconds after the last interaction - not while a mouse button is still
 held on it. The featured combo needs enough laps today for the list to
 overflow the screen. It takes a little over two minutes.
 
-`npm run leaderboards:check` does the same for the page that code opens: it
-loads `/leaderboards` at 390x844 (`--viewport` for another phone) with long
-driver names of its own in place of the board's rows, and fails if any name is
-truncated, the page scrolls sideways, or anything covers the LEADERBOARDS
-heading. The server needs at least one lap so there is a board to show.
+`npm run leaderboards:check` does the same for the page the shop rotation's
+code opens: it loads `/leaderboards` at 390x844 (`--viewport` for another
+phone) with long driver names of its own in place of the board's rows, and
+fails if any name is truncated, the page scrolls sideways, anything covers
+the LEADERBOARDS heading, or the Screens button is missing. The server needs at
+least one lap so there is a board to show.
 
 Demo: open `/r/demo-rig-1` on your phone (or localhost), check in as a guest, start `npm run fake-rig`, and watch laps land on `/me` and `/tv`. Check in **first**: like the real agent, the fake rig polls `GET /api/agent/assignment` and stamps each lap with the assignment that was open when it was driven, and the ingestion API attributes from that stamp rather than crediting the lap to whoever is checked in when it arrives (`docs/plan.md`, event model). Laps driven before you check in are stored *unattributed* - kept, unrankable, and listed on `/staff` under **Unclaimed laps**. They are never backfilled onto you once you do check in. Staff dashboard is at `/staff`. To try league night, open a round from `/staff` against the combo the fake rig drives, then watch `/league` and the round's page fill up.
 

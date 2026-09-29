@@ -1,9 +1,12 @@
 /**
- * Screenshots `/tv` and proves the phone-standings QR code in the corner is
- * fully on screen and overlaps nothing: not a board row, not the board's
- * header, not the rest of the footer. Then it waits for the rotation to move
- * and checks and screenshots the next boards too, so the corner is proven on
- * more than the board that happened to be up.
+ * Screenshots `/tv` and proves the QR code in the corner is fully on screen
+ * and overlaps nothing: not a board row, not the board's header, not the rest
+ * of the footer. It also decodes the hydrated code and fails unless it opens
+ * the view's target - the Oasis website on the event view, the page's own
+ * `/leaderboards` on the rotation - which no server-side test can see, since
+ * the rotation's code is only drawn once the browser knows its origin. Then it
+ * waits for the rotation to move and checks and screenshots the next boards
+ * too, so the corner is proven on more than the board that happened to be up.
  *
  * Runs against a live server in the system's Google Chrome through
  * `playwright-core` - no browser download, and nothing in `npm test` needs a
@@ -12,6 +15,11 @@
  * to check the event view: it has one board, so the wait for a second is
  * skipped on its own.
  *
+ * It also checks the app-wide Screens button: shown on the rotation, hidden
+ * on the event view, where any visitor could tap it through to the staff
+ * sign-in. That is the CSS rule in `globals.css` meeting the page's
+ * `data-tv-mode`, which only a browser can evaluate.
+ *
  * Usage (server already running, see README):
  *   npx tsx scripts/tv-corner-check.ts [--url http://localhost:3000/tv]
  *     [--viewport 1272x601] [--out tv-corner.png] [--boards 2]
@@ -19,6 +27,9 @@
  * Exits non-zero on the first overlap or clipped corner it finds.
  */
 import { chromium, type Page } from "playwright-core";
+import { tvMode } from "../src/lib/tv-rotation";
+import { decodeQrMarkup } from "../src/test/decode-qr-markup";
+import { OASIS_WEBSITE_URL, STANDINGS_PATH } from "../src/components/tv/phone-standings-qr";
 
 type Box = { x: number; y: number; width: number; height: number };
 
@@ -109,6 +120,20 @@ async function main() {
     await page.locator("main section").first().waitFor();
 
     await check(page, "board 1");
+    const eventView = tvMode(new URL(url).searchParams.get("event") ?? undefined) === "event";
+    // Where a phone that scans the hydrated code lands: the Oasis website on
+    // the event view, this page's own leaderboard on the rotation.
+    const target = eventView ? OASIS_WEBSITE_URL : `${new URL(page.url()).origin}${STANDINGS_PATH}`;
+    const scanned = decodeQrMarkup(await page.locator("#tv-phone-qr").evaluate((el) => el.outerHTML));
+    if (scanned !== target) {
+      throw new Error(`corner code opens ${scanned ?? "nothing readable"}, expected ${target}`);
+    }
+    console.log(`corner code opens: ${scanned}`);
+    const menuShown = await page.getByRole("button", { name: "Open screen menu" }).isVisible();
+    if (menuShown === eventView) {
+      throw new Error(`Screens button is ${menuShown ? "shown" : "hidden"} on the ${eventView ? "event view" : "rotation"}`);
+    }
+    console.log(`Screens button: ${menuShown ? "shown" : "hidden"}`);
     await page.screenshot({ path: out });
     console.log(`screenshot: ${out}`);
     // Later boards get the same name with their number before the extension.
