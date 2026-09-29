@@ -2,8 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
-import { tvMode } from "@/lib/tv-rotation";
+import { usePathname } from "next/navigation";
 
 type ScreenLink = {
   href: string;
@@ -87,20 +86,16 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
- * Whether a page leaves the screen index out. Only the `/tv` event view does:
- * it runs on a touch display the public walks up to at an off-site event, and
- * the index would hand any visitor every other screen, the staff sign-in
- * included. The owner asked for that closed after the 2026-09-27 event.
+ * Interview-ready screen index shared by every route in the application.
+ *
+ * Every page renders it, the `/tv` event view included; that view hides it
+ * with CSS (`data-screen-menu` in `globals.css`), because it runs on a touch
+ * display the public walks up to at an off-site event and the index would
+ * hand any visitor every other screen, the staff sign-in included.
  */
-export function hidesScreenMenu(pathname: string, event: string | null): boolean {
-  return pathname === "/tv" && tvMode(event ?? undefined) === "event";
-}
-
-/** Interview-ready screen index shared by every route in the application. */
 export function NavMenu() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
-  const hidden = hidesScreenMenu(pathname, useSearchParams().get("event"));
   const titleId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -147,10 +142,8 @@ export function NavMenu() {
     };
   }, [open]);
 
-  if (hidden) return null;
-
   return (
-    <>
+    <div data-screen-menu className="contents">
       <button
         ref={triggerRef}
         type="button"
@@ -286,6 +279,6 @@ export function NavMenu() {
           </p>
         </footer>
       </aside>
-    </>
+    </div>
   );
 }

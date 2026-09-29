@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Orbitron, Rajdhani, Geist_Mono } from "next/font/google";
-import { Suspense } from "react";
 import "./globals.css";
 import { NavMenu } from "@/components/nav-menu";
 
@@ -43,13 +42,7 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col bg-bg text-ink">
         {children}
-        {/* NavMenu reads the query string to leave itself off the /tv event
-            view. A prerendered page only knows its query in the browser, so
-            the boundary lets those pages render without the menu and add it
-            on the client. */}
-        <Suspense fallback={null}>
-          <NavMenu />
-        </Suspense>
+        <NavMenu />
       </body>
     </html>
   );

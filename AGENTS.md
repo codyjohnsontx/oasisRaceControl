@@ -47,12 +47,20 @@ own origin. On the event view it opens the Oasis website
 (`OASIS_WEBSITE_URL`) instead: the owner asked for that after the 2026-09-27
 event, because the leaderboard's site menu hands the public every other
 screen including the staff login. Do not make that target a query parameter.
-For the same reason the event view has no app-wide Screens menu at all
-(`hidesScreenMenu` in `nav-menu.tsx`): nothing on it may navigate to another
-screen of the app, since any visitor can tap a touch display.
 It sits in the footer's flow rather than pinned over the board, which is what
 makes it unable to cover a row; `npm run tv:check` screenshots `/tv` and fails
 on any overlap (root README, Integration tests).
+
+For the same reason the event view shows no app-wide Screens menu: nothing on
+it may navigate to another screen of the app, since any visitor can tap a
+touch display. The menu lives in the root layout, which cannot see the query,
+so it is in every page's server HTML and the `/tv` page hides it - its `main`
+carries `data-tv-mode`, and a `body:has(...)` rule in `globals.css` sets the
+menu's `data-screen-menu` root to `display: none`. Do not make the menu read
+the query string instead: `useSearchParams` in the root layout needs a
+Suspense boundary that takes the menu out of every prerendered page's HTML.
+`npm run tv:check` fails if the button shows on the event view or not on the
+rotation.
 
 A board can also take the wall over rather than take a turn on it, without any
 engine change: renew the contract's `hold()` on every refresh while the takeover

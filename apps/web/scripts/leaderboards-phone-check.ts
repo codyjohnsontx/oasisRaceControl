@@ -3,7 +3,8 @@
  * `/tv` corner code opens - and proves a spectator can read it: every driver
  * name is shown in full (wrapped if need be, never cut to an ellipsis), and
  * nothing, the floating Screens button included, sits on top of the
- * LEADERBOARDS heading, and the page does not scroll sideways.
+ * LEADERBOARDS heading, and the page does not scroll sideways. The Screens
+ * button must be shown here: only the `/tv` event view hides it.
  *
  * The rows are the script's own, served in place of `/api/leaderboards/board`,
  * so the names are long ones whoever has driven. The page still needs one
@@ -91,6 +92,9 @@ async function main() {
       return null;
     });
     if (cover) problems.push(`the LEADERBOARDS heading is covered by ${cover}`);
+    if (!(await page.getByRole("button", { name: "Open screen menu" }).isVisible())) {
+      problems.push("the Screens button is not shown");
+    }
 
     await page.screenshot({ path: out, fullPage: true });
     console.log(`screenshot: ${out}`);

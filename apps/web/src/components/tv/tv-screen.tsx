@@ -30,8 +30,8 @@ import { TvCornerQr } from "./phone-standings-qr";
  *    on a touch screen can take over for a while (`auto-scroll.tsx`). The
  *    board disallows every touch gesture but that vertical pan, so a tap on a
  *    projected screen cannot zoom or flash-select it. The app-wide Screens
- *    button is outside it on the rotation, and absent on the event view
- *    (`hidesScreenMenu` in `nav-menu.tsx`).
+ *    button is outside it on the rotation, and hidden on the event view
+ *    (`data-tv-mode`, below).
  */
 
 type Props = {
@@ -293,6 +293,9 @@ export function TvScreen({ initialBoards, mode, hostLogo }: Props) {
       // panned by hand, and a browser honours the list's `touch-action` only
       // if no ancestor forbids that gesture, so there the lock keeps zoom out
       // but lets vertical panning through (`tv-screen.test.tsx` pins both).
+      // `data-tv-mode` is what hides the app-wide Screens menu on the event
+      // view (`globals.css`).
+      data-tv-mode={mode}
       className={`tv-scale relative flex h-dvh ${
         mode === "event" ? "touch-pan-y" : "touch-none"
       } flex-col overflow-hidden p-[2.5em] select-none`}

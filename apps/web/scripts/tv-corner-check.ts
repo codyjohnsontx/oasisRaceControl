@@ -12,6 +12,11 @@
  * to check the event view: it has one board, so the wait for a second is
  * skipped on its own.
  *
+ * It also checks the app-wide Screens button: shown on the rotation, hidden
+ * on the event view, where any visitor could tap it through to the staff
+ * sign-in. That is the CSS rule in `globals.css` meeting the page's
+ * `data-tv-mode`, which only a browser can evaluate.
+ *
  * Usage (server already running, see README):
  *   npx tsx scripts/tv-corner-check.ts [--url http://localhost:3000/tv]
  *     [--viewport 1272x601] [--out tv-corner.png] [--boards 2]
@@ -19,6 +24,7 @@
  * Exits non-zero on the first overlap or clipped corner it finds.
  */
 import { chromium, type Page } from "playwright-core";
+import { tvMode } from "../src/lib/tv-rotation";
 
 type Box = { x: number; y: number; width: number; height: number };
 
@@ -109,6 +115,12 @@ async function main() {
     await page.locator("main section").first().waitFor();
 
     await check(page, "board 1");
+    const eventView = tvMode(new URL(url).searchParams.get("event") ?? undefined) === "event";
+    const menuShown = await page.getByRole("button", { name: "Open screen menu" }).isVisible();
+    if (menuShown === eventView) {
+      throw new Error(`Screens button is ${menuShown ? "shown" : "hidden"} on the ${eventView ? "event view" : "rotation"}`);
+    }
+    console.log(`Screens button: ${menuShown ? "shown" : "hidden"}`);
     await page.screenshot({ path: out });
     console.log(`screenshot: ${out}`);
     // Later boards get the same name with their number before the extension.
