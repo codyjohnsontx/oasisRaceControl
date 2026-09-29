@@ -1,5 +1,6 @@
 import { query, queryOne } from "@/lib/db";
 import { rigFromBearer } from "@/lib/agent-auth";
+import { scheduleMonitor } from "@/lib/monitor/run";
 import {
   agentEventsBody,
   MAX_EVENTS_BODY_BYTES,
@@ -88,6 +89,12 @@ export async function POST(request: Request) {
     // write churn for nothing.
     if (!markedSeen) {
       await query("update rigs set last_seen_at = now() where id = $1", [rig.id]);
+    } else {
+      // Every heartbeat is also a tick of the rig monitor: a healthy rig is
+      // what notices a silent one. It runs after this response has gone, so
+      // the agent is answered as fast as before, and it is throttled across
+      // every rig (src/lib/monitor/run.ts).
+      scheduleMonitor();
     }
 
     return Response.json({ results });

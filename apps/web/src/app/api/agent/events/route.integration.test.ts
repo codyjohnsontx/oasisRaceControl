@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeEach, expect, it } from "vitest";
+import { afterAll, beforeEach, expect, it, vi } from "vitest";
 import { POST } from "./route";
 import { UNATTRIBUTED_CAUSES } from "@/lib/unattributed-cause";
 import {
@@ -17,6 +17,11 @@ import {
   testDb,
   type SeededRig,
 } from "@/test/db";
+
+// The monitor evaluation a heartbeat schedules runs through Next's after(),
+// which needs a request scope these direct calls do not have. The monitor has
+// its own real-Postgres suite (src/lib/monitor/monitor.integration.test.ts).
+vi.mock("@/lib/monitor/run", () => ({ scheduleMonitor: () => {} }));
 
 /**
  * Real-Postgres coverage for the project's core invariant: every lap is

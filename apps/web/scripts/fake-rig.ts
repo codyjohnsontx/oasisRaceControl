@@ -172,6 +172,8 @@ let rejectedLaps = 0;
 let lastLapCapturedAt: string | null = null;
 let lastLapPostedAt: string | null = null;
 let cpuMark = { usage: process.cpuUsage(), at: performance.now() };
+/** Heartbeats this process has built, as the agent numbers them. */
+let heartbeatSequence = 0;
 
 /**
  * The v2 heartbeat (heartbeatEvent in src/lib/events.ts), filled with what a
@@ -213,6 +215,7 @@ function heartbeat(): HeartbeatEvent {
     agentCpuPercent: Math.round(Math.max(0, cpuPercent) * 100) / 100,
     agentMemoryMb: Math.round(process.memoryUsage().rss / 1_048_576),
     shuttingDown: false,
+    sequence: ++heartbeatSequence,
   };
 }
 

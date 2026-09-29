@@ -74,6 +74,9 @@ The repo is a monorepo; the app lives in `apps/web`.
    |---|---|---|
    | `DATABASE_URL` | Neon **pooled** connection string | `-pooler` host, `sslmode=require`. Server-only — never `NEXT_PUBLIC_`. |
    | `SESSION_SECRET` | long random string | signs driver + staff cookies. Generate: `openssl rand -base64 48` |
+   | `DISCORD_WEBHOOK_URL` | the channel's webhook URL ([monitoring.md](./monitoring.md)) | the rig monitor's alerts. Optional: without it the monitor still evaluates, but logs each message instead of posting it. Production only, so a preview never posts to the venue |
+   | `DISCORD_ALERT_USER_ID` | the owner's Discord user id | optional: without it urgent alerts still post, with no @mention |
+   | `CRON_SECRET` | long random string | the bearer token `GET /api/monitor/tick` requires. Optional: without it the tick refuses every call, while rig heartbeats still run evaluations |
 
    Both are read lazily on the request paths that use them — a missing
    `DATABASE_URL` throws the first time a route touches the database, and a
@@ -342,6 +345,64 @@ deployment in the meantime is unaffected: that code never touches the table.
    commit;
    -- one row per rig that is on; sends_v1 true until the rig runs rig-agent/0.4-monitor
    ```
+
+### Applying 0006_monitor.sql
+
+`0006_monitor.sql` holds the rig monitor's alert state
+([monitoring.md](./monitoring.md)). It is additive - two new tables, one
+index, one seed row, nothing existing altered - so apply it to Neon **before
+merging** the change that adds it, exactly as 0005 went: the migration lands
+first, the verify in step 4 says it is safe, the merge follows. Until the
+merge deploys, nothing reads the new tables.
+
+1. Point at production exactly as in
+   [step 2 of the recovery runbook](#2-point-at-production-and-prove-it).
+2. From `apps/web`: `npm run db:check`. Read the target line, then expect
+   exactly one missing file, `0006_monitor.sql`. Anything more and stop.
+3. `npm run db:migrate`. Read the `migrating <host>/<database>` line; expect
+   `applied 0006_monitor.sql` and `skip` for the rest. The runner applies the
+   file and its bookkeeping row in one transaction.
+
+   Only if you cannot run it, paste this into Neon's SQL Editor as one
+   explicit transaction, with the whole of `db/migrations/0006_monitor.sql`
+   copied in unaltered where marked:
+
+   ```sql
+   begin;
+   -- the whole of db/migrations/0006_monitor.sql, unaltered
+   insert into schema_migrations (version) values ('0006_monitor.sql');
+   commit;
+   ```
+
+   If anything in it fails, nothing is applied - fix the paste and run it
+   again. Without the `insert` the build gate keeps refusing to deploy.
+4. Verify, whichever way you applied it. `db/verify/0006_monitor.sql`
+   fingerprints both tables' columns, every constraint, the one-open-alert
+   index and the seed row against a database built from the migration file.
+   It is a **single SELECT with no transaction around it**, because the SQL
+   Editor shows only the last statement's result - paste the whole file and
+   run it, and the result grid is the answer. It only reads, so it is safe
+   against production at any time. Or from `psql`:
+
+   ```bash
+   psql "$DATABASE_URL" -f ../../db/verify/0006_monitor.sql
+   ```
+
+   Expect twelve rows, every one `ok = t`. Any `f` means the database does
+   not hold what the file says: stop and compare `actual` with `expected`. An
+   error saying `monitor_state` does not exist means the migration is not
+   applied at all. Then `npm run db:check` should say every migration is
+   applied.
+5. After the merge deploys, the first rig heartbeat runs an evaluation. This
+   shows it happened (read-only, one statement):
+
+   ```sql
+   select last_evaluated_at, now() - last_evaluated_at as ago from monitor_state;
+   -- ago under a minute or two while any rig is on
+   ```
+
+   Then set the monitor's variables and the outside clock
+   ([monitoring.md](./monitoring.md)).
 
 ---
 
