@@ -129,9 +129,10 @@ public sealed record HeartbeatReport
 /// minute, so a blip cannot outlast that rule. From the second in a row the
 /// gap doubles (two, four, then five minutes at most) with a little jitter,
 /// so an offline rig spends nothing on a network that is not there and a
-/// whole venue coming back does not knock in step. The first answer puts it
-/// straight back to a minute - and any backend call that brings the link
-/// back, the poll or the flush, wakes the heartbeat at once (see
+/// whole venue coming back does not knock in step. The first heartbeat that
+/// gets through puts it straight back to a minute. The poll or the flush
+/// bringing the link back wakes the heartbeat at once, once per streak of
+/// failures, without resetting the count (see
 /// <c>AgentService.HeartbeatLoop</c>).
 ///
 /// Only the heartbeat backs off. The assignment poll and the lap flush keep

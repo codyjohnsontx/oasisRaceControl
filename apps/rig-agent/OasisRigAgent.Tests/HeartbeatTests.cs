@@ -68,6 +68,45 @@ public sealed class HeartbeatTests : IDisposable
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(15), clock.Elapsed.ToString());
     }
 
+    /// <summary>A backend that answers the poll but fails every heartbeat
+    /// with an error is reachable: the rig stays online, and the heartbeat
+    /// waits out its schedule instead of going again on every poll.</summary>
+    [Fact]
+    public async Task AHeartbeatAnsweredWithAnErrorLeavesTheRigOnlineAndIsNotRetriedEveryPoll()
+    {
+        var backend = new RecordingBackend { FailHeartbeats = true };
+        using var queue = new EventQueue(_dbPath);
+        var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
+        var connections = new List<ConnectionState>();
+        agent.StatusChanged += s => { lock (connections) connections.Add(s.Connection); };
+        agent.Start();
+
+        await Eventually(() => backend.AssignmentPolls >= 3, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, backend.EventPosts);
+        lock (connections) Assert.DoesNotContain(ConnectionState.Offline, connections);
+        Assert.False(await agent.SendHeartbeatAsync(shuttingDown: false));
+        Assert.Equal(ConnectionState.Online, agent.CurrentStatus().Connection);
+    }
+
+    /// <summary>A heartbeat that cannot reach the backend while the poll
+    /// can gets one early retry for the streak, not one per poll; after that
+    /// it backs off on the schedule.</summary>
+    [Fact]
+    public async Task AStreakOfLostHeartbeatsGetsOneEarlyRetryNotOnePerPoll()
+    {
+        var backend = new RecordingBackend { DropHeartbeats = true };
+        using var queue = new EventQueue(_dbPath);
+        var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
+        agent.Start();
+
+        await Eventually(() => backend.AssignmentPolls >= 4, TimeSpan.FromSeconds(40));
+
+        Assert.Equal(2, backend.EventPosts);
+    }
+
     [Fact]
     public void TheStartLogCountsTheLastDaysStartsAndForgetsOlderOnes()
     {
@@ -443,22 +482,32 @@ public sealed class HeartbeatTests : IDisposable
         public volatile bool Offline;
         public volatile bool RefuseReports;
         public volatile bool Hang;
+        public volatile bool FailHeartbeats;
+        public volatile bool DropHeartbeats;
 
         private int _eventPosts;
+        private int _assignmentPolls;
 
         public IReadOnlyList<JsonObject> Heartbeats { get { lock (_heartbeats) return _heartbeats.ToList(); } }
         public int EventPosts => Volatile.Read(ref _eventPosts);
+        public int AssignmentPolls => Volatile.Read(ref _assignmentPolls);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
-            if (request.RequestUri!.AbsolutePath.EndsWith("/events")) Interlocked.Increment(ref _eventPosts);
+            var path = request.RequestUri!.AbsolutePath;
+            var isEvents = path.EndsWith("/events");
+            if (isEvents) Interlocked.Increment(ref _eventPosts);
             if (Hang) await Task.Delay(Timeout.Infinite, ct);
             if (Offline) throw new HttpRequestException("venue network is down");
-            var path = request.RequestUri!.AbsolutePath;
+            if (isEvents && DropHeartbeats) throw new HttpRequestException("the write never arrived");
+            if (isEvents && FailHeartbeats) return new HttpResponseMessage(HttpStatusCode.InternalServerError);
             if (path.EndsWith("/assignment"))
+            {
+                Interlocked.Increment(ref _assignmentPolls);
                 return Json(Assignment is null
                     ? """{"assignment":null}"""
                     : "{\"assignment\":{\"id\":\"" + Assignment + "\",\"startedAt\":\"2026-07-12T00:00:00Z\",\"driver\":{\"id\":\"d-mike\",\"displayName\":\"Mike\"}}}");
+            }
             if (path.EndsWith("/checkout")) return Json("""{"ended":false}""");
 
             var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!;

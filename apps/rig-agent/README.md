@@ -429,10 +429,15 @@ already tolerates a late tick.
 **Offline.** Only the heartbeat backs off, and only from its second failure in
 a row: one missed heartbeat still waits 60 s, then 120, 240 and at most 300
 seconds between attempts, each within 10% jitter, back to 60 on the first
-answer. The assignment poll and lap flush keep their intervals, because they
-carry the laps and the sign-out - and when either of them reaches the backend
-again after a heartbeat failed, the heartbeat goes at once, so a blip never
-outlasts the monitor's two-minute silence rule. Notices and sign-in failures raised while the
+heartbeat that gets through. The assignment poll and lap flush keep their
+intervals, because they carry the laps and the sign-out - and when either of
+them brings the link back after a heartbeat failed, the heartbeat is retried
+at once, so a blip never outlasts the monitor's two-minute silence rule. That
+early retry happens once per streak of failures and does not reset the
+backoff, so a backend that answers the poll but keeps failing the heartbeat
+is still asked two, four, then five minutes apart. A heartbeat the backend
+answers with an error leaves the rig online; only a backend that cannot be
+reached marks it offline. Notices and sign-in failures raised while the
 backend is away are kept (the newest ten notices) and arrive with the first
 heartbeat that gets through. A backend that refuses the report as invalid input
 gets the bare `{type, agentVersion}` heartbeat instead, so a schema mismatch
