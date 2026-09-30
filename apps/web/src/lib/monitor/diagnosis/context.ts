@@ -157,7 +157,10 @@ export function incidentContext(
 
   return {
     alertId: alert.id,
-    rule: { key: text(alert.rule), number: rule.number, title: text(rule.title) },
+    // The rule's key and title are the monitor's own words, never a driver's:
+    // the key names the issue's marker, lock and re-fire lookup, which must
+    // agree whatever name the seated driver chose.
+    rule: { key: alert.rule, number: rule.number, title: oneLine(rule.title) },
     severity: alert.severity,
     openedAt: alert.openedAt,
     where,

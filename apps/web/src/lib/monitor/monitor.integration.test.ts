@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
 import commentCreated from "./fixtures/github-comment-created.json";
 import issueCreated from "./fixtures/github-issue-created.json";
-import { rigAlertMarker } from "./handoff";
+import { markedAlerts, rigAlertMarker } from "./handoff";
 import { runDiagnoses, runMonitor } from "./run";
 import { applyFindings, claimEvaluation, type OpenAlert } from "./store";
 import type { Finding } from "./rules";
@@ -913,6 +913,37 @@ describeDb("rig monitor against real Postgres", () => {
         expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
         expect(issues.size).toBe(1);
         expect(await issueNumbers()).toEqual([42]);
+      });
+
+      it("reconciles lost writes when the seated driver is named after the rule key", async () => {
+        const rig = await seatedSilentRig(2, "rig_silent");
+        geminiAnswers = ["answer", "answer"];
+        githubAnswers = ["lost"];
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+
+        // The marker names the rule the lock and re-fire lookup use, not the driver's stand-in.
+        const trailer = (body: string) => body.trimEnd().split("\n").at(-1)!;
+        const { rows } = await testDb().query<{ id: string; rule: string }>("select id::text, rule from monitor_alerts");
+        expect(rows[0]!.rule).toBe("rig_silent");
+        expect(markedAlerts(trailer(issues.get(42)!.body), "issue", rows[0]!.rule)).toEqual([rows[0]!.id]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([42]);
+
+        await recover(rig);
+        githubAnswers = ["lost"];
+        await silentAgain(rig);
+        await nextEvaluation();
+        await retryDue();
+        await nextEvaluation();
+        const refires = issues.get(42)!.comments.filter((c) => c.body.startsWith("Fired again"));
+        expect(refires).toHaveLength(1);
+        expect(markedAlerts(trailer(refires[0]!.body), "refire", "rig_silent")).toHaveLength(1);
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([42, 42]);
       });
 
       it("never repeats a recovery or re-fire comment whose answer was lost", async () => {

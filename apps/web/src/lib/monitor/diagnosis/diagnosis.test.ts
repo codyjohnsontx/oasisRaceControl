@@ -158,6 +158,11 @@ describe("redaction before the call (D9)", () => {
     expect(context.headline).toBe(`Rig 2 has been silent with ${pseudonym(driver)} signed in`);
   });
 
+  it.each(["laps_stuck", "laps", "site"])("never redacts the rule's own key or title, even for a driver named %s", (driver) => {
+    const context = incidentContext({ ...ALERT, detail: { ...ALERT.detail, driver } }, [], null);
+    expect(context.rule).toEqual({ key: "laps_stuck", number: "3a", title: "Laps queued but not reaching the site" });
+  });
+
   it("keeps the handoff free of names and ids too", () => {
     const context = incidentContext(ALERT, HEARTBEATS, null);
     const text = handoffText(context, { ok: false, error: "timed out" });
