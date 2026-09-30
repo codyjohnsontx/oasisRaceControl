@@ -186,9 +186,15 @@ handoff stays either way, as the fallback when the harness is offline.
   code is logged - never GitHub's answer, which could quote the request.
 - **No duplicates.** Filing is serialized per fault (one rule on one rig), so
   two alerts filed at once make one issue and one comment. Every issue and
-  comment carries a hidden marker naming its alert; a write whose answer was
-  lost (a timeout, a function that died) is found by that marker on the retry
-  and recorded, not written again.
+  comment carries a hidden marker naming its alert as its last line; a write
+  whose answer was lost (a timeout, a function that died) is found by that
+  marker on the retry and recorded, not written again. A marker counts only
+  on an issue or comment written by the token's own GitHub account (read once
+  from `GET /user`), so nobody else can type one into this public repository
+  to stop an issue being filed. The lookup pages through the issue and comment
+  lists, not search, up to ten pages of 100; past that it retries later
+  rather than guess. A re-fire comment that already landed is recorded as it
+  is, without reopening an issue you closed since.
 
 | Variable | What it is |
 |---|---|

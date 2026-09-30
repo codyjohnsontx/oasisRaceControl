@@ -294,7 +294,8 @@ to it behind a redaction regex; add a field of a vouchable kind, and keep
 model text going through `modelText`. The rig is named there by
 `rigs.rig_number`, never its staff-typed display name, which only the Discord
 alert shows. Issue writes are serialized per fault (`lockFault`) and carry a
-hidden marker (`rigAlertMarker`) that a retry looks for before writing again;
+hidden marker (`rigAlertMarker`) that a retry looks for before writing again,
+trusted only as the last line of a write by the token's own account;
 keep both on any new GitHub write.
 
 ## The twenty-rig soak

@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
 import commentCreated from "./fixtures/github-comment-created.json";
 import issueCreated from "./fixtures/github-issue-created.json";
+import { rigAlertMarker } from "./handoff";
 import { runDiagnoses, runMonitor } from "./run";
 import { applyFindings, claimEvaluation, type OpenAlert } from "./store";
 import type { Finding } from "./rules";
@@ -627,7 +628,18 @@ describeDb("rig monitor against real Postgres", () => {
        * token and the request.
        */
       type Answer = number | "lost" | "hold" | "echo";
-      type FakeIssue = { number: number; state: string; body: string; comments: Array<{ body: string }> };
+      const MONITOR = "oasis-monitor";
+      type FakeComment = { body: string; user: { login: string } };
+      type FakeIssue = {
+        number: number;
+        state: string;
+        body: string;
+        user: { login: string };
+        labels: Array<{ name: string }>;
+        comments: FakeComment[];
+      };
+      /** GitHub files the next issue without its label, as it does when the label is missing. */
+      let dropLabel = false;
       let issues: Map<number, FakeIssue>;
       /** Every write to GitHub, in order; the reads are in `reads`. */
       let calls: Array<{ method: string; url: string; body: Record<string, unknown> }> = [];
@@ -641,13 +653,14 @@ describeDb("rig monitor against real Postgres", () => {
         const path = url.slice(GITHUB.length);
         if (method === "POST" && path === "") {
           const number = 42 + issues.size;
-          issues.set(number, { number, state: "open", body: body.body as string, comments: [] });
-          return { ...issueCreated, number, title: body.title, body: body.body };
+          const labels = dropLabel ? [] : [{ name: "rig-alert" }];
+          issues.set(number, { number, state: "open", body: body.body as string, user: { login: MONITOR }, labels, comments: [] });
+          return { ...issueCreated, number, title: body.title, body: body.body, labels };
         }
         const [, n, comments] = path.match(/^\/(\d+)(\/comments)?$/)!;
         const issue = issues.get(Number(n))!;
         if (comments) {
-          issue.comments.push({ body: body.body as string });
+          issue.comments.push({ body: body.body as string, user: { login: MONITOR } });
           return commentCreated;
         }
         if (typeof body.state === "string") issue.state = body.state;
@@ -656,14 +669,18 @@ describeDb("rig monitor against real Postgres", () => {
 
       function read(url: string): unknown {
         const path = url.slice(GITHUB.length);
-        if (path.startsWith("?")) return [...issues.values()].reverse().map((i) => ({ ...issueCreated, ...i }));
+        // Every list fits on its first page here; the paging itself is unit-tested.
+        const firstPage = new URL(url).searchParams.get("page") === "1";
+        if (path.startsWith("?")) return firstPage ? [...issues.values()].reverse().map((i) => ({ ...issueCreated, ...i })) : [];
         const [, n, comments] = path.match(/^\/(\d+)(\/comments)?(\?.*)?$/)!;
         const issue = issues.get(Number(n))!;
-        return comments ? issue.comments : { ...issueCreated, number: issue.number, state: issue.state };
+        if (comments) return firstPage ? issue.comments : [];
+        return { ...issueCreated, number: issue.number, state: issue.state };
       }
 
       beforeEach(() => {
         issues = new Map();
+        dropLabel = false;
         calls = [];
         reads = [];
         githubAnswers = [];
@@ -673,6 +690,7 @@ describeDb("rig monitor against real Postgres", () => {
         vi.stubGlobal(
           "fetch",
           vi.fn(async (url: string, init: RequestInit) => {
+            if (url === "https://api.github.com/user") return Response.json({ login: MONITOR });
             if (!url.startsWith(GITHUB)) return others(url, init);
             const method = init.method ?? "GET";
             if (method === "GET") {
@@ -903,6 +921,64 @@ describeDb("rig monitor against real Postgres", () => {
         expect(issues.get(42)!.comments).toHaveLength(2);
         expect(issues.size).toBe(1);
         expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("files its own issue when a stranger's issue carries the alert's exact marker", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = [500];
+        await nextEvaluation();
+        const { rows } = await testDb().query<{ id: string }>("select id::text from monitor_alerts");
+        issues.set(7, {
+          number: 7,
+          state: "open",
+          body: `please fix\n\n${rigAlertMarker("issue", rows[0]!.id)}`,
+          user: { login: "someone-else" },
+          labels: [{ name: "rig-alert" }],
+          comments: [],
+        });
+
+        await retryDue();
+        await nextEvaluation();
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(await issueNumbers()).toEqual([43]);
+      });
+
+      it("records a re-fire comment that landed and leaves the issue closed since then alone", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+        await nextEvaluation();
+        await recover(rig);
+        githubAnswers = ["lost"];
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, null]);
+
+        // The owner closes the issue before the retry.
+        issues.get(42)!.state = "closed";
+        await retryDue();
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+        expect(issues.get(42)!.state).toBe("closed");
+        expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(0);
+        expect(issues.get(42)!.comments.filter((c) => c.body.startsWith("Fired again"))).toHaveLength(1);
+      });
+
+      it("warns when the issue it finds by marker was filed without the label", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        dropLabel = true;
+        githubAnswers = ["lost"];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([null]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42]);
+        expect(issues.size).toBe(1);
+        const logged = consoleError.mock.calls.map((args: unknown[]) => args.join(" ")).join("\n");
+        expect(logged).toContain("issue #42 for alert");
+        expect(logged).toContain("without the rig-alert label");
       });
 
       it("files one issue when two alerts of one fault are filed by concurrent runs", async () => {

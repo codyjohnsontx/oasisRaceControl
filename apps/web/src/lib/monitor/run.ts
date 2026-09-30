@@ -239,12 +239,13 @@ async function fileIssue(alert: AlertToFile): Promise<void> {
     const since = alert.openedAt - MARKER_LOOKBACK_MS;
     const refireOf = await refireTarget(client, alert.id);
     if (refireOf !== null) {
-      const reopened = await reopenIssue(refireOf);
-      if (reopened.status !== "sent") return logFailedIssue(alert.id, reopened);
-      const marker = rigAlertMarker("refire", alert.id);
-      const found = await hasCommentWithMarker(refireOf, marker, since);
+      // A comment that already landed is recorded as it stands: reopening
+      // first would undo an owner's close for a comment already delivered.
+      const found = await hasCommentWithMarker(refireOf, rigAlertMarker("refire", alert.id), since);
       if (found.status !== "sent") return logFailedIssue(alert.id, found);
       if (!found.found) {
+        const reopened = await reopenIssue(refireOf);
+        if (reopened.status !== "sent") return logFailedIssue(alert.id, reopened);
         const sent = await commentOnIssue(refireOf, refireComment(context, alert.handoff));
         if (sent.status !== "sent") return logFailedIssue(alert.id, sent);
       }
@@ -253,17 +254,17 @@ async function fileIssue(alert: AlertToFile): Promise<void> {
 
     const found = await findIssueWithMarker(rigAlertMarker("issue", alert.id), since);
     if (found.status !== "sent") return logFailedIssue(alert.id, found);
-    let number = found.number;
+    let { number, labelled } = found;
     if (number === null) {
       const opened = await openIssue(rigAlertIssue(context, alert.handoff));
       if (opened.status !== "sent") return logFailedIssue(alert.id, opened);
-      if (!opened.labelled) {
-        console.error(
-          `[monitor] issue #${opened.number} for alert #${alert.id} was filed without the rig-alert label; ` +
-            "create the label (docs/monitoring.md) or nothing picks the issue up",
-        );
-      }
-      number = opened.number;
+      ({ number, labelled } = opened);
+    }
+    if (!labelled) {
+      console.error(
+        `[monitor] issue #${number} for alert #${alert.id} was filed without the rig-alert label; ` +
+          "create the label (docs/monitoring.md) or nothing picks the issue up",
+      );
     }
     await recordIssue(client, alert.id, number);
   });

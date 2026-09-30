@@ -2,7 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import badCredentials from "./fixtures/github-bad-credentials.json";
 import commentCreated from "./fixtures/github-comment-created.json";
 import issueCreated from "./fixtures/github-issue-created.json";
-import { commentOnIssue, findIssueWithMarker, hasCommentWithMarker, openIssue, reopenIssue } from "./github";
+import {
+  commentOnIssue,
+  findIssueWithMarker,
+  hasCommentWithMarker,
+  MARKER_MAX_PAGES,
+  openIssue,
+  reopenIssue,
+} from "./github";
 
 /**
  * The issue client against GitHub's own answers, served by a fake fetch - no
@@ -136,44 +143,122 @@ describe("reopenIssue", () => {
 describe("the marker lookups", () => {
   const MARKER = "<!-- oasis-rig-alert:issue:alert-7 -->";
   const SINCE = Date.parse("2026-09-29T07:00:00Z");
+  const MONITOR = { login: "oasis-monitor" };
+  const LABELS = issueCreated.labels;
+  let tokens = 0;
 
-  it("finds the issue carrying the marker, never a pull request that quotes it", async () => {
-    const fetch = answering(200, [
-      { ...issueCreated, number: 45, body: `quoted ${MARKER}`, pull_request: { url: "x" } },
-      { ...issueCreated, number: 44, body: "another alert <!-- oasis-rig-alert:issue:alert-70 -->" },
-      { ...issueCreated, number: 43, body: `handoff\n\n${MARKER}` },
+  /** A fresh token per test, so the account read is not served from an earlier test. */
+  function token() {
+    return `github_pat_lookup_${++tokens}`;
+  }
+
+  /** Answers GET /user with the monitor's account, and each list page from `pages`. */
+  function github(pages: unknown[][]) {
+    return vi.fn(async (url: string) => {
+      const u = new URL(url);
+      if (u.pathname === "/user") return Response.json(MONITOR);
+      return Response.json(pages[Number(u.searchParams.get("page")) - 1] ?? []);
+    }) as unknown as typeof globalThis.fetch & ReturnType<typeof vi.fn>;
+  }
+
+  const filed = (number: number, body: string, extra: object = {}) => ({
+    ...issueCreated,
+    number,
+    body,
+    user: MONITOR,
+    labels: LABELS,
+    ...extra,
+  });
+
+  it("finds only the monitor's own issue with the marker as its last line", async () => {
+    const fetch = github([
+      [
+        filed(49, `quoted ${MARKER}`, { pull_request: { url: "x" } }),
+        filed(48, `handoff\n\n${MARKER}`, { user: { login: "someone-else" }, labels: [] }),
+        filed(47, `the handoff quotes ${MARKER} and goes on\n\n<!-- oasis-rig-alert:issue:alert-8 -->`),
+        filed(46, "another alert <!-- oasis-rig-alert:issue:alert-70 -->"),
+        filed(43, `handoff\n\n${MARKER}\n`),
+      ],
     ]);
-    await expect(findIssueWithMarker(MARKER, SINCE, { token: TOKEN, fetch })).resolves.toEqual({
+    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch })).resolves.toEqual({
       status: "sent",
       number: 43,
+      labelled: true,
     });
-    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect(init.method).toBe("GET");
-    const query = new URL(url).searchParams;
-    expect(query.get("state")).toBe("all");
-    expect(query.get("since")).toBe("2026-09-29T07:00:00.000Z");
+    const list = new URL((fetch.mock.calls as unknown as Array<[string]>)[1]![0]);
+    expect(list.pathname).toBe("/repos/codyjohnsontx/oasisRaceControl/issues");
+    expect(list.searchParams.get("state")).toBe("all");
+    expect(list.searchParams.get("since")).toBe("2026-09-29T07:00:00.000Z");
   });
 
-  it("answers no issue when none carries it, and fails when the list cannot be read", async () => {
-    await expect(
-      findIssueWithMarker(MARKER, SINCE, { token: TOKEN, fetch: answering(200, [issueCreated]) }),
-    ).resolves.toEqual({ status: "sent", number: null });
-    await expect(
-      findIssueWithMarker(MARKER, SINCE, { token: TOKEN, fetch: answering(401, badCredentials) }),
-    ).resolves.toEqual({ status: "failed", reason: "HTTP 401" });
+  it("ignores a stranger's issue carrying the exact marker", async () => {
+    const fetch = github([[filed(48, `handoff\n\n${MARKER}`, { user: { login: "someone-else" } })]]);
+    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch })).resolves.toMatchObject({
+      number: null,
+    });
   });
 
-  it("says whether the issue already has a comment carrying the marker", async () => {
-    const marker = "<!-- oasis-rig-alert:recovery:alert-7 -->";
-    const fetch = answering(200, [commentCreated, { ...commentCreated, body: `recovered\n\n${marker}` }]);
-    await expect(hasCommentWithMarker(42, marker, SINCE, { token: TOKEN, fetch })).resolves.toEqual({
+  it("reports an unlabelled issue of its own as found but unlabelled", async () => {
+    const fetch = github([[filed(43, `handoff\n\n${MARKER}`, { labels: [] })]]);
+    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch })).resolves.toEqual({
       status: "sent",
-      found: true,
+      number: 43,
+      labelled: false,
     });
-    const [url] = fetch.mock.calls[0] as unknown as [string];
-    expect(url.startsWith("https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues/42/comments?")).toBe(true);
-    await expect(
-      hasCommentWithMarker(42, marker, SINCE, { token: TOKEN, fetch: answering(200, [commentCreated]) }),
-    ).resolves.toEqual({ status: "sent", found: false });
+  });
+
+  it("reads the next page until the marker turns up, and gives up after the cap", async () => {
+    const other = (n: number) => filed(1000 + n, "someone else's alert");
+    const fullPage = Array.from({ length: 100 }, (_, n) => other(n));
+    const found = github([fullPage, [filed(43, `handoff\n\n${MARKER}`)]]);
+    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch: found })).resolves.toMatchObject({
+      number: 43,
+    });
+
+    const endless = github(Array.from({ length: MARKER_MAX_PAGES + 1 }, () => fullPage));
+    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch: endless })).resolves.toEqual({
+      status: "failed",
+      reason: `marker not found in ${MARKER_MAX_PAGES} pages`,
+    });
+    expect(endless).toHaveBeenCalledTimes(1 + MARKER_MAX_PAGES);
+  });
+
+  it("reads the token's account once, and fails when the list cannot be read", async () => {
+    const key = token();
+    const fetch = github([[]]);
+    await findIssueWithMarker(MARKER, SINCE, { token: key, fetch });
+    await findIssueWithMarker(MARKER, SINCE, { token: key, fetch });
+    const accountReads = (fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => url.endsWith("/user"));
+    expect(accountReads).toHaveLength(1);
+
+    const refused = vi.fn(async (url: string) =>
+      url.endsWith("/user") ? Response.json(MONITOR) : Response.json(badCredentials, { status: 401 }),
+    ) as unknown as typeof globalThis.fetch;
+    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch: refused })).resolves.toEqual({
+      status: "failed",
+      reason: "HTTP 401",
+    });
+  });
+
+  it("finds only the monitor's own comment with the marker as its last line, on any page", async () => {
+    const marker = "<!-- oasis-rig-alert:recovery:alert-7 -->";
+    const comment = (body: string, login = MONITOR.login) => ({ ...commentCreated, body, user: { login } });
+    const fullPage = Array.from({ length: 100 }, () => comment("chatter"));
+    const cases: Array<[unknown[][], boolean]> = [
+      [[[comment(`recovered\n\n${marker}`, "someone-else")]], false],
+      [[[comment(`quoting ${marker} in passing`)]], false],
+      [[fullPage, [comment(`recovered\n\n${marker}`)]], true],
+    ];
+    for (const [pages, expected] of cases) {
+      const fetch = github(pages);
+      await expect(hasCommentWithMarker(42, marker, SINCE, { token: token(), fetch })).resolves.toEqual({
+        status: "sent",
+        found: expected,
+      });
+    }
+    const fetch = github([[]]);
+    await hasCommentWithMarker(42, marker, SINCE, { token: token(), fetch });
+    const list = new URL((fetch.mock.calls as unknown as Array<[string]>)[1]![0]);
+    expect(list.pathname).toBe("/repos/codyjohnsontx/oasisRaceControl/issues/42/comments");
   });
 });
