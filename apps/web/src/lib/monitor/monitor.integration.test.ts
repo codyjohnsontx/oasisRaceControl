@@ -764,6 +764,32 @@ describeDb("rig monitor against real Postgres", () => {
       expect(await alerts()).toMatchObject([{}, {}, {}, { rule: "laps_refused", level: 4, resolved: false }]);
     });
 
+    it("keeps an opening late in the mute muted, rises and all, once the openings before the mute have aged out", async () => {
+      const rig = await seedRig(1);
+      for (let i = 0; i < 4; i++) {
+        await heartbeat(rig, 0, { rejectedLaps: 1 });
+        await nextEvaluation();
+        await heartbeat(rig, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+      }
+      await testDb().query(
+        "update monitor_alerts set opened_at = opened_at - interval '61 minutes' where refire_count < 3",
+      );
+      posts = [];
+
+      await heartbeat(rig, 0, { rejectedLaps: 1 });
+      await nextEvaluation();
+      await heartbeat(rig, 0, { rejectedLaps: 4 });
+      await nextEvaluation();
+
+      expect(posts).toEqual([]);
+      const { rows } = await testDb().query<{ refire_count: number; level: number; resolved: boolean }>(
+        "select refire_count, level, resolved_at is not null as resolved from monitor_alerts order by id desc limit 1",
+      );
+      expect(rows).toEqual([{ refire_count: 3, level: 4, resolved: false }]);
+    });
+
     it("counts only the last hour: once the mute has passed, the rule posts again", async () => {
       const rig = await seedRig(1);
       for (let i = 0; i < 4; i++) await flap(rig);

@@ -87,7 +87,8 @@ const RETRY_AFTER = "60 seconds";
  * posts one "flapping, muted" line instead of itself, and everything on that
  * rule and subject for FLAPPING_WINDOW after it (openings, recoveries, rises)
  * is kept but not posted. monitor_alerts.refire_count records how many
- * earlier openings each alert had in the window before it: at or over
+ * earlier openings each alert had in the window before it, and never less
+ * than FLAPPING_REFIRES for one that opened inside a mute: at or over
  * FLAPPING_REFIRES the alert is muted, and the muted alert that started the
  * mute is the one with a notify deadline, since it has the mute line to post.
  * The alerts stay open and visible; the mute only keeps the channel quiet.
@@ -492,7 +493,8 @@ export async function applyFindings(
        )
        insert into monitor_alerts
          (rule, subject, severity, level, detail, refire_count, notify_attempted_at, notify_until)
-       select $1, $2, $3, $4, $5, openings,
+       select $1, $2, $3, $4, $5,
+              case when muting then greatest(openings, $7) else openings end,
               case when muting then null else now() end,
               case when muting then null else now() + $6::interval end
        from earlier
