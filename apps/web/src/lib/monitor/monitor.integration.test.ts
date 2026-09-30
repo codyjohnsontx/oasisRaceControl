@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/lib/db";
-import { runMonitor } from "./run";
+import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
+import { runDiagnoses, runMonitor } from "./run";
 import { applyFindings, claimEvaluation, nextVenueMidnightSql, type OpenAlert } from "./store";
 import type { Finding } from "./rules";
 import {
@@ -33,7 +34,7 @@ const PROCESS_STARTED = new Date(Date.now() - 3 * 3_600_000);
 
 type Post = {
   content?: string;
-  embeds?: Array<{ description?: string; color?: number }>;
+  embeds?: Array<{ title?: string; description?: string; color?: number }>;
   allowed_mentions: unknown;
 };
 let posts: Post[] = [];
@@ -48,10 +49,14 @@ const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
 let consoleError: ReturnType<typeof vi.spyOn>;
 let consoleLog: ReturnType<typeof vi.spyOn>;
 
-/** Lets the next runMonitor() past the throttle, as if 20 s had passed. */
+/**
+ * Lets the next runMonitor() past the throttle, as if 20 s had passed, and
+ * runs the diagnosis stage after it the way both callers do.
+ */
 async function nextEvaluation() {
   await testDb().query("update monitor_state set last_evaluated_at = null");
-  return runMonitor();
+  const run = await runMonitor();
+  return run.evaluated ? { ...run, diagnosed: await runDiagnoses() } : run;
 }
 
 /**
@@ -66,14 +71,17 @@ async function heartbeat(
     sequence?: number;
     sentAgoS?: number;
     rejectedLaps?: number;
+    agentVersion?: string;
+    assignmentId?: string;
   } = {},
 ) {
+  // The route's column layout: the fields rules filter on have columns, the rest is payload.
   await testDb().query(
     `insert into rig_heartbeats (rig_id, received_at, sent_at, clock_skew_ms,
        process_started_at, sim_connected, telemetry_faulted, pending_laps, rejected_laps,
-       checkout, shutting_down, payload)
+       checkout, shutting_down, payload, agent_version, assignment_id)
      values ($1, now() - make_interval(secs => $2), now() - make_interval(secs => $3), 0,
-       $4, true, false, 0, $5, 'none', $6, $7)`,
+       $4, true, false, 0, $5, 'none', $6, $7, $8, $9)`,
     [
       rig.id,
       agoS,
@@ -82,6 +90,8 @@ async function heartbeat(
       fields.rejectedLaps ?? 0,
       fields.shuttingDown ?? false,
       fields.sequence === undefined ? {} : { sequence: fields.sequence, telemetryMode: "iracing" },
+      fields.agentVersion ?? null,
+      fields.assignmentId ?? null,
     ],
   );
   await testDb().query(
@@ -409,6 +419,212 @@ describeDb("rig monitor against real Postgres", () => {
     await heartbeat(rig, 9 * 86_400);
     await nextEvaluation();
     expect(await count()).toBe(3);
+  });
+
+  describe("AI diagnosis and the copy-paste handoff", () => {
+    const GEMINI = "https://generativelanguage.googleapis.com/";
+    let geminiAnswers: Array<"timeout" | "answer"> = [];
+    let prompts: string[] = [];
+
+    beforeEach(() => {
+      geminiAnswers = [];
+      prompts = [];
+      vi.stubEnv("GEMINI_API_KEY", "test-gemini-key");
+      vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "9b4fd5d0c0ffee");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init: RequestInit) => {
+          if (!url.startsWith(GEMINI)) return fetchMock(url, init);
+          prompts.push(init.body as string);
+          // What AbortSignal.timeout() rejects with when the 20 s run out.
+          if (geminiAnswers.shift() !== "answer") throw new DOMException("timed out", "TimeoutError");
+          return Response.json(geminiAnswer);
+        }),
+      );
+    });
+
+    async function diagnosis() {
+      const { rows } = await testDb().query<{ diagnosis: Record<string, unknown> | null; handoff: string | null }>(
+        "select diagnosis, handoff from monitor_alerts order by id",
+      );
+      return rows;
+    }
+
+    /** Moves the stored diagnosis's clocks back, as if `seconds` had passed. */
+    async function age(seconds: number) {
+      await testDb().query(
+        `update monitor_alerts set diagnosis = diagnosis
+           || jsonb_build_object('at', now() - make_interval(secs => $1))
+           || case when diagnosis ? 'postAttemptedAt'
+                   then jsonb_build_object('postAttemptedAt', now() - make_interval(secs => $1))
+                   else '{}'::jsonb end`,
+        [seconds],
+      );
+    }
+
+    async function seatedSilentRig() {
+      const rig = await seedRig(2);
+      const driver = await seedDriver("Matt G");
+      await openAssignment(rig.id, driver.id);
+      for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) await heartbeat(rig, ago);
+    }
+
+    it("posts the alert alone when the model times out, retries once, then posts diagnosis and handoff", async () => {
+      await seatedSilentRig();
+      geminiAnswers = ["timeout", "answer"];
+
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        `<@${OWNER}> 🔴 Rig 02 has been silent for 3 min with Matt G signed in`,
+      ]);
+      expect(await diagnosis()).toMatchObject([
+        { diagnosis: { status: "retry", attempts: 1, error: "timed out" }, handoff: null },
+      ]);
+
+      // Not before a minute has passed.
+      await nextEvaluation();
+      expect(prompts).toHaveLength(1);
+
+      await age(90);
+      await expect(nextEvaluation()).resolves.toMatchObject({ diagnosed: 1 });
+      expect(prompts).toHaveLength(2);
+      expect(posts).toHaveLength(3);
+      expect(posts[1]).toMatchObject({
+        embeds: [{ title: "Likely cause (Gemini, confidence medium)" }],
+        allowed_mentions: { parse: [] },
+      });
+      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 02\)\n/);
+      expect(posts[2]!.content).toContain("Site commit: 9b4fd5d");
+      expect(posts[2]!.content).toContain("Likely cause (AI, confidence medium): The lap ingestion route");
+      expect(posts[2]!.allowed_mentions).toEqual({ parse: [] });
+      expect(await diagnosis()).toMatchObject([
+        {
+          diagnosis: {
+            status: "done",
+            attempts: 2,
+            provider: "gemini",
+            model: "gemini-2.5-flash",
+            result: { causeClass: "software" },
+            diagnosisPostedAt: expect.any(String),
+            handoffPostedAt: expect.any(String),
+          },
+          handoff: expect.stringMatching(/^Oasis rig alert #/),
+        },
+      ]);
+
+      // The driver's name reached Discord in the alert, and nowhere else.
+      for (const prompt of prompts) expect(prompt).not.toContain("Matt G");
+      expect(posts[2]!.content).not.toContain("Matt G");
+
+      // Nothing more, however many evaluations follow.
+      await age(600);
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(prompts).toHaveLength(2);
+      expect(posts).toHaveLength(3);
+    });
+
+    it("posts the handoff without the model's lines once the retry fails too", async () => {
+      await seatedSilentRig();
+
+      await nextEvaluation();
+      await age(90);
+      await expect(nextEvaluation()).resolves.toMatchObject({ diagnosed: 0 });
+
+      expect(prompts).toHaveLength(2);
+      expect(posts).toHaveLength(2);
+      expect(posts[1]!.content).toContain("Likely cause (AI): no diagnosis (timed out)");
+      expect(await diagnosis()).toMatchObject([
+        { diagnosis: { status: "done", attempts: 2, error: "timed out", handoffPostedAt: expect.any(String) } },
+      ]);
+
+      await age(600);
+      await nextEvaluation();
+      expect(prompts).toHaveLength(2);
+      expect(posts).toHaveLength(2);
+    });
+
+    it("finishes a half-posted diagnosis later without posting the first half twice", async () => {
+      await seatedSilentRig();
+      geminiAnswers = ["answer"];
+      // The alert and the diagnosis go through; the handoff is refused.
+      discordAnswers = [204, 204, 500];
+
+      await nextEvaluation();
+      expect(posts).toHaveLength(2);
+
+      await nextEvaluation();
+      expect(posts).toHaveLength(2);
+
+      await age(90);
+      await nextEvaluation();
+      expect(posts).toHaveLength(3);
+      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #/);
+      expect(prompts).toHaveLength(1);
+    });
+
+    it("never diagnoses a rig alert whose detail does not say who was seated", async () => {
+      const opened = async (subject: string, driver?: string) => {
+        const finding: Finding = {
+          rule: "rig_silent",
+          subject,
+          severity: "urgent",
+          level: 0,
+          detail: {
+            headline: "Rig 09 has been silent for 3 min with Matt G signed in",
+            where: "Rig 09",
+            fields: [{ name: "Driver", value: "Matt G (seated 18 min)" }],
+            ...(driver === undefined ? {} : { driver }),
+          },
+        };
+        await applyFindings(db(), [finding], []);
+      };
+      await opened("rig:00000000-0000-4000-8000-000000000001");
+      await opened("rig:00000000-0000-4000-8000-000000000002", "Matt G");
+      await testDb().query("update monitor_alerts set notified_at = now()");
+      geminiAnswers = ["answer"];
+
+      await nextEvaluation();
+
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain("Rig 09 has been silent for 3 min with driver-");
+      expect(prompts[0]).not.toContain("Matt G");
+      expect(await diagnosis()).toMatchObject([{ diagnosis: null }, { diagnosis: { status: "done" } }]);
+    });
+
+    it("hands the model and the handoff the rig state stored in heartbeat columns", async () => {
+      const rig = await seedRig(2);
+      const driver = await seedDriver("Matt G");
+      const assignmentId = await openAssignment(rig.id, driver.id);
+      for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) {
+        await heartbeat(rig, ago, { agentVersion: "1.4.2", assignmentId });
+      }
+      geminiAnswers = ["answer"];
+
+      await nextEvaluation();
+
+      expect(posts).toHaveLength(3);
+      const handoff = posts[2]!.content!;
+      expect(handoff).toContain("· agent 1.4.2\n");
+      expect(handoff).toMatch(/Rig state \(last 3 heartbeats\): \d\d:\d\d:\d\d, sim connected, pending 0, skew \+0\.0 s;/);
+      const heartbeats = JSON.parse(prompts[0]!).contents[0].parts[0].text;
+      expect(heartbeats).toContain('"agentVersion": "1.4.2"');
+      expect(heartbeats).toContain('"simConnected": true');
+      expect(heartbeats).toContain('"pendingLaps": 0');
+      expect(heartbeats).toContain('"driverSeated": true');
+      expect(heartbeats).not.toContain(assignmentId);
+    });
+
+    it("makes no call without a key, and posts the alert as before", async () => {
+      vi.stubEnv("GEMINI_API_KEY", "");
+      await seatedSilentRig();
+
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(prompts).toHaveLength(0);
+      expect(posts).toHaveLength(1);
+      expect(await diagnosis()).toMatchObject([{ diagnosis: null, handoff: null }]);
+    });
   });
 
   it("passes the read-only verify the owner runs after hand-applying 0006", async () => {

@@ -106,6 +106,56 @@ treats it as failed and retries, so on a slow Discord the same alert can
 appear more than once - at most once a minute, and never after that hour.
 Counting a timeout as delivered instead would risk an alert nobody ever saw.
 
+## AI diagnosis and the copy-paste handoff
+
+An **urgent** alert is followed by two more messages, both quiet:
+
+1. **Likely cause** - a purple embed with the model's summary and the change
+   it suggests, titled with the provider and its confidence.
+2. **The handoff** - one fenced block to copy and paste into the coding
+   harness: the rule, the rig, when it opened, the deployed commit, the last
+   three heartbeats, the agent's recent notices, and the model's likely cause,
+   suggested change and where to look. The frame is fixed text the monitor
+   fills in (`handoff.ts`); the model only writes those three lines.
+
+The alert itself always goes first and never waits for the model, and the
+tick answers its clock before the model is called: the diagnosis runs in
+`after()` once the evaluation has answered (`runDiagnoses` in `run.ts`). A call
+that fails or takes over 20 s leaves a retry marker, and an evaluation at
+least a minute later tries once more; if that fails too, the handoff is
+posted anyway with "no diagnosis" in place of the model's lines. Nothing is
+diagnosed twice, and a post Discord refused is retried like an alert's.
+
+**Nothing a rig typed leaves.** A heartbeat's strings - session names,
+agent notices, variable names - are whatever the rig, or anyone holding its
+token, sent, and no filter can promise they hold no name, address, path or
+instruction. So the prompt and the handoff carry only what the server can
+vouch for (`diagnosis/context.ts`): the heartbeats' numbers, true/false
+flags and enum values; the agent version only when it has a version's
+shape; agent notices only as codes of the notices the agent is known to
+raise, counted, with a fixed summary; and the alert's own words - the rule,
+the rig's name and the headline and numbers the rules wrote, with the seated
+driver's name replaced by `driver-<4 hex>`. The alert message above still
+names the driver, as it always has: that is the staff channel.
+
+**The handoff keeps its shape.** The model read rig data, so its answer is
+treated as untrusted too: the prompt marks the incident as data, never
+instructions; every field of the answer is flattened to one line with links,
+mentions, code fences and the handoff's own labels (such as `Rules:`)
+neutralized; and `whereToLook` can only name the repository paths listed in
+the prompt. The handoff ends with its one `Rules:` line, which
+the length clip never cuts, and labels the model's three lines AI.
+
+| Variable | What it is |
+|---|---|
+| `GEMINI_API_KEY` | a free key from [AI Studio](https://aistudio.google.com) > Get API key. Without it there is no diagnosis and no handoff; alerts post as before |
+| `DIAGNOSIS_PROVIDER` | `gemini` (default), `anthropic`, or `off` |
+| `ANTHROPIC_API_KEY` | only with `DIAGNOSIS_PROVIDER=anthropic` |
+| `DIAGNOSIS_MODEL` | optional; defaults to `gemini-2.5-flash`, or `claude-haiku-4-5-20251001` for `anthropic`. It names a model of the chosen provider, so clear it when switching |
+
+Production only, like the webhook. Google may use free-tier prompts to
+improve its products, which is why the allowlist above is not optional.
+
 ## The outside clock
 
 `GET /api/monitor/tick` evaluates and answers
@@ -176,8 +226,8 @@ by `eventMode()` in `event-mode.ts`, pure, from the same snapshot as the rules:
   (`{"mode":"on"|"off"|"auto","reason":"..."}`, staff session, same-origin JSON;
   no page has buttons for it yet - the Rig health page will). `on` and `off`
   last until venue midnight, never longer; `auto` hands it back to the
-  boards. Every change writes an audit row. Use `off` when a board was left open by mistake: it also
-  silences rule 8a for the rest of the day.
+  boards. Every change writes an audit row. Use `off` when a board was left
+  open by mistake: it also silences rule 8a for the rest of the day.
 
 Each change posts one grey line ("⚪ Event mode on: Event board (Cadillac)
 opened at 2:31 PM"). While it is on, an evaluation posts the update when the

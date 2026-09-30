@@ -284,7 +284,15 @@ reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
 migration, and a verify fingerprints only the columns its own migration
-created, so a later `alter table` does not fail an earlier verify.
+created, so a later `alter table` does not fail an earlier verify. An urgent
+alert's AI diagnosis and copy-paste handoff (`diagnosis/`, `handoff.ts`) are
+written from `incidentContext`, an allowlist
+of what the server can vouch for - numbers, flags, enum values, known agent
+notices as codes - that never carries a rig's own strings (plan decision D9:
+the free Gemini tier may train on prompts, and the handoff is pasted into a
+coding harness and this public repository's issues). Do not add a rig string
+to it behind a redaction regex; add a field of a vouchable kind, and keep
+model text going through `modelText`.
 
 A `/tv` page opened from its signed staff link on `/staff` (the shop wall,
 or the event board) heartbeats too (`components/tv/board-heartbeat.tsx`,
@@ -292,8 +300,8 @@ beside the engine, never inside it - `tv-screen.tsx` stays untouched), with a
 ticket the page's server render signed (`lib/board-ticket.ts`): the route is
 public and believes board, mode and host only from that ticket. The public
 `/tv` and `/tv?event=1` get no ticket and report nothing - the owner's rule,
-so no stranger can switch the channel into event mode or page him. Feed health comes from wrapping each
-registered board type's `load` (`lib/tv-feed-health.ts`), not from the engine.
+so no stranger can switch the channel into event mode or page him. Feed
+health comes from wrapping each registered board type's `load` (`lib/tv-feed-health.ts`), not from the engine.
 An event board heard within 3 minutes is event mode (`eventMode()` in
 `monitor/event-mode.ts`, pure, shared like the rules); a dark one is rule 8a,
 which is judged without event mode because the dark board no longer holds it.

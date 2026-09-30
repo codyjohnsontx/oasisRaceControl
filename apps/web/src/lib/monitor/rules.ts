@@ -169,6 +169,14 @@ export type AlertDetail = {
   /** Which rig, or "Venue". */
   where: string;
   fields: Array<{ name: string; value: string }>;
+  /**
+   * The seated driver's name when the text above uses it, so the AI
+   * diagnosis can take it out before the prompt leaves (diagnosis/context.ts).
+   * Null when nobody is seated or the name is under review, which the text
+   * never shows. Every rig alert carries it; a rig alert stored without it
+   * may name a driver it cannot redact, so it is never diagnosed (store.ts).
+   */
+  driver?: string | null;
 };
 
 export type Finding = {
@@ -609,9 +617,10 @@ export function boardSubject(mode: BoardSnapshot["mode"]): string {
  * 8a: of the event's displays (eventDisplays: today's event boards, each
  * opened from a staff link, or the shop wall while staff have forced event
  * mode on without one still open), the one heard from most recently went
- * dark: not heard from for BOARD_DARK_AFTER_MS, without a goodbye. The most recent, so a browser
- * killed and restored as a new page, or a tab closed after a phone was left
- * locked on the board, is judged by the board the room is watching. An event
+ * dark: not heard from for BOARD_DARK_AFTER_MS, without a goodbye. The most
+ * recent, so a browser killed and restored as a new page, or a tab closed
+ * after a phone was left locked on the board, is judged by the board the room
+ * is watching. An event
  * board is judged whether or not event mode is on, since a dark board no
  * longer holds it, and it is urgent: the board it reports was holding the
  * event. Staff forcing event mode off silences it. The shop wall switched off
@@ -767,7 +776,12 @@ function finding(
     subject: rigSubject(rig.id),
     severity,
     level: 0,
-    detail: { headline, where: rig.name, fields },
+    detail: {
+      headline,
+      where: rig.name,
+      fields,
+      driver: rig.seated?.driverStatus === "active" ? rig.seated.driverName : null,
+    },
   };
 }
 
