@@ -818,7 +818,10 @@ export async function markDiagnosisPosted(
 
 export type DiagnosisToPost = { id: string; diagnosis: DiagnosisState; handoff: string; alert: AlertForMessage };
 
-/** Diagnosis messages an earlier evaluation could not post, claimed as the alert retries are. */
+/**
+ * Diagnosis messages an earlier evaluation could not post, claimed as the alert
+ * retries are, for RETRY_FOR after the diagnosis was made.
+ */
 export async function claimDiagnosisPostRetries(): Promise<DiagnosisToPost[]> {
   const rows = await query<AlertRow & { diagnosis: DiagnosisState; handoff: string }>(
     `update monitor_alerts
@@ -826,7 +829,7 @@ export async function claimDiagnosisPostRetries(): Promise<DiagnosisToPost[]> {
      where diagnosis->>'status' = 'done' and handoff is not null
        and diagnosis->>'handoffPostedAt' is null
        and coalesce((diagnosis->>'postAttemptedAt')::timestamptz, '-infinity') < now() - $1::interval
-       and opened_at > now() - $2::interval
+       and (diagnosis->>'at')::timestamptz > now() - $2::interval
      returning ${ALERT_COLUMNS}, diagnosis, handoff`,
     [RETRY_AFTER, RETRY_FOR],
   );

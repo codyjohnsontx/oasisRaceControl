@@ -866,12 +866,14 @@ describeDb("rig monitor against real Postgres", () => {
     it("diagnoses a muted urgent alert only once its mute has ended and it is posted", async () => {
       vi.stubEnv("GEMINI_API_KEY", "test-gemini-key");
       const calls: string[] = [];
+      let modelAnswers = false;
       vi.stubGlobal(
         "fetch",
         vi.fn(async (url: string, init: RequestInit) => {
           if (!url.includes("generativelanguage")) return fetchMock(url, init);
           calls.push(url);
-          throw new DOMException("timed out", "TimeoutError");
+          if (!modelAnswers) throw new DOMException("timed out", "TimeoutError");
+          return Response.json(geminiAnswer);
         }),
       );
       const rig = await seedRig(1);
@@ -883,12 +885,26 @@ describeDb("rig monitor against real Postgres", () => {
       await nextEvaluation();
       expect(calls).toHaveLength(3);
 
+      // The alert goes out when the mute ends and is diagnosed then; Discord
+      // refuses the diagnosis, and a later evaluation posts it with the handoff.
       await timePasses(61);
+      posts = [];
+      modelAnswers = true;
+      discordAnswers = [204, 500];
       await heartbeat(rig, 0, { rejectedLaps: 1 });
       await nextEvaluation();
-      expect(posts.at(-1)!.content).toBe(`<@${OWNER}> 🔴 Rig 01: the site refused 1 lap; it is parked on the rig`);
+      expect(posts.map((p) => p.content)).toEqual([
+        `<@${OWNER}> 🔴 Rig 01: the site refused 1 lap; it is parked on the rig`,
+      ]);
       expect(calls).toHaveLength(4);
+
+      await testDb().query(
+        `update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('postAttemptedAt', now() - interval '90 seconds')
+         where diagnosis->>'status' = 'done'`,
+      );
       await nextEvaluation();
+      expect(posts).toHaveLength(3);
+      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #4/);
       expect(calls).toHaveLength(4);
     });
   });
