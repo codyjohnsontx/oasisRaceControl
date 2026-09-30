@@ -132,8 +132,14 @@ export type MonitorSnapshot = {
 export type AlertDetail = {
   /** One line: the whole alert, as a phone notification shows it. */
   headline: string;
-  /** Which rig, or "Venue". */
+  /** Which rig, by its staff-set display name, or "Venue". */
   where: string;
+  /**
+   * The rig's server-owned number (rigs.rig_number), which is how anything
+   * public names the rig: the display name is free text staff typed, and
+   * only the private Discord alert shows it (diagnosis/context.ts).
+   */
+  rigNumber?: number;
   fields: Array<{ name: string; value: string }>;
   /**
    * The seated driver's name when the text above uses it, so the AI
@@ -539,6 +545,7 @@ function finding(
     detail: {
       headline,
       where: rig.name,
+      rigNumber: rig.number,
       fields,
       driver: rig.seated?.driverStatus === "active" ? rig.seated.driverName : null,
     },

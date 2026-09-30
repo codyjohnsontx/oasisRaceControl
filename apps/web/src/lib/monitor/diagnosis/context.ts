@@ -19,11 +19,14 @@ import { RULES, type AlertDetail, type Severity } from "../rules";
  * - the agent version, only when it has a version's shape;
  * - agent notices, only as codes of the notices the agent is known to raise
  *   (`NOTICE_CODES`), counted, each with a fixed summary written here;
- * - the alert's own words: the rule, the rig's name (set by staff), and the
- *   headline and numeric fields the rules wrote from those numbers. The seated
- *   driver's name, the one person-derived value a headline carries, becomes
- *   `driver-<4 hex>`; the Driver and Agent fields are dropped, since the first
- *   is that name again and the second is a rig string.
+ * - the alert's own words: the rule, and the headline and numeric fields the
+ *   rules wrote from those numbers. The rig is named by its server-owned
+ *   number ("Rig 7"), never its display name: that is free text staff typed,
+ *   which could hold an instruction or a person's name, so it is replaced in
+ *   the headline and a headline it would survive in is swapped for a fixed
+ *   one. The seated driver's name becomes `driver-<4 hex>`; the Driver and
+ *   Agent fields are dropped, since the first is that name again and the
+ *   second is a rig string.
  *
  * Every string is also flattened to one line, so nothing here can pose as a
  * line of the handoff frame.
@@ -148,14 +151,15 @@ export function incidentContext(
   const text = serverText(alert.detail.driver);
   const rule = RULES[alert.rule as keyof typeof RULES] ?? { number: "?", title: alert.rule };
   const oldestFirst = [...heartbeats].reverse();
+  const where = publicRig(alert.detail);
 
   return {
     alertId: alert.id,
     rule: { key: text(alert.rule), number: rule.number, title: text(rule.title) },
     severity: alert.severity,
     openedAt: alert.openedAt,
-    where: text(alert.detail.where),
-    headline: text(alert.detail.headline),
+    where,
+    headline: publicHeadline(text(alert.detail.headline), alert.detail.where, where, rule.title),
     fields: alert.detail.fields
       .filter((field) => NUMERIC_FIELDS.has(field.name))
       .map((field) => ({ name: field.name, value: text(field.value) })),
@@ -163,6 +167,32 @@ export function incidentContext(
     notices: noticeCounts(oldestFirst),
     commit: commit && /^[0-9a-f]{7,40}$/i.test(commit) ? commit : null,
   };
+}
+
+/**
+ * The rig as anything public names it: "Rig 7" from the server-owned number.
+ * The venue note's "Venue" is the monitor's own word; a rig alert stored
+ * before the number was recorded is "a rig", never its display name.
+ */
+function publicRig(detail: AlertDetail): string {
+  if (typeof detail.rigNumber === "number" && Number.isInteger(detail.rigNumber)) return `Rig ${detail.rigNumber}`;
+  return detail.where === "Venue" ? "Venue" : "a rig";
+}
+
+/**
+ * The headline with the rig's display name replaced by its public name. The
+ * rules put the name in verbatim, so the replacement catches it; should any of
+ * it survive - a name inside another word - the headline becomes a fixed one.
+ */
+function publicHeadline(headline: string, displayName: string, where: string, title: string): string {
+  // The venue note's headline lists rigs by display name; it is never
+  // diagnosed (it is a warning), but it is not made public either.
+  if (where === "Venue") return `${title} (${where})`;
+  const name = oneLine(displayName);
+  if (!name || name === where) return headline;
+  const bounded = new RegExp(`(?<![\\p{L}\\p{N}])${escape(name)}(?![\\p{L}\\p{N}])`, "gu");
+  const replaced = headline.replace(bounded, where);
+  return replaced.includes(name) ? `${title} (${where})` : replaced;
 }
 
 function facts(row: HeartbeatRow): HeartbeatFacts {

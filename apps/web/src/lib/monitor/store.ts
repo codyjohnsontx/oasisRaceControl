@@ -621,12 +621,30 @@ export async function claimIssues(softwareRules: readonly string[]): Promise<Ale
 }
 
 /**
+ * Takes the lock that serializes filing for one fault - one rule on one rig -
+ * for the rest of `db`'s transaction, or answers false when another filer
+ * holds it (that filer's alert is retried after RETRY_AFTER). Held from the
+ * re-fire lookup through the GitHub write to the record, so two alerts of one
+ * fault filed at once cannot both find no issue and both open one. It holds
+ * nothing any evaluation waits on, only other filers of the same fault.
+ */
+export async function lockFault(db: Db, rule: string, subject: string): Promise<boolean> {
+  const [row] = await rows<{ locked: boolean }>(
+    db,
+    "select pg_try_advisory_xact_lock(hashtext('rig-alert-issue'), hashtext($1 || '|' || $2)) as locked",
+    [rule, subject],
+  );
+  return row?.locked ?? false;
+}
+
+/**
  * The issue another alert on the same rule and subject, opened within
  * REFIRE_WINDOW either side of this one, has already filed - read at filing
- * time, so an alert filed out of order still finds it.
+ * time, under lockFault, so an alert filed out of order still finds it.
  */
-export async function refireTarget(id: string): Promise<number | null> {
-  const row = await queryOne<{ n: number }>(
+export async function refireTarget(db: Db, id: string): Promise<number | null> {
+  const [row] = await rows<{ n: number }>(
+    db,
     `select p.github_issue_number as n
      from monitor_alerts a join monitor_alerts p
        on p.rule = a.rule and p.subject = a.subject and p.id <> a.id
@@ -638,8 +656,8 @@ export async function refireTarget(id: string): Promise<number | null> {
   return row?.n ?? null;
 }
 
-export async function recordIssue(id: string, number: number): Promise<void> {
-  await query("update monitor_alerts set github_issue_number = $2 where id = $1", [id, number]);
+export async function recordIssue(db: Db, id: string, number: number): Promise<void> {
+  await db.query("update monitor_alerts set github_issue_number = $2 where id = $1", [id, number]);
 }
 
 /**

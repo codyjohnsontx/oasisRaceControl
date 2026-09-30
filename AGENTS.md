@@ -291,7 +291,11 @@ own strings (plan decision D9:
 the free Gemini tier may train on prompts, and the handoff is pasted into a
 coding harness and this public repository's issues). Do not add a rig string
 to it behind a redaction regex; add a field of a vouchable kind, and keep
-model text going through `modelText`.
+model text going through `modelText`. The rig is named there by
+`rigs.rig_number`, never its staff-typed display name, which only the Discord
+alert shows. Issue writes are serialized per fault (`lockFault`) and carry a
+hidden marker (`rigAlertMarker`) that a retry looks for before writing again;
+keep both on any new GitHub write.
 
 ## The twenty-rig soak
 

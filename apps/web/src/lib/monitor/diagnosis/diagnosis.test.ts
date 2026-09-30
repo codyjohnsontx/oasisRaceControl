@@ -30,6 +30,7 @@ const ALERT: AlertForDiagnosis = {
   detail: {
     headline: `Rig 02: 4 laps waiting 6 min to reach the site while the rig is online`,
     where: "Rig 02",
+    rigNumber: 2,
     fields: [
       { name: "Driver", value: `${DRIVER} (seated 18 min)` },
       { name: "Last heard", value: "4 s ago" },
@@ -95,7 +96,8 @@ describe("redaction before the call (D9)", () => {
     expect(body).not.toContain(RIG);
     // What the model does get: the rule, the rig and its heartbeats.
     expect(body).toContain("Laps queued but not reaching the site");
-    expect(body).toContain("Rig 02");
+    expect(body).toContain("Rig 2");
+    expect(body).not.toContain("Rig 02");
     expect(body).toContain("pendingLaps");
     expect(body).toContain('\\"driverSeated\\": true');
   });
@@ -128,7 +130,7 @@ describe("redaction before the call (D9)", () => {
       [],
       null,
     );
-    expect(context.headline).toBe(`Rig 02: ${pseudonym("Jo Smith")} is seated`);
+    expect(context.headline).toBe(`Rig 2: ${pseudonym("Jo Smith")} is seated`);
     expect(handoffText(context, { ok: false, error: "timed out" })).not.toMatch(/jo\s*smith/i);
   });
 

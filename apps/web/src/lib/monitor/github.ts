@@ -69,9 +69,47 @@ export async function reopenIssue(number: number, options: Options = {}): Promis
 }
 
 /**
+ * The issue that carries `marker`, if one was filed. Reads the repository's
+ * issues updated since `since` (the list, not search, which lags behind
+ * writes), newest first; the monitor files a handful a day, so the first page
+ * of 100 reaches back past any retry window.
+ */
+export async function findIssueWithMarker(
+  marker: string,
+  since: number,
+  options: Options = {},
+): Promise<GitHubResult<{ number: number | null }>> {
+  const query = `state=all&sort=created&direction=desc&per_page=100&since=${new Date(since).toISOString()}`;
+  const result = await call("GET", `/issues?${query}`, undefined, options);
+  if (result.status !== "sent") return result;
+  const issues = Array.isArray(result.body) ? (result.body as Array<{ number?: unknown; body?: unknown; pull_request?: unknown }>) : [];
+  const found = issues.find(
+    (issue) => !issue.pull_request && typeof issue.body === "string" && issue.body.includes(marker),
+  );
+  return { status: "sent", number: typeof found?.number === "number" ? found.number : null };
+}
+
+/** Whether a comment carrying `marker` is already on the numbered issue. */
+export async function hasCommentWithMarker(
+  number: number,
+  marker: string,
+  since: number,
+  options: Options = {},
+): Promise<GitHubResult<{ found: boolean }>> {
+  const query = `per_page=100&since=${new Date(since).toISOString()}`;
+  const result = await call("GET", `/issues/${number}/comments?${query}`, undefined, options);
+  if (result.status !== "sent") return result;
+  const comments = Array.isArray(result.body) ? (result.body as Array<{ body?: unknown }>) : [];
+  return {
+    status: "sent",
+    found: comments.some((comment) => typeof comment.body === "string" && comment.body.includes(marker)),
+  };
+}
+
+/**
  * One request. Resolves - never throws - with GitHub's JSON on a 2xx, and
- * otherwise a reason safe to log: GitHub's error body names what was wrong
- * and never echoes the token.
+ * otherwise a reason made only of the status code: an error body is never
+ * read, because nothing guarantees it cannot echo the token or the issue.
  */
 async function call(
   method: "GET" | "POST" | "PATCH",
@@ -98,8 +136,8 @@ async function call(
       signal: AbortSignal.timeout(options.timeoutMs ?? CALL_TIMEOUT_MS),
     });
     if (response.ok) return { status: "sent", body: await response.json() };
-    const body = (await response.text().catch(() => "")).slice(0, 300);
-    return { status: "failed", reason: `HTTP ${response.status}${body ? ` ${body}` : ""}` };
+    await response.body?.cancel().catch(() => {});
+    return { status: "failed", reason: `HTTP ${response.status}` };
   } catch (error) {
     const name = error instanceof Error ? error.name : "Error";
     return { status: "failed", reason: name === "TimeoutError" ? "timed out" : `unreachable (${name})` };

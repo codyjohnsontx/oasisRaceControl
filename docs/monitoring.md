@@ -156,12 +156,17 @@ turn into a pull request; the owner still approves every merge. The Discord
 handoff stays either way, as the fallback when the harness is offline.
 
 - **Which alerts:** an urgent alert whose rule names software as a plausible
-  cause (3a, 3b, 10, 15; `software` in `rules.ts`), or any urgent alert the
+  cause (3a, 3b, 10, 15, 16, 17 and 18; `software` in `rules.ts`, though 16,
+  17 and 18 are warnings today and so never file), or any urgent alert the
   diagnosis classes as `software`. An unplugged rig or a closed iRacing files
   nothing. The issue's body is the handoff, so it also needs what the handoff
   needs: `DISCORD_WEBHOOK_URL` and the diagnosis key (`GEMINI_API_KEY`, or
   `ANTHROPIC_API_KEY` with `DIAGNOSIS_PROVIDER=anthropic`). Without either, no
   issue is filed, even on a software rule.
+- **The rig is named by its number** ("Rig 7", `rigs.rig_number`) in the
+  issue and in the handoff, never by its display name: that is free text staff
+  typed, and a plain sentence or a person's name there would otherwise be
+  published. Only the Discord alert itself shows the display name.
 - **The issue:** titled `[rig-alert] <rule> - <rig>`, its body is the handoff
   exactly as Discord got it, plus the heartbeat facts it was written from (the
   same allowlisted fields, as JSON, and only heartbeats received by the time
@@ -176,7 +181,13 @@ handoff stays either way, as the fallback when the harness is offline.
   thread.
 - **A recovery** comments on the issue and leaves it open: closing it would
   cancel a fix in progress. Close it yourself when the fix has merged.
-- A call GitHub refuses is retried like a Discord post.
+- A call GitHub refuses is retried like a Discord post, and only its status
+  code is logged - never GitHub's answer, which could quote the request.
+- **No duplicates.** Filing is serialized per fault (one rule on one rig), so
+  two alerts filed at once make one issue and one comment. Every issue and
+  comment carries a hidden marker naming its alert; a write whose answer was
+  lost (a timeout, a function that died) is found by that marker on the retry
+  and recorded, not written again.
 
 | Variable | What it is |
 |---|---|

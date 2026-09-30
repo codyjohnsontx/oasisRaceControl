@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import badCredentials from "./fixtures/github-bad-credentials.json";
 import commentCreated from "./fixtures/github-comment-created.json";
 import issueCreated from "./fixtures/github-issue-created.json";
-import { commentOnIssue, openIssue, reopenIssue } from "./github";
+import { commentOnIssue, findIssueWithMarker, hasCommentWithMarker, openIssue, reopenIssue } from "./github";
 
 /**
  * The issue client against GitHub's own answers, served by a fake fetch - no
@@ -50,10 +50,22 @@ describe("openIssue", () => {
     await expect(openIssue(ISSUE, { token: TOKEN, fetch })).resolves.toMatchObject({ labelled: false });
   });
 
-  it("reports the recorded 401 as failed, with GitHub's reason and never the token", async () => {
+  it("reports the recorded 401 as failed by its status alone", async () => {
     const result = await openIssue(ISSUE, { token: TOKEN, fetch: answering(401, badCredentials) });
-    expect(result).toMatchObject({ status: "failed", reason: expect.stringMatching(/^HTTP 401 .*Bad credentials/) });
-    expect(JSON.stringify(result)).not.toContain(TOKEN);
+    expect(result).toEqual({ status: "failed", reason: "HTTP 401" });
+  });
+
+  it("never keeps an error body, even one that echoes the token and the issue", async () => {
+    const fetch = vi.fn(
+      async (_url: string, init: RequestInit) =>
+        new Response(`upstream echoed ${TOKEN} ${init.body as string}`, { status: 502 }),
+    );
+    const result = await openIssue(ISSUE, { token: TOKEN, fetch: fetch as unknown as typeof globalThis.fetch });
+    expect(result).toEqual({ status: "failed", reason: "HTTP 502" });
+    const text = JSON.stringify(result);
+    expect(text).not.toContain(TOKEN);
+    expect(text).not.toContain(ISSUE.title);
+    expect(text).not.toContain(ISSUE.body);
   });
 
   it("gives up on a call that takes too long", async () => {
@@ -118,5 +130,50 @@ describe("reopenIssue", () => {
     const fetch = answering(401, badCredentials);
     await expect(reopenIssue(42, { token: TOKEN, fetch })).resolves.toMatchObject({ status: "failed" });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the marker lookups", () => {
+  const MARKER = "<!-- oasis-rig-alert:issue:alert-7 -->";
+  const SINCE = Date.parse("2026-09-29T07:00:00Z");
+
+  it("finds the issue carrying the marker, never a pull request that quotes it", async () => {
+    const fetch = answering(200, [
+      { ...issueCreated, number: 45, body: `quoted ${MARKER}`, pull_request: { url: "x" } },
+      { ...issueCreated, number: 44, body: "another alert <!-- oasis-rig-alert:issue:alert-70 -->" },
+      { ...issueCreated, number: 43, body: `handoff\n\n${MARKER}` },
+    ]);
+    await expect(findIssueWithMarker(MARKER, SINCE, { token: TOKEN, fetch })).resolves.toEqual({
+      status: "sent",
+      number: 43,
+    });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.method).toBe("GET");
+    const query = new URL(url).searchParams;
+    expect(query.get("state")).toBe("all");
+    expect(query.get("since")).toBe("2026-09-29T07:00:00.000Z");
+  });
+
+  it("answers no issue when none carries it, and fails when the list cannot be read", async () => {
+    await expect(
+      findIssueWithMarker(MARKER, SINCE, { token: TOKEN, fetch: answering(200, [issueCreated]) }),
+    ).resolves.toEqual({ status: "sent", number: null });
+    await expect(
+      findIssueWithMarker(MARKER, SINCE, { token: TOKEN, fetch: answering(401, badCredentials) }),
+    ).resolves.toEqual({ status: "failed", reason: "HTTP 401" });
+  });
+
+  it("says whether the issue already has a comment carrying the marker", async () => {
+    const marker = "<!-- oasis-rig-alert:recovery:alert-7 -->";
+    const fetch = answering(200, [commentCreated, { ...commentCreated, body: `recovered\n\n${marker}` }]);
+    await expect(hasCommentWithMarker(42, marker, SINCE, { token: TOKEN, fetch })).resolves.toEqual({
+      status: "sent",
+      found: true,
+    });
+    const [url] = fetch.mock.calls[0] as unknown as [string];
+    expect(url.startsWith("https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues/42/comments?")).toBe(true);
+    await expect(
+      hasCommentWithMarker(42, marker, SINCE, { token: TOKEN, fetch: answering(200, [commentCreated]) }),
+    ).resolves.toEqual({ status: "sent", found: false });
   });
 });

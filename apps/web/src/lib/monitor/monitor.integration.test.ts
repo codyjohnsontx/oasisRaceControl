@@ -492,7 +492,7 @@ describeDb("rig monitor against real Postgres", () => {
         embeds: [{ title: "Likely cause (Gemini, confidence medium)" }],
         allowed_mentions: { parse: [] },
       });
-      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 02\)\n/);
+      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 2\)\n/);
       expect(posts[2]!.content).toContain("Site commit: 9b4fd5d");
       expect(posts[2]!.content).toContain("Likely cause (AI, confidence medium): The lap ingestion route");
       expect(posts[2]!.allowed_mentions).toEqual({ parse: [] });
@@ -572,6 +572,7 @@ describeDb("rig monitor against real Postgres", () => {
           detail: {
             headline: "Rig 09 has been silent for 3 min with Matt G signed in",
             where: "Rig 09",
+            rigNumber: 9,
             fields: [{ name: "Driver", value: "Matt G (seated 18 min)" }],
             ...(driver === undefined ? {} : { driver }),
           },
@@ -586,7 +587,7 @@ describeDb("rig monitor against real Postgres", () => {
       await nextEvaluation();
 
       expect(prompts).toHaveLength(1);
-      expect(prompts[0]).toContain("Rig 09 has been silent for 3 min with driver-");
+      expect(prompts[0]).toContain("Rig 9 has been silent for 3 min with driver-");
       expect(prompts[0]).not.toContain("Matt G");
       expect(await diagnosis()).toMatchObject([{ diagnosis: null }, { diagnosis: { status: "done" } }]);
     });
@@ -616,37 +617,82 @@ describeDb("rig monitor against real Postgres", () => {
 
     describe("the rig-alert GitHub issue", () => {
       const GITHUB = "https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues";
-      /** Every write to GitHub, in order; the reads of an issue's state are in `reads`. */
+      const TOKEN = "github_pat_test_never_logged";
+      /**
+       * A fake GitHub that keeps what is written to it, so the marker lookups
+       * read back what was filed. Each write takes the next answer:
+       * a status (201/200 when none is queued); "lost", which lands the write
+       * and then times out, as a dropped answer does; "hold", which lands it
+       * only once `release` is called; or "echo", a 502 whose body quotes the
+       * token and the request.
+       */
+      type Answer = number | "lost" | "hold" | "echo";
+      type FakeIssue = { number: number; state: string; body: string; comments: Array<{ body: string }> };
+      let issues: Map<number, FakeIssue>;
+      /** Every write to GitHub, in order; the reads are in `reads`. */
       let calls: Array<{ method: string; url: string; body: Record<string, unknown> }> = [];
       let reads: string[] = [];
-      let githubAnswers: number[] = [];
-      /** The state GitHub answers for issue 42 - the recorded object, open unless a test closes it. */
-      let issueState = "open";
+      let githubAnswers: Answer[] = [];
+      let release: () => void = () => {};
+      let held: Promise<void>;
+      let holding: () => void = () => {};
+
+      function write(method: string, url: string, body: Record<string, unknown>): unknown {
+        const path = url.slice(GITHUB.length);
+        if (method === "POST" && path === "") {
+          const number = 42 + issues.size;
+          issues.set(number, { number, state: "open", body: body.body as string, comments: [] });
+          return { ...issueCreated, number, title: body.title, body: body.body };
+        }
+        const [, n, comments] = path.match(/^\/(\d+)(\/comments)?$/)!;
+        const issue = issues.get(Number(n))!;
+        if (comments) {
+          issue.comments.push({ body: body.body as string });
+          return commentCreated;
+        }
+        if (typeof body.state === "string") issue.state = body.state;
+        return { ...issueCreated, number: issue.number, state: issue.state };
+      }
+
+      function read(url: string): unknown {
+        const path = url.slice(GITHUB.length);
+        if (path.startsWith("?")) return [...issues.values()].reverse().map((i) => ({ ...issueCreated, ...i }));
+        const [, n, comments] = path.match(/^\/(\d+)(\/comments)?(\?.*)?$/)!;
+        const issue = issues.get(Number(n))!;
+        return comments ? issue.comments : { ...issueCreated, number: issue.number, state: issue.state };
+      }
 
       beforeEach(() => {
+        issues = new Map();
         calls = [];
         reads = [];
         githubAnswers = [];
-        issueState = "open";
-        vi.stubEnv("GITHUB_RIG_ALERT_TOKEN", "github_pat_test");
+        held = new Promise((resolve) => (holding = resolve));
+        vi.stubEnv("GITHUB_RIG_ALERT_TOKEN", TOKEN);
         const others = globalThis.fetch;
         vi.stubGlobal(
           "fetch",
           vi.fn(async (url: string, init: RequestInit) => {
             if (!url.startsWith(GITHUB)) return others(url, init);
             const method = init.method ?? "GET";
-            const status = githubAnswers.shift() ?? (method === "POST" ? 201 : 200);
-            if (status >= 300) return Response.json({ message: "Server Error" }, { status });
             if (method === "GET") {
               reads.push(url);
-              return Response.json({ ...issueCreated, state: issueState }, { status });
+              return Response.json(read(url), { status: 200 });
             }
             const body = JSON.parse(init.body as string) as Record<string, unknown>;
+            const answer = githubAnswers.shift() ?? (method === "POST" ? 201 : 200);
+            if (answer === "echo") {
+              return new Response(`upstream echoed ${TOKEN} ${JSON.stringify(body)}`, { status: 502 });
+            }
+            if (typeof answer === "number" && answer >= 300) return Response.json({ message: "Server Error" }, { status: answer });
+            if (answer === "hold") {
+              holding();
+              await new Promise<void>((resolve) => (release = resolve));
+            }
             calls.push({ method, url, body });
-            if (method === "PATCH" && typeof body.state === "string") issueState = body.state;
-            return Response.json(url.endsWith("/comments") ? commentCreated : { ...issueCreated, state: issueState }, {
-              status,
-            });
+            const result = write(method, url, body);
+            if (answer === "lost") throw new DOMException("timed out", "TimeoutError");
+            return Response.json(result, { status: answer === "hold" ? 201 : answer });
           }),
         );
       });
@@ -679,11 +725,11 @@ describeDb("rig monitor against real Postgres", () => {
         expect(calls).toHaveLength(1);
         expect(calls[0]!.url).toBe(GITHUB);
         expect(calls[0]!.body).toMatchObject({
-          title: "[rig-alert] Rig silent - Rig 02",
+          title: "[rig-alert] Rig silent - Rig 2",
           labels: ["rig-alert"],
         });
         const body = calls[0]!.body.body as string;
-        expect(body).toMatch(/```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 02\)\n/);
+        expect(body).toMatch(/```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 2\)\n/);
         expect(body).toContain("<details><summary>Latest heartbeats (allowlisted fields, oldest first)</summary>");
         expect(body).not.toContain("Matt G");
         expect(body).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
@@ -707,7 +753,7 @@ describeDb("rig monitor against real Postgres", () => {
         expect(await issueNumbers()).toEqual([42, 42]);
 
         // The open issue was read, not reopened; every call filed or commented, none closed anything.
-        expect(reads).toEqual([`${GITHUB}/42`]);
+        expect(reads.filter((url) => url === `${GITHUB}/42`)).toHaveLength(1);
         expect(calls.every((c) => c.method === "POST" && !("state" in c.body))).toBe(true);
       });
 
@@ -719,14 +765,14 @@ describeDb("rig monitor against real Postgres", () => {
         await recover(rig);
         expect(calls).toHaveLength(2);
 
-        issueState = "closed";
+        issues.get(42)!.state = "closed";
         await silentAgain(rig);
         await nextEvaluation();
         expect(calls.slice(2)).toMatchObject([
           { method: "PATCH", url: `${GITHUB}/42`, body: { state: "open" } },
           { method: "POST", url: `${GITHUB}/42/comments`, body: { body: expect.stringMatching(/^Fired again as alert \d+\./) } },
         ]);
-        expect(issueState).toBe("open");
+        expect(issues.get(42)!.state).toBe("open");
         expect(await issueNumbers()).toEqual([42, 42]);
       });
 
@@ -811,6 +857,107 @@ describeDb("rig monitor against real Postgres", () => {
         expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
         expect(calls[1]!.body.body).toMatch(/^Fired again as alert \d+\./);
         expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("records an issue whose create landed but whose answer was lost, instead of filing it again", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = ["lost"];
+
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([null]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([42]);
+      });
+
+      it("never repeats a recovery or re-fire comment whose answer was lost", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+
+        await nextEvaluation();
+        githubAnswers = ["lost"];
+        await recover(rig);
+        expect(issues.get(42)!.comments).toHaveLength(1);
+        await testDb().query(
+          "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueRecoveryAttemptedAt', now() - interval '90 seconds')",
+        );
+        await nextEvaluation();
+        expect(issues.get(42)!.comments).toHaveLength(1);
+        const { rows } = await testDb().query<{ done: boolean }>(
+          "select diagnosis ? 'issueRecoveryCommentedAt' as done from monitor_alerts",
+        );
+        expect(rows).toEqual([{ done: true }]);
+
+        githubAnswers = ["lost"];
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(issues.get(42)!.comments).toHaveLength(2);
+        expect(await issueNumbers()).toEqual([42, null]);
+        await retryDue();
+        await nextEvaluation();
+        expect(issues.get(42)!.comments).toHaveLength(2);
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("files one issue when two alerts of one fault are filed by concurrent runs", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+        // Both alerts' first filings are refused, so neither has an issue.
+        githubAnswers = [500];
+        await nextEvaluation();
+        await recover(rig);
+        githubAnswers = [500];
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([null, null]);
+
+        // The first run takes the older alert and stalls inside its create...
+        const { rows } = await testDb().query<{ id: string }>("select id::text from monitor_alerts order by id");
+        const [older, newer] = rows.map((r) => r.id);
+        const due = (id: string) =>
+          testDb().query(
+            "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now() - interval '90 seconds') where id = $1",
+            [id],
+          );
+        await due(older!);
+        githubAnswers = ["hold"];
+        const first = runDiagnoses();
+        await held;
+        // ...while a second run takes the newer one.
+        await due(newer!);
+        await runDiagnoses();
+        release();
+        await first;
+
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(await issueNumbers()).toEqual([42, null]);
+        await retryDue();
+        await runDiagnoses();
+        expect(issues.size).toBe(1);
+        // One re-fire comment for the newer alert; the older one, recovered, also gets its recovery comment.
+        const bodies = issues.get(42)!.comments.map((c) => c.body);
+        expect(bodies.filter((b) => b.startsWith("Fired again as alert "))).toHaveLength(1);
+        expect(bodies.filter((b) => / recovered after /.test(b))).toHaveLength(1);
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("logs only the status when GitHub's error body echoes the token and the issue", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = ["echo"];
+
+        await nextEvaluation();
+        const logged = consoleError.mock.calls.map((args: unknown[]) => args.join(" ")).join("\n");
+        expect(logged).toContain("HTTP 502");
+        expect(logged).not.toContain(TOKEN);
+        expect(logged).not.toContain("rig-alert]");
+        expect(logged).not.toContain("Oasis rig alert");
       });
 
       it("opens no issue when neither the rule nor the diagnosis says software", async () => {

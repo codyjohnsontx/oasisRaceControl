@@ -109,18 +109,37 @@ export function rigAlertIssue(context: IncidentContext, handoff: string): { titl
     title: clip(`[rig-alert] ${githubInert(`${context.rule.title} - ${context.where}`)}`, ISSUE_TITLE_MAX),
     body:
       `Filed by the rig monitor for alert ${context.alertId} (docs/monitoring.md). ` +
-      `Close this issue when the fix has merged; a recovery only comments.\n\n${incidentSection(context, handoff)}`,
+      `Close this issue when the fix has merged; a recovery only comments.\n\n${incidentSection(context, handoff)}\n\n` +
+      rigAlertMarker("issue", context.alertId),
   };
+}
+
+/**
+ * The hidden line every issue, re-fire comment and recovery comment the
+ * monitor writes carries, naming the alert and what the write was for. A write
+ * whose answer never came back (a timeout, a dropped connection, a process
+ * that died before recording it) may still have landed, so before writing
+ * again the monitor looks for its marker and records what it finds instead.
+ * An HTML comment, so GitHub renders nothing for it.
+ */
+export function rigAlertMarker(kind: "issue" | "refire" | "recovery", alertId: string): string {
+  return `<!-- oasis-rig-alert:${kind}:alert-${alertId} -->`;
 }
 
 /** A later alert on the same rule and rig, commented on the open issue instead of filing another. */
 export function refireComment(context: IncidentContext, handoff: string): string {
-  return `Fired again as alert ${context.alertId}.\n\n${incidentSection(context, handoff)}`;
+  return (
+    `Fired again as alert ${context.alertId}.\n\n${incidentSection(context, handoff)}\n\n` +
+    rigAlertMarker("refire", context.alertId)
+  );
 }
 
 export function recoveryComment(alert: { id: string; openedAt: number; resolvedAt: number | null }): string {
   const after = alert.resolvedAt === null ? "" : ` after ${duration(alert.resolvedAt - alert.openedAt)}`;
-  return `Alert ${alert.id} recovered${after}. The issue stays open for the fix; close it when that has merged.`;
+  return (
+    `Alert ${alert.id} recovered${after}. The issue stays open for the fix; close it when that has merged.\n\n` +
+    rigAlertMarker("recovery", alert.id)
+  );
 }
 
 /**
