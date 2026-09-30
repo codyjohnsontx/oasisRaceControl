@@ -422,12 +422,17 @@ describeDb("rig monitor against real Postgres", () => {
 
   describe("AI diagnosis and the copy-paste handoff", () => {
     const GEMINI = "https://generativelanguage.googleapis.com/";
-    let geminiAnswers: Array<"timeout" | "answer"> = [];
+    /** "hold" answers only once `releaseModel` is called, and resolves `modelHeld` when it starts waiting. */
+    let geminiAnswers: Array<"timeout" | "answer" | "hold"> = [];
     let prompts: string[] = [];
+    let releaseModel: () => void = () => {};
+    let holdingModel: () => void = () => {};
+    let modelHeld: Promise<void>;
 
     beforeEach(() => {
       geminiAnswers = [];
       prompts = [];
+      modelHeld = new Promise((resolve) => (holdingModel = resolve));
       vi.stubEnv("GEMINI_API_KEY", "test-gemini-key");
       vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "9b4fd5d0c0ffee");
       vi.stubGlobal(
@@ -436,7 +441,13 @@ describeDb("rig monitor against real Postgres", () => {
           if (!url.startsWith(GEMINI)) return fetchMock(url, init);
           prompts.push(init.body as string);
           // What AbortSignal.timeout() rejects with when the 20 s run out.
-          if (geminiAnswers.shift() !== "answer") throw new DOMException("timed out", "TimeoutError");
+          const answer = geminiAnswers.shift();
+          if (answer === "hold") {
+            holdingModel();
+            await new Promise<void>((resolve) => (releaseModel = resolve));
+          } else if (answer !== "answer") {
+            throw new DOMException("timed out", "TimeoutError");
+          }
           return Response.json(geminiAnswer);
         }),
       );
@@ -1098,6 +1109,38 @@ describeDb("rig monitor against real Postgres", () => {
 
         await retryDue();
         await nextEvaluation();
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+        expect(recoveries()).toHaveLength(1);
+        expect(recoveries()[0]!.split("\n")[0]!.match(/\(Rig \d+\)/g)).toEqual(["(Rig 2)", "(Rig 7)"]);
+        expect(comments().at(-1)).toBe(recoveries()[0]);
+        expect(comments().filter((b) => b.startsWith("Fired again"))).toHaveLength(1);
+      });
+
+      it("holds the recovery for an alert whose rig recovered while its diagnosis was in flight", async () => {
+        const first = await seatedSilentRig(2, "Matt G");
+        geminiAnswers = ["answer"];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42]);
+
+        // The second rig's diagnosis call is still running...
+        const second = await seatedSilentRig(7, "Ana R");
+        geminiAnswers = ["hold"];
+        const diagnosing = nextEvaluation();
+        await modelHeld;
+
+        // ...when every rig recovers and another run looks for recoveries.
+        await heartbeat(first, 0);
+        await heartbeat(second, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+        expect((await alerts()).every((a) => a.resolved)).toBe(true);
+        const comments = () => issues.get(42)!.comments.map((c) => c.body);
+        const recoveries = () => comments().filter((b) => b.startsWith("Every rig on this issue has recovered"));
+        expect(recoveries()).toHaveLength(0);
+
+        releaseModel();
+        await diagnosing;
         await nextEvaluation();
         expect(await issueNumbers()).toEqual([42, 42]);
         expect(recoveries()).toHaveLength(1);

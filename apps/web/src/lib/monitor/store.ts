@@ -687,7 +687,9 @@ export async function unfiledAlerts(db: Db, ids: readonly string[]): Promise<str
  * has recovered and no alert of its rule is still to be filed on it: one
  * claimIssues could yet take (urgent, opened within RETRY_FOR, software by
  * rule or by diagnosis, and diagnosed - even if it has recovered since), or
- * an open one not diagnosed yet that it could take once it is. So an issue
+ * one it could take once its diagnosis is done: open and not diagnosed yet,
+ * or recovered while its diagnosis call is in flight (a pending claim not yet
+ * DIAGNOSIS_STALE, since a recovered alert is never claimed again). So an issue
  * shared by many rigs gets one comment when the last of them recovers, not
  * one per rig. The issue is never closed: closing it would cancel a fix in progress.
  */
@@ -712,10 +714,12 @@ export async function claimIssueRecoveries(
          where o.rule = due.rule and o.github_issue_number is null
            and o.severity = 'urgent' and o.opened_at > now() - $2::interval
            and (o.rule = any($3::text[]) or o.diagnosis->'result'->>'causeClass' = 'software'
-                or (o.resolved_at is null and coalesce(o.diagnosis->>'status', '') <> 'done'))
-           and (o.resolved_at is null or (o.diagnosis->>'status' = 'done' and o.handoff is not null)))
+                or coalesce(o.diagnosis->>'status', '') <> 'done')
+           and (o.resolved_at is null
+                or (o.diagnosis->>'status' = 'done' and o.handoff is not null)
+                or (o.diagnosis->>'status' = 'pending' and (o.diagnosis->>'at')::timestamptz > now() - $4::interval)))
      returning m.id::text, m.rule, m.severity, m.opened_at, m.resolved_at, m.detail, m.github_issue_number`,
-    [RETRY_AFTER, RETRY_FOR, softwareRules],
+    [RETRY_AFTER, RETRY_FOR, softwareRules, DIAGNOSIS_STALE],
   );
   return rows
     .map((row) => ({ ...toAlert(row), issue: row.github_issue_number }))

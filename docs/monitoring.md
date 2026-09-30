@@ -188,8 +188,9 @@ handoff stays either way, as the fallback when the harness is offline.
   on the same thread.
 - **A recovery** comments on the issue once every alert on it has recovered
   and no rig's alert of that rule is still waiting to join it (including one
-  whose rig recovered before its filing went through), not once per rig, and
-  leaves it open: closing it would cancel a fix in progress. Close it yourself when the fix has merged.
+  whose rig recovered before its filing went through, or while its diagnosis
+  was still being written), not once per rig, and leaves it open: closing it
+  would cancel a fix in progress. Close it yourself when the fix has merged.
 - A call GitHub refuses is retried like a Discord post, and only its status
   code is logged - never GitHub's answer, which could quote the request.
 - **No duplicates.** Filing is serialized per rule, so two alerts of one
