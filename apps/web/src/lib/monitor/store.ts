@@ -586,12 +586,7 @@ export async function claimDiagnosisPostRetries(): Promise<DiagnosisToPost[]> {
 /** A re-fire of the same rule and subject this soon comments on the earlier alert's issue. */
 const REFIRE_WINDOW = "24 hours";
 
-export type AlertToFile = AlertForMessage & {
-  subject: string;
-  handoff: string;
-  /** The issue an earlier alert on this rule and subject opened within REFIRE_WINDOW. */
-  refireOf: number | null;
-};
+export type AlertToFile = AlertForMessage & { subject: string; handoff: string };
 
 /**
  * Claims the urgent alerts whose handoff should become a rig-alert issue: a
@@ -601,10 +596,10 @@ export type AlertToFile = AlertForMessage & {
  * RETRY_FOR.
  */
 export async function claimIssues(softwareRules: readonly string[]): Promise<AlertToFile[]> {
-  const rows = await query<AlertRow & { subject: string; handoff: string; refire_of: number | null }>(
-    `update monitor_alerts a
-     set diagnosis = a.diagnosis || jsonb_build_object('issueAttemptedAt', now())
-     where a.id in (
+  const rows = await query<AlertRow & { subject: string; handoff: string }>(
+    `update monitor_alerts
+     set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now())
+     where id in (
        select id from monitor_alerts
        where severity = 'urgent' and diagnosis->>'status' = 'done' and handoff is not null
          and github_issue_number is null
@@ -613,19 +608,30 @@ export async function claimIssues(softwareRules: readonly string[]): Promise<Ale
          and opened_at > now() - $3::interval
        order by id
        for update skip locked)
-     returning ${ALERT_COLUMNS}, subject, handoff,
-       (select p.github_issue_number from monitor_alerts p
-        where p.rule = a.rule and p.subject = a.subject and p.id < a.id
-          and p.github_issue_number is not null and p.opened_at > a.opened_at - $4::interval
-        order by p.id desc limit 1) as refire_of`,
-    [softwareRules, RETRY_AFTER, RETRY_FOR, REFIRE_WINDOW],
+     returning ${ALERT_COLUMNS}, subject, handoff`,
+    [softwareRules, RETRY_AFTER, RETRY_FOR],
   );
-  return rows.map((row) => ({
-    ...toAlert(row),
-    subject: row.subject,
-    handoff: row.handoff,
-    refireOf: row.refire_of,
-  }));
+  return rows
+    .map((row) => ({ ...toAlert(row), subject: row.subject, handoff: row.handoff }))
+    .sort((a, b) => Number(a.id) - Number(b.id));
+}
+
+/**
+ * The issue another alert on the same rule and subject, opened within
+ * REFIRE_WINDOW either side of this one, has already filed - read at filing
+ * time, so an alert filed out of order still finds it.
+ */
+export async function refireTarget(id: string): Promise<number | null> {
+  const row = await queryOne<{ n: number }>(
+    `select p.github_issue_number as n
+     from monitor_alerts a join monitor_alerts p
+       on p.rule = a.rule and p.subject = a.subject and p.id <> a.id
+     where a.id = $1 and p.github_issue_number is not null
+       and p.opened_at between a.opened_at - $2::interval and a.opened_at + $2::interval
+     order by p.id desc limit 1`,
+    [id, REFIRE_WINDOW],
+  );
+  return row?.n ?? null;
 }
 
 export async function recordIssue(id: string, number: number): Promise<void> {

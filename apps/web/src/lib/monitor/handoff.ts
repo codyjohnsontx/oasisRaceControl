@@ -107,19 +107,19 @@ export function rigAlertIssue(context: IncidentContext, handoff: string): { titl
   return {
     title: clip(`[rig-alert] ${githubInert(`${context.rule.title} - ${context.where}`)}`, ISSUE_TITLE_MAX),
     body:
-      `Filed by the rig monitor for alert #${context.alertId} (docs/monitoring.md). ` +
+      `Filed by the rig monitor for alert ${context.alertId} (docs/monitoring.md). ` +
       `Close this issue when the fix has merged; a recovery only comments.\n\n${incidentSection(context, handoff)}`,
   };
 }
 
 /** A later alert on the same rule and rig, commented on the open issue instead of filing another. */
 export function refireComment(context: IncidentContext, handoff: string): string {
-  return `Fired again as alert #${context.alertId}.\n\n${incidentSection(context, handoff)}`;
+  return `Fired again as alert ${context.alertId}.\n\n${incidentSection(context, handoff)}`;
 }
 
 export function recoveryComment(alert: { id: string; openedAt: number; resolvedAt: number | null }): string {
   const after = alert.resolvedAt === null ? "" : ` after ${duration(alert.resolvedAt - alert.openedAt)}`;
-  return `Alert #${alert.id} recovered${after}. The issue stays open for the fix; close it when that has merged.`;
+  return `Alert ${alert.id} recovered${after}. The issue stays open for the fix; close it when that has merged.`;
 }
 
 /**

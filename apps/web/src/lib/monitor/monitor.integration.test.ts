@@ -681,14 +681,14 @@ describeDb("rig monitor against real Postgres", () => {
         await recover(rig);
         expect(calls).toHaveLength(2);
         expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
-        expect(calls[1]!.body.body).toMatch(/^Alert #\d+ recovered after \d+ s\. The issue stays open/);
+        expect(calls[1]!.body.body).toMatch(/^Alert \d+ recovered after \d+ s\. The issue stays open/);
 
         // The same rule on the same rig within a day: a comment, not a second issue.
         await silentAgain(rig);
         await nextEvaluation();
         expect(calls).toHaveLength(3);
         expect(calls[2]!.url).toBe(`${GITHUB}/42/comments`);
-        expect(calls[2]!.body.body).toMatch(/^Fired again as alert #\d+\.\n\n```text\nOasis rig alert #/);
+        expect(calls[2]!.body.body).toMatch(/^Fired again as alert \d+\.\n\n```text\nOasis rig alert #/);
         expect(await issueNumbers()).toEqual([42, 42]);
 
         // Every call filed or commented; none closed anything.
@@ -712,6 +712,49 @@ describeDb("rig monitor against real Postgres", () => {
         await nextEvaluation();
         expect(calls).toHaveLength(1);
         expect(await issueNumbers()).toEqual([42]);
+      });
+
+      /** Makes a refused issue due for its retry now. */
+      async function retryDue() {
+        await testDb().query(
+          "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now() - interval '90 seconds') where github_issue_number is null",
+        );
+      }
+
+      it("files one issue when a refused alert's retry and its re-fire are filed together", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+        githubAnswers = [500];
+
+        await nextEvaluation();
+        await recover(rig);
+        await silentAgain(rig);
+        await retryDue();
+        await nextEvaluation();
+
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
+        expect(calls[1]!.body.body).toMatch(/^Fired again as alert \d+\./);
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("comments a refused alert's retry on the issue its later re-fire opened", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+        githubAnswers = [500];
+
+        await nextEvaluation();
+        await recover(rig);
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([null, 42]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
+        expect(calls[1]!.body.body).toMatch(/^Fired again as alert \d+\./);
+        expect(await issueNumbers()).toEqual([42, 42]);
       });
 
       it("opens no issue when neither the rule nor the diagnosis says software", async () => {

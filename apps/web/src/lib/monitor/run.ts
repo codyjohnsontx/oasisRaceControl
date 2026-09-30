@@ -32,6 +32,7 @@ import {
   pruneHeartbeats,
   recentHeartbeats,
   recordIssue,
+  refireTarget,
   saveDiagnosis,
   type AlertToDiagnose,
   type AlertToFile,
@@ -203,16 +204,17 @@ async function postDiagnosis(alert: AlertForMessage, state: DiagnosisState, hand
 }
 
 /**
- * Opens the alert's rig-alert issue, or - when an earlier alert on the same
- * rule and rig opened one within a day - comments on that one instead, so a
+ * Opens the alert's rig-alert issue, or - when another alert on the same
+ * rule and rig within a day has one - comments on that one instead, so a
  * flapping rig makes one issue. A failure is retried by a later evaluation.
  */
 async function fileIssue(alert: AlertToFile): Promise<void> {
   const context = await contextOf(alert);
-  if (alert.refireOf !== null) {
-    const sent = await commentOnIssue(alert.refireOf, refireComment(context, alert.handoff));
+  const refireOf = await refireTarget(alert.id);
+  if (refireOf !== null) {
+    const sent = await commentOnIssue(refireOf, refireComment(context, alert.handoff));
     if (sent.status !== "sent") return logFailedIssue(alert.id, sent);
-    return recordIssue(alert.id, alert.refireOf);
+    return recordIssue(alert.id, refireOf);
   }
   const opened = await openIssue(rigAlertIssue(context, alert.handoff));
   if (opened.status !== "sent") return logFailedIssue(alert.id, opened);

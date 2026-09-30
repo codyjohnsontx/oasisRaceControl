@@ -180,9 +180,20 @@ describe("the rig-alert issue", () => {
   });
 
   it("comments a re-fire with the new alert's handoff, and a recovery without closing", () => {
-    expect(refireComment(CONTEXT, handoff)).toMatch(/^Fired again as alert #123\.\n\n```text\nOasis rig alert #123/);
+    expect(refireComment(CONTEXT, handoff)).toMatch(/^Fired again as alert 123\.\n\n```text\nOasis rig alert #123/);
     expect(recoveryComment({ id: "123", openedAt: OPENED, resolvedAt: OPENED + 4 * 60_000 })).toBe(
-      "Alert #123 recovered after 4 min. The issue stays open for the fix; close it when that has merged.",
+      "Alert 123 recovered after 4 min. The issue stays open for the fix; close it when that has merged.",
     );
+  });
+
+  it("references no issue or pull request by number outside a code block", () => {
+    const outsideCode = (text: string) => text.replace(/```[\s\S]*?```/g, "");
+    for (const text of [
+      rigAlertIssue(CONTEXT, handoff).body,
+      refireComment(CONTEXT, handoff),
+      recoveryComment({ id: "123", openedAt: OPENED, resolvedAt: OPENED + 60_000 }),
+    ]) {
+      expect(outsideCode(text)).not.toMatch(/#\d/);
+    }
   });
 });
