@@ -684,11 +684,12 @@ export async function unfiledAlerts(db: Db, ids: readonly string[]): Promise<str
 
 /**
  * Claims the alerts owed a recovery comment, once every alert on their issue
- * has recovered and no open alert of its rule is still to be filed on it
- * (one claimIssues could yet take: urgent, opened within RETRY_FOR, and
- * software by rule, by diagnosis, or not diagnosed yet) - so an issue shared
- * by many rigs gets one comment when the last of them recovers, not one per
- * rig. The issue is never closed: closing it would cancel a fix in progress.
+ * has recovered and no alert of its rule is still to be filed on it: one
+ * claimIssues could yet take (urgent, opened within RETRY_FOR, software by
+ * rule or by diagnosis, and diagnosed - even if it has recovered since), or
+ * an open one not diagnosed yet that it could take once it is. So an issue
+ * shared by many rigs gets one comment when the last of them recovers, not
+ * one per rig. The issue is never closed: closing it would cancel a fix in progress.
  */
 export async function claimIssueRecoveries(
   softwareRules: readonly string[],
@@ -708,10 +709,11 @@ export async function claimIssueRecoveries(
        and coalesce((m.diagnosis->>'issueRecoveryAttemptedAt')::timestamptz, '-infinity') < now() - $1::interval
        and not exists (
          select 1 from monitor_alerts o
-         where o.rule = due.rule and o.resolved_at is null and o.github_issue_number is null
+         where o.rule = due.rule and o.github_issue_number is null
            and o.severity = 'urgent' and o.opened_at > now() - $2::interval
            and (o.rule = any($3::text[]) or o.diagnosis->'result'->>'causeClass' = 'software'
-                or coalesce(o.diagnosis->>'status', '') <> 'done'))
+                or (o.resolved_at is null and coalesce(o.diagnosis->>'status', '') <> 'done'))
+           and (o.resolved_at is null or (o.diagnosis->>'status' = 'done' and o.handoff is not null)))
      returning m.id::text, m.rule, m.severity, m.opened_at, m.resolved_at, m.detail, m.github_issue_number`,
     [RETRY_AFTER, RETRY_FOR, softwareRules],
   );

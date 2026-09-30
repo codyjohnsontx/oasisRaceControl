@@ -1074,6 +1074,38 @@ describeDb("rig monitor against real Postgres", () => {
         expect(recoveries()[0]!.body.split("\n")[0]!.match(/\(Rig \d+\)/g)).toEqual(["(Rig 2)", "(Rig 7)"]);
       });
 
+      it("holds the recovery for an alert whose filing waits, though its rig recovered first", async () => {
+        const first = await seatedSilentRig(2, "Matt G");
+        geminiAnswers = ["answer", "answer"];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42]);
+
+        // The second rig's alert is diagnosed, but GitHub refuses its re-fire comment.
+        const second = await seatedSilentRig(7, "Ana R");
+        githubAnswers = [500];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, null]);
+
+        // Every rig recovers before the refused filing is retried.
+        await heartbeat(first, 0);
+        await heartbeat(second, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+        expect((await alerts()).every((a) => a.resolved)).toBe(true);
+        const comments = () => issues.get(42)!.comments.map((c) => c.body);
+        const recoveries = () => comments().filter((b) => b.startsWith("Every rig on this issue has recovered"));
+        expect(recoveries()).toHaveLength(0);
+
+        await retryDue();
+        await nextEvaluation();
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+        expect(recoveries()).toHaveLength(1);
+        expect(recoveries()[0]!.split("\n")[0]!.match(/\(Rig \d+\)/g)).toEqual(["(Rig 2)", "(Rig 7)"]);
+        expect(comments().at(-1)).toBe(recoveries()[0]);
+        expect(comments().filter((b) => b.startsWith("Fired again"))).toHaveLength(1);
+      });
+
       it("files one issue for a rule firing on twenty rigs, one comment per pass, and one recovery once all recover", async () => {
         const rigs: SeededRig[] = [];
         for (let n = 1; n <= 20; n++) rigs.push(await seatedSilentRig(n, `Driver ${n}`));
