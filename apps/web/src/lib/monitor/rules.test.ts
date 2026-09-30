@@ -41,7 +41,7 @@ function hb(ago: number, overrides: Partial<Heartbeat> = {}): Heartbeat {
     clockSkewMs: 0,
     processStartedAt: STARTED,
     sequence: Math.round((receivedAt - STARTED) / MIN),
-    agentVersion: "rig-agent/0.4-monitor",
+    agentVersion: CURRENT_AGENT_VERSION,
     telemetryMode: "iracing",
     simConnected: true,
     telemetryFaulted: false,

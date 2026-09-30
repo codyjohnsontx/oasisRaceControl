@@ -85,7 +85,7 @@ Details worth knowing:
   they read laps, stints and today's combo, so they work for an agent too old
   to send more than its version. Rule 7's session half, rule 6 and rule 13
   (which needs the rig it left to report the sim in a session) need
-  `rig-agent/0.4-monitor`.
+  `rig-agent/0.4-monitor` or later.
 - **Rule 7 judges the combo exactly as ingestion does** (`comboMismatch` in
   `validity.ts`), so it never calls a session right whose laps will be
   refused. Its message names today's combo and which part is wrong, never the
@@ -106,7 +106,7 @@ Details worth knowing:
   alert already open holds through a goodbye or a silence.
 - **Rule 6 counts each refusal once.** A heartbeat reports every refusal the
   site has not acknowledged, so after a lost answer the next one reports the
-  same refusals again. `rig-agent/0.4-monitor` sends each refusal's own
+  same refusals again. `rig-agent/0.5-monitor` and later send each refusal's own
   sequence number (`signInFailureSeqs`), and the monitor counts each once per
   agent process; a heartbeat without them is counted as it stands.
 - **Rule 13 is the move, not two stints at once.** A driver cannot hold two

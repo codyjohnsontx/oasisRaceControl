@@ -492,7 +492,10 @@ from the prompt's exceptions: `wrong_pin_or_name` (a returning driver's wrong
 PIN - a login answering 401 - or a new driver's name that is already taken or
 not allowed), `locked`, `rate_limited`, `unreachable`, `other`. Only the
 returning path logs in and only the new path registers, so each refused
-answer is one failed sign-in.
+answer is one failed sign-in. A failure stays in every heartbeat until one is
+answered, so from `rig-agent/0.5-monitor` each heartbeat also carries every
+reported failure's own sequence number (`signInFailureSeqs`, the newest ten),
+and the monitor counts a failure re-reported after a lost answer once.
 
 ### Checking the footprint on a rig with iRacing
 
