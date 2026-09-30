@@ -1031,6 +1031,49 @@ describeDb("rig monitor against real Postgres", () => {
         expect(await issueNumbers()).toEqual([42, 42]);
       });
 
+      it("never announces as a re-fire the alert whose lost create another rig's alert adopted", async () => {
+        await seatedSilentRig(2, "Matt G");
+        geminiAnswers = ["answer", "answer"];
+        githubAnswers = ["lost"];
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([null]);
+
+        // Another rig's alert of the rule is filed before the first one's retry is due.
+        await seatedSilentRig(7, "Ana R");
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+        const refires = issues.get(42)!.comments.filter((c) => c.body.startsWith("Fired again"));
+        expect(refires.map((c) => c.body.split("\n")[0])).toEqual([expect.stringMatching(/^Fired again as alert \d+ \(Rig 7\)\.$/)]);
+      });
+
+      it("says nothing of recovery while another rig's alert of the rule is still to be filed", async () => {
+        const first = await seatedSilentRig(2, "Matt G");
+        geminiAnswers = ["answer"];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42]);
+
+        // The second rig's diagnosis times out, so its alert waits for a retry while the first recovers.
+        const second = await seatedSilentRig(7, "Ana R");
+        await recover(first);
+        expect(await issueNumbers()).toEqual([42, null]);
+        const recoveries = () =>
+          issues.get(42)!.comments.filter((c) => c.body.startsWith("Every rig on this issue has recovered"));
+        expect(recoveries()).toHaveLength(0);
+
+        geminiAnswers = ["answer"];
+        await age(90);
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+        await recover(second);
+        expect(recoveries()).toHaveLength(1);
+        expect(recoveries()[0]!.body.split("\n")[0]!.match(/\(Rig \d+\)/g)).toEqual(["(Rig 2)", "(Rig 7)"]);
+      });
+
       it("files one issue for a rule firing on twenty rigs, one comment per pass, and one recovery once all recover", async () => {
         const rigs: SeededRig[] = [];
         for (let n = 1; n <= 20; n++) rigs.push(await seatedSilentRig(n, `Driver ${n}`));

@@ -660,22 +660,44 @@ export async function refireTarget(db: Db, rule: string, ids: readonly string[])
   return row?.n ?? null;
 }
 
+/**
+ * Records `ids` as filed on the numbered issue. An alert already recorded
+ * keeps its issue: the ids a found issue's marker names may include one
+ * a later filing put elsewhere.
+ */
 export async function recordIssue(db: Db, ids: readonly string[], number: number): Promise<void> {
-  await db.query("update monitor_alerts set github_issue_number = $2 where id = any($1::bigint[])", [ids, number]);
+  await db.query(
+    "update monitor_alerts set github_issue_number = $2 where id = any($1::bigint[]) and github_issue_number is null",
+    [ids, number],
+  );
+}
+
+/** Which of `ids` no issue has recorded yet. */
+export async function unfiledAlerts(db: Db, ids: readonly string[]): Promise<string[]> {
+  const found = await rows<{ id: string }>(
+    db,
+    "select id::text from monitor_alerts where id = any($1::bigint[]) and github_issue_number is null",
+    [ids],
+  );
+  return found.map((row) => row.id);
 }
 
 /**
  * Claims the alerts owed a recovery comment, once every alert on their issue
- * has recovered - so an issue shared by many rigs gets one comment when the
- * last of them recovers, not one per rig. The issue is never closed: closing
- * it would cancel a fix in progress.
+ * has recovered and no open alert of its rule is still to be filed on it
+ * (one claimIssues could yet take: urgent, opened within RETRY_FOR, and
+ * software by rule, by diagnosis, or not diagnosed yet) - so an issue shared
+ * by many rigs gets one comment when the last of them recovers, not one per
+ * rig. The issue is never closed: closing it would cancel a fix in progress.
  */
-export async function claimIssueRecoveries(): Promise<Array<AlertForMessage & { issue: number }>> {
+export async function claimIssueRecoveries(
+  softwareRules: readonly string[],
+): Promise<Array<AlertForMessage & { issue: number }>> {
   const rows = await query<AlertRow & { github_issue_number: number }>(
     `update monitor_alerts m
      set diagnosis = m.diagnosis || jsonb_build_object('issueRecoveryAttemptedAt', now())
      from (
-       select github_issue_number as n from monitor_alerts
+       select github_issue_number as n, min(rule) as rule from monitor_alerts
        where github_issue_number is not null
        group by github_issue_number
        having bool_and(resolved_at is not null)
@@ -684,8 +706,14 @@ export async function claimIssueRecoveries(): Promise<Array<AlertForMessage & { 
      where m.github_issue_number = due.n
        and m.diagnosis->>'issueRecoveryCommentedAt' is null
        and coalesce((m.diagnosis->>'issueRecoveryAttemptedAt')::timestamptz, '-infinity') < now() - $1::interval
-     returning ${ALERT_COLUMNS}, github_issue_number`,
-    [RETRY_AFTER, RETRY_FOR],
+       and not exists (
+         select 1 from monitor_alerts o
+         where o.rule = due.rule and o.resolved_at is null and o.github_issue_number is null
+           and o.severity = 'urgent' and o.opened_at > now() - $2::interval
+           and (o.rule = any($3::text[]) or o.diagnosis->'result'->>'causeClass' = 'software'
+                or coalesce(o.diagnosis->>'status', '') <> 'done'))
+     returning m.id::text, m.rule, m.severity, m.opened_at, m.resolved_at, m.detail, m.github_issue_number`,
+    [RETRY_AFTER, RETRY_FOR, softwareRules],
   );
   return rows
     .map((row) => ({ ...toAlert(row), issue: row.github_issue_number }))

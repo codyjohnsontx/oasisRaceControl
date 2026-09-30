@@ -44,6 +44,7 @@ import {
   recordIssue,
   refireTarget,
   saveDiagnosis,
+  unfiledAlerts,
   type AlertToDiagnose,
   type AlertToFile,
   type DiagnosisState,
@@ -142,7 +143,7 @@ export async function runDiagnoses(): Promise<number> {
   // and the Discord handoff is the whole story.
   if (githubConfigured()) {
     for (const alerts of groupBy(await claimIssues(SOFTWARE_RULES), (alert) => alert.rule)) await fileIssue(alerts);
-    for (const alerts of groupBy(await claimIssueRecoveries(), (alert) => alert.issue)) {
+    for (const alerts of groupBy(await claimIssueRecoveries(SOFTWARE_RULES), (alert) => alert.issue)) {
       await commentRecovery(alerts[0]!.issue, alerts);
     }
   }
@@ -235,14 +236,19 @@ async function postDiagnosis(alert: AlertForMessage, state: DiagnosisState, hand
  * is looked for by its marker first, so a write whose answer was lost is
  * recorded, not repeated. A failure is retried by a later evaluation.
  */
-async function fileIssue(alerts: AlertToFile[]): Promise<void> {
-  const rule = alerts[0]!.rule;
-  const ids = alerts.map((alert) => alert.id);
-  const filings = await Promise.all(
-    alerts.map(async (alert) => ({ context: await contextOf(alert, alert.handoffAt), handoff: alert.handoff })),
+async function fileIssue(claimed: AlertToFile[]): Promise<void> {
+  const rule = claimed[0]!.rule;
+  const prepared = await Promise.all(
+    claimed.map(async (alert) => ({ context: await contextOf(alert, alert.handoffAt), handoff: alert.handoff })),
   );
   await withTransaction(async (client) => {
     if (!(await lockFault(client, rule))) return;
+    // Another filer may have recorded some of these since they were claimed.
+    const unfiled = new Set(await unfiledAlerts(client, claimed.map((alert) => alert.id)));
+    const alerts = claimed.filter((alert) => unfiled.has(alert.id));
+    if (alerts.length === 0) return;
+    const ids = alerts.map((alert) => alert.id);
+    const filings = prepared.filter(({ context }) => unfiled.has(context.alertId));
     // Everything the monitor wrote for these alerts is newer than their opening.
     const since = Math.min(...alerts.map((alert) => alert.openedAt)) - MARKER_LOOKBACK_MS;
     const said = new Set<string>();
@@ -258,7 +264,10 @@ async function fileIssue(alerts: AlertToFile[]): Promise<void> {
       }
       warnIfUnlabelled(found.number, found.labelled, ids);
       number = found.number;
-      for (const id of markedAlerts(found.marker!, "issue", rule)) said.add(id);
+      const opened = markedAlerts(found.marker!, "issue", rule);
+      for (const id of opened) said.add(id);
+      // The alerts it was opened for are on it, whether or not they are in this batch.
+      await recordIssue(client, opened, number);
     }
 
     const comments = await commentMarkers(number, since);

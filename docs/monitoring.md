@@ -186,8 +186,9 @@ handoff stays either way, as the fallback when the harness is offline.
   joined (and the first one's handoff) instead of opening another, and reopen
   it first if it was closed - a fix that did not hold goes back to the harness
   on the same thread.
-- **A recovery** comments on the issue once every alert on it has recovered,
-  not once per rig, and leaves it open: closing it would cancel a fix in
+- **A recovery** comments on the issue once every alert on it has recovered
+  and no rig's alert of that rule is still waiting to join it, not once per
+  rig, and leaves it open: closing it would cancel a fix in
   progress. Close it yourself when the fix has merged.
 - A call GitHub refuses is retried like a Discord post, and only its status
   code is logged - never GitHub's answer, which could quote the request.
