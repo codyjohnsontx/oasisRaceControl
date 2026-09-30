@@ -863,23 +863,33 @@ describeDb("rig monitor against real Postgres", () => {
       ]);
     });
 
-    it("never diagnoses a muted urgent alert", async () => {
+    it("diagnoses a muted urgent alert only once its mute has ended and it is posted", async () => {
       vi.stubEnv("GEMINI_API_KEY", "test-gemini-key");
       const calls: string[] = [];
       vi.stubGlobal(
         "fetch",
         vi.fn(async (url: string, init: RequestInit) => {
+          if (!url.includes("generativelanguage")) return fetchMock(url, init);
           calls.push(url);
-          return fetchMock(url, init);
+          throw new DOMException("timed out", "TimeoutError");
         }),
       );
-      await testDb().query(
-        `insert into monitor_alerts (rule, subject, severity, detail, refire_count, notify_attempted_at, notify_until)
-         values ('telemetry_faulted', 'venue', 'urgent', '{"headline":"x","where":"Venue","fields":[]}',
-                 3, now() + interval '1 hour', now() + interval '2 hours')`,
-      );
-      await runDiagnoses();
-      expect(calls.filter((url) => url.includes("generativelanguage"))).toEqual([]);
+      const rig = await seedRig(1);
+
+      // One call for each of the three openings before the mute; none for the
+      // one that posted the mute line, however long it stays open inside it.
+      await flapIntoMute(rig);
+      await heartbeat(rig, 0, { rejectedLaps: 1 });
+      await nextEvaluation();
+      expect(calls).toHaveLength(3);
+
+      await timePasses(61);
+      await heartbeat(rig, 0, { rejectedLaps: 1 });
+      await nextEvaluation();
+      expect(posts.at(-1)!.content).toBe(`<@${OWNER}> 🔴 Rig 01: the site refused 1 lap; it is parked on the rig`);
+      expect(calls).toHaveLength(4);
+      await nextEvaluation();
+      expect(calls).toHaveLength(4);
     });
   });
 
