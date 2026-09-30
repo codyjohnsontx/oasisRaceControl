@@ -974,15 +974,36 @@ describe("rule 8a: TV board went dark", () => {
     const override = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
     // An ordinary day: the wall switched off at closing is not news.
     expect(evaluate([rig(1)], [], { boards: [wall] })).toEqual([]);
-    // An event at the shop, run on the wall: its mini-PC sleeping is.
-    const findings = evaluate([rig(1)], [], { boards: [wall], override });
+    // An event at the shop, run on the wall since an hour ago: its mini-PC sleeping is.
+    const findings = evaluate([rig(1)], [], { boards: [wall], override, eventModeSince: NOW - 60 * MIN });
     expect(rulesOf(findings)).toEqual(["board_dark board:rotation urgent"]);
     expect(findings[0]!.detail.headline).toBe(
       "Shop wall board has not been heard from for 30 min - laptop asleep, browser closed, or offline?",
     );
     expect(evaluate([rig(1)], [], { boards: [board({ id: "wall", mode: "rotation", host: null })], override })).toEqual([]);
     // With an event board open today, that board is the room's display.
-    expect(evaluate([rig(1)], [], { boards: [wall, board()], override })).toEqual([]);
+    expect(evaluate([rig(1)], [], { boards: [wall, board()], override, eventModeSince: NOW - 60 * MIN })).toEqual([]);
+  });
+
+  it("watches the shop wall once the event board of the day has closed and staff force event mode back on", () => {
+    const wall = board({ id: "wall", mode: "rotation", host: null, lastSeenAt: NOW - 10 * MIN });
+    const closedLaptop = board({ id: "laptop", lastSeenAt: NOW - 45 * MIN, closedAt: NOW - 45 * MIN });
+    const override = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
+    expect(rulesOf(evaluate([rig(1)], [], { boards: [closedLaptop, wall], override, eventModeSince: NOW - 40 * MIN }))).toEqual([
+      "board_dark board:rotation urgent",
+    ]);
+  });
+
+  it("pages about none of a shop wall switched off in the morning when staff force event mode on in the afternoon", () => {
+    // The wall's mini-PC was powered off at 10:00 with no goodbye; staff
+    // force event mode on at 15:59, before any event board opens.
+    const wall = board({ id: "wall", mode: "rotation", host: null, lastSeenAt: NOW - 6 * 60 * MIN });
+    const override = { mode: "on" as const, expiresAt: NOW + 8 * 60 * MIN, setBy: "Cody" };
+    for (const eventModeSince of [null, NOW - MIN]) {
+      const findings = evaluate([rig(1)], [], { boards: [wall], override, eventModeSince });
+      expect(findings.filter((f) => f.severity === "urgent")).toEqual([]);
+      expect(findings.filter((f) => f.rule === "board_dark")).toEqual([]);
+    }
   });
 
   it("clears when staff stop the event, or a board is heard again", () => {

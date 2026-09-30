@@ -5,6 +5,7 @@ import {
   boardsToday,
   eventDisplays,
   eventMode,
+  eventModeBegan,
   type BoardSnapshot,
   type EventMode,
   type EventModeOverride,
@@ -192,7 +193,7 @@ export function evaluateRules(snapshot: MonitorSnapshot): Finding[] {
   const isOpen = (rule: RuleKey, subject: string) => open.has(`${rule}|${subject}`);
   const rigs = snapshot.rigs.map((rig) => ({ rig, state: rigState(rig.heartbeats) }));
   const mode = eventMode(snapshot);
-  const eventSince = mode.on ? (snapshot.eventModeSince ?? snapshot.now) : null;
+  const eventSince = eventModeBegan(snapshot);
 
   return [
     ...silence(snapshot.now, rigs, eventSince, isOpen),
@@ -606,8 +607,8 @@ export function boardSubject(mode: BoardSnapshot["mode"]): string {
  * Rules 8a and 8b, about the screen the room watches rather than a rig.
  *
  * 8a: of the event's displays (eventDisplays: today's event boards, each
- * opened from a staff link, or the shop wall while event mode is on without
- * one), the one heard from most recently went dark: not heard from for
+ * opened from a staff link, or the shop wall while staff have forced event
+ * mode on without one still open), the one heard from most recently went dark: not heard from for
  * BOARD_DARK_AFTER_MS, without a goodbye. The most recent, so a browser
  * killed and restored as a new page, or a tab closed after a phone was left
  * locked on the board, is judged by the board the room is watching. An event

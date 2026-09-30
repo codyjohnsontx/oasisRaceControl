@@ -43,7 +43,7 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 | 3a | Laps queued but not reaching the site | a lap has waited over 2 min while at least two heartbeats got through | the queue drains | urgent |
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
 | 4 | No featured car and track today | no `featured_combos` row for the venue day, and event mode is on or a rig is in an iRacing session | today's row exists | urgent. The alert carries the `insert` to paste, built from that rig's own session strings - or, with no rig in a session, says to run `--diagnose` on one |
-| 8a | TV board went dark | of the event's displays - today's event boards (each opened from its staff link), or, while event mode is on with none, the shop wall opened from its staff link - the one heard from most recently has not been heard from for 3 min and did not say goodbye. An event board is judged whether or not event mode is on - the dark board has stopped holding it; the shop wall only while event mode is on, never on an ordinary day | a display is heard again, staff force event mode off, or the venue day ends | urgent: the board it reports was holding the event, or is the room's display during one |
+| 8a | TV board went dark | of the event's displays - today's event boards (each opened from its staff link), or, while staff have forced event mode on with none of them still open, the shop wall opened from its staff link - the one heard from most recently has not been heard from for 3 min and did not say goodbye. An event board is judged whether or not event mode is on - the dark board has stopped holding it; the shop wall only while event mode is forced on, and only if it was heard since event mode began or was still live when it began, never on an ordinary day | a display is heard again, staff force event mode off, or the venue day ends | urgent: the board it reports was holding the event, or is the room's display during one |
 | 8b | TV board cannot load its numbers | a live board says its last 3 loads of the leaderboard failed (it shows "Reconnecting") | a load succeeds | urgent, in any mode: the board reached the site to say so, so the feed is what is broken |
 | 9b | Monitor gap | more than 10 min of the time since the previous evaluation fell in venue hours (08:00-midnight) | - | a one-line note, not an alert: nothing to recover from, and only the evaluation that ends the gap sees it |
 | 10 | Rig agent restarting repeatedly | 3 agent starts within 15 min | the starts age out of the 15 min | urgent |
@@ -165,10 +165,13 @@ by `eventMode()` in `event-mode.ts`, pure, from the same snapshot as the rules:
   reported once the laptop's tab is closed properly, while a killed laptop
   browser is. Closing the tab alerts nothing; killing the browser alerts once,
   urgently, three minutes later, and posts "event mode off" beside it. While
-  staff have forced event mode on and no event board is open today - an
-  event run on the shop wall - the wall, opened from its staff link, is the
-  display 8a judges, the same one the 20-minute update reports on. On an
-  ordinary day the wall is not judged.
+  staff have forced event mode on and no event board is still open today -
+  an event run on the shop wall, including after the day's event board was
+  closed - the wall, opened from its staff link, is the display 8a judges,
+  the same one the 20-minute update reports on. Only a wall heard since event
+  mode began, or still live when it began, counts: a wall switched off that
+  morning never pages when staff force event mode on that afternoon (the
+  same rule rig silence follows). On an ordinary day the wall is not judged.
 - **Staff can force it** on or off with `POST /api/staff/event-mode`
   (`{"mode":"on"|"off"|"auto","reason":"..."}`, staff session, same-origin JSON
   - the Rig health page's buttons). `on` and `off` last until venue midnight,

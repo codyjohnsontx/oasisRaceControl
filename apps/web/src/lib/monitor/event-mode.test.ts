@@ -40,7 +40,7 @@ function board(overrides: Partial<BoardSnapshot> = {}): BoardSnapshot {
 }
 
 function input(overrides: Partial<EventModeInput> = {}): EventModeInput {
-  return { now: NOW, venueDayStart: DAY_START, override: null, boards: [], ...overrides };
+  return { now: NOW, venueDayStart: DAY_START, override: null, boards: [], eventModeSince: null, ...overrides };
 }
 
 describe("eventMode", () => {
@@ -118,6 +118,27 @@ describe("boards", () => {
     expect(eventDisplays(input({ boards: [wall, event], override: on })).map((b) => b.id)).toEqual(["event"]);
     expect(eventDisplays(input({ boards: [wall, yesterdaysEvent], override: on })).map((b) => b.id)).toEqual(["wall"]);
     expect(eventDisplays(input({ boards: [wall, yesterdaysEvent] }))).toEqual([]);
+  });
+
+  it("falls back to the shop wall when today's event boards are all closed, not only when there are none", () => {
+    const wall = board({ id: "wall", mode: "rotation", host: null });
+    const closed = board({ id: "closed", closedAt: NOW - 60 * MIN, lastSeenAt: NOW - 60 * MIN });
+    const on = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
+    expect(eventDisplays(input({ boards: [wall, closed], override: on })).map((b) => b.id)).toEqual(["wall"]);
+    const lockedPhone = board({ id: "phone", lastSeenAt: NOW - 90 * MIN });
+    expect(eventDisplays(input({ boards: [wall, closed, lockedPhone], override: on })).map((b) => b.id)).toEqual([
+      "closed",
+      "phone",
+    ]);
+  });
+
+  it("does not take a shop wall already dark when event mode began as the event's display", () => {
+    const on = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
+    const began = NOW - 30 * MIN;
+    const darkBefore = board({ id: "wall", mode: "rotation", host: null, lastSeenAt: began - BOARD_DARK_AFTER_MS - 1 });
+    const liveWhenBegan = board({ id: "wall", mode: "rotation", host: null, lastSeenAt: began - BOARD_DARK_AFTER_MS });
+    expect(eventDisplays(input({ boards: [darkBefore], override: on, eventModeSince: began }))).toEqual([]);
+    expect(eventDisplays(input({ boards: [liveWhenBegan], override: on, eventModeSince: began }))).toHaveLength(1);
   });
 
   it("names a board by its host, as the host's own name", () => {

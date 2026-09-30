@@ -62,6 +62,11 @@ export type EventModeInput = {
   venueDayStart: number;
   override: EventModeOverride | null;
   boards: readonly BoardSnapshot[];
+  /**
+   * When the channel was told event mode came on, or null while it was last
+   * told off - so the evaluation that turns it on finds it began just now.
+   */
+  eventModeSince: number | null;
 };
 
 export type EventMode =
@@ -84,6 +89,11 @@ export function eventMode(input: EventModeInput): EventMode {
     .filter((b) => b.mode === "event" && holdsEventMode(b, input.now))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
   return board ? { on: true, cause: "board", board } : { on: false, cause: "none" };
+}
+
+/** When the event mode now on began, or null while it is off. */
+export function eventModeBegan(input: EventModeInput): number | null {
+  return eventMode(input).on ? (input.eventModeSince ?? input.now) : null;
 }
 
 /**
@@ -111,15 +121,19 @@ export function boardsToday(input: Pick<EventModeInput, "venueDayStart" | "board
 }
 
 /**
- * The display the room is watching: today's event boards, or, while event
- * mode is on with none (an event staff started at the shop), the shop wall's.
- * On an ordinary day the wall is nobody's event display.
+ * The display the room is watching: today's event boards, or, while staff
+ * have forced event mode on with none of them still open (an event run on
+ * the shop wall), the shop wall's - one heard since event mode began, or
+ * still live when it began, so a wall already dark by then is not the event's
+ * display. On an ordinary day the wall is nobody's event display.
  */
 export function eventDisplays(input: EventModeInput): BoardSnapshot[] {
   const today = boardsToday(input);
   const event = today.filter((b) => b.mode === "event");
-  if (event.length > 0 || !eventMode(input).on) return event;
-  return today.filter((b) => b.mode === "rotation");
+  const mode = eventMode(input);
+  if (mode.cause !== "override" || !mode.on || event.some((b) => b.closedAt === null)) return event;
+  const began = eventModeBegan(input)!;
+  return today.filter((b) => b.mode === "rotation" && b.lastSeenAt >= began - BOARD_DARK_AFTER_MS);
 }
 
 /** "Event board (Cadillac)", "Shop wall board". */
