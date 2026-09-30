@@ -103,10 +103,10 @@ export async function runMonitor(): Promise<MonitorRun> {
 
 /**
  * Urgent alerts' diagnoses and handoffs, the retry of any that Discord
- * refused, and the rig-alert issues filed from those handoffs. Runs after an evaluation, so every alert and recovery has had its
- * turn first and a slow or failing model delays nothing; the claims keep two
- * concurrent runs from diagnosing or posting the same alert. Returns how many
- * diagnoses were made.
+ * refused, and the rig-alert issues filed from those handoffs. Runs after an
+ * evaluation, so every alert and recovery has had its turn first and a slow
+ * or failing model delays nothing; the claims keep two concurrent runs from
+ * diagnosing or posting the same alert. Returns how many diagnoses were made.
  */
 export async function runDiagnoses(): Promise<number> {
   if (!discordConfigured()) return 0;

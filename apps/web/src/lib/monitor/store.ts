@@ -506,8 +506,8 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
 
 /**
  * A rig's latest heartbeats, newest first, for the diagnosis to read - or,
- * given `until`, the latest received by then. The
- * ingestion route stores the fields the rules filter on in their own columns
+ * given `until`, the latest received by then. The ingestion route stores the
+ * fields the rules filter on in their own columns
  * and only the rest in `payload`, so the columns are put back under their
  * wire names here. A null column is a field the heartbeat did not carry,
  * except `assignment_id`: a current agent always says whether anyone is

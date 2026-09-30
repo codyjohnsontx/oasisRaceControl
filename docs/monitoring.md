@@ -166,9 +166,9 @@ handoff stays either way, as the fallback when the harness is offline.
   exactly as Discord got it, plus the heartbeat facts it was written from (the
   same allowlisted fields, as JSON, and only heartbeats received by the time
   the handoff was written, so a retry an hour later adds none from after) in
-  a `<details>` block. Both sit in code
-  blocks, so no rig string reaches the issue and nothing in it can @mention
-  anyone or link anywhere; the rule and rig names in the title are made inert.
+  a `<details>` block. Both sit in code blocks, so no rig string reaches the
+  issue and nothing in it can @mention anyone or link anywhere; the rule and
+  rig names in the title are made inert.
   The number is stored in `monitor_alerts.github_issue_number`.
 - **A re-fire** of the same rule on the same rig within 24 hours comments on
   that issue instead of opening another, and reopens it first if it was
