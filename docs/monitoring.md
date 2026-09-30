@@ -164,12 +164,16 @@ handoff stays either way, as the fallback when the harness is offline.
   issue is filed, even on a software rule.
 - **The issue:** titled `[rig-alert] <rule> - <rig>`, its body is the handoff
   exactly as Discord got it, plus the heartbeat facts it was written from (the
-  same allowlisted fields, as JSON) in a `<details>` block. Both sit in code
+  same allowlisted fields, as JSON, and only heartbeats received by the time
+  the handoff was written, so a retry an hour later adds none from after) in
+  a `<details>` block. Both sit in code
   blocks, so no rig string reaches the issue and nothing in it can @mention
   anyone or link anywhere; the rule and rig names in the title are made inert.
   The number is stored in `monitor_alerts.github_issue_number`.
 - **A re-fire** of the same rule on the same rig within 24 hours comments on
-  that issue instead of opening another.
+  that issue instead of opening another, and reopens it first if it was
+  closed - a fix that did not hold goes back to the harness on the same
+  thread.
 - **A recovery** comments on the issue and leaves it open: closing it would
   cancel a fix in progress. Close it yourself when the fix has merged.
 - A call GitHub refuses is retried like a Discord post.

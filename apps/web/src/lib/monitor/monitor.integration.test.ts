@@ -616,22 +616,37 @@ describeDb("rig monitor against real Postgres", () => {
 
     describe("the rig-alert GitHub issue", () => {
       const GITHUB = "https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues";
-      let calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+      /** Every write to GitHub, in order; the reads of an issue's state are in `reads`. */
+      let calls: Array<{ method: string; url: string; body: Record<string, unknown> }> = [];
+      let reads: string[] = [];
       let githubAnswers: number[] = [];
+      /** The state GitHub answers for issue 42 - the recorded object, open unless a test closes it. */
+      let issueState = "open";
 
       beforeEach(() => {
         calls = [];
+        reads = [];
         githubAnswers = [];
+        issueState = "open";
         vi.stubEnv("GITHUB_RIG_ALERT_TOKEN", "github_pat_test");
         const others = globalThis.fetch;
         vi.stubGlobal(
           "fetch",
           vi.fn(async (url: string, init: RequestInit) => {
             if (!url.startsWith(GITHUB)) return others(url, init);
-            const status = githubAnswers.shift() ?? 201;
-            if (status !== 201) return Response.json({ message: "Server Error" }, { status });
-            calls.push({ url, body: JSON.parse(init.body as string) as Record<string, unknown> });
-            return Response.json(url.endsWith("/comments") ? commentCreated : issueCreated, { status });
+            const method = init.method ?? "GET";
+            const status = githubAnswers.shift() ?? (method === "POST" ? 201 : 200);
+            if (status >= 300) return Response.json({ message: "Server Error" }, { status });
+            if (method === "GET") {
+              reads.push(url);
+              return Response.json({ ...issueCreated, state: issueState }, { status });
+            }
+            const body = JSON.parse(init.body as string) as Record<string, unknown>;
+            calls.push({ method, url, body });
+            if (method === "PATCH" && typeof body.state === "string") issueState = body.state;
+            return Response.json(url.endsWith("/comments") ? commentCreated : { ...issueCreated, state: issueState }, {
+              status,
+            });
           }),
         );
       });
@@ -691,8 +706,49 @@ describeDb("rig monitor against real Postgres", () => {
         expect(calls[2]!.body.body).toMatch(/^Fired again as alert \d+\.\n\n```text\nOasis rig alert #/);
         expect(await issueNumbers()).toEqual([42, 42]);
 
-        // Every call filed or commented; none closed anything.
-        expect(calls.every((c) => !("state" in c.body))).toBe(true);
+        // The open issue was read, not reopened; every call filed or commented, none closed anything.
+        expect(reads).toEqual([`${GITHUB}/42`]);
+        expect(calls.every((c) => c.method === "POST" && !("state" in c.body))).toBe(true);
+      });
+
+      it("reopens the issue a re-fire comments on when it was closed", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+
+        await nextEvaluation();
+        await recover(rig);
+        expect(calls).toHaveLength(2);
+
+        issueState = "closed";
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(calls.slice(2)).toMatchObject([
+          { method: "PATCH", url: `${GITHUB}/42`, body: { state: "open" } },
+          { method: "POST", url: `${GITHUB}/42/comments`, body: { body: expect.stringMatching(/^Fired again as alert \d+\./) } },
+        ]);
+        expect(issueState).toBe("open");
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("files a refused issue's retry with only the heartbeats its handoff was written from", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = [500];
+
+        await nextEvaluation();
+        const { rows } = await testDb().query<{ at: string }>("select diagnosis->>'at' as at from monitor_alerts");
+        const handoffAt = Date.parse(rows[0]!.at);
+        await heartbeat(rig, 0, { agentVersion: "9.9.9" });
+        await testDb().query(
+          "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now() - interval '90 seconds')",
+        );
+        await nextEvaluation();
+
+        const body = calls[0]!.body.body as string;
+        const heartbeats = JSON.parse(body.match(/```json\n([\s\S]*?)\n```/)![1]!) as Array<{ receivedAt: number }>;
+        expect(heartbeats.length).toBeGreaterThan(0);
+        expect(heartbeats.every((h) => h.receivedAt <= handoffAt)).toBe(true);
+        expect(body).not.toContain("9.9.9");
       });
 
       it("retries an issue GitHub refused on a later evaluation, once", async () => {

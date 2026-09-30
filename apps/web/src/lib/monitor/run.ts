@@ -4,7 +4,7 @@ import { diagnose, diagnosisConfig, diagnosisSchema, type DiagnosisConfig } from
 import { incidentContext } from "./diagnosis/context";
 import type { ProviderName } from "./diagnosis/provider";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
-import { commentOnIssue, githubConfigured, openIssue, type GitHubResult } from "./github";
+import { commentOnIssue, githubConfigured, openIssue, reopenIssue, type GitHubResult } from "./github";
 import {
   diagnosisMessage,
   handoffMessage,
@@ -209,13 +209,17 @@ async function postDiagnosis(alert: AlertForMessage, state: DiagnosisState, hand
 
 /**
  * Opens the alert's rig-alert issue, or - when another alert on the same
- * rule and rig within a day has one - comments on that one instead, so a
- * flapping rig makes one issue. A failure is retried by a later evaluation.
+ * rule and rig within a day has one - comments on that one instead, reopening
+ * it if it was closed, so a flapping rig makes one issue. The heartbeats are
+ * the ones the handoff was written from, not any received since. A failure
+ * is retried by a later evaluation.
  */
 async function fileIssue(alert: AlertToFile): Promise<void> {
-  const context = await contextOf(alert);
+  const context = await contextOf(alert, alert.handoffAt);
   const refireOf = await refireTarget(alert.id);
   if (refireOf !== null) {
+    const reopened = await reopenIssue(refireOf);
+    if (reopened.status !== "sent") return logFailedIssue(alert.id, reopened);
     const sent = await commentOnIssue(refireOf, refireComment(context, alert.handoff));
     if (sent.status !== "sent") return logFailedIssue(alert.id, sent);
     return recordIssue(alert.id, refireOf);
@@ -238,10 +242,10 @@ function logFailedIssue(id: string, result: GitHubResult): void {
 }
 
 /** The redacted incident a diagnosis, handoff and issue are written from. */
-async function contextOf(alert: AlertForMessage & { subject: string }) {
+async function contextOf(alert: AlertForMessage & { subject: string }, until?: string) {
   return incidentContext(
     alert,
-    await recentHeartbeats(alert.subject),
+    await recentHeartbeats(alert.subject, until),
     process.env.VERCEL_GIT_COMMIT_SHA?.trim() || null,
   );
 }

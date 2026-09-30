@@ -40,7 +40,7 @@ export async function openIssue(
   issue: { title: string; body: string },
   options: Options = {},
 ): Promise<GitHubResult<{ number: number; labelled: boolean }>> {
-  const result = await call("/issues", { ...issue, labels: [RIG_ALERT_LABEL] }, options);
+  const result = await call("POST", "/issues", { ...issue, labels: [RIG_ALERT_LABEL] }, options);
   if (result.status !== "sent") return result;
   const answer = result.body as { number?: unknown; labels?: Array<{ name?: unknown }> };
   if (typeof answer.number !== "number") return { status: "failed", reason: "no issue number in the answer" };
@@ -52,23 +52,40 @@ export async function openIssue(
 }
 
 export async function commentOnIssue(number: number, body: string, options: Options = {}): Promise<GitHubResult> {
-  const result = await call(`/issues/${number}/comments`, { body }, options);
+  const result = await call("POST", `/issues/${number}/comments`, { body }, options);
   return result.status === "sent" ? { status: "sent" } : result;
 }
 
 /**
- * One POST. Resolves - never throws - with GitHub's JSON on a 2xx, and
+ * Reopens the numbered issue if it has been closed, so a re-fire after a fix
+ * that did not hold is picked up again; an open issue is left alone.
+ */
+export async function reopenIssue(number: number, options: Options = {}): Promise<GitHubResult> {
+  const found = await call("GET", `/issues/${number}`, undefined, options);
+  if (found.status !== "sent") return found;
+  if ((found.body as { state?: unknown }).state !== "closed") return { status: "sent" };
+  const reopened = await call("PATCH", `/issues/${number}`, { state: "open" }, options);
+  return reopened.status === "sent" ? { status: "sent" } : reopened;
+}
+
+/**
+ * One request. Resolves - never throws - with GitHub's JSON on a 2xx, and
  * otherwise a reason safe to log: GitHub's error body names what was wrong
  * and never echoes the token.
  */
-async function call(path: string, payload: unknown, options: Options): Promise<GitHubResult<{ body: unknown }>> {
+async function call(
+  method: "GET" | "POST" | "PATCH",
+  path: string,
+  payload: unknown,
+  options: Options,
+): Promise<GitHubResult<{ body: unknown }>> {
   const token = (options.token ?? process.env.GITHUB_RIG_ALERT_TOKEN)?.trim();
   if (!token) return { status: "not_configured" };
 
   const doFetch = options.fetch ?? fetch;
   try {
     const response = await doFetch(`${API}${path}`, {
-      method: "POST",
+      method,
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${token}`,
@@ -77,7 +94,7 @@ async function call(path: string, payload: unknown, options: Options): Promise<G
         "user-agent": "oasis-rig-monitor",
         "x-github-api-version": "2022-11-28",
       },
-      body: JSON.stringify(payload),
+      body: payload === undefined ? undefined : JSON.stringify(payload),
       signal: AbortSignal.timeout(options.timeoutMs ?? CALL_TIMEOUT_MS),
     });
     if (response.ok) return { status: "sent", body: await response.json() };

@@ -96,7 +96,8 @@ const ISSUE_TITLE_MAX = 256;
 
 /**
  * The rig-alert issue (plan section 11), for the coding harness: the handoff
- * exactly as Discord got it, and the heartbeat facts it was written from.
+ * exactly as Discord got it, and the heartbeat facts it was written from -
+ * the caller passes a context of heartbeats received no later than that.
  * GitHub renders markdown and notifies @mentions, so nothing outside a code
  * block is anything but the monitor's own fixed words and numbers - except
  * the title's rule and rig names, which go through `githubInert` - and the

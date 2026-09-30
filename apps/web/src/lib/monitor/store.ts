@@ -505,14 +505,15 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
 }
 
 /**
- * A rig's latest heartbeats, newest first, for the diagnosis to read. The
+ * A rig's latest heartbeats, newest first, for the diagnosis to read - or,
+ * given `until`, the latest received by then. The
  * ingestion route stores the fields the rules filter on in their own columns
  * and only the rest in `payload`, so the columns are put back under their
  * wire names here. A null column is a field the heartbeat did not carry,
  * except `assignment_id`: a current agent always says whether anyone is
  * seated (`assignmentKnown`), so there null means nobody.
  */
-export async function recentHeartbeats(subject: string): Promise<DiagnosisHeartbeat[]> {
+export async function recentHeartbeats(subject: string, until?: string): Promise<DiagnosisHeartbeat[]> {
   const rigId = subject.match(/^rig:([0-9a-f-]{36})$/i)?.[1];
   if (!rigId) return [];
   const rows = await query<{ received_ms: number; clock_skew_ms: number | null; payload: Record<string, unknown> }>(
@@ -534,8 +535,10 @@ export async function recentHeartbeats(subject: string): Promise<DiagnosisHeartb
             || case when assignment_id is not null or (payload->>'assignmentKnown')::boolean
                     then jsonb_build_object('assignmentId', assignment_id) else '{}'::jsonb end
               as payload
-     from rig_heartbeats where rig_id = $1 order by received_at desc, id desc limit 15`,
-    [rigId],
+     from rig_heartbeats
+     where rig_id = $1 and ($2::timestamptz is null or received_at <= $2::timestamptz)
+     order by received_at desc, id desc limit 15`,
+    [rigId, until ?? null],
   );
   return rows.map((r) => ({ receivedAt: r.received_ms, clockSkewMs: r.clock_skew_ms, payload: r.payload }));
 }
@@ -586,7 +589,8 @@ export async function claimDiagnosisPostRetries(): Promise<DiagnosisToPost[]> {
 /** A re-fire of the same rule and subject this soon comments on the earlier alert's issue. */
 const REFIRE_WINDOW = "24 hours";
 
-export type AlertToFile = AlertForMessage & { subject: string; handoff: string };
+/** `handoffAt` is when the handoff was written: the done state's `at`. */
+export type AlertToFile = AlertForMessage & { subject: string; handoff: string; handoffAt: string };
 
 /**
  * Claims the urgent alerts whose handoff should become a rig-alert issue: a
@@ -596,7 +600,7 @@ export type AlertToFile = AlertForMessage & { subject: string; handoff: string }
  * RETRY_FOR.
  */
 export async function claimIssues(softwareRules: readonly string[]): Promise<AlertToFile[]> {
-  const rows = await query<AlertRow & { subject: string; handoff: string }>(
+  const rows = await query<AlertRow & { subject: string; handoff: string; handoff_at: string }>(
     `update monitor_alerts
      set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now())
      where id in (
@@ -608,11 +612,11 @@ export async function claimIssues(softwareRules: readonly string[]): Promise<Ale
          and opened_at > now() - $3::interval
        order by id
        for update skip locked)
-     returning ${ALERT_COLUMNS}, subject, handoff`,
+     returning ${ALERT_COLUMNS}, subject, handoff, diagnosis->>'at' as handoff_at`,
     [softwareRules, RETRY_AFTER, RETRY_FOR],
   );
   return rows
-    .map((row) => ({ ...toAlert(row), subject: row.subject, handoff: row.handoff }))
+    .map((row) => ({ ...toAlert(row), subject: row.subject, handoff: row.handoff, handoffAt: row.handoff_at }))
     .sort((a, b) => Number(a.id) - Number(b.id));
 }
 

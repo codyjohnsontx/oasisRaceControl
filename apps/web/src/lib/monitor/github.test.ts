@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import badCredentials from "./fixtures/github-bad-credentials.json";
 import commentCreated from "./fixtures/github-comment-created.json";
 import issueCreated from "./fixtures/github-issue-created.json";
-import { commentOnIssue, openIssue } from "./github";
+import { commentOnIssue, openIssue, reopenIssue } from "./github";
 
 /**
  * The issue client against GitHub's own answers, served by a fake fetch - no
@@ -15,7 +15,8 @@ import { commentOnIssue, openIssue } from "./github";
  * that matter, because recording a create means filing one on the real
  * repository; a create answers with the same object. Edited to fit a
  * rig-alert: the title, the comment's body and html_url, and the label, whose
- * shape is the documented label object.
+ * shape is the documented label object. A closed issue is that object with
+ * `state: "closed"`, as GET answers for one.
  */
 
 const TOKEN = "github_pat_never_logged";
@@ -85,5 +86,37 @@ describe("commentOnIssue", () => {
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues/42/comments");
     expect(JSON.parse(init.body as string)).toEqual({ body: "recovered" });
+  });
+});
+
+describe("reopenIssue", () => {
+  const closed = { ...issueCreated, state: "closed", state_reason: "completed" };
+
+  it("reopens a closed issue", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(closed, { status: 200 }))
+      .mockResolvedValueOnce(Response.json(issueCreated, { status: 200 }));
+    await expect(reopenIssue(42, { token: TOKEN, fetch })).resolves.toEqual({ status: "sent" });
+
+    const [[getUrl, get], [patchUrl, patch]] = fetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(getUrl).toBe("https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues/42");
+    expect(get.method).toBe("GET");
+    expect(get.body).toBeUndefined();
+    expect(patchUrl).toBe("https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues/42");
+    expect(patch.method).toBe("PATCH");
+    expect(JSON.parse(patch.body as string)).toEqual({ state: "open" });
+  });
+
+  it("leaves an open issue alone", async () => {
+    const fetch = answering(200, issueCreated);
+    await expect(reopenIssue(42, { token: TOKEN, fetch })).resolves.toEqual({ status: "sent" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a refused read as failed and changes nothing", async () => {
+    const fetch = answering(401, badCredentials);
+    await expect(reopenIssue(42, { token: TOKEN, fetch })).resolves.toMatchObject({ status: "failed" });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
