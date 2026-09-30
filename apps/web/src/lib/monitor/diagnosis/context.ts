@@ -199,9 +199,9 @@ function publicHeadline(
   // diagnosed (it is a warning), but it is not made public either.
   if (where === "Venue") return `${title} (${where})`;
   const name = oneLine(displayName);
-  const rig: StandIn[] = name && name !== where ? [[name, where]] : [];
-  const replaced = serverText([...seated, ...rig])(headline);
-  return name && replaced.includes(name) ? `${title} (${where})` : replaced;
+  const standIns: StandIn[] = name ? [...seated, [name, where]] : [...seated];
+  const survivor = name && serverText(standIns.map(([n]) => [n, " "]))(headline).includes(name);
+  return survivor ? `${title} (${where})` : serverText(standIns)(headline);
 }
 
 function facts(row: HeartbeatRow): HeartbeatFacts {

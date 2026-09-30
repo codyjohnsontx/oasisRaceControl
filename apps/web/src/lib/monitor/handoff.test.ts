@@ -211,6 +211,18 @@ describe("the rig-alert issue", () => {
       null,
     );
     expect(substring.headline).toBe("Laps queued but not reaching the site (Rig 2)");
+    const sameName = incidentContext(
+      { ...ALERT, detail: { ...ALERT.detail, headline: "Rig 10: 4 laps waiting", where: "Rig 10", rigNumber: 10 } },
+      [],
+      null,
+    );
+    expect(sameName.headline).toBe("Rig 10: 4 laps waiting");
+    const withinPublic = incidentContext(
+      { ...ALERT, detail: { ...ALERT.detail, headline: "Rig 1: 4 laps waiting", where: "Rig 1", rigNumber: 12 } },
+      [],
+      null,
+    );
+    expect(withinPublic.headline).toBe("Rig 12: 4 laps waiting");
     const unnumbered = incidentContext(
       { ...ALERT, detail: { headline: "Jane Doe: 4 laps waiting", where: "Jane Doe", fields: [] } },
       [],
