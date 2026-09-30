@@ -3,6 +3,7 @@ import {
   boardName,
   boardState,
   boardsToday,
+  eventDisplays,
   eventMode,
   type BoardSnapshot,
   type EventMode,
@@ -604,15 +605,16 @@ export function boardSubject(mode: BoardSnapshot["mode"]): string {
 /**
  * Rules 8a and 8b, about the screen the room watches rather than a rig.
  *
- * 8a: of today's event boards - each opened from the staff link, so each one
- * is an event someone set up - the one heard from most recently went dark:
- * not heard from for BOARD_DARK_AFTER_MS, without a goodbye. The most recent,
- * so a browser killed and restored as a new page, or a tab closed after a
- * phone was left locked on the board, is judged by the board the room is
- * watching. It does not wait on event mode, which a dark board no longer
- * holds, and it is urgent: the board it reports was holding the event. Staff
- * forcing event mode off silences it. The shop wall switched off at closing
- * is not news, and is never judged.
+ * 8a: of the event's displays (eventDisplays: today's event boards, each
+ * opened from a staff link, or the shop wall while event mode is on without
+ * one), the one heard from most recently went dark: not heard from for
+ * BOARD_DARK_AFTER_MS, without a goodbye. The most recent, so a browser
+ * killed and restored as a new page, or a tab closed after a phone was left
+ * locked on the board, is judged by the board the room is watching. An event
+ * board is judged whether or not event mode is on, since a dark board no
+ * longer holds it, and it is urgent: the board it reports was holding the
+ * event. Staff forcing event mode off silences it. The shop wall switched off
+ * at closing on an ordinary day is not news, and is not judged.
  *
  * 8b, in any mode: a live board says its last FEED_FAILURES_TO_ALERT loads
  * failed. It reached the site to say so, so the site is up and the feed is
@@ -624,9 +626,7 @@ function boardFindings(snapshot: MonitorSnapshot, mode: EventMode): Finding[] {
 
   const forcedOff = mode.cause === "override" && !mode.on;
   if (!forcedOff) {
-    const board = boardsToday(snapshot)
-      .filter((b) => b.mode === "event")
-      .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+    const board = eventDisplays(snapshot).sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
     if (board && boardState(board, now) === "dark") {
       findings.push({
         rule: "board_dark",

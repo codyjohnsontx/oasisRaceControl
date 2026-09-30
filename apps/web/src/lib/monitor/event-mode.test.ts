@@ -109,12 +109,15 @@ describe("boards", () => {
     expect(boardState(board({ closedAt: NOW - 10 * MIN, lastSeenAt: NOW - 10 * MIN }), NOW)).toBe("closed");
   });
 
-  it("takes today's event boards as the event's display, or the shop wall on a day with none", () => {
+  it("takes today's event boards as the event's display, or the shop wall while event mode is on without one", () => {
     const wall = board({ id: "wall", mode: "rotation", host: null });
     const event = board({ id: "event" });
     const yesterdaysEvent = board({ id: "old", lastSeenAt: DAY_START - MIN });
+    const on = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
     expect(eventDisplays(input({ boards: [wall, event] })).map((b) => b.id)).toEqual(["event"]);
-    expect(eventDisplays(input({ boards: [wall, yesterdaysEvent] })).map((b) => b.id)).toEqual(["wall"]);
+    expect(eventDisplays(input({ boards: [wall, event], override: on })).map((b) => b.id)).toEqual(["event"]);
+    expect(eventDisplays(input({ boards: [wall, yesterdaysEvent], override: on })).map((b) => b.id)).toEqual(["wall"]);
+    expect(eventDisplays(input({ boards: [wall, yesterdaysEvent] }))).toEqual([]);
   });
 
   it("names a board by its host, as the host's own name", () => {

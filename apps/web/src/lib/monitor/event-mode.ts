@@ -111,13 +111,15 @@ export function boardsToday(input: Pick<EventModeInput, "venueDayStart" | "board
 }
 
 /**
- * The display the room is watching: today's event boards, or, on a day with
- * none (an event staff started at the shop), the shop wall's.
+ * The display the room is watching: today's event boards, or, while event
+ * mode is on with none (an event staff started at the shop), the shop wall's.
+ * On an ordinary day the wall is nobody's event display.
  */
-export function eventDisplays(input: Pick<EventModeInput, "venueDayStart" | "boards">): BoardSnapshot[] {
+export function eventDisplays(input: EventModeInput): BoardSnapshot[] {
   const today = boardsToday(input);
   const event = today.filter((b) => b.mode === "event");
-  return event.length > 0 ? event : today.filter((b) => b.mode === "rotation");
+  if (event.length > 0 || !eventMode(input).on) return event;
+  return today.filter((b) => b.mode === "rotation");
 }
 
 /** "Event board (Cadillac)", "Shop wall board". */

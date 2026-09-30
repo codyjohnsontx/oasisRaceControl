@@ -969,11 +969,20 @@ describe("rule 8a: TV board went dark", () => {
     ]);
   });
 
-  it("never watches the shop wall, even with event mode forced on", () => {
-    const wall = board({ mode: "rotation", host: null, lastSeenAt: NOW - 30 * MIN });
+  it("watches the staff-linked shop wall only while event mode is forced on with no event board today", () => {
+    const wall = board({ id: "wall", mode: "rotation", host: null, lastSeenAt: NOW - 30 * MIN });
     const override = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
+    // An ordinary day: the wall switched off at closing is not news.
     expect(evaluate([rig(1)], [], { boards: [wall] })).toEqual([]);
-    expect(evaluate([rig(1)], [], { boards: [wall], override, featuredCombo: COMBO })).toEqual([]);
+    // An event at the shop, run on the wall: its mini-PC sleeping is.
+    const findings = evaluate([rig(1)], [], { boards: [wall], override });
+    expect(rulesOf(findings)).toEqual(["board_dark board:rotation urgent"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Shop wall board has not been heard from for 30 min - laptop asleep, browser closed, or offline?",
+    );
+    expect(evaluate([rig(1)], [], { boards: [board({ id: "wall", mode: "rotation", host: null })], override })).toEqual([]);
+    // With an event board open today, that board is the room's display.
+    expect(evaluate([rig(1)], [], { boards: [wall, board()], override })).toEqual([]);
   });
 
   it("clears when staff stop the event, or a board is heard again", () => {
