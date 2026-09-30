@@ -81,10 +81,11 @@ Details worth knowing:
 - **Event mode raises rules 5a and 7 to urgent.** Event mode itself arrives
   with plan PR 4; until then it is off everywhere (`inEventMode` in
   `rules.ts` is the one place that reads it), so both stay warnings.
-- **Rules 5a, 5b, 7 (its laps half), 13 and 14 need nothing new from the
-  rig**: they read laps, stints and today's combo, so they work for an agent
-  too old to send more than its version. Rule 7's session half and rule 6
-  need `rig-agent/0.4-monitor`.
+- **Rules 5a, 5b, 7 (its laps half) and 14 need nothing new from the rig**:
+  they read laps, stints and today's combo, so they work for an agent too old
+  to send more than its version. Rule 7's session half, rule 6 and rule 13
+  (which needs the rig it left to report the sim in a session) need
+  `rig-agent/0.4-monitor`.
 - **Rule 7 judges the combo exactly as ingestion does** (`comboMismatch` in
   `validity.ts`), so it never calls a session right whose laps will be
   refused. Its message names today's combo and which part is wrong, never the

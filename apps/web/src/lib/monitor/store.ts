@@ -444,12 +444,13 @@ function toHeartbeat(row: HeartbeatRow): Heartbeat {
  * this evaluation won the right to post: `announce` (opened, or got worse) and
  * `recover` (resolved, having been announced).
  *
- * - Open: INSERT ... ON CONFLICT against monitor_alerts_one_open. Only the
- *   evaluation whose row was inserted announces; a problem already open only
- *   has its last_seen_at, detail and absence count refreshed. An opening that
- *   starts a flapping mute announces the mute instead (FLAPPING_REFIRES); one
- *   inside a mute announces nothing, and is given no notify deadline, so no
- *   retry ever posts it either.
+ * - Open: a problem already open only has its last_seen_at, detail and
+ *   absence count refreshed, found through monitor_alerts_one_open. Otherwise
+ *   it is inserted, and only the evaluation whose row was inserted announces;
+ *   counting its earlier openings reads the rule's alert history, so only a
+ *   new opening pays for it. An opening that starts a flapping mute announces
+ *   the mute instead (FLAPPING_REFIRES); one inside a mute announces nothing,
+ *   and is given no notify deadline, so no retry ever posts it either.
  * - Worse: a finding whose level rose re-announces once per rise, claimed by
  *   the update that moved the level - unless the alert is muted.
  * - Recover: an open alert no finding named counts one absence; the evaluation
@@ -469,7 +470,19 @@ export async function applyFindings(
 
   for (const finding of findings) {
     seen.add(`${finding.rule}|${finding.subject}`);
-    const [row] = await rows<{ id: string; inserted: boolean; silent: boolean }>(
+    const [open] = await rows<{ id: string }>(
+      db,
+      `update monitor_alerts
+       set last_seen_at = now(), absent_evaluations = 0, detail = $3
+       where rule = $1 and subject = $2 and resolved_at is null
+       returning id::text`,
+      [finding.rule, finding.subject, finding.detail],
+    );
+    if (open) {
+      if (finding.level > 0 && (await levelRose(db, open.id, finding.level))) announce.push(open.id);
+      continue;
+    }
+    const [row] = await rows<{ id: string; silent: boolean }>(
       db,
       `with earlier as (
          select count(*)::int as openings,
@@ -483,9 +496,8 @@ export async function applyFindings(
               case when muting then null else now() end,
               case when muting then null else now() + $6::interval end
        from earlier
-       on conflict (rule, subject) where resolved_at is null
-       do update set last_seen_at = now(), absent_evaluations = 0, detail = excluded.detail
-       returning id::text, (xmax = 0) as inserted, notify_until is null as silent`,
+       on conflict (rule, subject) where resolved_at is null do nothing
+       returning id::text, notify_until is null as silent`,
       [
         finding.rule,
         finding.subject,
@@ -497,12 +509,7 @@ export async function applyFindings(
         FLAPPING_WINDOW,
       ],
     );
-    if (!row) continue;
-    if (row.inserted) {
-      if (!row.silent) announce.push(row.id);
-    } else if (finding.level > 0 && (await levelRose(db, row.id, finding.level))) {
-      announce.push(row.id);
-    }
+    if (row && !row.silent) announce.push(row.id);
   }
 
   const absent = openAlerts
