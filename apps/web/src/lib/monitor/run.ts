@@ -232,9 +232,9 @@ async function postDiagnosis(alert: AlertForMessage, state: DiagnosisState, hand
  * recorded, not repeated. A failure is retried by a later evaluation.
  */
 async function fileIssue(alert: AlertToFile): Promise<void> {
+  const context = await contextOf(alert, alert.handoffAt);
   await withTransaction(async (client) => {
     if (!(await lockFault(client, alert.rule, alert.subject))) return;
-    const context = await contextOf(alert, alert.handoffAt);
     // Everything the monitor wrote for this alert is newer than its opening.
     const since = alert.openedAt - MARKER_LOOKBACK_MS;
     const refireOf = await refireTarget(client, alert.id);

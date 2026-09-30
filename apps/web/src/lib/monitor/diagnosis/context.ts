@@ -159,7 +159,7 @@ export function incidentContext(
     severity: alert.severity,
     openedAt: alert.openedAt,
     where,
-    headline: publicHeadline(text(alert.detail.headline), alert.detail.where, where, rule.title),
+    headline: text(publicHeadline(oneLine(alert.detail.headline), alert.detail.where, where, rule.title)),
     fields: alert.detail.fields
       .filter((field) => NUMERIC_FIELDS.has(field.name))
       .map((field) => ({ name: field.name, value: text(field.value) })),

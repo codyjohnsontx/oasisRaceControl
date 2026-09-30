@@ -134,6 +134,16 @@ describe("redaction before the call (D9)", () => {
     expect(handoffText(context, { ok: false, error: "timed out" })).not.toMatch(/jo\s*smith/i);
   });
 
+  it("replaces a display name that holds the seated driver's name", () => {
+    const where = "Jo Smith - back office PC";
+    const context = incidentContext(
+      { ...ALERT, detail: { ...ALERT.detail, headline: `${where}: Jo Smith is seated`, where, driver: "Jo Smith" } },
+      [],
+      null,
+    );
+    expect(context.headline).toBe(`Rig 2: ${pseudonym("Jo Smith")} is seated`);
+  });
+
   it("keeps the handoff free of names and ids too", () => {
     const context = incidentContext(ALERT, HEARTBEATS, null);
     const text = handoffText(context, { ok: false, error: "timed out" });
