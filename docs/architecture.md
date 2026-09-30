@@ -152,7 +152,7 @@ flowchart TB
 | `apps/web` (Next.js) | **Vercel** | root dir `apps/web`; env `DATABASE_URL` (pooled) + `SESSION_SECRET` |
 | Postgres | **Neon** | serverless; pooled connection string |
 | `apps/rig-agent` | **each sim PC** | published single-file exe; auto-start via Task Scheduler |
-| TV board | **venue display** | any always-on browser pointed at `/tv` in kiosk mode; unattended - it cycles every track board and recovers from feed failures without a reload |
+| TV board | **venue display** | any always-on browser in kiosk mode on the **Shop wall board** link from `/staff` (the bare `/tv` shows the same board but does not report to the rig monitor); unattended - it cycles every track board and recovers from feed failures without a reload |
 
 `apps/web` also runs on a local Kubernetes cluster for development and for
 demonstrating its runtime behaviour - two replicas, probes, rolling updates,

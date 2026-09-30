@@ -159,7 +159,7 @@ oasisRaceControl/
 
 - **Web/API:** Vercel (preview deploys per PR, prod on main). **DB:** Neon, migrations via `npm run db:migrate` from `apps/web`, point-in-time restore enabled before pilot.
 - **Agent:** GitHub Release with a versioned zip + install script (creates auto-start scheduled task, writes rig token to DPAPI-protected config); update = script pulls latest release. Enrollment: staff runs installer, pastes a one-time enrollment code from the dashboard, backend issues the rig token.
-- **TV:** mini-PC, Chrome kiosk mode pointed at `/tv`, auto-login + auto-restart on boot.
+- **TV:** mini-PC, Chrome kiosk mode pointed at `/tv` through the Shop wall board staff link on `/staff` (so the rig monitor sees it), auto-login + auto-restart on boot.
 
 ## Technical risks to prove in the spike (gate for Phase 2)
 

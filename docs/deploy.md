@@ -5,7 +5,9 @@ database on Neon, and a rig agent on each simulator. See
 [architecture.md](./architecture.md) for how the pieces talk to each other.
 
 Only the web app is "deployed" in the cloud sense. The agent is installed on
-each sim PC, and the TV is just a browser pointed at `/tv`.
+each sim PC, and the TV is just a browser pointed at `/tv` - opened from the
+**Shop wall board** link under **TV boards** on `/staff`, so the rig monitor
+can see it ([monitoring.md](./monitoring.md#event-mode-and-the-20-minute-update)).
 
 There is also a local Kubernetes environment - `kind`, container images, and
 Kustomize manifests - for development and for demonstrating the web tier's
@@ -170,7 +172,10 @@ holds it, so set the combo first; the script refuses without one.
   of them before the site is public; see the seed for the exact values to rotate.
 - **Clear demo data** if prod shares the seeded database — otherwise the demo
   drivers show up on the live leaderboard.
-- **Point the TV** at `https://<your-vercel-domain>/tv` in a kiosk browser.
+- **Point the TV** at the **Shop wall board** link under **TV boards** on
+  `https://<your-vercel-domain>/staff`, in a kiosk browser, and bookmark that
+  link for the kiosk to reopen (it opens the wall for a year). The bare `/tv`
+  shows the same board but never reports to the rig monitor.
 
 ---
 
@@ -406,8 +411,9 @@ merge deploys, nothing reads the new tables.
 
 ### Applying 0007_board_heartbeats.sql
 
-`0007_board_heartbeats.sql` stores each open `/tv` page's heartbeat and the
-event mode the monitor last announced ([monitoring.md](./monitoring.md#event-mode-and-the-20-minute-update)).
+`0007_board_heartbeats.sql` stores the heartbeat of each `/tv` page opened
+from a staff link, and the event mode the monitor last announced
+([monitoring.md](./monitoring.md#event-mode-and-the-20-minute-update)).
 It is additive - one new table, one index, two new `monitor_state` columns
 with defaults - so apply it to Neon **before merging** the change that adds
 it, exactly as 0006 went. It needs 0006 applied first.
@@ -449,8 +455,10 @@ it, exactly as 0006 went. It needs 0006 applied first.
    hold what the file says: stop and compare `actual` with `expected`.
    `db/verify/0006_monitor.sql` still passes after 0007: it fingerprints only
    the `monitor_state` columns 0006 created.
-5. After the merge deploys, open `/tv` on the hosted address. This shows its
-   heartbeat arrived (read-only, one statement):
+5. After the merge deploys, sign in to `/staff` on the hosted address and open
+   the **Shop wall board** link under **TV boards** (the bare `/tv` sends no
+   heartbeat, so it would show nothing here). This shows its heartbeat arrived
+   (read-only, one statement):
 
    ```sql
    select mode, host, now() - last_seen_at as ago, feed_ok, closed_at
@@ -620,5 +628,5 @@ nothing left to retire.
 | Database | Neon | pooled connection string; migrate before first deploy |
 | Migration gate | `npm run build` | fails a **production** build when the database is behind `db/migrations` (a preview only warns); `npm run db:check` runs it alone and names the database it read |
 | Rig agent | each sim PC | `backendBaseUrl` = Vercel domain; per-rig `rigToken` |
-| TV board | venue display | browser at `/tv`, kiosk mode |
+| TV board | venue display | browser in kiosk mode at the **Shop wall board** link from `/staff` (TV boards) |
 | Local Kubernetes | your laptop | `./deploy/local/oasis-kind.sh up` - development and demonstration only, deploys nothing ([platform/local-kubernetes.md](./platform/local-kubernetes.md)) |
