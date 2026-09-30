@@ -249,6 +249,11 @@ export function rigSubject(rigId: string): string {
   return `rig:${rigId}`;
 }
 
+/** Rule 11's subject: the rig, and the build it should be running. */
+export function outdatedAgentSubject(rigId: string): string {
+  return `${rigSubject(rigId)}|${CURRENT_AGENT_VERSION}`;
+}
+
 type Rig = { rig: RigSnapshot; state: Heartbeat | null };
 
 export function evaluateRules(snapshot: MonitorSnapshot): Finding[] {
@@ -260,7 +265,7 @@ export function evaluateRules(snapshot: MonitorSnapshot): Finding[] {
   return [
     ...silence(snapshot.now, rigs, isOpen),
     ...rigs.flatMap(({ rig, state }) =>
-      state ? rigFindings(snapshot.now, rig, state, isOpen) : [],
+      state ? rigFindings(snapshot.now, rig, state, isOpen, snapshot.openAlerts) : [],
     ),
     ...rigs.flatMap((r) => seatAndLapFindings(snapshot, r, eventMode, isOpen)),
     ...driverMoves(snapshot, rigs, isOpen),
@@ -387,11 +392,21 @@ function rigSilent(now: number, { rig, state }: Rig, severity: Severity): Findin
   ]);
 }
 
+/**
+ * A rig switched on and reporting now: its standing state is not a goodbye,
+ * and it has been heard inside SILENT_AFTER_MS. Rules that must not open on a
+ * rig that went dark with the venue open only while this holds.
+ */
+function isLive(now: number, rig: RigSnapshot, state: Heartbeat | null): state is Heartbeat {
+  return state !== null && !state.shuttingDown && rig.lastSeenAt !== null && now - rig.lastSeenAt <= SILENT_AFTER_MS;
+}
+
 function rigFindings(
   now: number,
   rig: RigSnapshot,
   state: Heartbeat,
   isOpen: (rule: RuleKey, subject: string) => boolean,
+  openAlerts: MonitorSnapshot["openAlerts"],
 ): Finding[] {
   const findings: Finding[] = [];
   const subject = rigSubject(rig.id);
@@ -456,25 +471,33 @@ function rigFindings(
     );
   }
 
-  // Rule 11: the agent build, which a goodbye reports as truly as any other
-  // heartbeat. A rig not heard from since before the lookback is off, not
-  // outdated, until it is switched on again.
+  // Rule 11: the agent build, once per rig per version - the subject names
+  // CURRENT_AGENT_VERSION, so a new release opens a fresh alert naming it.
+  // It opens only on a rig that is live: one that went dark with the venue
+  // stays quiet until it is switched on again. While the rig still runs an
+  // outdated build, every alert open on it holds - one naming an earlier
+  // release too, so a release made after closing posts nothing, and nothing
+  // reads as recovered until the rig reports the current build.
   const version = state.agentVersion;
-  if (
-    version !== null &&
-    version !== CURRENT_AGENT_VERSION &&
-    rig.lastSeenAt !== null &&
-    (now - rig.lastSeenAt <= SILENT_LOOKBACK_MS || isOpen("agent_outdated", subject))
-  ) {
-    findings.push(
-      finding(
-        "agent_outdated",
-        rig,
-        "warning",
-        `${rig.name} runs an outdated rig agent - install ${CURRENT_AGENT_VERSION} on it`,
-        [...fields, { name: "Current build", value: CURRENT_AGENT_VERSION }],
-      ),
+  if (version !== null && version !== CURRENT_AGENT_VERSION) {
+    const subjects = new Set(
+      openAlerts
+        .filter((alert) => alert.rule === "agent_outdated" && alert.subject.startsWith(`${subject}|`))
+        .map((alert) => alert.subject),
     );
+    if (isLive(now, rig, state)) subjects.add(outdatedAgentSubject(rig.id));
+    for (const outdated of subjects) {
+      findings.push({
+        ...finding(
+          "agent_outdated",
+          rig,
+          "warning",
+          `${rig.name} runs an outdated rig agent - install ${CURRENT_AGENT_VERSION} on it`,
+          [...fields, { name: "Current build", value: CURRENT_AGENT_VERSION }],
+        ),
+        subject: outdated,
+      });
+    }
   }
 
   // Rules 12, 17 and 18 describe the rig, not the process, so a restart does
@@ -621,9 +644,12 @@ const SIGN_IN_FAILURE_WORDS: Record<string, string> = {
 /**
  * Rule 6: walk-up sign-ins the rig reported refused, SIGN_IN_FAILURES_TO_ALERT
  * of them inside SIGN_IN_FAILURE_WINDOW_MS; an open alert holds while any
- * arrived inside SIGN_IN_FAILURE_CLEAR_MS. Each heartbeat reports the
- * refusals since the last one the site acknowledged, so a heartbeat stored
- * twice (its answer lost, then retried) is counted once.
+ * arrived inside SIGN_IN_FAILURE_CLEAR_MS. A heartbeat reports every refusal
+ * the site has not acknowledged, so after an answer is lost the next one
+ * reports the same refusals again under a new heartbeat sequence. A report
+ * that carries `signInFailureSeqs` is counted by those: each refusal once per
+ * agent process, when it first arrived. One without them (an older agent, or
+ * no process start to key on) counts its `signInFailures` as it stands.
  */
 function signInFailures(
   now: number,
@@ -631,19 +657,23 @@ function signInFailures(
   open: boolean,
 ): { count: number; window: number; kinds: string[] } | null {
   const seen = new Set<string>();
-  const reports = heartbeats.filter((h) => {
-    if (!h.signInFailures) return false;
-    if (h.processStartedAt === null || h.sequence === null) return true;
-    const key = `${h.processStartedAt}|${h.sequence}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  const reports = heartbeats.flatMap((h) => {
+    if (h.signInFailureSeqs === null || h.processStartedAt === null) {
+      return h.signInFailures ? [{ h, count: h.signInFailures }] : [];
+    }
+    const fresh = h.signInFailureSeqs.filter((seq) => {
+      const key = `${h.processStartedAt}|${seq}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return fresh.length > 0 ? [{ h, count: fresh.length }] : [];
   });
   const within = (window: number) => {
-    const inside = reports.filter((h) => now - h.receivedAt <= window);
-    const kinds = new Set(inside.flatMap((h) => h.signInFailureKinds));
+    const inside = reports.filter(({ h }) => now - h.receivedAt <= window);
+    const kinds = new Set(inside.flatMap(({ h }) => h.signInFailureKinds));
     return {
-      count: inside.reduce((sum, h) => sum + h.signInFailures!, 0),
+      count: inside.reduce((sum, { count }) => sum + count, 0),
       window,
       kinds: Object.keys(SIGN_IN_FAILURE_WORDS)
         .filter((kind) => kinds.has(kind))
@@ -685,6 +715,7 @@ function seatAndLapFindings(
   const fields = rigFields(now, rig, state);
   const rigLaps = snapshot.laps.filter((lap) => lap.rigId === rig.id);
   const raised: Severity = eventMode ? "urgent" : "warning";
+  const live = isLive(now, rig, state) ? state : null;
 
   // Rule 5a: laps the agent said nobody was signed in for, since the rig's
   // last lap that did reach a driver.
@@ -708,17 +739,19 @@ function seatAndLapFindings(
         rig,
         raised,
         `${rig.name}: ${laps(n)} in the last ${duration(window)} landed with nobody signed in - ` +
-          "they will not rank until someone signs in on the rig",
+          "they will not rank; laps rank again once someone signs in on the rig",
         [...fields, { name: "Laps with nobody signed in", value: String(n) }],
       ),
     );
   }
 
   // Rule 5b: a stint far longer than a session runs - usually a driver who
-  // walked away without signing out, whose name the next laps would carry.
+  // walked away without signing out, whose name the next laps would carry. It
+  // opens only on a live rig, so a stint left open at closing stays quiet
+  // until the rig is switched on again; an alert already open holds.
   if (rig.seated) {
     const seatedFor = now - rig.seated.startedAt;
-    if (seatedFor > snapshot.longStintMinutes * 60_000) {
+    if (seatedFor > snapshot.longStintMinutes * 60_000 && (live || isOpen("long_stint", subject))) {
       findings.push(
         finding(
           "long_stint",
@@ -738,10 +771,6 @@ function seatAndLapFindings(
   // laps are refused. Without a combo nothing is wrong (rule 4's business).
   const combo = snapshot.featuredCombo;
   if (combo) {
-    const live =
-      state && !state.shuttingDown && rig.lastSeenAt !== null && now - rig.lastSeenAt <= SILENT_AFTER_MS
-        ? state
-        : null;
     const sessionWrong =
       rig.seated && live?.simConnected === true && live.session
         ? comboMismatch(

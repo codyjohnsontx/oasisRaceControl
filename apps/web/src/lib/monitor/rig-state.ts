@@ -34,6 +34,12 @@ export type Heartbeat = {
    */
   signInFailures: number | null;
   signInFailureKinds: string[];
+  /**
+   * The agent's own sequence number for each refusal reported (the newest
+   * ten), so a refusal reported again after a lost answer is counted once;
+   * null when the heartbeat did not carry them.
+   */
+  signInFailureSeqs: number[] | null;
   missingVariables: string[];
   agentCpuPercent: number | null;
   agentMemoryMb: number | null;

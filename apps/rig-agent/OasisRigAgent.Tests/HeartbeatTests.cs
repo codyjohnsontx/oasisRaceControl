@@ -258,6 +258,9 @@ public sealed class HeartbeatTests : IDisposable
         Assert.Null(json["lastLapPostedAt"]);
         Assert.Equal(3, json["signInFailures"]!.GetValue<int>());
         Assert.Equal(["wrong_pin_or_name", "locked"], Strings(json, "signInFailureKinds"));
+        var seqs = Longs(json, "signInFailureSeqs");
+        Assert.Equal(3, seqs.Count);
+        Assert.Equal(seqs.Order().Distinct(), seqs);
         Assert.Contains(Strings(json, "notices"), n => n.Contains("lap reading stopped"));
         Assert.True(json["agentCpuPercent"]!.GetValue<double>() >= 0);
         Assert.True(json["agentMemoryMb"]!.GetValue<double>() > 0);
@@ -294,6 +297,31 @@ public sealed class HeartbeatTests : IDisposable
 
         Assert.True(await agent.SendHeartbeatAsync(shuttingDown: false));
         Assert.Equal(0, backend.Heartbeats[^1]["signInFailures"]!.GetValue<int>());
+    }
+
+    /// <summary>A report whose answer never came back leaves its failures
+    /// unacknowledged, so the next report carries them again under a new
+    /// heartbeat sequence - with the same failure sequences, which is what
+    /// lets the server count each failure once.</summary>
+    [Fact]
+    public async Task AReportSentAgainNamesTheSameFailuresByTheirOwnSequence()
+    {
+        var backend = new RecordingBackend();
+        using var queue = new EventQueue(_dbPath);
+        var client = new BackendClient(new HttpClient(backend), "https://x.test", "t");
+        await using var agent = new AgentService(Config(), client, queue, new FakeSim());
+
+        agent.RecordSignInFailure(SignInFailureKind.WrongPinOrName);
+        agent.RecordSignInFailure(SignInFailureKind.WrongPinOrName);
+        var lost = agent.BuildHeartbeat(shuttingDown: false).Report.ToEvent();
+        agent.RecordSignInFailure(SignInFailureKind.Locked);
+        var retry = agent.BuildHeartbeat(shuttingDown: false).Report.ToEvent();
+
+        Assert.NotEqual(lost["sequence"]!.GetValue<long>(), retry["sequence"]!.GetValue<long>());
+        Assert.Equal(2, Longs(lost, "signInFailureSeqs").Count);
+        Assert.Equal(3, retry["signInFailures"]!.GetValue<int>());
+        Assert.Equal(Longs(lost, "signInFailureSeqs"), Longs(retry, "signInFailureSeqs").Take(2));
+        Assert.Equal(3, Longs(retry, "signInFailureSeqs").Distinct().Count());
     }
 
     /// <summary>A backend whose schema disagrees with this report must still
@@ -451,6 +479,7 @@ public sealed class HeartbeatTests : IDisposable
             Checkout = CheckoutDelivery.None,
             SignInFailures = 12,
             SignInFailureKinds = Enumerable.Repeat(SignInFailureKind.Locked, 12).ToArray(),
+            SignInFailureSeqs = Enumerable.Range(1, 12).Select(i => (long)i).ToArray(),
             Notices = Enumerable.Range(0, 15).Select(i => $"notice {i} " + new string('n', 300)).ToArray(),
             ShuttingDown = false,
         };
@@ -466,6 +495,7 @@ public sealed class HeartbeatTests : IDisposable
         Assert.Equal(120, Text(json["session"]!, "trackName").Length);
         Assert.Null(json["session"]!["trackConfig"]);
         Assert.Equal(["locked"], Strings(json, "signInFailureKinds"));
+        Assert.Equal(Enumerable.Range(3, 10).Select(i => (long)i), Longs(json, "signInFailureSeqs"));
         Assert.False(json.ContainsKey("pendingLaps"));
         Assert.False(json.ContainsKey("oldestPendingAgeS"));
     }
@@ -493,6 +523,9 @@ public sealed class HeartbeatTests : IDisposable
 
     private static List<string> Strings(JsonNode node, string key)
         => node[key]!.AsArray().Select(n => n!.GetValue<string>()).ToList();
+
+    private static List<long> Longs(JsonNode node, string key)
+        => node[key]!.AsArray().Select(n => n!.GetValue<long>()).ToList();
 
     private static async Task Eventually(Func<bool> condition, TimeSpan? within = null)
     {

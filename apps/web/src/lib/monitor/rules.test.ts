@@ -4,6 +4,7 @@ import { CURRENT_AGENT_VERSION } from "./agent-version";
 import {
   evaluateRules,
   inEventMode,
+  outdatedAgentSubject,
   RECOVERS_SILENTLY,
   rigSubject,
   VENUE_SUBJECT,
@@ -51,6 +52,7 @@ function hb(ago: number, overrides: Partial<Heartbeat> = {}): Heartbeat {
     checkout: "none",
     signInFailures: 0,
     signInFailureKinds: [],
+    signInFailureSeqs: null,
     missingVariables: [],
     agentCpuPercent: 0.2,
     agentMemoryMb: 40,
@@ -815,7 +817,7 @@ describe("rule 5a: laps with nobody signed in", () => {
     const findings = evaluate([rig(1)], [], { laps: [nobodyLap(1, 6 * MIN), nobodyLap(1, 2 * MIN)] });
     expect(rulesOf(findings)).toEqual(["unattributed_laps rig:rig-1 warning"]);
     expect(findings[0]!.detail.headline).toBe(
-      "Rig 01: 2 laps in the last 10 min landed with nobody signed in - they will not rank until someone signs in on the rig",
+      "Rig 01: 2 laps in the last 10 min landed with nobody signed in - they will not rank; laps rank again once someone signs in on the rig",
     );
     expect(findings[0]!.detail.fields).toContainEqual({ name: "Laps with nobody signed in", value: "2" });
   });
@@ -871,9 +873,20 @@ describe("rule 5b: unusually long stint", () => {
   });
 
   it("holds while the stint stays open, even on a rig that has gone quiet, and clears when it ends", () => {
+    const open = [{ rule: "long_stint" as const, subject: rigSubject("rig-1") }];
     const quiet = rig(1, { seated: seatedFor(3 * 60 * MIN), heartbeats: minutely(60 * MIN, 50 * MIN) });
-    expect(rulesOf(evaluate([quiet]))).toContain("long_stint rig:rig-1 warning");
-    expect(evaluate([rig(1)])).toEqual([]);
+    expect(rulesOf(evaluate([quiet], open))).toContain("long_stint rig:rig-1 warning");
+    expect(evaluate([rig(1)], open)).toEqual([]);
+  });
+
+  it("stays quiet about a stint left open at closing until the rig is switched on again", () => {
+    const seated = seatedFor(3 * 60 * MIN);
+    const closed = [...minutely(90 * MIN, 61 * MIN), hb(60 * MIN, { shuttingDown: true })];
+    expect(only(evaluate([rig(1, { seated, heartbeats: closed })]), "long_stint")).toBeUndefined();
+    const dark = minutely(90 * MIN, 60 * MIN);
+    expect(only(evaluate([rig(1, { seated, heartbeats: dark })]), "long_stint")).toBeUndefined();
+    const backOn = [...closed, ...minutely(2 * MIN)];
+    expect(rulesOf(evaluate([rig(1, { seated, heartbeats: backOn })]))).toEqual(["long_stint rig:rig-1 warning"]);
   });
 
   it("never names a driver whose name is under review", () => {
@@ -910,10 +923,30 @@ describe("rule 6: repeated sign-in failures", () => {
     expect(evaluate([rig(1, { heartbeats: failing([8 * MIN, 3 * MIN, MIN]) })])).toEqual([]);
   });
 
-  it("counts a heartbeat stored twice - its answer lost and the report retried - once", () => {
-    const heartbeats = failing([3 * MIN, MIN]);
-    const retried = { ...heartbeats.find((h) => h.signInFailures === 1)!, id: "retry", receivedAt: NOW - 3 * MIN + 10 * S };
-    expect(evaluate([rig(1, { heartbeats: [...heartbeats, retried].sort((a, b) => a.receivedAt - b.receivedAt) })])).toEqual([]);
+  it("counts failures re-reported after a lost answer once, by the agent's own failure sequence", () => {
+    // Two refusals reported, the answer lost, and the retry ten seconds later
+    // reporting the same two under a new heartbeat sequence.
+    const reported = { signInFailures: 2, signInFailureKinds: ["wrong_pin_or_name"], signInFailureSeqs: [4, 5] };
+    const heartbeats = [
+      ...minutely(14 * MIN, 3 * MIN),
+      hb(2 * MIN + 50 * S, { ...reported, sequence: 1_001 }),
+      hb(2 * MIN + 40 * S, { ...reported, sequence: 1_002 }),
+      ...minutely(MIN),
+    ];
+    expect(evaluate([rig(1, { heartbeats })])).toEqual([]);
+
+    const third = hb(30 * S, { signInFailures: 1, signInFailureKinds: ["locked"], signInFailureSeqs: [9], sequence: 1_003 });
+    const findings = evaluate([rig(1, { heartbeats: [...heartbeats, third].sort((a, b) => a.receivedAt - b.receivedAt) })]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Rig 01: 3 walk-up sign-ins refused in 5 min (wrong PIN or name, locked out)",
+    );
+  });
+
+  it("keys the failure sequence by agent process, since a restarted agent counts from 1 again", () => {
+    const reported = (ago: number, processStartedAt: number, signInFailureSeqs: number[]) =>
+      hb(ago, { processStartedAt, signInFailures: signInFailureSeqs.length, signInFailureKinds: ["other"], signInFailureSeqs });
+    const heartbeats = [reported(3 * MIN, STARTED, [1, 2]), reported(MIN, NOW - 2 * MIN, [1, 2])];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })]))).toEqual(["sign_in_failures rig:rig-1 warning"]);
   });
 
   it("holds while any came inside ten minutes, and clears after ten quiet ones", () => {
@@ -1002,9 +1035,12 @@ describe("rule 7: wrong car or track", () => {
 describe("rule 11: outdated rig agent", () => {
   const running = (agentVersion: string | null) => minutely(14 * MIN, 0, () => ({ agentVersion }));
 
-  it("warns about a rig on any build but the current one", () => {
+  const outdated = `agent_outdated ${outdatedAgentSubject("rig-1")} warning`;
+
+  it("warns about a rig on any build but the current one, once per rig per version", () => {
     const findings = evaluate([rig(1, { heartbeats: running("rig-agent/0.3-event") })]);
-    expect(rulesOf(findings)).toEqual(["agent_outdated rig:rig-1 warning"]);
+    expect(rulesOf(findings)).toEqual([outdated]);
+    expect(findings[0]!.subject).toBe(`rig:rig-1|${CURRENT_AGENT_VERSION}`);
     expect(findings[0]!.detail.headline).toBe(
       `Rig 01 runs an outdated rig agent - install ${CURRENT_AGENT_VERSION} on it`,
     );
@@ -1016,17 +1052,36 @@ describe("rule 11: outdated rig agent", () => {
     expect(evaluate([rig(1, { heartbeats: running(null) })])).toEqual([]);
   });
 
-  it("holds through a goodbye, which reports the same build", () => {
-    const heartbeats = [...running("rig-agent/0.3-event"), hb(-S, { agentVersion: "rig-agent/0.3-event", shuttingDown: true })];
-    expect(rulesOf(evaluate([rig(1, { heartbeats, lastSeenAt: NOW })]))).toEqual(["agent_outdated rig:rig-1 warning"]);
+  it("does not open on a goodbye or a silent rig, but holds an alert already open through either", () => {
+    const goodbye = [...running("rig-agent/0.3-event"), hb(-S, { agentVersion: "rig-agent/0.3-event", shuttingDown: true })];
+    const closed = rig(1, { heartbeats: goodbye, lastSeenAt: NOW });
+    const dark = rig(1, { heartbeats: minutely(60 * MIN, 30 * MIN, () => ({ agentVersion: "rig-agent/0.3-event" })) });
+    const open = [{ rule: "agent_outdated" as const, subject: outdatedAgentSubject("rig-1") }];
+    for (const off of [closed, dark]) {
+      expect(only(evaluate([off]), "agent_outdated")).toBeUndefined();
+      expect(rulesOf(evaluate([off], open).filter((f) => f.rule === "agent_outdated"))).toEqual([outdated]);
+    }
   });
 
-  it("does not open for a rig off since before the lookback, but holds one already open", () => {
-    const old = [hb(13 * 60 * MIN, { agentVersion: "rig-agent/0.3-event", shuttingDown: true })];
-    const off = rig(1, { heartbeats: old });
-    expect(only(evaluate([off]), "agent_outdated")).toBeUndefined();
-    const open = [{ rule: "agent_outdated" as const, subject: rigSubject("rig-1") }];
-    expect(only(evaluate([off], open), "agent_outdated")).toBeDefined();
+  it("posts nothing for switched-off rigs when a new build is released after closing", () => {
+    const closed = (n: number) =>
+      rig(n, {
+        heartbeats: [
+          ...minutely(90 * MIN, 61 * MIN, () => ({ agentVersion: "rig-agent/0.3-event" })),
+          hb(60 * MIN, { agentVersion: "rig-agent/0.3-event", shuttingDown: true }),
+        ],
+      });
+    // Rig 1 was told to install the previous release; rig 2 never was.
+    const previous = [{ rule: "agent_outdated" as const, subject: "rig:rig-1|rig-agent/0.3-previous" }];
+    const findings = evaluate([closed(1), closed(2)], previous);
+    expect(findings.map((f) => `${f.rule} ${f.subject}`)).toEqual(["agent_outdated rig:rig-1|rig-agent/0.3-previous"]);
+  });
+
+  it("opens a fresh alert naming a new release on a live rig, holding the earlier one until the rig is current", () => {
+    const previous = [{ rule: "agent_outdated" as const, subject: "rig:rig-1|rig-agent/0.3-previous" }];
+    const behind = evaluate([rig(1, { heartbeats: running("rig-agent/0.3-event") })], previous);
+    expect(behind.map((f) => f.subject).sort()).toEqual(["rig:rig-1|rig-agent/0.3-previous", outdatedAgentSubject("rig-1")]);
+    expect(evaluate([rig(1, { heartbeats: running(CURRENT_AGENT_VERSION) })], previous)).toEqual([]);
   });
 });
 

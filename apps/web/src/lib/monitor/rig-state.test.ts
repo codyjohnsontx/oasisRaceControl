@@ -23,6 +23,7 @@ function hb(id: string, receivedAt: number, overrides: Partial<Heartbeat> = {}):
     checkout: "none",
     signInFailures: 0,
     signInFailureKinds: [],
+    signInFailureSeqs: null,
     missingVariables: [],
     agentCpuPercent: 0.2,
     agentMemoryMb: 40,

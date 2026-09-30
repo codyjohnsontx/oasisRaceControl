@@ -832,7 +832,7 @@ describeDb("rig monitor against real Postgres", () => {
 
       await nextEvaluation();
       expect(posts.map((p) => p.content)).toEqual([
-        "🟡 Rig 01: 2 laps in the last 10 min landed with nobody signed in - they will not rank until someone signs in on the rig",
+        "🟡 Rig 01: 2 laps in the last 10 min landed with nobody signed in - they will not rank; laps rank again once someone signs in on the rig",
       ]);
 
       const driver = await seedDriver("Ada");

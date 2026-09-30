@@ -213,6 +213,7 @@ export async function loadSnapshot(
               h.pending_laps, h.rejected_laps, h.checkout, h.shutting_down,
               h.session_track, h.session_config, h.session_car, h.sign_in_failures,
               h.payload->'signInFailureKinds' as sign_in_failure_kinds,
+              h.payload->'signInFailureSeqs' as sign_in_failure_seqs,
               h.payload->>'telemetryMode' as telemetry_mode,
               (h.payload->>'sequence')::float8 as sequence,
               (h.payload->>'oldestPendingAgeS')::float8 as oldest_pending_age_s,
@@ -399,6 +400,7 @@ type HeartbeatRow = {
   session_car: string | null;
   sign_in_failures: number | null;
   sign_in_failure_kinds: unknown;
+  sign_in_failure_seqs: unknown;
   telemetry_mode: string | null;
   sequence: number | null;
   oldest_pending_age_s: number | null;
@@ -431,6 +433,9 @@ function toHeartbeat(row: HeartbeatRow): Heartbeat {
     signInFailureKinds: Array.isArray(row.sign_in_failure_kinds)
       ? row.sign_in_failure_kinds.filter((kind): kind is string => typeof kind === "string")
       : [],
+    signInFailureSeqs: Array.isArray(row.sign_in_failure_seqs)
+      ? row.sign_in_failure_seqs.filter((seq): seq is number => typeof seq === "number")
+      : null,
     missingVariables: Array.isArray(row.missing_variables)
       ? row.missing_variables.filter((name): name is string => typeof name === "string")
       : [],

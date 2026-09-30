@@ -39,11 +39,11 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 | 3a | Laps queued but not reaching the site | a lap has waited over 2 min while at least two heartbeats got through | the queue drains | urgent |
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
 | 5a | Laps with nobody signed in | 2 laps inside 10 min that the agent said nobody was signed in for, since the rig's last lap that reached a driver | a lap reaches a driver, or 15 min pass without another | warning; urgent in event mode |
-| 5b | Unusually long stint | a driver has been signed in longer than `monitor_state.long_stint_minutes` (2 h unless staff change it) | the stint ends | warning |
+| 5b | Unusually long stint | a driver has been signed in longer than `monitor_state.long_stint_minutes` (2 h unless staff change it), on a rig that is switched on and reporting | the stint ends | warning |
 | 6 | Repeated sign-in failures | 3 walk-up sign-ins refused on one rig inside 5 min; the message names the kinds (wrong PIN or name, locked out, ...) | 10 min without one | warning |
 | 7 | Wrong car or track | today has a featured combo, and a seated rig's iRacing session is on another car or track, or the rig's last 3 laps inside 15 min were all refused for the combo | the session matches, or a valid lap lands | warning; urgent in event mode |
 | 10 | Rig agent restarting repeatedly | 3 agent starts within 15 min | the starts age out of the 15 min | urgent |
-| 11 | Outdated rig agent | the rig reports an agent build other than `CURRENT_AGENT_VERSION` | it reports the current build | warning |
+| 11 | Outdated rig agent | a rig that is switched on and reporting runs an agent build other than `CURRENT_AGENT_VERSION` | it reports the current build | warning, once per rig per version |
 | 12 | Rig clock is off | the rig's clock is over 5 min from the server's | under 2 min | urgent |
 | 13 | Driver moved rigs mid-session | a driver signed in on another rig, and within 10 min the rig they left, with nobody signed in, is still in an iRacing session | 10 min after the move | warning |
 | 14 | Implausibly fast lap | a valid lap over 3% under the best any other driver had on that car and track before it, once 5 other drivers have one | never announced: the alert closes quietly once the lap is 15 min old | warning |
@@ -95,9 +95,20 @@ Details worth knowing:
   `apps/rig-agent/OasisRigAgent.Core/AgentConfig.cs` that
   `agent-version.test.ts` keeps equal. Bump both in the agent's release
   commit: from its deploy on, every rig still on the old build shows a quiet
-  warning until the new exe is installed. A rig not heard from in 12 h is
-  off, not outdated, and is not warned about. It fires once per rig, not per
-  version: a rig moved from one old build to another keeps its open alert.
+  warning until the new exe is installed. It fires once per rig per version:
+  the alert's subject names `CURRENT_AGENT_VERSION`, so a new release opens a
+  fresh alert naming it, while the one naming the earlier release stays open
+  until the rig reports the current build.
+- **Rules 5b and 11 open only on a rig that is switched on and reporting** -
+  heard in the last 2 min, and not after a goodbye - so a rig that went dark
+  with the venue stays quiet until it is switched on again: a stint left open
+  at closing, or a release made after closing, posts nothing overnight. An
+  alert already open holds through a goodbye or a silence.
+- **Rule 6 counts each refusal once.** A heartbeat reports every refusal the
+  site has not acknowledged, so after a lost answer the next one reports the
+  same refusals again. `rig-agent/0.4-monitor` sends each refusal's own
+  sequence number (`signInFailureSeqs`), and the monitor counts each once per
+  agent process; a heartbeat without them is counted as it stands.
 - **Rule 13 is the move, not two stints at once.** A driver cannot hold two
   stints: `one_open_assignment_per_driver` in `0001_core_schema.sql` forbids
   it, and signing in on a second rig ends the first with `end_reason =
@@ -120,7 +131,8 @@ posts one quiet line, `🔕 Flapping: <rule> - <rig> has fired 4 times in the
 last hour; muted for 1 h`, and for the hour after that line nothing on that
 rule and rig is posted: no openings, recoveries, rises or AI diagnosis. The
 alerts are still stored (`monitor_alerts.refire_count` counts each one's
-earlier openings in the hour) and still open while the problem lasts, so the
+earlier openings in the hour, and is at least 3 for one opened inside a
+mute) and still open while the problem lasts, so the
 Rig health page shows them. Once the hour has passed the rule posts normally
 again; if it is still flapping, the next mute line says so.
 
