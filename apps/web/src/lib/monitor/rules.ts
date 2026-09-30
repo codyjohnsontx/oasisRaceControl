@@ -608,8 +608,8 @@ export function boardSubject(mode: BoardSnapshot["mode"]): string {
  *
  * 8a: of the event's displays (eventDisplays: today's event boards, each
  * opened from a staff link, or the shop wall while staff have forced event
- * mode on without one still open), the one heard from most recently went dark: not heard from for
- * BOARD_DARK_AFTER_MS, without a goodbye. The most recent, so a browser
+ * mode on without one still open), the one heard from most recently went
+ * dark: not heard from for BOARD_DARK_AFTER_MS, without a goodbye. The most recent, so a browser
  * killed and restored as a new page, or a tab closed after a phone was left
  * locked on the board, is judged by the board the room is watching. An event
  * board is judged whether or not event mode is on, since a dark board no

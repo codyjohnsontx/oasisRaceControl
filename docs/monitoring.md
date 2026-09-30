@@ -173,10 +173,10 @@ by `eventMode()` in `event-mode.ts`, pure, from the same snapshot as the rules:
   morning never pages when staff force event mode on that afternoon (the
   same rule rig silence follows). On an ordinary day the wall is not judged.
 - **Staff can force it** on or off with `POST /api/staff/event-mode`
-  (`{"mode":"on"|"off"|"auto","reason":"..."}`, staff session, same-origin JSON
-  - the Rig health page's buttons). `on` and `off` last until venue midnight,
-  never longer; `auto` hands it back to the boards. Every change writes an
-  audit row. Use `off` when a board was left open by mistake: it also
+  (`{"mode":"on"|"off"|"auto","reason":"..."}`, staff session, same-origin JSON;
+  no page has buttons for it yet - the Rig health page will). `on` and `off`
+  last until venue midnight, never longer; `auto` hands it back to the
+  boards. Every change writes an audit row. Use `off` when a board was left open by mistake: it also
   silences rule 8a for the rest of the day.
 
 Each change posts one grey line ("⚪ Event mode on: Event board (Cadillac)
