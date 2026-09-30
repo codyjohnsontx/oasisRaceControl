@@ -152,7 +152,8 @@ it lives there and nowhere in the repository.
 
 A post that fails (Discord down, rate-limited) is retried by a later
 evaluation, no sooner than a minute after the last attempt, until an hour
-after the alert opened (or its count last rose) - however long the problem
+after the alert opened (or its count last rose, or the [flapping](#flapping)
+mute it was held by ended) - however long the problem
 itself lasts - and never by two evaluations at once. An alert that came and
 went while Discord was down posts its opening late and then its recovery,
 never a lone "recovered".
@@ -181,7 +182,8 @@ tick answers its clock before the model is called: the diagnosis runs in
 that fails or takes over 20 s leaves a retry marker, and an evaluation at
 least a minute later tries once more; if that fails too, the handoff is
 posted anyway with "no diagnosis" in place of the model's lines. Nothing is
-diagnosed twice, and a post Discord refused is retried like an alert's.
+diagnosed twice, and a post Discord refused is retried like an alert's, for
+an hour after the diagnosis was made.
 
 **Nothing a rig typed leaves.** A heartbeat's strings - session names,
 agent notices, variable names - are whatever the rig, or anyone holding its
