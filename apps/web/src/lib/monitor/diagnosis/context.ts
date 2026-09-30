@@ -148,10 +148,12 @@ export function incidentContext(
   heartbeats: readonly HeartbeatRow[],
   commit: string | null,
 ): IncidentContext {
-  const text = serverText(alert.detail.driver);
   const rule = RULES[alert.rule as keyof typeof RULES] ?? { number: "?", title: alert.rule };
   const oldestFirst = [...heartbeats].reverse();
   const where = publicRig(alert.detail);
+  const driver = alert.detail.driver ? oneLine(alert.detail.driver) : "";
+  const seated: StandIn[] = driver ? [[driver, pseudonym(driver)]] : [];
+  const text = serverText(seated);
 
   return {
     alertId: alert.id,
@@ -159,7 +161,7 @@ export function incidentContext(
     severity: alert.severity,
     openedAt: alert.openedAt,
     where,
-    headline: text(publicHeadline(oneLine(alert.detail.headline), alert.detail.where, where, rule.title)),
+    headline: publicHeadline(alert.detail.headline, alert.detail.where, seated, where, rule.title),
     fields: alert.detail.fields
       .filter((field) => NUMERIC_FIELDS.has(field.name))
       .map((field) => ({ name: field.name, value: text(field.value) })),
@@ -180,19 +182,26 @@ function publicRig(detail: AlertDetail): string {
 }
 
 /**
- * The headline with the rig's display name replaced by its public name. The
- * rules put the name in verbatim, so the replacement catches it; should any of
- * it survive - a name inside another word - the headline becomes a fixed one.
+ * The headline with the rig's display name replaced by its public name and
+ * the driver's by its stand-in, in one pass so neither can swallow part of
+ * the other. The rules put the name in verbatim, so the replacement catches
+ * it; should any of it survive - a name inside another word - the headline
+ * becomes a fixed one.
  */
-function publicHeadline(headline: string, displayName: string, where: string, title: string): string {
+function publicHeadline(
+  headline: string,
+  displayName: string,
+  seated: readonly StandIn[],
+  where: string,
+  title: string,
+): string {
   // The venue note's headline lists rigs by display name; it is never
   // diagnosed (it is a warning), but it is not made public either.
   if (where === "Venue") return `${title} (${where})`;
   const name = oneLine(displayName);
-  if (!name || name === where) return headline;
-  const bounded = new RegExp(`(?<![\\p{L}\\p{N}])${escape(name)}(?![\\p{L}\\p{N}])`, "gu");
-  const replaced = headline.replace(bounded, where);
-  return replaced.includes(name) ? `${title} (${where})` : replaced;
+  const rig: StandIn[] = name && name !== where ? [[name, where]] : [];
+  const replaced = serverText([...seated, ...rig])(headline);
+  return name && replaced.includes(name) ? `${title} (${where})` : replaced;
 }
 
 function facts(row: HeartbeatRow): HeartbeatFacts {
@@ -261,18 +270,25 @@ export function noticeCode(notice: string): NoticeCode {
   return "other";
 }
 
+/** A one-lined name and what replaces it. */
+type StandIn = readonly [name: string, standIn: string];
+
 /**
  * The monitor's own words, made safe to send: one line, no control
- * characters, and the seated driver's name replaced by its stand-in.
+ * characters, and each name replaced by its stand-in as a whole word, the
+ * longest name first so a name that holds another is replaced whole.
  */
-function serverText(driver: string | null | undefined) {
-  const normalized = driver ? oneLine(driver) : "";
-  const name = normalized
-    ? new RegExp(`(?<![\\p{L}\\p{N}])${escape(normalized)}(?![\\p{L}\\p{N}])`, "giu")
-    : null;
+function serverText(standIns: readonly StandIn[]) {
+  const names = [...standIns].sort(([a], [b]) => b.length - a.length);
+  const alternatives = names.map(([name]) => `(${escape(name)})`).join("|");
+  const pattern = names.length ? new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives})(?![\\p{L}\\p{N}])`, "giu") : null;
   return (s: string) => {
     const line = oneLine(s);
-    return name ? line.replace(name, pseudonym(normalized)) : line;
+    if (!pattern) return line;
+    return line.replace(pattern, (...groups: unknown[]) => {
+      const matched = groups.slice(1, names.length + 1).findIndex((group) => group !== undefined);
+      return names[matched][1];
+    });
   };
 }
 

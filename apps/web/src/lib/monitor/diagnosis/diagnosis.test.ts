@@ -144,6 +144,20 @@ describe("redaction before the call (D9)", () => {
     expect(context.headline).toBe(`Rig 2: ${pseudonym("Jo Smith")} is seated`);
   });
 
+  it("replaces a driver's name that holds the rig's display name", () => {
+    const where = "Pod 3";
+    const driver = "Pod 3 King";
+    const context = incidentContext(
+      {
+        ...ALERT,
+        detail: { ...ALERT.detail, headline: `${where} has been silent with ${driver} signed in`, where, driver },
+      },
+      [],
+      null,
+    );
+    expect(context.headline).toBe(`Rig 2 has been silent with ${pseudonym(driver)} signed in`);
+  });
+
   it("keeps the handoff free of names and ids too", () => {
     const context = incidentContext(ALERT, HEARTBEATS, null);
     const text = handoffText(context, { ok: false, error: "timed out" });
