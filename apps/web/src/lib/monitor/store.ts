@@ -84,17 +84,27 @@ const RETRY_AFTER = "60 seconds";
 /**
  * Flapping. An alert that opens for the FLAPPING_REFIRES-th time on the same
  * rule and subject within FLAPPING_WINDOW - three re-fires after the first -
- * posts one "flapping, muted" line instead of itself, and everything on that
- * rule and subject for FLAPPING_WINDOW after it (openings, recoveries, rises)
- * is kept but not posted. monitor_alerts.refire_count records how many
- * earlier openings each alert had in the window before it, and never less
- * than FLAPPING_REFIRES for one that opened inside a mute: at or over
- * FLAPPING_REFIRES the alert is muted, and the muted alert that started the
- * mute is the one with a notify deadline, since it has the mute line to post.
- * The alerts stay open and visible; the mute only keeps the channel quiet.
+ * posts one "flapping, muted" line instead of itself, and starts a mute that
+ * ends FLAPPING_WINDOW after it. Everything on that rule and subject until then
+ * (openings, recoveries, rises) is kept but not posted. monitor_alerts.
+ * refire_count records how many earlier openings each alert had in the window
+ * before it, and never less than FLAPPING_REFIRES for one that opened inside a
+ * mute.
+ *
+ * A muted alert's own opening is not dropped but deferred to the mute's end:
+ * its notify window starts there, so notify_until is the mute's end plus
+ * RETRY_FOR - the one thing that says an alert is muted (MUTED), and shared by
+ * every alert of one mute. Once the mute ends, the retry sweep posts each one
+ * still open with its current state, and from then on it rises and recovers
+ * like any other; one that closed inside the mute is never posted, since its
+ * notify window began after it closed. The alerts stay open and visible; the
+ * mute only keeps the channel quiet.
  */
 export const FLAPPING_REFIRES = 3;
 const FLAPPING_WINDOW = "1 hour";
+
+/** Whether an alert is inside a flapping mute right now (see FLAPPING_REFIRES). */
+const MUTED = `(refire_count >= ${FLAPPING_REFIRES} and notify_until > now() + interval '${RETRY_FOR}')`;
 
 /**
  * How far before now a lap's completed_at (the rig's clock) may be for the
@@ -455,13 +465,14 @@ function toHeartbeat(row: HeartbeatRow): Heartbeat {
  *   it is inserted, and only the evaluation whose row was inserted announces;
  *   counting its earlier openings reads the rule's alert history, so only a
  *   new opening pays for it. An opening that starts a flapping mute announces
- *   the mute instead (FLAPPING_REFIRES); one inside a mute announces nothing,
- *   and is given no notify deadline, so no retry ever posts it either.
+ *   the mute instead (FLAPPING_REFIRES); one inside a mute announces nothing
+ *   now, and its opening is due when the mute ends.
  * - Worse: a finding whose level rose re-announces once per rise, claimed by
  *   the update that moved the level - unless the alert is muted.
  * - Recover: an open alert no finding named counts one absence; the evaluation
- *   whose update reaches RESOLVE_AFTER_ABSENT resolves it and posts, unless it
- *   is muted or its rule recovers silently (RECOVERS_SILENTLY).
+ *   whose update reaches RESOLVE_AFTER_ABSENT resolves it and posts, if its
+ *   opening was posted (a muted one's never was) and its rule does not recover
+ *   silently (RECOVERS_SILENTLY).
  *
  * Evaluations run one at a time (the monitor_state lock), so the count of
  * earlier openings an insert reads cannot race another evaluation's insert.
@@ -491,20 +502,21 @@ export async function applyFindings(
     const [row] = await rows<{ id: string; silent: boolean }>(
       db,
       `with earlier as (
-         select count(*)::int as openings,
-                coalesce(bool_or(refire_count >= $7 and notify_until is not null), false) as muting
+         select count(*)::int as openings, max(notify_until) filter (where ${MUTED}) as mute_deadline
          from monitor_alerts
          where rule = $1 and subject = $2 and opened_at > now() - $8::interval
        )
        insert into monitor_alerts
          (rule, subject, severity, level, detail, refire_count, notify_attempted_at, notify_until)
        select $1, $2, $3, $4, $5,
-              case when muting then greatest(openings, $7) else openings end,
-              case when muting then null else now() end,
-              case when muting then null else now() + $6::interval end
+              case when mute_deadline is null then openings else greatest(openings, $7) end,
+              coalesce(mute_deadline - $6::interval, now()),
+              case when mute_deadline is not null then mute_deadline
+                   when openings >= $7 then now() + $8::interval + $6::interval
+                   else now() + $6::interval end
        from earlier
        on conflict (rule, subject) where resolved_at is null do nothing
-       returning id::text, notify_until is null as silent`,
+       returning id::text, notify_attempted_at > now() as silent`,
       [
         finding.rule,
         finding.subject,
@@ -533,8 +545,8 @@ export async function applyFindings(
      where id = any($1::bigint[]) and resolved_at is null
      returning id::text,
                resolved_at is not null and notified_at is not null
-                 and refire_count < $3 and rule <> all($4::text[]) as announced`,
-    [absent, RESOLVE_AFTER_ABSENT, FLAPPING_REFIRES, RECOVERS_SILENTLY],
+                 and rule <> all($3::text[]) as announced`,
+    [absent, RESOLVE_AFTER_ABSENT, RECOVERS_SILENTLY],
   );
   return { announce, recover: resolved.filter((r) => r.announced).map((r) => r.id) };
 }
@@ -554,11 +566,11 @@ async function levelRose(db: Db, id: string, level: number): Promise<boolean> {
          notified_at = case when old.posts then null else a.notified_at end,
          notify_attempted_at = case when old.posts then now() else a.notify_attempted_at end,
          notify_until = case when old.posts then now() + $3::interval else a.notify_until end
-     from (select id, level, $2::int > level and refire_count < $4 as posts
+     from (select id, level, $2::int > level and not ${MUTED} as posts
            from monitor_alerts where id = $1::bigint for update) old
      where a.id = old.id and a.level <> $2::int
      returning old.posts as rose`,
-    [id, level, RETRY_FOR, FLAPPING_REFIRES],
+    [id, level, RETRY_FOR],
   );
   return row?.rose ?? false;
 }
@@ -570,10 +582,11 @@ type AlertRow = {
   opened_at: Date;
   resolved_at: Date | null;
   refire_count: number;
+  muted: boolean;
   detail: AlertDetail;
 };
 
-const ALERT_COLUMNS = "id::text, rule, severity, opened_at, resolved_at, refire_count, detail";
+const ALERT_COLUMNS = `id::text, rule, severity, opened_at, resolved_at, refire_count, ${MUTED} as muted, detail`;
 
 function toAlert(row: AlertRow): AlertForMessage {
   return {
@@ -583,7 +596,7 @@ function toAlert(row: AlertRow): AlertForMessage {
     openedAt: row.opened_at.getTime(),
     resolvedAt: row.resolved_at?.getTime() ?? null,
     refireCount: row.refire_count,
-    flapping: row.refire_count >= FLAPPING_REFIRES,
+    flapping: row.muted,
     detail: row.detail,
   };
 }
@@ -597,12 +610,21 @@ export async function alertsById(ids: readonly string[]): Promise<AlertForMessag
   return rows.map(toAlert);
 }
 
-export async function markAnnounced(id: string): Promise<void> {
-  await query("update monitor_alerts set notified_at = now() where id = $1", [id]);
+/**
+ * Records a posted opening. A flapping line is not the alert's opening: it
+ * only moves the next attempt to the mute's end, where the opening is due.
+ */
+export async function markAnnounced(alert: AlertForMessage): Promise<void> {
+  await query(
+    alert.flapping
+      ? "update monitor_alerts set notify_attempted_at = notify_until - $2::interval where id = $1"
+      : "update monitor_alerts set notified_at = now() where id = $1",
+    alert.flapping ? [alert.id, RETRY_FOR] : [alert.id],
+  );
 }
 
-export async function markRecoveryAnnounced(id: string): Promise<void> {
-  await query("update monitor_alerts set recovery_notified_at = now() where id = $1", [id]);
+export async function markRecoveryAnnounced(alert: AlertForMessage): Promise<void> {
+  await query("update monitor_alerts set recovery_notified_at = now() where id = $1", [alert.id]);
 }
 
 /**
@@ -610,7 +632,8 @@ export async function markRecoveryAnnounced(id: string): Promise<void> {
  * evaluations cannot both retry one. Retry openings before recoveries: a
  * recovery is only ever posted for an alert whose opening got through, so an
  * alert that came and went while Discord was down does not arrive as a lone
- * "recovered".
+ * "recovered". The same sweep posts a muted alert's opening once its mute has
+ * ended, unless it closed inside the mute, before its opening was due.
  */
 export async function claimAnnounceRetries(): Promise<AlertForMessage[]> {
   const rows = await query<AlertRow>(
@@ -618,8 +641,9 @@ export async function claimAnnounceRetries(): Promise<AlertForMessage[]> {
      where notified_at is null
        and coalesce(notify_attempted_at, '-infinity') < now() - $1::interval
        and notify_until > now()
+       and (resolved_at is null or resolved_at >= notify_until - $2::interval)
      returning ${ALERT_COLUMNS}`,
-    [RETRY_AFTER],
+    [RETRY_AFTER, RETRY_FOR],
   );
   return rows.map(toAlert);
 }
@@ -629,11 +653,11 @@ export async function claimRecoveryRetries(): Promise<AlertForMessage[]> {
     `update monitor_alerts set recovery_attempted_at = now()
      where resolved_at is not null and recovery_notified_at is null
        and notified_at is not null
-       and refire_count < $3 and rule <> all($4::text[])
+       and rule <> all($3::text[])
        and coalesce(recovery_attempted_at, '-infinity') < now() - $1::interval
        and resolved_at > now() - $2::interval
      returning ${ALERT_COLUMNS}`,
-    [RETRY_AFTER, RETRY_FOR, FLAPPING_REFIRES, RECOVERS_SILENTLY],
+    [RETRY_AFTER, RETRY_FOR, RECOVERS_SILENTLY],
   );
   return rows.map(toAlert);
 }
@@ -699,14 +723,13 @@ const DIAGNOSES_PER_EVALUATION = 3;
 export type AlertToDiagnose = AlertForMessage & { subject: string; attempts: number };
 
 /**
- * Claims the urgent alerts that need a diagnosis call: announced (so the
- * alert itself always goes first), still open, and never diagnosed, due a
- * retry, or claimed by a call that went quiet. A rig alert whose detail does
- * not say who was seated (stored before AlertDetail.driver existed) is never
- * claimed, since its text may name a driver the redaction cannot know, and
- * neither is a muted one: its announcement was the flapping line, and the
- * three openings before it were diagnosed already. One statement, and SKIP
- * LOCKED, so two evaluations cannot both call for one alert.
+ * Claims the urgent alerts that need a diagnosis call: announced in the last
+ * RETRY_FOR (so the alert itself always goes first - a muted one only once
+ * its mute has ended), still open, and never diagnosed, due a retry, or
+ * claimed by a call that went quiet. A rig alert whose detail does not say
+ * who was seated (stored before AlertDetail.driver existed) is never claimed,
+ * since its text may name a driver the redaction cannot know. One statement,
+ * and SKIP LOCKED, so two evaluations cannot both call for one alert.
  */
 export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
   const rows = await query<AlertRow & { subject: string; attempts: number }>(
@@ -717,8 +740,7 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
        'at', now())
      where a.id in (
        select id from monitor_alerts
-       where severity = 'urgent' and notified_at is not null and resolved_at is null
-         and opened_at > now() - $1::interval and refire_count < $5
+       where severity = 'urgent' and notified_at > now() - $1::interval and resolved_at is null
          and (subject not like 'rig:%' or detail ? 'driver')
          and (diagnosis is null
            or (diagnosis->>'status' = 'retry' and (diagnosis->>'at')::timestamptz < now() - $2::interval)
@@ -727,7 +749,7 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
        limit $4
        for update skip locked)
      returning ${ALERT_COLUMNS}, subject, (diagnosis->>'attempts')::int as attempts`,
-    [RETRY_FOR, RETRY_AFTER, DIAGNOSIS_STALE, DIAGNOSES_PER_EVALUATION, FLAPPING_REFIRES],
+    [RETRY_FOR, RETRY_AFTER, DIAGNOSIS_STALE, DIAGNOSES_PER_EVALUATION],
   );
   return rows.map((row) => ({ ...toAlert(row), subject: row.subject, attempts: row.attempts }));
 }

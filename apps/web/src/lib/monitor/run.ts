@@ -109,13 +109,13 @@ export async function runDiagnoses(): Promise<number> {
 async function deliver(
   alerts: AlertForMessage[],
   render: (alert: AlertForMessage) => Parameters<typeof postDiscord>[0],
-  record: (id: string) => Promise<void>,
+  record: (alert: AlertForMessage) => Promise<void>,
 ): Promise<number> {
   let sent = 0;
   for (const alert of alerts) {
     const result = await postDiscord(render(alert));
     if (result.status === "sent") {
-      await record(alert.id);
+      await record(alert);
       sent++;
     } else if (result.status === "failed") {
       console.error(`[monitor] could not post alert #${alert.id} to Discord: ${result.reason}`);

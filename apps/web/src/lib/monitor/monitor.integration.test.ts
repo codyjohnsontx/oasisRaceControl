@@ -745,8 +745,21 @@ describeDb("rig monitor against real Postgres", () => {
       expect(rows.every((r) => r.resolved)).toBe(true);
     });
 
-    it("keeps a muted alert open and on record while the problem lasts, without posting its rises", async () => {
-      const rig = await seedRig(1);
+    /** Every alert timestamp moved `minutes` into the past, as if that long had gone by. */
+    async function timePasses(minutes: number) {
+      await testDb().query(
+        `update monitor_alerts
+         set opened_at = opened_at - $1::interval, last_seen_at = last_seen_at - $1::interval,
+             resolved_at = resolved_at - $1::interval, notified_at = notified_at - $1::interval,
+             notify_attempted_at = notify_attempted_at - $1::interval, notify_until = notify_until - $1::interval,
+             recovery_notified_at = recovery_notified_at - $1::interval,
+             recovery_attempted_at = recovery_attempted_at - $1::interval`,
+        [`${minutes} minutes`],
+      );
+    }
+
+    /** Rule 3b opens and clears three times, then opens a fourth time and stays open. */
+    async function flapIntoMute(rig: SeededRig) {
       for (let i = 0; i < 3; i++) {
         await heartbeat(rig, 0, { rejectedLaps: 1 });
         await nextEvaluation();
@@ -756,12 +769,50 @@ describeDb("rig monitor against real Postgres", () => {
       }
       await heartbeat(rig, 0, { rejectedLaps: 1 });
       await nextEvaluation();
+    }
+
+    it("keeps a muted alert open and quiet through the hour, then posts it once, and its rises after that", async () => {
+      const rig = await seedRig(1);
+      await flapIntoMute(rig);
       await heartbeat(rig, 0, { rejectedLaps: 4 });
       await nextEvaluation();
 
       expect(posts.at(-1)!.content).toMatch(/^🔕 Flapping: Laps refused by the site - Rig 01 has fired 4 times/);
       expect(posts.filter((p) => p.content?.startsWith("🔕"))).toHaveLength(1);
       expect(await alerts()).toMatchObject([{}, {}, {}, { rule: "laps_refused", level: 4, resolved: false }]);
+
+      posts = [];
+      await timePasses(61);
+      await heartbeat(rig, 0, { rejectedLaps: 4 });
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        `<@${OWNER}> 🔴 Rig 01: the site refused 4 laps; they are parked on the rig`,
+      ]);
+
+      posts = [];
+      await timePasses(120);
+      await heartbeat(rig, 0, { rejectedLaps: 20 });
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        `<@${OWNER}> 🔴 Rig 01: the site refused 20 laps; they are parked on the rig`,
+      ]);
+    });
+
+    it("says Recovered once when a muted alert clears hours after the mute line", async () => {
+      const rig = await seedRig(1);
+      await flapIntoMute(rig);
+      await timePasses(61);
+      await heartbeat(rig, 0, { rejectedLaps: 1 });
+      await nextEvaluation();
+      await timePasses(120);
+      posts = [];
+
+      await heartbeat(rig, 0);
+      for (let i = 0; i < 4; i++) await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        expect.stringMatching(/^🟢 Recovered: Laps refused by the site - Rig 01 \(alert #4, after 3 h/),
+      ]);
     });
 
     it("keeps an opening late in the mute muted, rises and all, once the openings before the mute have aged out", async () => {
@@ -788,12 +839,21 @@ describeDb("rig monitor against real Postgres", () => {
         "select refire_count, level, resolved_at is not null as resolved from monitor_alerts order by id desc limit 1",
       );
       expect(rows).toEqual([{ refire_count: 3, level: 4, resolved: false }]);
+
+      // The mute ends: the one opened inside it and still open posts its opening
+      // then, and the one that closed inside it stays unposted.
+      await timePasses(61);
+      await heartbeat(rig, 0, { rejectedLaps: 4 });
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        `<@${OWNER}> 🔴 Rig 01: the site refused 4 laps; they are parked on the rig`,
+      ]);
     });
 
     it("counts only the last hour: once the mute has passed, the rule posts again", async () => {
       const rig = await seedRig(1);
       for (let i = 0; i < 4; i++) await flap(rig);
-      await testDb().query("update monitor_alerts set opened_at = opened_at - interval '61 minutes'");
+      await timePasses(61);
       posts = [];
 
       await flap(rig);
@@ -814,9 +874,9 @@ describeDb("rig monitor against real Postgres", () => {
         }),
       );
       await testDb().query(
-        `insert into monitor_alerts (rule, subject, severity, detail, refire_count, notified_at, notify_until)
+        `insert into monitor_alerts (rule, subject, severity, detail, refire_count, notify_attempted_at, notify_until)
          values ('telemetry_faulted', 'venue', 'urgent', '{"headline":"x","where":"Venue","fields":[]}',
-                 3, now(), now() + interval '1 hour')`,
+                 3, now() + interval '1 hour', now() + interval '2 hours')`,
       );
       await runDiagnoses();
       expect(calls.filter((url) => url.includes("generativelanguage"))).toEqual([]);

@@ -133,8 +133,12 @@ rule and rig is posted: no openings, recoveries, rises or AI diagnosis. The
 alerts are still stored (`monitor_alerts.refire_count` counts each one's
 earlier openings in the hour, and is at least 3 for one opened inside a
 mute) and still open while the problem lasts, so the
-Rig health page shows them. Once the hour has passed the rule posts normally
-again; if it is still flapping, the next mute line says so.
+Rig health page shows them. When the hour is up, an alert of the mute that is
+still open - the one that posted the line, or one opened since - posts its
+opening once, with the problem as it stands then, and from then on rises and
+recovers like any other; one that closed inside the hour is never posted. After
+that the rule posts normally again; if it is still flapping, the next mute line
+says so.
 
 ## Discord
 

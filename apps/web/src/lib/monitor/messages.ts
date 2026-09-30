@@ -15,7 +15,7 @@ export type AlertForMessage = {
   resolvedAt: number | null;
   /** Earlier openings on the same rule and subject in the hour before this one. */
   refireCount: number;
-  /** Muted for flapping: announced by flappingMessage, and never recovered aloud. */
+  /** Inside a flapping mute right now: announced by flappingMessage, and not recovered aloud. */
   flapping: boolean;
   detail: AlertDetail;
 };
