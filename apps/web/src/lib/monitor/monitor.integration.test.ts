@@ -461,9 +461,9 @@ describeDb("rig monitor against real Postgres", () => {
       );
     }
 
-    async function seatedSilentRig() {
-      const rig = await seedRig(2);
-      const driver = await seedDriver("Matt G");
+    async function seatedSilentRig(rigNumber = 2, driverName = "Matt G") {
+      const rig = await seedRig(rigNumber);
+      const driver = await seedDriver(driverName);
       await openAssignment(rig.id, driver.id);
       for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) await heartbeat(rig, ago);
       return rig;
@@ -632,6 +632,7 @@ describeDb("rig monitor against real Postgres", () => {
       type FakeComment = { body: string; user: { login: string } };
       type FakeIssue = {
         number: number;
+        created_at: string;
         state: string;
         body: string;
         user: { login: string };
@@ -654,7 +655,15 @@ describeDb("rig monitor against real Postgres", () => {
         if (method === "POST" && path === "") {
           const number = 42 + issues.size;
           const labels = dropLabel ? [] : [{ name: "rig-alert" }];
-          issues.set(number, { number, state: "open", body: body.body as string, user: { login: MONITOR }, labels, comments: [] });
+          issues.set(number, {
+            number,
+            created_at: new Date().toISOString(),
+            state: "open",
+            body: body.body as string,
+            user: { login: MONITOR },
+            labels,
+            comments: [],
+          });
           return { ...issueCreated, number, title: body.title, body: body.body, labels };
         }
         const [, n, comments] = path.match(/^\/(\d+)(\/comments)?$/)!;
@@ -760,14 +769,16 @@ describeDb("rig monitor against real Postgres", () => {
         await recover(rig);
         expect(calls).toHaveLength(2);
         expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
-        expect(calls[1]!.body.body).toMatch(/^Alert \d+ recovered after \d+ s\. The issue stays open/);
+        expect(calls[1]!.body.body).toMatch(
+          /^Every rig on this issue has recovered: alert \d+ \(Rig 2\) after \d+ s\. The issue stays open/,
+        );
 
-        // The same rule on the same rig within a day: a comment, not a second issue.
+        // The same rule within a day: a comment, not a second issue.
         await silentAgain(rig);
         await nextEvaluation();
         expect(calls).toHaveLength(3);
         expect(calls[2]!.url).toBe(`${GITHUB}/42/comments`);
-        expect(calls[2]!.body.body).toMatch(/^Fired again as alert \d+\.\n\n```text\nOasis rig alert #/);
+        expect(calls[2]!.body.body).toMatch(/^Fired again as alert \d+ \(Rig 2\)\.\n\n```text\nOasis rig alert #/);
         expect(await issueNumbers()).toEqual([42, 42]);
 
         // The open issue was read, not reopened; every call filed or commented, none closed anything.
@@ -788,7 +799,7 @@ describeDb("rig monitor against real Postgres", () => {
         await nextEvaluation();
         expect(calls.slice(2)).toMatchObject([
           { method: "PATCH", url: `${GITHUB}/42`, body: { state: "open" } },
-          { method: "POST", url: `${GITHUB}/42/comments`, body: { body: expect.stringMatching(/^Fired again as alert \d+\./) } },
+          { method: "POST", url: `${GITHUB}/42/comments`, body: { body: expect.stringMatching(/^Fired again as alert \d+ \(Rig 2\)\./) } },
         ]);
         expect(issues.get(42)!.state).toBe("open");
         expect(await issueNumbers()).toEqual([42, 42]);
@@ -841,7 +852,7 @@ describeDb("rig monitor against real Postgres", () => {
         );
       }
 
-      it("files one issue when a refused alert's retry and its re-fire are filed together", async () => {
+      it("files one issue naming both when a refused alert's retry and its re-fire are filed together", async () => {
         const rig = await seatedSilentRig();
         geminiAnswers = ["answer", "answer"];
         githubAnswers = [500];
@@ -852,9 +863,9 @@ describeDb("rig monitor against real Postgres", () => {
         await retryDue();
         await nextEvaluation();
 
-        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
-        expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
-        expect(calls[1]!.body.body).toMatch(/^Fired again as alert \d+\./);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.url).toBe(GITHUB);
+        expect(calls[0]!.body.body).toMatch(/^Filed by the rig monitor for alert \d+ \(Rig 2\), alert \d+ \(Rig 2\)\./);
         expect(await issueNumbers()).toEqual([42, 42]);
       });
 
@@ -873,7 +884,7 @@ describeDb("rig monitor against real Postgres", () => {
         await nextEvaluation();
         expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
         expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
-        expect(calls[1]!.body.body).toMatch(/^Fired again as alert \d+\./);
+        expect(calls[1]!.body.body).toMatch(/^Fired again as alert \d+ \(Rig 2\)\./);
         expect(await issueNumbers()).toEqual([42, 42]);
       });
 
@@ -931,8 +942,9 @@ describeDb("rig monitor against real Postgres", () => {
         const { rows } = await testDb().query<{ id: string }>("select id::text from monitor_alerts");
         issues.set(7, {
           number: 7,
+          created_at: new Date().toISOString(),
           state: "open",
-          body: `please fix\n\n${rigAlertMarker("issue", rows[0]!.id)}`,
+          body: `please fix\n\n${rigAlertMarker("issue", "rig_silent", [rows[0]!.id])}`,
           user: { login: "someone-else" },
           labels: [{ name: "rig-alert" }],
           comments: [],
@@ -981,15 +993,12 @@ describeDb("rig monitor against real Postgres", () => {
         expect(logged).toContain("without the rig-alert label");
       });
 
-      it("files one issue when two alerts of one fault are filed by concurrent runs", async () => {
-        const rig = await seatedSilentRig();
+      it("files one issue when two rigs' alerts of one rule are filed by concurrent runs", async () => {
+        await seatedSilentRig(2, "Matt G");
+        await seatedSilentRig(7, "Ana R");
         geminiAnswers = ["answer", "answer"];
-        // Both alerts' first filings are refused, so neither has an issue.
+        // Both alerts' first filing is refused, so neither has an issue.
         githubAnswers = [500];
-        await nextEvaluation();
-        await recover(rig);
-        githubAnswers = [500];
-        await silentAgain(rig);
         await nextEvaluation();
         expect(await issueNumbers()).toEqual([null, null]);
 
@@ -1005,7 +1014,7 @@ describeDb("rig monitor against real Postgres", () => {
         githubAnswers = ["hold"];
         const first = runDiagnoses();
         await held;
-        // ...while a second run takes the newer one.
+        // ...while a second run takes the other rig's.
         await due(newer!);
         await runDiagnoses();
         release();
@@ -1016,11 +1025,48 @@ describeDb("rig monitor against real Postgres", () => {
         await retryDue();
         await runDiagnoses();
         expect(issues.size).toBe(1);
-        // One re-fire comment for the newer alert; the older one, recovered, also gets its recovery comment.
         const bodies = issues.get(42)!.comments.map((c) => c.body);
-        expect(bodies.filter((b) => b.startsWith("Fired again as alert "))).toHaveLength(1);
-        expect(bodies.filter((b) => / recovered after /.test(b))).toHaveLength(1);
+        expect(bodies).toHaveLength(1);
+        expect(bodies[0]).toMatch(/^Fired again as alert \d+ \(Rig 7\)\./);
         expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("files one issue for a rule firing on twenty rigs, one comment per pass, and one recovery once all recover", async () => {
+        const rigs: SeededRig[] = [];
+        for (let n = 1; n <= 20; n++) rigs.push(await seatedSilentRig(n, `Driver ${n}`));
+        geminiAnswers = Array.from({ length: 20 }, () => "answer" as const);
+
+        let passes = 0;
+        const filed = async () => (await issueNumbers()).filter((n) => n !== null).length;
+        while ((await filed()) < 20 && passes < 20) {
+          await nextEvaluation();
+          passes++;
+        }
+        expect(await issueNumbers()).toEqual(Array.from({ length: 20 }, () => 42));
+        expect(issues.size).toBe(1);
+        const issue = issues.get(42)!;
+        const refires = issue.comments.filter((c) => c.body.startsWith("Fired again"));
+        expect(refires.length).toBeLessThanOrEqual(passes - 1);
+        expect(refires.length).toBeLessThan(19);
+        // Every rig is named once, in the issue or the comment of the pass it joined in.
+        const named = [issue.body, ...refires.map((c) => c.body)].flatMap((b) => b.split("\n")[0]!.match(/\(Rig \d+\)/g) ?? []);
+        expect(named).toHaveLength(20);
+        expect(new Set(named).size).toBe(20);
+
+        // Nineteen recover: the issue says nothing while one rig is still down.
+        const recoveries = () => issue.comments.filter((c) => c.body.startsWith("Every rig on this issue has recovered"));
+        for (const rig of rigs.slice(0, 19)) await heartbeat(rig, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+        expect(recoveries()).toHaveLength(0);
+
+        await recover(rigs[19]!);
+        expect(recoveries()).toHaveLength(1);
+        expect(recoveries()[0]!.body.split("\n")[0]!.match(/\(Rig \d+\)/g)).toHaveLength(20);
+        await nextEvaluation();
+        expect(recoveries()).toHaveLength(1);
+        expect(issues.size).toBe(1);
+        expect(calls.every((c) => !("state" in c.body))).toBe(true);
       });
 
       it("logs only the status when GitHub's error body echoes the token and the issue", async () => {

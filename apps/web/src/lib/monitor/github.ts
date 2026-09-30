@@ -78,17 +78,14 @@ const PAGE_SIZE = 100;
 type Authored = { body?: unknown; user?: { login?: unknown } | null };
 
 /**
- * Whether `item` is the monitor's own write carrying `marker`: authored by the
- * token's account, with the marker as the body's exact last line. Anyone can
- * open an issue or comment on this public repository and type a marker, and a
- * handoff can quote one mid-text; neither counts.
+ * The marker `item` carries when it is the monitor's own write: its body's
+ * exact last line, when the token's account wrote it. Anyone can open an
+ * issue or comment on this public repository and type a marker, and a handoff
+ * can quote one mid-text; neither counts.
  */
-function carries(item: Authored, marker: string, login: string): boolean {
-  return (
-    item.user?.login === login &&
-    typeof item.body === "string" &&
-    item.body.trimEnd().split("\n").at(-1) === marker
-  );
+function markerOf(item: Authored, login: string): string | null {
+  if (item.user?.login !== login || typeof item.body !== "string") return null;
+  return item.body.trimEnd().split("\n").at(-1) ?? null;
 }
 
 /**
@@ -110,70 +107,90 @@ async function monitorAccount(options: Options): Promise<GitHubResult<{ login: s
 }
 
 /**
- * Reads a list endpoint page by page until `match` finds an item, a short page
- * ends the list, or MARKER_MAX_PAGES have been read - which fails, so the
- * write is retried later rather than repeated on a guess.
+ * Reads a list endpoint page by page until `enough` says a page settles it, a
+ * short page ends the list, or MARKER_MAX_PAGES have been read - which fails,
+ * so the write is retried later rather than repeated on a guess.
  */
-async function findInPages<T>(
+async function readPages<T>(
   path: string,
   query: string,
-  match: (item: T) => boolean,
+  enough: (page: T[]) => boolean,
   options: Options,
-): Promise<GitHubResult<{ item: T | null }>> {
+): Promise<GitHubResult<{ items: T[] }>> {
+  const items: T[] = [];
   for (let page = 1; page <= MARKER_MAX_PAGES; page++) {
     const result = await call("GET", `${path}?${query}&per_page=${PAGE_SIZE}&page=${page}`, undefined, options);
     if (result.status !== "sent") return result;
-    const items = Array.isArray(result.body) ? (result.body as T[]) : [];
-    const found = items.find(match);
-    if (found) return { status: "sent", item: found };
-    if (items.length < PAGE_SIZE) return { status: "sent", item: null };
+    const read = Array.isArray(result.body) ? (result.body as T[]) : [];
+    items.push(...read);
+    if (enough(read) || read.length < PAGE_SIZE) return { status: "sent", items };
   }
   return { status: "failed", reason: `marker not found in ${MARKER_MAX_PAGES} pages` };
 }
 
 /**
- * The issue the monitor filed carrying `marker`, if it filed one, and whether
- * it has the rig-alert label. Reads the repository's issues updated since
- * `since` - the list, not search, which lags behind writes.
+ * The issue the monitor filed, created since `since`, whose marker `match`
+ * accepts - with that marker and whether it has the rig-alert label. Reads
+ * the repository's issues updated since then - the list, not search, which
+ * lags behind writes.
  */
 export async function findIssueWithMarker(
-  marker: string,
+  match: (marker: string) => boolean,
   since: number,
   options: Options = {},
-): Promise<GitHubResult<{ number: number | null; labelled: boolean }>> {
+): Promise<GitHubResult<{ number: number | null; marker: string | null; labelled: boolean }>> {
   const account = await monitorAccount(options);
   if (account.status !== "sent") return account;
-  type Issue = Authored & { number?: unknown; pull_request?: unknown; labels?: Array<{ name?: unknown }> };
-  const found = await findInPages<Issue>(
+  type Issue = Authored & {
+    number?: unknown;
+    created_at?: unknown;
+    pull_request?: unknown;
+    labels?: Array<{ name?: unknown }>;
+  };
+  const isIt = (issue: Issue) => {
+    const marker = markerOf(issue, account.login);
+    return (
+      !issue.pull_request &&
+      typeof issue.number === "number" &&
+      typeof issue.created_at === "string" &&
+      Date.parse(issue.created_at) >= since &&
+      marker !== null &&
+      match(marker)
+    );
+  };
+  const read = await readPages<Issue>(
     `${REPO}/issues`,
     `state=all&sort=created&direction=desc&since=${new Date(since).toISOString()}`,
-    (issue) => !issue.pull_request && typeof issue.number === "number" && carries(issue, marker, account.login),
+    (page) => page.some(isIt),
     options,
   );
-  if (found.status !== "sent") return found;
+  if (read.status !== "sent") return read;
+  const issue = read.items.find(isIt);
   return {
     status: "sent",
-    number: (found.item?.number as number | undefined) ?? null,
-    labelled: (found.item?.labels ?? []).some((label) => label.name === RIG_ALERT_LABEL),
+    number: (issue?.number as number | undefined) ?? null,
+    marker: issue ? markerOf(issue, account.login) : null,
+    labelled: (issue?.labels ?? []).some((label) => label.name === RIG_ALERT_LABEL),
   };
 }
 
-/** Whether the monitor already left a comment carrying `marker` on the numbered issue. */
-export async function hasCommentWithMarker(
+/** The markers of every comment the monitor left on the numbered issue since `since`. */
+export async function commentMarkers(
   number: number,
-  marker: string,
   since: number,
   options: Options = {},
-): Promise<GitHubResult<{ found: boolean }>> {
+): Promise<GitHubResult<{ markers: string[] }>> {
   const account = await monitorAccount(options);
   if (account.status !== "sent") return account;
-  const found = await findInPages<Authored>(
+  const read = await readPages<Authored>(
     `${REPO}/issues/${number}/comments`,
     `since=${new Date(since).toISOString()}`,
-    (comment) => carries(comment, marker, account.login),
+    () => false,
     options,
   );
-  return found.status === "sent" ? { status: "sent", found: found.item !== null } : found;
+  if (read.status !== "sent") return read;
+  const markers = read.items.map((comment) => markerOf(comment, account.login));
+  return { status: "sent", markers: markers.filter((marker): marker is string => marker !== null) };
 }
 
 /**

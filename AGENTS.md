@@ -293,8 +293,11 @@ coding harness and this public repository's issues). Do not add a rig string
 to it behind a redaction regex; add a field of a vouchable kind, and keep
 model text going through `modelText`. The rig is named there by
 `rigs.rig_number`, never its staff-typed display name, which only the Discord
-alert shows. Issue writes are serialized per fault (`lockFault`) and carry a
-hidden marker (`rigAlertMarker`) that a retry looks for before writing again,
+alert shows. One issue serves every alert of a rule within 24 hours, on any
+rig - a software fault is venue-wide, and one bug must start one fix worker,
+not twenty - while Discord stays per rig. Issue writes are serialized per rule
+(`lockFault`) and carry a hidden marker (`rigAlertMarker`, naming the rule and
+every alert the write covers) that a retry looks for before writing again,
 trusted only as the last line of a write by the token's own account;
 keep both on any new GitHub write.
 

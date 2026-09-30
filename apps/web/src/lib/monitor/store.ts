@@ -586,7 +586,7 @@ export async function claimDiagnosisPostRetries(): Promise<DiagnosisToPost[]> {
   return rows.map((row) => ({ id: row.id, diagnosis: row.diagnosis, handoff: row.handoff, alert: toAlert(row) }));
 }
 
-/** A re-fire of the same rule and subject this soon comments on the earlier alert's issue. */
+/** An alert of a rule this soon after another shares that alert's issue. */
 const REFIRE_WINDOW = "24 hours";
 
 /** `handoffAt` is when the handoff was written: the done state's `at`. */
@@ -621,59 +621,73 @@ export async function claimIssues(softwareRules: readonly string[]): Promise<Ale
 }
 
 /**
- * Takes the lock that serializes filing for one fault - one rule on one rig -
- * for the rest of `db`'s transaction, or answers false when another filer
- * holds it (that filer's alert is retried after RETRY_AFTER). Held from the
- * re-fire lookup through the GitHub write to the record, so two alerts of one
- * fault filed at once cannot both find no issue and both open one. It holds
- * nothing any evaluation waits on, only other filers of the same fault.
+ * Takes the lock that serializes filing for one rule - one fault, however many
+ * rigs it hits - for the rest of `db`'s transaction, or answers false when
+ * another filer holds it (that filer's alerts are retried after RETRY_AFTER).
+ * Held from the issue lookup through the GitHub write to the record, so two
+ * alerts of one rule filed at once cannot both find no issue and both open
+ * one. It holds nothing any evaluation waits on, only other filers of the
+ * same rule.
  */
-export async function lockFault(db: Db, rule: string, subject: string): Promise<boolean> {
+export async function lockFault(db: Db, rule: string): Promise<boolean> {
   const [row] = await rows<{ locked: boolean }>(
     db,
-    "select pg_try_advisory_xact_lock(hashtext('rig-alert-issue'), hashtext($1 || '|' || $2)) as locked",
-    [rule, subject],
+    "select pg_try_advisory_xact_lock(hashtext('rig-alert-issue'), hashtext($1)) as locked",
+    [rule],
   );
   return row?.locked ?? false;
 }
 
 /**
- * The issue another alert on the same rule and subject, opened within
- * REFIRE_WINDOW either side of this one, has already filed - read at filing
- * time, under lockFault, so an alert filed out of order still finds it.
+ * The issue another alert of `rule`, opened within REFIRE_WINDOW either side
+ * of one of `ids`, has already filed - on any rig, since a software fault is
+ * one fault wherever it shows. Read at filing time, under lockFault, so an
+ * alert filed out of order still finds it.
  */
-export async function refireTarget(db: Db, id: string): Promise<number | null> {
+export async function refireTarget(db: Db, rule: string, ids: readonly string[]): Promise<number | null> {
   const [row] = await rows<{ n: number }>(
     db,
     `select p.github_issue_number as n
-     from monitor_alerts a join monitor_alerts p
-       on p.rule = a.rule and p.subject = a.subject and p.id <> a.id
-     where a.id = $1 and p.github_issue_number is not null
-       and p.opened_at between a.opened_at - $2::interval and a.opened_at + $2::interval
+     from monitor_alerts p
+     where p.rule = $1 and p.github_issue_number is not null and p.id <> all($2::bigint[])
+       and exists (
+         select 1 from monitor_alerts a
+         where a.id = any($2::bigint[])
+           and p.opened_at between a.opened_at - $3::interval and a.opened_at + $3::interval)
      order by p.id desc limit 1`,
-    [id, REFIRE_WINDOW],
+    [rule, ids, REFIRE_WINDOW],
   );
   return row?.n ?? null;
 }
 
-export async function recordIssue(db: Db, id: string, number: number): Promise<void> {
-  await db.query("update monitor_alerts set github_issue_number = $2 where id = $1", [id, number]);
+export async function recordIssue(db: Db, ids: readonly string[], number: number): Promise<void> {
+  await db.query("update monitor_alerts set github_issue_number = $2 where id = any($1::bigint[])", [ids, number]);
 }
 
 /**
- * Claims the recovered alerts whose issue has not had its recovery comment.
- * The issue is never closed: closing it would cancel a fix in progress.
+ * Claims the alerts owed a recovery comment, once every alert on their issue
+ * has recovered - so an issue shared by many rigs gets one comment when the
+ * last of them recovers, not one per rig. The issue is never closed: closing
+ * it would cancel a fix in progress.
  */
 export async function claimIssueRecoveries(): Promise<Array<AlertForMessage & { issue: number }>> {
   const rows = await query<AlertRow & { github_issue_number: number }>(
-    `update monitor_alerts
-     set diagnosis = diagnosis || jsonb_build_object('issueRecoveryAttemptedAt', now())
-     where resolved_at is not null and github_issue_number is not null
-       and diagnosis->>'issueRecoveryCommentedAt' is null
-       and coalesce((diagnosis->>'issueRecoveryAttemptedAt')::timestamptz, '-infinity') < now() - $1::interval
-       and resolved_at > now() - $2::interval
+    `update monitor_alerts m
+     set diagnosis = m.diagnosis || jsonb_build_object('issueRecoveryAttemptedAt', now())
+     from (
+       select github_issue_number as n from monitor_alerts
+       where github_issue_number is not null
+       group by github_issue_number
+       having bool_and(resolved_at is not null)
+         and bool_or(diagnosis->>'issueRecoveryCommentedAt' is null and resolved_at > now() - $2::interval)
+     ) due
+     where m.github_issue_number = due.n
+       and m.diagnosis->>'issueRecoveryCommentedAt' is null
+       and coalesce((m.diagnosis->>'issueRecoveryAttemptedAt')::timestamptz, '-infinity') < now() - $1::interval
      returning ${ALERT_COLUMNS}, github_issue_number`,
     [RETRY_AFTER, RETRY_FOR],
   );
-  return rows.map((row) => ({ ...toAlert(row), issue: row.github_issue_number }));
+  return rows
+    .map((row) => ({ ...toAlert(row), issue: row.github_issue_number }))
+    .sort((a, b) => Number(a.id) - Number(b.id));
 }

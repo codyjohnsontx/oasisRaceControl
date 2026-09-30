@@ -9,9 +9,11 @@ import {
   HANDOFF_RULES,
   handoffMessage,
   handoffText,
+  markedAlerts,
   recoveryComment,
   refireComment,
   rigAlertIssue,
+  rigAlertMarker,
 } from "./handoff";
 import { DISCORD_LIMITS } from "./discord";
 
@@ -139,9 +141,20 @@ describe("diagnosisMessage", () => {
 
 describe("the rig-alert issue", () => {
   const handoff = handoffText(CONTEXT, { ok: true, diagnosis: DIAGNOSIS });
+  const FILING = { context: CONTEXT, handoff };
+
+  /** The same rule on another rig, as alert `id`. */
+  function onRig(id: string, rigNumber: number) {
+    const context = incidentContext(
+      { ...ALERT, id, detail: { ...ALERT.detail, headline: `Rig 0${rigNumber}: 2 laps waiting`, rigNumber } },
+      [heartbeat(0, 2)],
+      null,
+    );
+    return { context, handoff: handoffText(context, { ok: false, error: "timed out" }) };
+  }
 
   it("is titled for the rule and rig, and carries the handoff exactly and the heartbeat facts", () => {
-    const issue = rigAlertIssue(CONTEXT, handoff);
+    const issue = rigAlertIssue([FILING]);
     expect(issue.title).toBe("[rig-alert] Laps queued but not reaching the site - Rig 2");
     expect(issue.body).toContain(`\`\`\`text\n${handoff}\n\`\`\``);
     expect(issue.body).toContain("<details><summary>Latest heartbeats (allowlisted fields, oldest first)</summary>");
@@ -166,7 +179,7 @@ describe("the rig-alert issue", () => {
       ],
       null,
     );
-    const issue = rigAlertIssue(hostile, handoffText(hostile, { ok: false, error: "timed out" }));
+    const issue = rigAlertIssue([{ context: hostile, handoff: handoffText(hostile, { ok: false, error: "timed out" }) }]);
     expect(issue.body).not.toContain("octocat");
     expect(issue.body).not.toContain("evil.example");
     expect(issue.body.match(/```/g)).toHaveLength(4);
@@ -190,10 +203,10 @@ describe("the rig-alert issue", () => {
       null,
     );
     const text = handoffText(context, { ok: true, diagnosis: DIAGNOSIS });
-    const issue = rigAlertIssue(context, text);
+    const issue = rigAlertIssue([{ context, handoff: text }]);
     expect(issue.title).toBe("[rig-alert] Laps refused by the site - Rig 7");
     expect(text).toContain("What the monitor saw: Rig 7: the site refused 2 laps; they are parked on the rig");
-    for (const published of [issue.title, issue.body, refireComment(context, text), JSON.stringify(context)]) {
+    for (const published of [issue.title, issue.body, refireComment([{ context, handoff: text }]), JSON.stringify(context)]) {
       expect(published).not.toMatch(/ignore previous|push a fix|jane|example\.com/i);
     }
   });
@@ -234,26 +247,64 @@ describe("the rig-alert issue", () => {
 
   it("makes the staff-set rig name inert in the title", () => {
     const named = { ...CONTEXT, where: "@octocat [Rig](https://evil.example) #1 <b>" };
-    const title = rigAlertIssue(named, handoff).title;
+    const title = rigAlertIssue([{ context: named, handoff }]).title;
     expect(title.startsWith("[rig-alert] Laps queued")).toBe(true);
     expect(title).not.toMatch(/@\w|\]\(|https:\/\/|#\d|<b>/);
     expect(githubInert("Rig 02")).toBe("Rig 02");
   });
 
   it("comments a re-fire with the new alert's handoff, and a recovery without closing", () => {
-    expect(refireComment(CONTEXT, handoff)).toMatch(/^Fired again as alert 123\.\n\n```text\nOasis rig alert #123/);
-    expect(recoveryComment({ id: "123", openedAt: OPENED, resolvedAt: OPENED + 4 * 60_000 })).toBe(
-      "Alert 123 recovered after 4 min. The issue stays open for the fix; close it when that has merged.\n\n" +
-        "<!-- oasis-rig-alert:recovery:alert-123 -->",
+    expect(refireComment([FILING])).toMatch(/^Fired again as alert 123 \(Rig 2\)\.\n\n```text\nOasis rig alert #123/);
+    expect(
+      recoveryComment([{ ...ALERT, resolvedAt: OPENED + 4 * 60_000 }]),
+    ).toBe(
+      "Every rig on this issue has recovered: alert 123 (Rig 2) after 4 min. " +
+        "The issue stays open for the fix; close it when that has merged.\n\n" +
+        "<!-- oasis-rig-alert:recovery:laps_stuck:alert-123 -->",
     );
+  });
+
+  it("names every rig of the rule in one issue, one re-fire comment and one recovery, with the first handoff", () => {
+    const filings = [FILING, onRig("124", 7), onRig("125", 7), onRig("126", 11)];
+    const issue = rigAlertIssue(filings);
+    expect(issue.title).toBe("[rig-alert] Laps queued but not reaching the site - Rig 2, Rig 7, Rig 11");
+    expect(issue.body).toMatch(
+      /^Filed by the rig monitor for alert 123 \(Rig 2\), alert 124 \(Rig 7\), alert 125 \(Rig 7\), alert 126 \(Rig 11\)\. The handoff below is alert 123's\./,
+    );
+    expect(issue.body.match(/```text\nOasis rig alert #/g)).toHaveLength(1);
+    expect(issue.body).toContain(`\`\`\`text\n${handoff}\n\`\`\``);
+    expect(issue.body.split("\n").at(-1)).toBe("<!-- oasis-rig-alert:issue:laps_stuck:alert-123,alert-124,alert-125,alert-126 -->");
+
+    const comment = refireComment(filings.slice(1));
+    expect(comment).toMatch(/^Fired again as alert 124 \(Rig 7\), alert 125 \(Rig 7\), alert 126 \(Rig 11\)\. The handoff below is alert 124's\./);
+    expect(comment.match(/```text\nOasis rig alert #/g)).toHaveLength(1);
+    expect(markedAlerts(comment.split("\n").at(-1)!, "refire", "laps_stuck")).toEqual(["124", "125", "126"]);
+
+    const recovered = [
+      { ...ALERT, resolvedAt: OPENED + 60_000 },
+      { ...ALERT, id: "124", resolvedAt: OPENED + 120_000, detail: { ...ALERT.detail, rigNumber: 7 } },
+    ];
+    expect(recoveryComment(recovered)).toMatch(
+      /^Every rig on this issue has recovered: alert 123 \(Rig 2\) after 1 min, alert 124 \(Rig 7\) after 2 min\./,
+    );
+  });
+
+  it("reads back only a marker of its own kind and rule, whole", () => {
+    const marker = rigAlertMarker("refire", "laps_stuck", ["7", "12"]);
+    expect(marker).toBe("<!-- oasis-rig-alert:refire:laps_stuck:alert-7,alert-12 -->");
+    expect(markedAlerts(marker, "refire", "laps_stuck")).toEqual(["7", "12"]);
+    expect(markedAlerts(marker, "issue", "laps_stuck")).toEqual([]);
+    expect(markedAlerts(marker, "refire", "laps_refused")).toEqual([]);
+    expect(markedAlerts(`${marker} and more`, "refire", "laps_stuck")).toEqual([]);
+    expect(markedAlerts("<!-- oasis-rig-alert:refire:laps_stuck:alert-7,evil -->", "refire", "laps_stuck")).toEqual([]);
   });
 
   it("references no issue or pull request by number outside a code block", () => {
     const outsideCode = (text: string) => text.replace(/```[\s\S]*?```/g, "");
     for (const text of [
-      rigAlertIssue(CONTEXT, handoff).body,
-      refireComment(CONTEXT, handoff),
-      recoveryComment({ id: "123", openedAt: OPENED, resolvedAt: OPENED + 60_000 }),
+      rigAlertIssue([FILING, onRig("124", 7)]).body,
+      refireComment([FILING, onRig("124", 7)]),
+      recoveryComment([{ ...ALERT, resolvedAt: OPENED + 60_000 }]),
     ]) {
       expect(outsideCode(text)).not.toMatch(/#\d/);
     }

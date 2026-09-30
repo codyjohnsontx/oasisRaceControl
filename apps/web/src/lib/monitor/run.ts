@@ -5,10 +5,10 @@ import { incidentContext } from "./diagnosis/context";
 import type { ProviderName } from "./diagnosis/provider";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
 import {
+  commentMarkers,
   commentOnIssue,
   findIssueWithMarker,
   githubConfigured,
-  hasCommentWithMarker,
   openIssue,
   reopenIssue,
   type GitHubResult,
@@ -17,10 +17,10 @@ import {
   diagnosisMessage,
   handoffMessage,
   handoffText,
+  markedAlerts,
   recoveryComment,
   refireComment,
   rigAlertIssue,
-  rigAlertMarker,
 } from "./handoff";
 import { alertMessage, recoveryMessage, type AlertForMessage } from "./messages";
 import { evaluateRules, RULES } from "./rules";
@@ -141,8 +141,10 @@ export async function runDiagnoses(): Promise<number> {
   // a slow GitHub delays no Discord post. Without a token nothing is claimed
   // and the Discord handoff is the whole story.
   if (githubConfigured()) {
-    for (const alert of await claimIssues(SOFTWARE_RULES)) await fileIssue(alert);
-    for (const alert of await claimIssueRecoveries()) await commentRecovery(alert);
+    for (const alerts of groupBy(await claimIssues(SOFTWARE_RULES), (alert) => alert.rule)) await fileIssue(alerts);
+    for (const alerts of groupBy(await claimIssueRecoveries(), (alert) => alert.issue)) {
+      await commentRecovery(alerts[0]!.issue, alerts);
+    }
   }
   return diagnosed;
 }
@@ -220,72 +222,99 @@ async function postDiagnosis(alert: AlertForMessage, state: DiagnosisState, hand
 }
 
 /**
- * Opens the alert's rig-alert issue, or - when another alert on the same
- * rule and rig within a day has one - comments on that one instead, reopening
- * it if it was closed, so a flapping rig makes one issue. The heartbeats are
- * the ones the handoff was written from, not any received since.
+ * Files one rule's claimed alerts: opens the rule's rig-alert issue, or - when
+ * an alert of the same rule within a day, on any rig, already has one -
+ * comments on that one instead, reopening it if it was closed, so one fault
+ * makes one issue however many rigs it hits and one comment however many of
+ * them join at once. The heartbeats are the ones each handoff was written
+ * from, not any received since.
  *
- * Runs under the fault's lock (lockFault), from the re-fire lookup to the
- * record, so concurrent filers of one fault cannot open two issues; a filer
- * that finds it held leaves its alert for a later evaluation. And each write
+ * Runs under the rule's lock (lockFault), from the issue lookup to the
+ * record, so concurrent filers of one rule cannot open two issues; a filer
+ * that finds it held leaves its alerts for a later evaluation. And each write
  * is looked for by its marker first, so a write whose answer was lost is
  * recorded, not repeated. A failure is retried by a later evaluation.
  */
-async function fileIssue(alert: AlertToFile): Promise<void> {
-  const context = await contextOf(alert, alert.handoffAt);
+async function fileIssue(alerts: AlertToFile[]): Promise<void> {
+  const rule = alerts[0]!.rule;
+  const ids = alerts.map((alert) => alert.id);
+  const filings = await Promise.all(
+    alerts.map(async (alert) => ({ context: await contextOf(alert, alert.handoffAt), handoff: alert.handoff })),
+  );
   await withTransaction(async (client) => {
-    if (!(await lockFault(client, alert.rule, alert.subject))) return;
-    // Everything the monitor wrote for this alert is newer than its opening.
-    const since = alert.openedAt - MARKER_LOOKBACK_MS;
-    const refireOf = await refireTarget(client, alert.id);
-    if (refireOf !== null) {
-      // A comment that already landed is recorded as it stands: reopening
-      // first would undo an owner's close for a comment already delivered.
-      const found = await hasCommentWithMarker(refireOf, rigAlertMarker("refire", alert.id), since);
-      if (found.status !== "sent") return logFailedIssue(alert.id, found);
-      if (!found.found) {
-        const reopened = await reopenIssue(refireOf);
-        if (reopened.status !== "sent") return logFailedIssue(alert.id, reopened);
-        const sent = await commentOnIssue(refireOf, refireComment(context, alert.handoff));
-        if (sent.status !== "sent") return logFailedIssue(alert.id, sent);
+    if (!(await lockFault(client, rule))) return;
+    // Everything the monitor wrote for these alerts is newer than their opening.
+    const since = Math.min(...alerts.map((alert) => alert.openedAt)) - MARKER_LOOKBACK_MS;
+    const said = new Set<string>();
+    let number = await refireTarget(client, rule, ids);
+    if (number === null) {
+      const found = await findIssueWithMarker((marker) => markedAlerts(marker, "issue", rule).length > 0, since);
+      if (found.status !== "sent") return logFailedIssue(ids, found);
+      if (found.number === null) {
+        const opened = await openIssue(rigAlertIssue(filings));
+        if (opened.status !== "sent") return logFailedIssue(ids, opened);
+        warnIfUnlabelled(opened.number, opened.labelled, ids);
+        return recordIssue(client, ids, opened.number);
       }
-      return recordIssue(client, alert.id, refireOf);
+      warnIfUnlabelled(found.number, found.labelled, ids);
+      number = found.number;
+      for (const id of markedAlerts(found.marker!, "issue", rule)) said.add(id);
     }
 
-    const found = await findIssueWithMarker(rigAlertMarker("issue", alert.id), since);
-    if (found.status !== "sent") return logFailedIssue(alert.id, found);
-    let { number, labelled } = found;
-    if (number === null) {
-      const opened = await openIssue(rigAlertIssue(context, alert.handoff));
-      if (opened.status !== "sent") return logFailedIssue(alert.id, opened);
-      ({ number, labelled } = opened);
+    const comments = await commentMarkers(number, since);
+    if (comments.status !== "sent") return logFailedIssue(ids, comments);
+    for (const marker of comments.markers) for (const id of markedAlerts(marker, "refire", rule)) said.add(id);
+    const joining = filings.filter(({ context }) => !said.has(context.alertId));
+    // Alerts a comment already named are recorded as they stand: reopening
+    // for them would undo an owner's close for a comment already delivered.
+    if (joining.length > 0) {
+      const reopened = await reopenIssue(number);
+      if (reopened.status !== "sent") return logFailedIssue(ids, reopened);
+      const sent = await commentOnIssue(number, refireComment(joining));
+      if (sent.status !== "sent") return logFailedIssue(ids, sent);
     }
-    if (!labelled) {
-      console.error(
-        `[monitor] issue #${number} for alert #${alert.id} was filed without the rig-alert label; ` +
-          "create the label (docs/monitoring.md) or nothing picks the issue up",
-      );
-    }
-    await recordIssue(client, alert.id, number);
+    await recordIssue(client, ids, number);
   });
 }
 
-/** A recovery comment, unless one whose answer was lost already landed. */
-async function commentRecovery(alert: AlertForMessage & { issue: number }): Promise<void> {
-  const marker = rigAlertMarker("recovery", alert.id);
-  const found = await hasCommentWithMarker(alert.issue, marker, alert.openedAt - MARKER_LOOKBACK_MS);
-  if (found.status !== "sent") return logFailedIssue(alert.id, found);
-  if (!found.found) {
-    const sent = await commentOnIssue(alert.issue, recoveryComment(alert));
-    if (sent.status !== "sent") return logFailedIssue(alert.id, sent);
-  }
-  await markDiagnosisPosted(alert.id, "issueRecoveryCommentedAt");
+function warnIfUnlabelled(number: number, labelled: boolean, ids: readonly string[]): void {
+  if (labelled) return;
+  console.error(
+    `[monitor] issue #${number} for alert #${ids.join(", #")} was filed without the rig-alert label; ` +
+      "create the label (docs/monitoring.md) or nothing picks the issue up",
+  );
 }
 
-function logFailedIssue(id: string, result: GitHubResult): void {
-  if (result.status === "failed") {
-    console.error(`[monitor] GitHub refused or missed the issue update for alert #${id}: ${result.reason}`);
+/**
+ * One recovery comment for the alerts of an issue whose every alert has
+ * recovered, naming those not yet said so - unless one whose answer was lost
+ * already landed.
+ */
+async function commentRecovery(issue: number, alerts: AlertForMessage[]): Promise<void> {
+  const ids = alerts.map((alert) => alert.id);
+  const since = Math.min(...alerts.map((alert) => alert.openedAt)) - MARKER_LOOKBACK_MS;
+  const found = await commentMarkers(issue, since);
+  if (found.status !== "sent") return logFailedIssue(ids, found);
+  const said = new Set(found.markers.flatMap((marker) => markedAlerts(marker, "recovery", alerts[0]!.rule)));
+  const recovered = alerts.filter((alert) => !said.has(alert.id));
+  if (recovered.length > 0) {
+    const sent = await commentOnIssue(issue, recoveryComment(recovered));
+    if (sent.status !== "sent") return logFailedIssue(ids, sent);
   }
+  for (const id of ids) await markDiagnosisPosted(id, "issueRecoveryCommentedAt");
+}
+
+function logFailedIssue(ids: readonly string[], result: GitHubResult): void {
+  if (result.status === "failed") {
+    console.error(`[monitor] GitHub refused or missed the issue update for alert #${ids.join(", #")}: ${result.reason}`);
+  }
+}
+
+/** `items` in groups sharing `key`, each group in the order its items came. */
+function groupBy<T, K>(items: readonly T[], key: (item: T) => K): T[][] {
+  const groups = new Map<K, T[]>();
+  for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
+  return [...groups.values()];
 }
 
 /** The redacted incident a diagnosis, handoff and issue are written from. */

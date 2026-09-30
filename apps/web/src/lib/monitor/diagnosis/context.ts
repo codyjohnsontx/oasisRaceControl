@@ -176,7 +176,7 @@ export function incidentContext(
  * The venue note's "Venue" is the monitor's own word; a rig alert stored
  * before the number was recorded is "a rig", never its display name.
  */
-function publicRig(detail: AlertDetail): string {
+export function publicRig(detail: AlertDetail): string {
   if (typeof detail.rigNumber === "number" && Number.isInteger(detail.rigNumber)) return `Rig ${detail.rigNumber}`;
   return detail.where === "Venue" ? "Venue" : "a rig";
 }

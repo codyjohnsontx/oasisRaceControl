@@ -1,7 +1,8 @@
 import { clip, DISCORD_LIMITS, type DiscordMessage } from "./discord";
-import type { IncidentContext } from "./diagnosis/context";
+import { publicRig, type IncidentContext } from "./diagnosis/context";
 import type { Diagnosis, DiagnosisResult } from "./diagnosis";
 import type { ProviderName } from "./diagnosis/provider";
+import type { AlertForMessage } from "./messages";
 import { duration, RULES } from "./rules";
 import { VENUE_TIMEZONE } from "@/lib/venue";
 
@@ -94,52 +95,97 @@ export function diagnosisMessage(
 /** GitHub's own limit on an issue title. */
 const ISSUE_TITLE_MAX = 256;
 
+/** One alert filed to a rig-alert issue: its redacted context and its handoff. */
+export type Filing = { context: IncidentContext; handoff: string };
+
 /**
- * The rig-alert issue (plan section 11), for the coding harness: the handoff
- * exactly as Discord got it, and the heartbeat facts it was written from -
- * the caller passes a context of heartbeats received no later than that.
+ * The rig-alert issue (plan section 11), for the coding harness. One issue
+ * serves every alert of a rule within a day (a software fault is venue-wide,
+ * and one fault must start one fix), so it names each alert's rig and carries
+ * the first alert's handoff exactly as Discord got it, and the heartbeat facts
+ * it was written from - the caller passes a context of heartbeats received no
+ * later than that.
  * GitHub renders markdown and notifies @mentions, so nothing outside a code
  * block is anything but the monitor's own fixed words and numbers - except
- * the title's rule and rig names, which go through `githubInert` - and the
+ * the rule and rig names, which go through `githubInert` - and the
  * code blocks cannot be closed early: the handoff has no fence in it
  * (handoffText), and the rows are the context's allowlisted facts, as JSON.
  */
-export function rigAlertIssue(context: IncidentContext, handoff: string): { title: string; body: string } {
+export function rigAlertIssue(filings: readonly Filing[]): { title: string; body: string } {
+  const [first] = filings as [Filing, ...Filing[]];
+  const rigs = [...new Set(filings.map(({ context }) => context.where))].join(", ");
   return {
-    title: clip(`[rig-alert] ${githubInert(`${context.rule.title} - ${context.where}`)}`, ISSUE_TITLE_MAX),
+    title: clip(`[rig-alert] ${githubInert(`${first.context.rule.title} - ${rigs}`)}`, ISSUE_TITLE_MAX),
     body:
-      `Filed by the rig monitor for alert ${context.alertId} (docs/monitoring.md). ` +
-      `Close this issue when the fix has merged; a recovery only comments.\n\n${incidentSection(context, handoff)}\n\n` +
-      rigAlertMarker("issue", context.alertId),
+      `Filed by the rig monitor for ${alertList(filings)}.${whichHandoff(filings)} ` +
+      "Every alert of this rule within a day joins this issue (docs/monitoring.md). " +
+      `Close this issue when the fix has merged; a recovery only comments.\n\n${incidentSection(first)}\n\n` +
+      rigAlertMarker("issue", first.context.rule.key, alertIds(filings)),
   };
 }
 
+type MarkerKind = "issue" | "refire" | "recovery";
+
 /**
  * The hidden line every issue, re-fire comment and recovery comment the
- * monitor writes carries, naming the alert and what the write was for. A write
- * whose answer never came back (a timeout, a dropped connection, a process
- * that died before recording it) may still have landed, so before writing
- * again the monitor looks for its marker and records what it finds instead.
- * An HTML comment, so GitHub renders nothing for it.
+ * monitor writes carries, naming the rule and every alert the write was for,
+ * and what it was for. A write whose answer never came back (a timeout, a
+ * dropped connection, a process that died before recording it) may still
+ * have landed, so before writing again the monitor looks for its markers and
+ * records what they name instead. An HTML comment, so GitHub renders nothing
+ * for it.
  */
-export function rigAlertMarker(kind: "issue" | "refire" | "recovery", alertId: string): string {
-  return `<!-- oasis-rig-alert:${kind}:alert-${alertId} -->`;
+export function rigAlertMarker(kind: MarkerKind, rule: string, alertIds: readonly string[]): string {
+  return `<!-- oasis-rig-alert:${kind}:${rule}:${alertIds.map((id) => `alert-${id}`).join(",")} -->`;
 }
 
-/** A later alert on the same rule and rig, commented on the open issue instead of filing another. */
-export function refireComment(context: IncidentContext, handoff: string): string {
+/** The alerts a marker line names, when it is a `kind` marker for `rule`; none otherwise. */
+export function markedAlerts(line: string, kind: MarkerKind, rule: string): string[] {
+  const prefix = `<!-- oasis-rig-alert:${kind}:${rule}:`;
+  const suffix = " -->";
+  if (!line.startsWith(prefix) || !line.endsWith(suffix)) return [];
+  const names = line.slice(prefix.length, -suffix.length).split(",");
+  return names.every((name) => /^alert-\d+$/.test(name)) ? names.map((name) => name.slice("alert-".length)) : [];
+}
+
+/**
+ * Further alerts of the rule within the day, in one comment on its issue
+ * however many rigs joined, rather than filing another issue.
+ */
+export function refireComment(filings: readonly Filing[]): string {
+  const [first] = filings as [Filing, ...Filing[]];
   return (
-    `Fired again as alert ${context.alertId}.\n\n${incidentSection(context, handoff)}\n\n` +
-    rigAlertMarker("refire", context.alertId)
+    `Fired again as ${alertList(filings)}.${whichHandoff(filings)}\n\n${incidentSection(first)}\n\n` +
+    rigAlertMarker("refire", first.context.rule.key, alertIds(filings))
   );
 }
 
-export function recoveryComment(alert: { id: string; openedAt: number; resolvedAt: number | null }): string {
-  const after = alert.resolvedAt === null ? "" : ` after ${duration(alert.resolvedAt - alert.openedAt)}`;
+/** Once every alert on the issue has recovered: the ones not yet said so. */
+export function recoveryComment(
+  alerts: ReadonlyArray<Pick<AlertForMessage, "id" | "rule" | "openedAt" | "resolvedAt" | "detail">>,
+): string {
+  const recovered = alerts.map((alert) => {
+    const after = alert.resolvedAt === null ? "" : ` after ${duration(alert.resolvedAt - alert.openedAt)}`;
+    return `alert ${alert.id} (${githubInert(publicRig(alert.detail))})${after}`;
+  });
   return (
-    `Alert ${alert.id} recovered${after}. The issue stays open for the fix; close it when that has merged.\n\n` +
-    rigAlertMarker("recovery", alert.id)
+    `Every rig on this issue has recovered: ${recovered.join(", ")}. ` +
+    "The issue stays open for the fix; close it when that has merged.\n\n" +
+    rigAlertMarker("recovery", alerts[0]!.rule, alerts.map((alert) => alert.id))
   );
+}
+
+function alertIds(filings: readonly Filing[]): string[] {
+  return filings.map(({ context }) => context.alertId);
+}
+
+/** "alert 12 (Rig 3), alert 13 (Rig 7)" */
+function alertList(filings: readonly Filing[]): string {
+  return filings.map(({ context }) => `alert ${context.alertId} (${githubInert(context.where)})`).join(", ");
+}
+
+function whichHandoff(filings: readonly Filing[]): string {
+  return filings.length > 1 ? ` The handoff below is alert ${filings[0]!.context.alertId}'s.` : "";
 }
 
 /**
@@ -157,7 +203,7 @@ export function githubInert(text: string): string {
     .trim();
 }
 
-function incidentSection(context: IncidentContext, handoff: string): string {
+function incidentSection({ context, handoff }: Filing): string {
   return [
     "```text",
     handoff.replaceAll("```", "'''"),

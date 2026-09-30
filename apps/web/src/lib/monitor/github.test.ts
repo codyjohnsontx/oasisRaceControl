@@ -3,9 +3,9 @@ import badCredentials from "./fixtures/github-bad-credentials.json";
 import commentCreated from "./fixtures/github-comment-created.json";
 import issueCreated from "./fixtures/github-issue-created.json";
 import {
+  commentMarkers,
   commentOnIssue,
   findIssueWithMarker,
-  hasCommentWithMarker,
   MARKER_MAX_PAGES,
   openIssue,
   reopenIssue,
@@ -141,7 +141,8 @@ describe("reopenIssue", () => {
 });
 
 describe("the marker lookups", () => {
-  const MARKER = "<!-- oasis-rig-alert:issue:alert-7 -->";
+  const MARKER = "<!-- oasis-rig-alert:issue:laps_stuck:alert-7 -->";
+  const isMarker = (marker: string) => marker === MARKER;
   const SINCE = Date.parse("2026-09-29T07:00:00Z");
   const MONITOR = { login: "oasis-monitor" };
   const LABELS = issueCreated.labels;
@@ -175,14 +176,16 @@ describe("the marker lookups", () => {
       [
         filed(49, `quoted ${MARKER}`, { pull_request: { url: "x" } }),
         filed(48, `handoff\n\n${MARKER}`, { user: { login: "someone-else" }, labels: [] }),
-        filed(47, `the handoff quotes ${MARKER} and goes on\n\n<!-- oasis-rig-alert:issue:alert-8 -->`),
-        filed(46, "another alert <!-- oasis-rig-alert:issue:alert-70 -->"),
+        filed(47, `the handoff quotes ${MARKER} and goes on\n\n<!-- oasis-rig-alert:issue:laps_stuck:alert-8 -->`),
+        filed(46, "another alert <!-- oasis-rig-alert:issue:laps_stuck:alert-70 -->"),
+        filed(45, `filed the day before\n\n${MARKER}`, { created_at: "2026-09-29T06:59:59Z" }),
         filed(43, `handoff\n\n${MARKER}\n`),
       ],
     ]);
-    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch })).resolves.toEqual({
+    await expect(findIssueWithMarker(isMarker, SINCE, { token: token(), fetch })).resolves.toEqual({
       status: "sent",
       number: 43,
+      marker: MARKER,
       labelled: true,
     });
     const list = new URL((fetch.mock.calls as unknown as Array<[string]>)[1]![0]);
@@ -193,16 +196,17 @@ describe("the marker lookups", () => {
 
   it("ignores a stranger's issue carrying the exact marker", async () => {
     const fetch = github([[filed(48, `handoff\n\n${MARKER}`, { user: { login: "someone-else" } })]]);
-    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch })).resolves.toMatchObject({
+    await expect(findIssueWithMarker(isMarker, SINCE, { token: token(), fetch })).resolves.toMatchObject({
       number: null,
     });
   });
 
   it("reports an unlabelled issue of its own as found but unlabelled", async () => {
     const fetch = github([[filed(43, `handoff\n\n${MARKER}`, { labels: [] })]]);
-    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch })).resolves.toEqual({
+    await expect(findIssueWithMarker(isMarker, SINCE, { token: token(), fetch })).resolves.toEqual({
       status: "sent",
       number: 43,
+      marker: MARKER,
       labelled: false,
     });
   });
@@ -211,12 +215,12 @@ describe("the marker lookups", () => {
     const other = (n: number) => filed(1000 + n, "someone else's alert");
     const fullPage = Array.from({ length: 100 }, (_, n) => other(n));
     const found = github([fullPage, [filed(43, `handoff\n\n${MARKER}`)]]);
-    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch: found })).resolves.toMatchObject({
+    await expect(findIssueWithMarker(isMarker, SINCE, { token: token(), fetch: found })).resolves.toMatchObject({
       number: 43,
     });
 
     const endless = github(Array.from({ length: MARKER_MAX_PAGES + 1 }, () => fullPage));
-    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch: endless })).resolves.toEqual({
+    await expect(findIssueWithMarker(isMarker, SINCE, { token: token(), fetch: endless })).resolves.toEqual({
       status: "failed",
       reason: `marker not found in ${MARKER_MAX_PAGES} pages`,
     });
@@ -226,39 +230,45 @@ describe("the marker lookups", () => {
   it("reads the token's account once, and fails when the list cannot be read", async () => {
     const key = token();
     const fetch = github([[]]);
-    await findIssueWithMarker(MARKER, SINCE, { token: key, fetch });
-    await findIssueWithMarker(MARKER, SINCE, { token: key, fetch });
+    await findIssueWithMarker(isMarker, SINCE, { token: key, fetch });
+    await findIssueWithMarker(isMarker, SINCE, { token: key, fetch });
     const accountReads = (fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => url.endsWith("/user"));
     expect(accountReads).toHaveLength(1);
 
     const refused = vi.fn(async (url: string) =>
       url.endsWith("/user") ? Response.json(MONITOR) : Response.json(badCredentials, { status: 401 }),
     ) as unknown as typeof globalThis.fetch;
-    await expect(findIssueWithMarker(MARKER, SINCE, { token: token(), fetch: refused })).resolves.toEqual({
+    await expect(findIssueWithMarker(isMarker, SINCE, { token: token(), fetch: refused })).resolves.toEqual({
       status: "failed",
       reason: "HTTP 401",
     });
   });
 
-  it("finds only the monitor's own comment with the marker as its last line, on any page", async () => {
-    const marker = "<!-- oasis-rig-alert:recovery:alert-7 -->";
+  it("reads the markers of the monitor's own comments only, as their last line, from every page", async () => {
+    const marker = "<!-- oasis-rig-alert:recovery:laps_stuck:alert-7 -->";
     const comment = (body: string, login = MONITOR.login) => ({ ...commentCreated, body, user: { login } });
-    const fullPage = Array.from({ length: 100 }, () => comment("chatter"));
-    const cases: Array<[unknown[][], boolean]> = [
-      [[[comment(`recovered\n\n${marker}`, "someone-else")]], false],
-      [[[comment(`quoting ${marker} in passing`)]], false],
-      [[fullPage, [comment(`recovered\n\n${marker}`)]], true],
+    const fullPage = Array.from({ length: 100 }, () => comment("chatter", "someone-else"));
+    const cases: Array<[unknown[][], string[]]> = [
+      [[[comment(`recovered\n\n${marker}`, "someone-else")]], []],
+      [[[comment(`quoting ${marker} in passing`)]], [`quoting ${marker} in passing`]],
+      [[fullPage, [comment(`recovered\n\n${marker}`)]], [marker]],
     ];
     for (const [pages, expected] of cases) {
       const fetch = github(pages);
-      await expect(hasCommentWithMarker(42, marker, SINCE, { token: token(), fetch })).resolves.toEqual({
+      await expect(commentMarkers(42, SINCE, { token: token(), fetch })).resolves.toEqual({
         status: "sent",
-        found: expected,
+        markers: expected,
       });
     }
     const fetch = github([[]]);
-    await hasCommentWithMarker(42, marker, SINCE, { token: token(), fetch });
+    await commentMarkers(42, SINCE, { token: token(), fetch });
     const list = new URL((fetch.mock.calls as unknown as Array<[string]>)[1]![0]);
     expect(list.pathname).toBe("/repos/codyjohnsontx/oasisRaceControl/issues/42/comments");
+    expect(list.searchParams.get("since")).toBe("2026-09-29T07:00:00.000Z");
+
+    const endless = github(Array.from({ length: MARKER_MAX_PAGES + 1 }, () => fullPage));
+    await expect(commentMarkers(42, SINCE, { token: token(), fetch: endless })).resolves.toMatchObject({
+      status: "failed",
+    });
   });
 });

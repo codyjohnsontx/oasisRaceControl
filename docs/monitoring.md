@@ -168,33 +168,41 @@ handoff stays either way, as the fallback when the harness is offline.
   issue and in the handoff, never by its display name: that is free text staff
   typed, and a plain sentence or a person's name there would otherwise be
   published. Only the Discord alert itself shows the display name.
-- **The issue:** titled `[rig-alert] <rule> - <rig>`, its body is the handoff
+- **One issue per fault, not per rig.** Every alert of the same rule within
+  24 hours shares one issue, whichever rig it is on: a software fault shows on
+  every rig at once, and one bug must start one fix, not twenty.
+- **The issue:** titled `[rig-alert] <rule> - <rigs>`, it names each alert it
+  was filed for and its rig, and its body is the first alert's handoff
   exactly as Discord got it, plus the heartbeat facts it was written from (the
   same allowlisted fields, as JSON, and only heartbeats received by the time
   the handoff was written, so a retry an hour later adds none from after) in
   a `<details>` block. Both sit in code blocks, so no rig string reaches the
   issue and nothing in it can @mention anyone or link anywhere; the rule and
-  rig names in the title are made inert.
-  The number is stored in `monitor_alerts.github_issue_number`.
-- **A re-fire** of the same rule on the same rig within 24 hours comments on
-  that issue instead of opening another, and reopens it first if it was
-  closed - a fix that did not hold goes back to the harness on the same
-  thread.
-- **A recovery** comments on the issue and leaves it open: closing it would
-  cancel a fix in progress. Close it yourself when the fix has merged.
+  rig names outside them are made inert.
+  The number is stored in `monitor_alerts.github_issue_number` of every alert
+  it covers. Discord still gets each rig's own alert, diagnosis and handoff.
+- **Further alerts** of that rule within 24 hours, on the same rig or another,
+  join the issue with one comment per filing pass naming every rig that
+  joined (and the first one's handoff) instead of opening another, and reopen
+  it first if it was closed - a fix that did not hold goes back to the harness
+  on the same thread.
+- **A recovery** comments on the issue once every alert on it has recovered,
+  not once per rig, and leaves it open: closing it would cancel a fix in
+  progress. Close it yourself when the fix has merged.
 - A call GitHub refuses is retried like a Discord post, and only its status
   code is logged - never GitHub's answer, which could quote the request.
-- **No duplicates.** Filing is serialized per fault (one rule on one rig), so
-  two alerts filed at once make one issue and one comment. Every issue and
-  comment carries a hidden marker naming its alert as its last line; a write
-  whose answer was lost (a timeout, a function that died) is found by that
-  marker on the retry and recorded, not written again. A marker counts only
-  on an issue or comment written by the token's own GitHub account (read once
-  from `GET /user`), so nobody else can type one into this public repository
-  to stop an issue being filed. The lookup pages through the issue and comment
-  lists, not search, up to ten pages of 100; past that it retries later
-  rather than guess. A re-fire comment that already landed is recorded as it
-  is, without reopening an issue you closed since.
+- **No duplicates.** Filing is serialized per rule, so two alerts of one
+  rule filed at once, on one rig or two, make one issue and one comment.
+  Every issue and comment carries a hidden marker as its last line naming the
+  rule and every alert it was written for; a write whose answer was lost (a
+  timeout, a function that died) is found by that marker on the retry and
+  recorded, not written again. A marker counts only on an issue or comment
+  written by the token's own GitHub account (read once from `GET /user`), so
+  nobody else can type one into this public repository to stop an issue
+  being filed. The lookup pages through the issue and comment lists, not
+  search, up to ten pages of 100; past that it retries later rather than
+  guess. A re-fire comment that already landed is recorded as it is, without
+  reopening an issue you closed since.
 
 | Variable | What it is |
 |---|---|
