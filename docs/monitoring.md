@@ -158,7 +158,10 @@ handoff stays either way, as the fallback when the harness is offline.
 - **Which alerts:** an urgent alert whose rule names software as a plausible
   cause (3a, 3b, 10, 15; `software` in `rules.ts`), or any urgent alert the
   diagnosis classes as `software`. An unplugged rig or a closed iRacing files
-  nothing.
+  nothing. The issue's body is the handoff, so it also needs what the handoff
+  needs: `DISCORD_WEBHOOK_URL` and the diagnosis key (`GEMINI_API_KEY`, or
+  `ANTHROPIC_API_KEY` with `DIAGNOSIS_PROVIDER=anthropic`). Without either, no
+  issue is filed, even on a software rule.
 - **The issue:** titled `[rig-alert] <rule> - <rig>`, its body is the handoff
   exactly as Discord got it, plus the heartbeat facts it was written from (the
   same allowlisted fields, as JSON) in a `<details>` block. Both sit in code
@@ -173,7 +176,7 @@ handoff stays either way, as the fallback when the harness is offline.
 
 | Variable | What it is |
 |---|---|
-| `GITHUB_RIG_ALERT_TOKEN` | a fine-grained personal access token: github.com > Settings > Developer settings > Personal access tokens > Fine-grained tokens > Generate new token. Resource owner: you. Repository access: Only select repositories > `oasisRaceControl`. Permissions: Repository > Issues > Read and write, nothing else. Expiration: 1 year, with the renewal date in your calendar. Without it no issue is filed and the Discord handoff is the whole story |
+| `GITHUB_RIG_ALERT_TOKEN` | a fine-grained personal access token: github.com > Settings > Developer settings > Personal access tokens > Fine-grained tokens > Generate new token. Resource owner: you. Repository access: Only select repositories > `oasisRaceControl`. Permissions: Repository > Issues > Read and write, nothing else. Expiration: 1 year, with the renewal date in your calendar. Without it no issue is filed and the Discord handoff is the whole story. It files nothing on its own either: the webhook and the diagnosis key must be set too |
 
 Production only, like the webhook. Create the label once, before the first
 issue: `gh label create rig-alert --color B60205 --description "Opened by the

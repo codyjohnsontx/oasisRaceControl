@@ -42,7 +42,11 @@ import {
 /** Calls per alert: the first, and one retry (plan section 10). */
 export const DIAGNOSIS_ATTEMPTS = 2;
 
-/** Rules where software is a plausible cause: their urgent alerts always get an issue. */
+/**
+ * Rules where software is a plausible cause: their urgent alerts get an issue
+ * whatever the diagnosis says - once there is a handoff to file, which needs
+ * the diagnosis key and the Discord webhook.
+ */
 const SOFTWARE_RULES = Object.entries(RULES)
   .filter(([, rule]) => rule.software)
   .map(([key]) => key);
