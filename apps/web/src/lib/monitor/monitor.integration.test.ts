@@ -4,7 +4,13 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { db } from "@/lib/db";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
 import { runDiagnoses, runMonitor } from "./run";
-import { applyFindings, claimEvaluation, nextVenueMidnightSql, type OpenAlert } from "./store";
+import {
+  applyFindings,
+  claimDiagnoses,
+  claimEvaluation,
+  nextVenueMidnightSql,
+  type OpenAlert,
+} from "./store";
 import type { Finding } from "./rules";
 import {
   closeTestDb,
@@ -796,6 +802,104 @@ describeDb("rig monitor against real Postgres", () => {
       await nextEvaluation();
       expect(await alerts()).toMatchObject([{ rule: "rig_silent", resolved: false }]);
       expect(contents().filter((c) => c?.includes("silent"))).toEqual([`<@${OWNER}> 🔴 Rig 04 has been silent for 5 min`]);
+    });
+
+    it("turns an open warning urgent once when event mode makes it urgent: stored, announced, diagnosed", async () => {
+      await setCombo();
+      const rig = await seedRig(4);
+      for (const ago of [1200, 1140, 1080, 1020, 960, 900, 840, 780, 720, 660, 600, 540, 480]) {
+        await heartbeat(rig, ago);
+      }
+
+      // An ordinary day: an empty rig quiet for 8 min is a quiet warning.
+      await nextEvaluation();
+      expect(contents()).toEqual(["🟡 Rig 04 has been silent for 8 min"]);
+      expect(await alerts()).toMatchObject([{ rule: "rig_silent", notified: true }]);
+
+      // Event mode began before the rig last spoke, so the rig was on for the
+      // event: the same open alert is now urgent.
+      await board();
+      await nextEvaluation();
+      await testDb().query("update monitor_state set event_mode_changed_at = now() - interval '30 minutes'");
+      posts = [];
+      await nextEvaluation();
+      await nextEvaluation();
+
+      expect(contents().filter((c) => c?.includes("silent"))).toEqual([
+        `<@${OWNER}> 🔴 Rig 04 has been silent for 8 min`,
+      ]);
+      const { rows } = await testDb().query<{ severity: string; notified: boolean }>(
+        "select severity, notified_at is not null as notified from monitor_alerts where rule = 'rig_silent'",
+      );
+      expect(rows).toEqual([{ severity: "urgent", notified: true }]);
+      // Urgent, announced and still inside its retry window: due a diagnosis.
+      await testDb().query("update monitor_alerts set diagnosis = null");
+      await expect(claimDiagnoses()).resolves.toMatchObject([{ rule: "rig_silent", severity: "urgent" }]);
+    });
+
+    it("keeps event mode's start when the line saying it ended fails to post", async () => {
+      await setCombo();
+      const id = await board();
+      await nextEvaluation();
+      const { rows: began } = await testDb().query<{ at: string }>(
+        `update monitor_state set event_mode_changed_at = now() - interval '2 hours'
+         returning event_mode_changed_at::text as at`,
+      );
+
+      await testDb().query(
+        "update board_heartbeats set last_seen_at = now() - interval '3 minutes', closed_at = now() - interval '3 minutes' where board_id = $1",
+        [id],
+      );
+      discordAnswers = [500];
+      await nextEvaluation();
+
+      // Handed back whole: still on as far as the channel knows, and since
+      // the moment it really began.
+      const { rows } = await testDb().query<{ event_mode: boolean; same_start: boolean }>(
+        "select event_mode, event_mode_changed_at = $1::timestamptz as same_start from monitor_state",
+        [began[0]!.at],
+      );
+      expect(rows).toEqual([{ event_mode: true, same_start: true }]);
+
+      await nextEvaluation();
+      expect(contents().filter((c) => c?.startsWith("⚪ Event mode off"))).toHaveLength(1);
+    });
+
+    it("keeps event mode on across venue midnight for a board heard seconds before it", async () => {
+      // The database cannot be moved to 00:00:10, so the venue's day is moved
+      // instead: venue_today() says tomorrow, so the day began after the
+      // board's last heartbeat, 20 s ago - a board heard at 23:59:50.
+      const client = await testDb().connect();
+      try {
+        await client.query(
+          `create or replace function venue_today() returns date language sql stable as $$
+             select (now() at time zone 'America/Chicago')::date + 1
+           $$`,
+        );
+        await setCombo();
+        await board({ lastSeenAgoS: 20 });
+        const { rows: began } = await testDb().query<{ at: string }>(
+          `insert into monitor_state (id, event_mode, event_mode_changed_at)
+           values (1, true, now() - interval '1 hour')
+           on conflict (id) do update set event_mode = true, event_mode_changed_at = excluded.event_mode_changed_at
+           returning event_mode_changed_at::text as at`,
+        );
+
+        await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: true });
+        expect(contents().filter((c) => c?.startsWith("⚪"))).toEqual([]);
+        const { rows } = await testDb().query<{ same_start: boolean }>(
+          "select event_mode_changed_at = $1::timestamptz as same_start from monitor_state",
+          [began[0]!.at],
+        );
+        expect(rows).toEqual([{ same_start: true }]);
+      } finally {
+        await client.query(
+          `create or replace function venue_today() returns date language sql stable as $$
+             select (now() at time zone 'America/Chicago')::date
+           $$`,
+        );
+        client.release();
+      }
     });
 
     it("retries an event-mode line Discord refused on a later evaluation, once", async () => {

@@ -34,6 +34,7 @@ import {
   pruneHeartbeats,
   recentHeartbeats,
   releaseEventModeFlip,
+  type EventModeFlip,
   releaseRoutineUpdate,
   saveDiagnosis,
   type AlertToDiagnose,
@@ -124,7 +125,7 @@ export async function runMonitor(): Promise<MonitorRun> {
  * differs from what the channel was last told, so only one evaluation posts
  * it; handed back if the post fails, so a later one does.
  */
-async function announceEventMode(mode: EventMode, claimed: string): Promise<void> {
+async function announceEventMode(mode: EventMode, claimed: EventModeFlip): Promise<void> {
   if (!(await postNote(eventModeLine(mode), "event mode"))) {
     await releaseEventModeFlip(mode.on, claimed);
   }

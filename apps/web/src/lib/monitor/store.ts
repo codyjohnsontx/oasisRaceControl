@@ -1,7 +1,12 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { query, queryOne } from "@/lib/db";
 import type { HeartbeatRow as DiagnosisHeartbeat } from "./diagnosis/context";
-import type { BoardMode, BoardSnapshot, EventModeOverride } from "./event-mode";
+import {
+  BOARD_DARK_AFTER_MS,
+  type BoardMode,
+  type BoardSnapshot,
+  type EventModeOverride,
+} from "./event-mode";
 import type { AlertForMessage } from "./messages";
 import type { Heartbeat } from "./rig-state";
 import {
@@ -137,8 +142,12 @@ export async function loadSnapshot(
       `select board_id::text, mode, host, first_seen_at, last_seen_at, visible, feed_ok,
               feed_failures, closed_at
        from board_heartbeats
-       where last_seen_at >= ${VENUE_DAY_START}
+       where last_seen_at >= least(${VENUE_DAY_START}, now() - $1::interval)
        order by last_seen_at desc`,
+      // Back to the venue day's start for the rules scoped to the day (8a,
+      // 8b), and never less than the live window, so a board heard just
+      // before venue midnight still holds event mode just after it.
+      [`${BOARD_DARK_AFTER_MS / 1000} seconds`],
     ),
     rows<{
       id: string;
@@ -398,6 +407,8 @@ export async function applyFindings(
     if (!row) continue;
     if (row.inserted) {
       announce.push(row.id);
+    } else if (finding.severity === "urgent" && (await severityRose(db, row.id))) {
+      announce.push(row.id);
     } else if (finding.level > 0 && (await levelRose(db, row.id, finding.level))) {
       announce.push(row.id);
     }
@@ -419,6 +430,26 @@ export async function applyFindings(
     [absent, RESOLVE_AFTER_ABSENT],
   );
   return { announce, recover: resolved.filter((r) => r.announced).map((r) => r.id) };
+}
+
+/**
+ * Moves an open warning to urgent - a rig silent before the event that the
+ * event has made urgent - and says whether this evaluation did it. Severity
+ * only ever rises: an urgent alert stays urgent for its life, so a mode that
+ * flips back and forth cannot page the owner twice for one problem. The rise
+ * is announced once, as an opening is, and so gets its diagnosis.
+ */
+async function severityRose(db: Db, id: string): Promise<boolean> {
+  const [row] = await rows<{ id: string }>(
+    db,
+    `update monitor_alerts
+     set severity = 'urgent', notified_at = null, notify_attempted_at = now(),
+         notify_until = now() + $2::interval
+     where id = $1::bigint and severity = 'warning'
+     returning id::text`,
+    [id, RETRY_FOR],
+  );
+  return row !== undefined;
 }
 
 /**
@@ -558,23 +589,31 @@ export async function monitorStatus(): Promise<{ activeAlerts: number; eventMode
  * mode, if it is not there already. Only the evaluation whose update moved it
  * posts the line. Returns the stamp to release with, or null.
  */
-export async function claimEventModeFlip(db: Db, on: boolean): Promise<string | null> {
-  const [row] = await rows<{ changed_at: string }>(
+export type EventModeFlip = { changedAt: string; prior: string | null };
+
+export async function claimEventModeFlip(db: Db, on: boolean): Promise<EventModeFlip | null> {
+  const [row] = await rows<{ changed_at: string; prior: string | null }>(
     db,
-    `update monitor_state set event_mode = $1, event_mode_changed_at = now()
-     where id = 1 and event_mode <> $1
-     returning event_mode_changed_at::text as changed_at`,
+    `update monitor_state s set event_mode = $1, event_mode_changed_at = now()
+     from (select event_mode_changed_at as prior from monitor_state where id = 1 for update) old
+     where s.id = 1 and s.event_mode <> $1
+     returning s.event_mode_changed_at::text as changed_at, old.prior::text as prior`,
     [on],
   );
-  return row?.changed_at ?? null;
+  return row ? { changedAt: row.changed_at, prior: row.prior } : null;
 }
 
-/** Puts a flip back after its post failed, so the next evaluation posts it again. */
-export async function releaseEventModeFlip(on: boolean, changedAt: string): Promise<void> {
+/**
+ * Puts a flip back after its post failed, so the next evaluation posts it
+ * again - the flag and when the mode last changed, both, or the event would
+ * seem to have begun at the failed flip and the rules would take rigs heard
+ * since the real start as heard before it.
+ */
+export async function releaseEventModeFlip(on: boolean, flip: EventModeFlip): Promise<void> {
   await query(
-    `update monitor_state set event_mode = not $1
+    `update monitor_state set event_mode = not $1, event_mode_changed_at = $3::timestamptz
      where id = 1 and event_mode = $1 and event_mode_changed_at = $2::timestamptz`,
-    [on, changedAt],
+    [on, flip.changedAt, flip.prior],
   );
 }
 
@@ -707,7 +746,7 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
      where a.id in (
        select id from monitor_alerts
        where severity = 'urgent' and notified_at is not null and resolved_at is null
-         and opened_at > now() - $1::interval
+         and coalesce(notify_until, opened_at + $1::interval) > now()
          and (subject not like 'rig:%' or detail ? 'driver')
          and (diagnosis is null
            or (diagnosis->>'status' = 'retry' and (diagnosis->>'at')::timestamptz < now() - $2::interval)

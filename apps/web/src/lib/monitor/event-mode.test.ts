@@ -75,10 +75,18 @@ describe("eventMode", () => {
     expect(eventMode(input({ boards: [closed] })).on).toBe(false);
   });
 
-  it("ends at venue midnight: a board last heard yesterday counts for nothing", () => {
-    const justBefore = input({ now: DAY_START + MIN });
-    expect(eventMode({ ...justBefore, boards: [board({ lastSeenAt: DAY_START - 1 })] }).on).toBe(false);
-    expect(eventMode({ ...justBefore, boards: [board({ lastSeenAt: DAY_START })] }).on).toBe(true);
+  it("stays on across venue midnight for a board heard within the live window before it", () => {
+    // 00:00:10 venue time, a board last heard at 23:59:50.
+    const justAfter = DAY_START + 10_000;
+    const heard = board({ lastSeenAt: DAY_START - 10_000 });
+    expect(eventMode(input({ now: justAfter, boards: [heard] }))).toMatchObject({ on: true, cause: "board" });
+  });
+
+  it("lets midnight change nothing: yesterday's board holds only while it is within the live window", () => {
+    const justAfter = input({ now: DAY_START + MIN });
+    const lastHeard = (at: number) => eventMode({ ...justAfter, boards: [board({ lastSeenAt: at })] }).on;
+    expect(lastHeard(DAY_START + MIN - BOARD_DARK_AFTER_MS)).toBe(true);
+    expect(lastHeard(DAY_START + MIN - BOARD_DARK_AFTER_MS - 1)).toBe(false);
   });
 
   it("follows a staff override over the boards until it expires, and the boards after", () => {

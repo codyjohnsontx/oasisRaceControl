@@ -68,6 +68,29 @@ describeDb("POST /api/tv/heartbeat against real Postgres", () => {
     expect(await row(boardId)).toMatchObject([{ feed_ok: true, feed_failures: 0, closed: false }]);
   });
 
+  it("keeps a board restored from the back-forward cache open when its old goodbye lands late", async () => {
+    // The page's goodbye is a beacon and its heartbeats are fetches, and the
+    // two keep no order: the goodbye sent as it left can reach the server
+    // after its first heartbeat back. The page says reopened on every
+    // heartbeat after a restore, so the next one undoes that late goodbye.
+    const boardId = randomUUID();
+    const ticket = await mintBoardTicket({ boardId, mode: "event", host: null });
+    const beat = { ticket, visible: true, feedOk: true, feedFailures: 0 };
+
+    await POST(post(beat));
+    await POST(post({ ...beat, visible: false, closing: true }));
+    await POST(post({ ...beat, reopened: true }));
+    expect(await row(boardId)).toMatchObject([{ closed: false }]);
+
+    // The goodbye from before the restore, delivered late.
+    await POST(post({ ...beat, visible: false, closing: true }));
+    expect(await row(boardId)).toMatchObject([{ closed: true }]);
+
+    // The restored page's next periodic heartbeat still says reopened.
+    await POST(post({ ...beat, reopened: true }));
+    expect(await row(boardId)).toMatchObject([{ closed: false }]);
+  });
+
   it("keeps a closed board closed when an ordinary heartbeat lands after its goodbye", async () => {
     const boardId = randomUUID();
     const ticket = await mintBoardTicket({ boardId, mode: "event", host: null });

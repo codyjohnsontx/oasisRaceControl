@@ -157,7 +157,7 @@ export type MonitorSnapshot = {
    * told off - so the evaluation that turns it on finds it began just now.
    */
   eventModeSince: number | null;
-  /** The /tv pages heard from since the venue day began. */
+  /** The /tv pages heard from since the venue day began, or within the live window before now. */
   boards: BoardSnapshot[];
   openAlerts: ReadonlyArray<{ rule: string; subject: string }>;
 };

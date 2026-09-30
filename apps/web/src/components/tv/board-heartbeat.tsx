@@ -29,7 +29,11 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
   useEffect(() => {
     let ticket = initialTicket;
     let refused = false;
-    let reopening = false;
+    // Set once the page comes back from the back-forward cache, and kept for
+    // the rest of its life: the goodbye it sent as it left can reach the
+    // server after its first heartbeat back (a beacon and a fetch keep no
+    // order), so every later heartbeat must undo it too.
+    let restored = false;
 
     const payload = (closing: boolean) => {
       const feed = feedHealth();
@@ -39,7 +43,7 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
         feedOk: feed.ok,
         feedFailures: feed.failures,
         closing,
-        ...(reopening && !closing ? { reopened: true } : {}),
+        ...(restored && !closing ? { reopened: true } : {}),
       });
     };
 
@@ -64,7 +68,6 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
         if (!res.ok) throw new Error(`status ${res.status}`);
         const answer = (await res.json()) as { ticket?: unknown };
         if (typeof answer.ticket === "string") ticket = answer.ticket;
-        reopening = false;
       } catch (error) {
         console.error("[tv] heartbeat failed", (error as Error).message);
       }
@@ -74,10 +77,10 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
       if (!refused) navigator.sendBeacon("/api/tv/heartbeat", payload(true));
     };
     // Back from the back-forward cache: the goodbye went, so report at once,
-    // and say so until the server has heard it - only that undoes a goodbye.
+    // and say so on every heartbeat from now on - only that undoes a goodbye.
     const onPageShow = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
-      reopening = true;
+      restored = true;
       void beat();
     };
 

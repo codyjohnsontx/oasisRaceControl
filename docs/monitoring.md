@@ -67,6 +67,10 @@ Details worth knowing:
 - **An empty rig going quiet waits 5 more minutes** before warning, because
   that is usually the first rig of a closing. If the rest follow, one note
   replaces the per-rig warnings. A rig with a driver in it never waits.
+- **An alert only ever gets more urgent.** A warning that turns urgent - a
+  rig already silent when event mode begins that the event makes urgent - is
+  stored as urgent and announced once more, with the @mention and its
+  diagnosis; an urgent alert never drops back to a warning while it is open.
 - **Recovery needs two evaluations in a row** without the problem, so one
   evaluation that misses a condition does not post "recovered".
 - **Rules 3a, 3b and 10 hold through a goodbye** - closing the agent does not
@@ -205,8 +209,9 @@ by `eventMode()` in `event-mode.ts`, pure, from the same snapshot as the rules:
   dark. A live board holds it across venue midnight: an event laptop left
   open overnight keeps event mode on (20-minute updates all night, and rule 4
   from 00:00 if the new day has no combo), so close its tab at the end of the
-  day. Only a board last heard before midnight counts for nothing after it,
-  and only the staff override ends at venue midnight by itself. A goodbye
+  day. Midnight itself changes nothing for a board heard within the last 3
+  minutes; a board last heard longer ago than that counts for nothing after
+  midnight, and only the staff override ends at venue midnight by itself. A goodbye
   followed by a new page within 2 minutes (a reload) does not flip it.
 - **Rule 8a does not wait on event mode.** A board that goes dark ends event
   mode at the same moment it becomes dark, so 8a is judged on its own: of
@@ -238,7 +243,8 @@ on today (online, iRacing, who is seated and for how long, last lap, queue,
 agent build); the top three by initials, from the same view the event board
 ranks; and the open alerts. Its colour is the worst open alert's. A post
 Discord refuses is handed back and retried by the next evaluation, for the
-line and the update alike.
+line and the update alike; a line handed back also restores when event mode
+last changed, so a failed post never moves the event's start.
 
 ### The board heartbeat
 
@@ -249,7 +255,10 @@ how many of its boards' loads have failed in a row (`lib/tv-feed-health.ts`,
 which counts every registered board type's loads - the same failures the
 footer shows as "Reconnecting"). As the page closes it sends a goodbye with
 `navigator.sendBeacon`; a killed browser or a sleeping laptop sends nothing,
-and that silence is rule 8a.
+and that silence is rule 8a. A page that comes back from the browser's
+back-forward cache says `reopened` on every heartbeat from then on, because
+the goodbye it sent as it left can reach the server after its first
+heartbeat back.
 
 The route is public, like `/tv`, so it believes a heartbeat only as far as
 its **ticket**: when the server renders `/tv` it mints a board id and signs

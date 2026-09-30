@@ -84,8 +84,10 @@ export function eventMode(input: EventModeInput): EventMode {
       expiresAt: override.expiresAt,
     };
   }
-  // Newest first, so the board named is the one most recently heard.
-  const board = boardsToday(input)
+  // Newest first, so the board named is the one most recently heard. Not
+  // limited to today's boards: one heard 20 s before venue midnight is still
+  // live at 00:00:10, and the 3-minute window is the rule that bounds it.
+  const board = input.boards
     .filter((b) => b.mode === "event" && holdsEventMode(b, input.now))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
   return board ? { on: true, cause: "board", board } : { on: false, cause: "none" };
