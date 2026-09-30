@@ -21,10 +21,19 @@ export type Heartbeat = {
   telemetryMode: string | null;
   simConnected: boolean | null;
   telemetryFaulted: boolean | null;
+  /** The session iRacing is in, in the strings laps are posted with; null when idle. */
+  session: { trackName: string; trackConfig: string | null; carName: string } | null;
   pendingLaps: number | null;
   oldestPendingAgeS: number | null;
   rejectedLaps: number | null;
   checkout: string | null;
+  /**
+   * Walk-up sign-ins refused since the agent's last delivered heartbeat, and
+   * their kinds (SIGN_IN_FAILURE_KINDS in events.ts; the route refuses any
+   * other value).
+   */
+  signInFailures: number | null;
+  signInFailureKinds: string[];
   missingVariables: string[];
   agentCpuPercent: number | null;
   agentMemoryMb: number | null;

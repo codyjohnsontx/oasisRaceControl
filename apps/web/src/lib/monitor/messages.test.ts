@@ -9,6 +9,8 @@ const URGENT: AlertForMessage = {
   severity: "urgent",
   openedAt: OPENED,
   resolvedAt: null,
+  refireCount: 0,
+  flapping: false,
   detail: {
     headline: "Rig 02 has been silent for 2 min with Matt G signed in",
     where: "Rig 02",

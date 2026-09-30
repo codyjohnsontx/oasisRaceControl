@@ -1,10 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/lib/db";
+import { CURRENT_AGENT_VERSION } from "./agent-version";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
 import { runDiagnoses, runMonitor } from "./run";
-import { applyFindings, claimEvaluation, type OpenAlert } from "./store";
+import { applyFindings, claimEvaluation, LAP_BESTS_SQL, RECENT_LAPS_SQL, type OpenAlert } from "./store";
 import type { Finding } from "./rules";
 import {
   closeTestDb,
@@ -13,6 +15,7 @@ import {
   resetDb,
   seedDriver,
   seedRig,
+  setFeaturedCombo,
   testDb,
   type SeededRig,
 } from "@/test/db";
@@ -69,15 +72,18 @@ async function heartbeat(
     rejectedLaps?: number;
     agentVersion?: string;
     assignmentId?: string;
+    checkout?: string;
+    session?: { track: string; config: string | null; car: string };
   } = {},
 ) {
   // The route's column layout: the fields rules filter on have columns, the rest is payload.
   await testDb().query(
     `insert into rig_heartbeats (rig_id, received_at, sent_at, clock_skew_ms,
        process_started_at, sim_connected, telemetry_faulted, pending_laps, rejected_laps,
-       checkout, shutting_down, payload, agent_version, assignment_id)
+       checkout, shutting_down, payload, agent_version, assignment_id,
+       session_track, session_config, session_car)
      values ($1, now() - make_interval(secs => $2), now() - make_interval(secs => $3), 0,
-       $4, true, false, 0, $5, 'none', $6, $7, $8, $9)`,
+       $4, true, false, 0, $5, $10, $6, $7, $8, $9, $11, $12, $13)`,
     [
       rig.id,
       agoS,
@@ -88,6 +94,10 @@ async function heartbeat(
       fields.sequence === undefined ? {} : { sequence: fields.sequence, telemetryMode: "iracing" },
       fields.agentVersion ?? null,
       fields.assignmentId ?? null,
+      fields.checkout ?? "none",
+      fields.session?.track ?? null,
+      fields.session?.config ?? null,
+      fields.session?.car ?? null,
     ],
   );
   await testDb().query(
@@ -99,6 +109,81 @@ async function heartbeat(
     "update rigs set last_seen_at = now() - make_interval(secs => $2) where id = $1 and last_seen_at is null",
     [rig.id, agoS],
   );
+}
+
+const TRACK = { track: "Circuit of the Americas", config: "Grand Prix" };
+
+/**
+ * Stores a lap `agoS` seconds ago as the ingestion route would: owned (with
+ * the assignment it was stamped with) or unattributed with a cause, valid or
+ * refused with a reason.
+ */
+async function storeLap(
+  rig: SeededRig,
+  agoS: number,
+  lap: {
+    owner?: { driverId: string; assignmentId: string };
+    cause?: string;
+    invalidReason?: string;
+    lapTimeMs?: number;
+    car?: string;
+  } = {},
+): Promise<string> {
+  const invalidReason = lap.owner ? (lap.invalidReason ?? null) : "UNATTRIBUTED";
+  const { rows } = await testDb().query<{ id: string }>(
+    `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name, track_config,
+       car_name, lap_time_ms, is_valid, invalid_reason, unattributed_cause, completed_at, created_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+       now() - make_interval(secs => $12), now() - make_interval(secs => $12))
+     returning id::text`,
+    [
+      randomUUID(),
+      rig.id,
+      lap.owner?.assignmentId ?? null,
+      lap.owner?.driverId ?? null,
+      TRACK.track,
+      TRACK.config,
+      lap.car ?? "FIA F4",
+      lap.lapTimeMs ?? 137_000,
+      invalidReason === null,
+      invalidReason,
+      lap.owner ? null : (lap.cause ?? "nobody_checked_in"),
+      agoS,
+    ],
+  );
+  return rows[0]!.id;
+}
+
+/** A stint that ended long ago: somewhere to hang a lap's attribution. */
+async function pastStint(rigId: string, driverId: string): Promise<string> {
+  const { rows } = await testDb().query<{ id: string }>(
+    `insert into rig_assignments (rig_id, driver_id, started_at, ended_at, end_reason)
+     values ($1, $2, now() - interval '3 days', now() - interval '3 days' + interval '1 hour', 'driver_ended')
+     returning id::text`,
+    [rigId, driverId],
+  );
+  return rows[0]!.id;
+}
+
+/**
+ * Rows a statement read from `relation`: what each scan returned plus what
+ * its filter threw away, from the executor's own statistics rather than a
+ * timing, so it is not flaky.
+ */
+function rowsRead(plan: unknown, relation: string): number {
+  let total = 0;
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (record["Relation Name"] === relation) {
+      const loops = Number(record["Actual Loops"] ?? 1);
+      total += (Number(record["Actual Rows"]) + Number(record["Rows Removed by Filter"] ?? 0)) * loops;
+    }
+    Object.values(record).forEach(visit);
+  };
+  visit(plan);
+  return total;
 }
 
 /** Waits until `n` backends in the test database are waiting on a lock. */
@@ -593,7 +678,8 @@ describeDb("rig monitor against real Postgres", () => {
       const driver = await seedDriver("Matt G");
       const assignmentId = await openAssignment(rig.id, driver.id);
       for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) {
-        await heartbeat(rig, ago, { agentVersion: "1.4.2", assignmentId });
+        // The current build, so rule 11 has nothing to add to the three posts.
+        await heartbeat(rig, ago, { agentVersion: CURRENT_AGENT_VERSION, assignmentId });
       }
       geminiAnswers = ["answer"];
 
@@ -601,10 +687,10 @@ describeDb("rig monitor against real Postgres", () => {
 
       expect(posts).toHaveLength(3);
       const handoff = posts[2]!.content!;
-      expect(handoff).toContain("· agent 1.4.2\n");
+      expect(handoff).toContain(`· agent ${CURRENT_AGENT_VERSION}\n`);
       expect(handoff).toMatch(/Rig state \(last 3 heartbeats\): \d\d:\d\d:\d\d, sim connected, pending 0, skew \+0\.0 s;/);
       const heartbeats = JSON.parse(prompts[0]!).contents[0].parts[0].text;
-      expect(heartbeats).toContain('"agentVersion": "1.4.2"');
+      expect(heartbeats).toContain(`"agentVersion": "${CURRENT_AGENT_VERSION}"`);
       expect(heartbeats).toContain('"simConnected": true');
       expect(heartbeats).toContain('"pendingLaps": 0');
       expect(heartbeats).toContain('"driverSeated": true');
@@ -620,6 +706,235 @@ describeDb("rig monitor against real Postgres", () => {
       expect(prompts).toHaveLength(0);
       expect(posts).toHaveLength(1);
       expect(await diagnosis()).toMatchObject([{ diagnosis: null, handoff: null }]);
+    });
+  });
+
+
+  describe("flapping", () => {
+    /** Rule 16 opens on one heartbeat and clears two evaluations after the next. */
+    async function flap(rig: SeededRig) {
+      await heartbeat(rig, 0, { checkout: "not_queued" });
+      await nextEvaluation();
+      await heartbeat(rig, 0);
+      await nextEvaluation();
+      await nextEvaluation();
+    }
+
+    it("mutes a rule that re-fires three times in an hour with one line, then posts nothing on it for the hour", async () => {
+      const rig = await seedRig(1);
+      for (let i = 0; i < 6; i++) await flap(rig);
+
+      const opened = /^🟡 Rig 01: a sign-out could not be saved on the rig/;
+      const recovered = /^🟢 Recovered: Sign-out not saved - Rig 01/;
+      expect(posts.map((p) => p.content)).toEqual([
+        expect.stringMatching(opened),
+        expect.stringMatching(recovered),
+        expect.stringMatching(opened),
+        expect.stringMatching(recovered),
+        expect.stringMatching(opened),
+        expect.stringMatching(recovered),
+        expect.stringMatching(
+          /^🔕 Flapping: Sign-out not saved - Rig 01 has fired 4 times in the last hour; muted for 1 h \(alert #4 · rule 16\)$/,
+        ),
+      ]);
+      expect(posts.at(-1)!.allowed_mentions).toEqual({ parse: [] });
+      const { rows } = await testDb().query<{ refire_count: number; resolved: boolean }>(
+        "select refire_count, resolved_at is not null as resolved from monitor_alerts order by id",
+      );
+      expect(rows.map((r) => r.refire_count)).toEqual([0, 1, 2, 3, 4, 5]);
+      expect(rows.every((r) => r.resolved)).toBe(true);
+    });
+
+    it("keeps a muted alert open and on record while the problem lasts, without posting its rises", async () => {
+      const rig = await seedRig(1);
+      for (let i = 0; i < 3; i++) {
+        await heartbeat(rig, 0, { rejectedLaps: 1 });
+        await nextEvaluation();
+        await heartbeat(rig, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+      }
+      await heartbeat(rig, 0, { rejectedLaps: 1 });
+      await nextEvaluation();
+      await heartbeat(rig, 0, { rejectedLaps: 4 });
+      await nextEvaluation();
+
+      expect(posts.at(-1)!.content).toMatch(/^🔕 Flapping: Laps refused by the site - Rig 01 has fired 4 times/);
+      expect(posts.filter((p) => p.content?.startsWith("🔕"))).toHaveLength(1);
+      expect(await alerts()).toMatchObject([{}, {}, {}, { rule: "laps_refused", level: 4, resolved: false }]);
+    });
+
+    it("counts only the last hour: once the mute has passed, the rule posts again", async () => {
+      const rig = await seedRig(1);
+      for (let i = 0; i < 4; i++) await flap(rig);
+      await testDb().query("update monitor_alerts set opened_at = opened_at - interval '61 minutes'");
+      posts = [];
+
+      await flap(rig);
+      expect(posts.map((p) => p.content)).toEqual([
+        expect.stringMatching(/^🟡 Rig 01: a sign-out could not be saved/),
+        expect.stringMatching(/^🟢 Recovered: Sign-out not saved/),
+      ]);
+    });
+
+    it("never diagnoses a muted urgent alert", async () => {
+      vi.stubEnv("GEMINI_API_KEY", "test-gemini-key");
+      const calls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init: RequestInit) => {
+          calls.push(url);
+          return fetchMock(url, init);
+        }),
+      );
+      await testDb().query(
+        `insert into monitor_alerts (rule, subject, severity, detail, refire_count, notified_at, notify_until)
+         values ('telemetry_faulted', 'venue', 'urgent', '{"headline":"x","where":"Venue","fields":[]}',
+                 3, now(), now() + interval '1 hour')`,
+      );
+      await runDiagnoses();
+      expect(calls.filter((url) => url.includes("generativelanguage"))).toEqual([]);
+    });
+  });
+
+  describe("rules read from laps, stints and the combo", () => {
+    it("warns about laps landing with nobody signed in, and clears when an attributed lap lands", async () => {
+      const rig = await seedRig(1);
+      await heartbeat(rig, 0);
+      await storeLap(rig, 300);
+      await storeLap(rig, 120);
+
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        "🟡 Rig 01: 2 laps in the last 10 min landed with nobody signed in - they will not rank until someone signs in on the rig",
+      ]);
+
+      const driver = await seedDriver("Ada");
+      const assignmentId = await openAssignment(rig.id, driver.id);
+      await storeLap(rig, 0, { owner: { driverId: driver.id, assignmentId } });
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(posts.at(-1)!.content).toMatch(/^🟢 Recovered: Laps with nobody signed in - Rig 01/);
+    });
+
+    it("warns about a stint past the threshold staff set in monitor_state", async () => {
+      const rig = await seedRig(1);
+      const driver = await seedDriver("Ada");
+      const assignmentId = await openAssignment(rig.id, driver.id);
+      await testDb().query("update rig_assignments set started_at = now() - interval '45 minutes' where id = $1", [
+        assignmentId,
+      ]);
+      await heartbeat(rig, 0);
+
+      await nextEvaluation();
+      expect(posts).toEqual([]);
+
+      await testDb().query("update monitor_state set long_stint_minutes = 30");
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        "🟡 Rig 01: Ada has been signed in for 45 min - still driving, or a missed sign-out?",
+      ]);
+    });
+
+    it("warns when a rig's last three laps were refused for today's combo, naming the combo and not the rig's strings", async () => {
+      await setFeaturedCombo({ trackName: TRACK.track, trackConfig: TRACK.config, carName: "FIA F4" });
+      const rig = await seedRig(1);
+      const driver = await seedDriver("Ada");
+      const assignmentId = await openAssignment(rig.id, driver.id);
+      await heartbeat(rig, 0, { session: { ...TRACK, car: "Mazda MX-5 Cup" } });
+      const owner = { driverId: driver.id, assignmentId };
+      for (const agoS of [600, 400, 200]) {
+        await storeLap(rig, agoS, { owner, car: "Mazda MX-5 Cup", invalidReason: "WRONG_CAR" });
+      }
+
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        "🟡 Rig 01 is in an iRacing session on the wrong car for today's featured combo while Ada is signed in - their laps will not rank",
+      ]);
+      expect(JSON.stringify(posts)).toContain("Circuit of the Americas Grand Prix · FIA F4");
+      expect(JSON.stringify(posts)).not.toContain("Mazda");
+    });
+
+    it("warns when a driver moves rigs while the rig they left is still in a session", async () => {
+      const [left, joined] = [await seedRig(1), await seedRig(2)];
+      const driver = await seedDriver("Ada");
+      const stint = await openAssignment(left.id, driver.id);
+      await testDb().query(
+        "update rig_assignments set ended_at = now() - interval '2 minutes', end_reason = 'moved' where id = $1",
+        [stint],
+      );
+      await openAssignment(joined.id, driver.id);
+      await heartbeat(left, 0, { session: { ...TRACK, car: "FIA F4" } });
+      await heartbeat(joined, 0);
+
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        "🟡 Ada signed in on Rig 02 while still seated on Rig 01, which is still in an iRacing session - is someone driving it without signing in?",
+      ]);
+    });
+
+    it("flags an implausibly fast lap without touching its validity, and closes it without a recovery", async () => {
+      const rig = await seedRig(1);
+      for (let i = 0; i < 5; i++) {
+        const other = await seedDriver(`Other ${i}`);
+        const owner = { driverId: other.id, assignmentId: await pastStint(rig.id, other.id) };
+        await storeLap(rig, 3600, { owner, lapTimeMs: 120_000 + i * 1000 });
+      }
+      const driver = await seedDriver("Ada");
+      const assignmentId = await openAssignment(rig.id, driver.id);
+      await heartbeat(rig, 0);
+      const fast = await storeLap(rig, 60, { owner: { driverId: driver.id, assignmentId }, lapTimeMs: 110_000 });
+
+      await nextEvaluation();
+      expect(posts.map((p) => p.content)).toEqual([
+        "🟡 Rig 01: a 1:50.000 lap by Ada is 8% under the best any other driver had on this car and track (2:00.000) - worth a look; it ranks unless staff invalidate it",
+      ]);
+      const valid = async () =>
+        (await testDb().query<{ is_valid: boolean; invalid_reason: string | null }>(
+          "select is_valid, invalid_reason from laps where id = $1",
+          [fast],
+        )).rows[0];
+      await expect(valid()).resolves.toEqual({ is_valid: true, invalid_reason: null });
+
+      // Twenty minutes on, the lap has left the monitor's view.
+      await testDb().query("update laps set created_at = created_at - interval '20 minutes', completed_at = completed_at - interval '20 minutes' where id = $1", [fast]);
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(posts).toHaveLength(1);
+      expect(await alerts()).toMatchObject([{ rule: "fast_lap", resolved: true, recovery_notified: false }]);
+      await expect(valid()).resolves.toEqual({ is_valid: true, invalid_reason: null });
+    });
+
+    it("reads the recent laps, and rule 14's reference for their combo only, not every lap stored", async () => {
+      // Five thousand laps from the last month across fifty other cars, twenty
+      // older ones on this car, and three from the last few minutes: the
+      // monitor reads these every evaluation, so what it reads must not grow
+      // with the lap history - only with the history of the combo being raced.
+      const rig = await seedRig(1);
+      const driver = await seedDriver("Ada");
+      const assignmentId = await pastStint(rig.id, driver.id);
+      await testDb().query(
+        `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name, track_config,
+           car_name, lap_time_ms, is_valid, completed_at, created_at)
+         select gen_random_uuid()::text, $1, $2, $3, $4, $5,
+                case when g <= 20 then 'FIA F4' else 'Old Car ' || (g % 50) end, 120000 + g, true,
+                now() - make_interval(mins => 60 + g * 8), now() - make_interval(mins => 60 + g * 8)
+         from generate_series(1, 5000) as g`,
+        [rig.id, assignmentId, driver.id, TRACK.track, TRACK.config],
+      );
+      for (const agoS of [300, 200, 100]) await storeLap(rig, agoS, { owner: { driverId: driver.id, assignmentId } });
+      await testDb().query("analyze laps");
+
+      const explain = async (sql: string) =>
+        (
+          await testDb().query<{ "QUERY PLAN": unknown }>(`explain (analyze, format json) ${sql}`, [
+            "1 hour",
+            "900 seconds",
+          ])
+        ).rows[0]!["QUERY PLAN"];
+      expect(rowsRead(await explain(RECENT_LAPS_SQL), "laps")).toBeLessThanOrEqual(10);
+      // The three recent laps found, then this combo's twenty older ones.
+      expect(rowsRead(await explain(LAP_BESTS_SQL), "laps")).toBeLessThanOrEqual(30);
     });
   });
 

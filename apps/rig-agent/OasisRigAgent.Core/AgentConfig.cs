@@ -36,7 +36,10 @@ public sealed record AgentConfig
     /// <summary>Reported on every heartbeat, so the staff dashboard can tell
     /// which rigs stamp laps with their capture-time assignment (0.2 and later)
     /// and which are still on an agent whose laps the backend can only store
-    /// unattributed, where they are kept but can never rank.</summary>
+    /// unattributed, where they are kept but can never rank. Bump
+    /// CURRENT_AGENT_VERSION in apps/web/src/lib/monitor/agent-version.ts with
+    /// it: the rig monitor warns about every rig on any other version, and
+    /// agent-version.test.ts fails until the two agree.</summary>
     public string AgentVersion { get; init; } = "rig-agent/0.4-monitor";
 
     /// <summary>This rig's check-in QR token (the slug in its /r/&lt;token&gt; URL).

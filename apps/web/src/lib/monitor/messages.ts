@@ -13,6 +13,10 @@ export type AlertForMessage = {
   severity: Severity;
   openedAt: number;
   resolvedAt: number | null;
+  /** Earlier openings on the same rule and subject in the hour before this one. */
+  refireCount: number;
+  /** Muted for flapping: announced by flappingMessage, and never recovered aloud. */
+  flapping: boolean;
   detail: AlertDetail;
 };
 
@@ -62,4 +66,27 @@ export function recoveryMessage(alert: AlertForMessage): DiscordMessage {
     ),
     allowed_mentions: { parse: [] },
   };
+}
+
+/**
+ * What announces an alert that opened once too often in an hour: one quiet
+ * line in place of the alert, saying the rule and subject are muted for the
+ * hour. Everything on them in that hour stays in monitor_alerts (and on the
+ * Rig health page) without being posted.
+ */
+export function flappingMessage(alert: AlertForMessage): DiscordMessage {
+  const rule = ruleOf(alert.rule);
+  return {
+    content: clip(
+      `🔕 Flapping: ${rule.title} - ${alert.detail.where} has fired ${alert.refireCount + 1} times ` +
+        `in the last hour; muted for 1 h (alert #${alert.id} · rule ${rule.number})`,
+      DISCORD_LIMITS.content,
+    ),
+    allowed_mentions: { parse: [] },
+  };
+}
+
+/** How an alert opening is announced: itself, or the flapping line that mutes it. */
+export function openingMessage(alert: AlertForMessage, mentionUserId: string | null): DiscordMessage {
+  return alert.flapping ? flappingMessage(alert) : alertMessage(alert, mentionUserId);
 }

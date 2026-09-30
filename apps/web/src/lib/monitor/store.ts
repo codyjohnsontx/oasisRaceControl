@@ -5,9 +5,14 @@ import type { AlertForMessage } from "./messages";
 import type { Heartbeat } from "./rig-state";
 import {
   HEARD_HISTORY_MS,
+  LAP_HISTORY_MS,
+  MOVE_WINDOW_MS,
+  RECOVERS_SILENTLY,
   SILENT_AFTER_MS,
   type AlertDetail,
+  type FeaturedCombo,
   type Finding,
+  type LapSnapshot,
   type MonitorSnapshot,
   type RigSnapshot,
   type Severity,
@@ -76,6 +81,78 @@ const RETRY_FOR = "1 hour";
 /** And no sooner than this after the previous attempt at the same post. */
 const RETRY_AFTER = "60 seconds";
 
+/**
+ * Flapping. An alert that opens for the FLAPPING_REFIRES-th time on the same
+ * rule and subject within FLAPPING_WINDOW - three re-fires after the first -
+ * posts one "flapping, muted" line instead of itself, and everything on that
+ * rule and subject for FLAPPING_WINDOW after it (openings, recoveries, rises)
+ * is kept but not posted. monitor_alerts.refire_count records how many
+ * earlier openings each alert had in the window before it: at or over
+ * FLAPPING_REFIRES the alert is muted, and the muted alert that started the
+ * mute is the one with a notify deadline, since it has the mute line to post.
+ * The alerts stay open and visible; the mute only keeps the channel quiet.
+ */
+export const FLAPPING_REFIRES = 3;
+const FLAPPING_WINDOW = "1 hour";
+
+/**
+ * How far before now a lap's completed_at (the rig's clock) may be for the
+ * snapshot to read it, which lets the read use laps_tonight_idx rather than
+ * scan every lap ever stored. Laps flushed after a longer outage, or from a
+ * rig whose clock is over this far behind (rule 12), are not judged by rules
+ * 5a, 7 and 14 - they describe what was driven hours ago, not now.
+ */
+const LAPS_DRIVEN_WITHIN = "1 hour";
+
+/**
+ * Laps stored in the last LAP_HISTORY_MS ($2), each with its driver. The
+ * completed_at bound ($1), with both values of is_valid named, is what makes
+ * this a range on laps_tonight_idx (is_valid, completed_at) rather than a
+ * scan of every lap ever stored; an integration test counts the rows it
+ * reads.
+ */
+export const RECENT_LAPS_SQL = `
+  select l.id::text, l.rig_id::text, l.created_at, l.driver_id::text,
+         d.display_name::text as driver_name, d.status::text as driver_status,
+         l.track_name, l.track_config, l.car_name, l.lap_time_ms, l.is_valid,
+         l.invalid_reason::text, l.unattributed_cause::text
+  from laps l
+  left join drivers d on d.id = l.driver_id
+  where l.is_valid = any (array[true, false])
+    and l.completed_at >= now() - $1::interval
+    and l.created_at >= now() - $2::interval
+  order by l.created_at, l.id`;
+
+/**
+ * Rule 14's reference: per driver, the best valid lap stored before those
+ * recent laps, on each car and track one of them was a valid lap on, folded
+ * to one row per driver - and nothing at all when no valid lap is recent. It
+ * reads only those combos' laps, each a range on laps_combo_idx: a missing
+ * layout and an empty one are the same combo, as ingestion treats them, so
+ * the empty one is looked up both ways rather than through a coalesce the
+ * index cannot use, and comes back as ''.
+ */
+export const LAP_BESTS_SQL = `
+  with recent as (
+    select distinct track_name, coalesce(track_config, '') as track_config, car_name
+    from laps
+    where is_valid and driver_id is not null
+      and completed_at >= now() - $1::interval and created_at >= now() - $2::interval
+  )
+  select r.track_name, r.track_config, r.car_name, l.driver_id::text, min(l.lap_time_ms) as best_ms
+  from recent r
+  cross join lateral (
+    select driver_id, lap_time_ms, created_at from laps
+    where track_name = r.track_name and track_config = r.track_config
+      and car_name = r.car_name and is_valid
+    union all
+    select driver_id, lap_time_ms, created_at from laps
+    where r.track_config = '' and track_name = r.track_name and track_config is null
+      and car_name = r.car_name and is_valid
+  ) l
+  where l.driver_id is not null and l.created_at < now() - $2::interval
+  group by r.track_name, r.track_config, r.car_name, l.driver_id`;
+
 const HEARTBEAT_RETENTION = "7 days";
 const PRUNE_EVERY = "24 hours";
 
@@ -105,7 +182,7 @@ export async function loadSnapshot(
   now: number,
 ): Promise<MonitorSnapshot & { openAlerts: OpenAlert[] }> {
   // One client runs one statement at a time; these queue on it in order.
-  const [rigRows, heartbeatRows, heardRows, openAlerts] = await Promise.all([
+  const [rigRows, heartbeatRows, heardRows, openAlerts, [venue], lapRows, bestRows, moveRows] = await Promise.all([
     rows<{
       id: string;
       rig_number: number;
@@ -133,6 +210,8 @@ export async function loadSnapshot(
               h.clock_skew_ms::float8 as clock_skew_ms, h.process_started_at,
               h.agent_version, h.sim_connected, h.telemetry_faulted,
               h.pending_laps, h.rejected_laps, h.checkout, h.shutting_down,
+              h.session_track, h.session_config, h.session_car, h.sign_in_failures,
+              h.payload->'signInFailureKinds' as sign_in_failure_kinds,
               h.payload->>'telemetryMode' as telemetry_mode,
               (h.payload->>'sequence')::float8 as sequence,
               (h.payload->>'oldestPendingAgeS')::float8 as oldest_pending_age_s,
@@ -170,6 +249,40 @@ export async function loadSnapshot(
       db,
       "select id::text, rule, subject from monitor_alerts where resolved_at is null",
     ),
+    rows<{
+      long_stint_minutes: number | null;
+      track_name: string | null;
+      track_config: string | null;
+      car_name: string | null;
+    }>(
+      db,
+      `select (select long_stint_minutes from monitor_state where id = 1) as long_stint_minutes,
+              fc.track_name, fc.track_config, fc.car_name
+       from (select 1) one
+       left join featured_combos fc on fc.combo_date = venue_today()`,
+    ),
+    rows<LapRow>(db, RECENT_LAPS_SQL, [LAPS_DRIVEN_WITHIN, `${LAP_HISTORY_MS / 1000} seconds`]),
+    rows<{ track_name: string; track_config: string; car_name: string; driver_id: string; best_ms: number }>(
+      db,
+      LAP_BESTS_SQL,
+      [LAPS_DRIVEN_WITHIN, `${LAP_HISTORY_MS / 1000} seconds`],
+    ),
+    rows<{
+      from_rig_id: string;
+      to_rig_id: string | null;
+      ended_at: Date;
+      driver_name: string;
+      driver_status: string;
+    }>(
+      db,
+      `select ra.rig_id::text as from_rig_id, now_on.rig_id::text as to_rig_id, ra.ended_at,
+              d.display_name::text as driver_name, d.status::text as driver_status
+       from rig_assignments ra
+       join drivers d on d.id = ra.driver_id
+       left join rig_assignments now_on on now_on.driver_id = ra.driver_id and now_on.ended_at is null
+       where ra.end_reason = 'moved' and ra.ended_at >= now() - $1::interval`,
+      [`${MOVE_WINDOW_MS / 1000} seconds`],
+    ),
   ]);
 
   const byRig = new Map<string, Heartbeat[]>();
@@ -203,7 +316,67 @@ export async function loadSnapshot(
     heard: heardByRig.get(row.id) ?? [],
   }));
 
-  return { now, rigs, openAlerts };
+  return {
+    now,
+    rigs,
+    featuredCombo:
+      venue?.track_name && venue.car_name
+        ? { trackName: venue.track_name, trackConfig: venue.track_config, carName: venue.car_name }
+        : null,
+    longStintMinutes: venue?.long_stint_minutes ?? 120,
+    laps: lapRows.map(toLap),
+    lapBests: bestRows.map((row) => ({
+      combo: { trackName: row.track_name, trackConfig: row.track_config || null, carName: row.car_name },
+      driverId: row.driver_id,
+      lapTimeMs: row.best_ms,
+    })),
+    moves: moveRows.map((row) => ({
+      fromRigId: row.from_rig_id,
+      toRigId: row.to_rig_id,
+      endedAt: row.ended_at.getTime(),
+      driverName: row.driver_name,
+      driverStatus: row.driver_status,
+    })),
+    openAlerts,
+  };
+}
+
+type LapRow = {
+  id: string;
+  rig_id: string;
+  created_at: Date;
+  driver_id: string | null;
+  driver_name: string | null;
+  driver_status: string | null;
+  track_name: string;
+  track_config: string | null;
+  car_name: string;
+  lap_time_ms: number;
+  is_valid: boolean;
+  invalid_reason: string | null;
+  unattributed_cause: string | null;
+};
+
+function toLap(row: LapRow): LapSnapshot {
+  const combo: FeaturedCombo = {
+    trackName: row.track_name,
+    trackConfig: row.track_config,
+    carName: row.car_name,
+  };
+  return {
+    id: row.id,
+    rigId: row.rig_id,
+    receivedAt: row.created_at.getTime(),
+    driver:
+      row.driver_id && row.driver_name && row.driver_status
+        ? { id: row.driver_id, name: row.driver_name, status: row.driver_status }
+        : null,
+    combo,
+    lapTimeMs: row.lap_time_ms,
+    valid: row.is_valid,
+    invalidReason: row.invalid_reason,
+    unattributedCause: row.unattributed_cause,
+  };
 }
 
 type HeartbeatRow = {
@@ -220,6 +393,11 @@ type HeartbeatRow = {
   rejected_laps: number | null;
   checkout: string | null;
   shutting_down: boolean;
+  session_track: string | null;
+  session_config: string | null;
+  session_car: string | null;
+  sign_in_failures: number | null;
+  sign_in_failure_kinds: unknown;
   telemetry_mode: string | null;
   sequence: number | null;
   oldest_pending_age_s: number | null;
@@ -240,10 +418,18 @@ function toHeartbeat(row: HeartbeatRow): Heartbeat {
     telemetryMode: row.telemetry_mode,
     simConnected: row.sim_connected,
     telemetryFaulted: row.telemetry_faulted,
+    session:
+      row.session_track && row.session_car
+        ? { trackName: row.session_track, trackConfig: row.session_config, carName: row.session_car }
+        : null,
     pendingLaps: row.pending_laps,
     oldestPendingAgeS: row.oldest_pending_age_s,
     rejectedLaps: row.rejected_laps,
     checkout: row.checkout,
+    signInFailures: row.sign_in_failures,
+    signInFailureKinds: Array.isArray(row.sign_in_failure_kinds)
+      ? row.sign_in_failure_kinds.filter((kind): kind is string => typeof kind === "string")
+      : [],
     missingVariables: Array.isArray(row.missing_variables)
       ? row.missing_variables.filter((name): name is string => typeof name === "string")
       : [],
@@ -260,11 +446,18 @@ function toHeartbeat(row: HeartbeatRow): Heartbeat {
  *
  * - Open: INSERT ... ON CONFLICT against monitor_alerts_one_open. Only the
  *   evaluation whose row was inserted announces; a problem already open only
- *   has its last_seen_at, detail and absence count refreshed.
+ *   has its last_seen_at, detail and absence count refreshed. An opening that
+ *   starts a flapping mute announces the mute instead (FLAPPING_REFIRES); one
+ *   inside a mute announces nothing, and is given no notify deadline, so no
+ *   retry ever posts it either.
  * - Worse: a finding whose level rose re-announces once per rise, claimed by
- *   the update that moved the level.
+ *   the update that moved the level - unless the alert is muted.
  * - Recover: an open alert no finding named counts one absence; the evaluation
- *   whose update reaches RESOLVE_AFTER_ABSENT resolves it and posts.
+ *   whose update reaches RESOLVE_AFTER_ABSENT resolves it and posts, unless it
+ *   is muted or its rule recovers silently (RECOVERS_SILENTLY).
+ *
+ * Evaluations run one at a time (the monitor_state lock), so the count of
+ * earlier openings an insert reads cannot race another evaluation's insert.
  */
 export async function applyFindings(
   db: Db,
@@ -276,19 +469,37 @@ export async function applyFindings(
 
   for (const finding of findings) {
     seen.add(`${finding.rule}|${finding.subject}`);
-    const [row] = await rows<{ id: string; inserted: boolean }>(
+    const [row] = await rows<{ id: string; inserted: boolean; silent: boolean }>(
       db,
-      `insert into monitor_alerts
-         (rule, subject, severity, level, detail, notify_attempted_at, notify_until)
-       values ($1, $2, $3, $4, $5, now(), now() + $6::interval)
+      `with earlier as (
+         select count(*)::int as openings,
+                coalesce(bool_or(refire_count >= $7 and notify_until is not null), false) as muting
+         from monitor_alerts
+         where rule = $1 and subject = $2 and opened_at > now() - $8::interval
+       )
+       insert into monitor_alerts
+         (rule, subject, severity, level, detail, refire_count, notify_attempted_at, notify_until)
+       select $1, $2, $3, $4, $5, openings,
+              case when muting then null else now() end,
+              case when muting then null else now() + $6::interval end
+       from earlier
        on conflict (rule, subject) where resolved_at is null
        do update set last_seen_at = now(), absent_evaluations = 0, detail = excluded.detail
-       returning id::text, (xmax = 0) as inserted`,
-      [finding.rule, finding.subject, finding.severity, finding.level, finding.detail, RETRY_FOR],
+       returning id::text, (xmax = 0) as inserted, notify_until is null as silent`,
+      [
+        finding.rule,
+        finding.subject,
+        finding.severity,
+        finding.level,
+        finding.detail,
+        RETRY_FOR,
+        FLAPPING_REFIRES,
+        FLAPPING_WINDOW,
+      ],
     );
     if (!row) continue;
     if (row.inserted) {
-      announce.push(row.id);
+      if (!row.silent) announce.push(row.id);
     } else if (finding.level > 0 && (await levelRose(db, row.id, finding.level))) {
       announce.push(row.id);
     }
@@ -306,30 +517,34 @@ export async function applyFindings(
          resolved_at = case when absent_evaluations + 1 >= $2 then now() end,
          recovery_attempted_at = case when absent_evaluations + 1 >= $2 then now() end
      where id = any($1::bigint[]) and resolved_at is null
-     returning id::text, resolved_at is not null and notified_at is not null as announced`,
-    [absent, RESOLVE_AFTER_ABSENT],
+     returning id::text,
+               resolved_at is not null and notified_at is not null
+                 and refire_count < $3 and rule <> all($4::text[]) as announced`,
+    [absent, RESOLVE_AFTER_ABSENT, FLAPPING_REFIRES, RECOVERS_SILENTLY],
   );
   return { announce, recover: resolved.filter((r) => r.announced).map((r) => r.id) };
 }
 
 /**
- * Moves an open alert to `level` and says whether that was a rise. A fall is
- * recorded quietly, so the next rise is measured from where the problem
- * actually is. The row lock makes two evaluations seeing the same rise agree
- * on which of them moved it.
+ * Moves an open alert to `level` and says whether that was a rise to post. A
+ * fall is recorded quietly, so the next rise is measured from where the
+ * problem actually is, and so is a rise while the alert is muted. The row
+ * lock makes two evaluations seeing the same rise agree on which of them
+ * moved it.
  */
 async function levelRose(db: Db, id: string, level: number): Promise<boolean> {
   const [row] = await rows<{ rose: boolean }>(
     db,
     `update monitor_alerts a
      set level = $2::int,
-         notified_at = case when $2::int > old.level then null else a.notified_at end,
-         notify_attempted_at = case when $2::int > old.level then now() else a.notify_attempted_at end,
-         notify_until = case when $2::int > old.level then now() + $3::interval else a.notify_until end
-     from (select id, level from monitor_alerts where id = $1::bigint for update) old
+         notified_at = case when old.posts then null else a.notified_at end,
+         notify_attempted_at = case when old.posts then now() else a.notify_attempted_at end,
+         notify_until = case when old.posts then now() + $3::interval else a.notify_until end
+     from (select id, level, $2::int > level and refire_count < $4 as posts
+           from monitor_alerts where id = $1::bigint for update) old
      where a.id = old.id and a.level <> $2::int
-     returning old.level < $2::int as rose`,
-    [id, level, RETRY_FOR],
+     returning old.posts as rose`,
+    [id, level, RETRY_FOR, FLAPPING_REFIRES],
   );
   return row?.rose ?? false;
 }
@@ -340,10 +555,11 @@ type AlertRow = {
   severity: Severity;
   opened_at: Date;
   resolved_at: Date | null;
+  refire_count: number;
   detail: AlertDetail;
 };
 
-const ALERT_COLUMNS = "id::text, rule, severity, opened_at, resolved_at, detail";
+const ALERT_COLUMNS = "id::text, rule, severity, opened_at, resolved_at, refire_count, detail";
 
 function toAlert(row: AlertRow): AlertForMessage {
   return {
@@ -352,6 +568,8 @@ function toAlert(row: AlertRow): AlertForMessage {
     severity: row.severity,
     openedAt: row.opened_at.getTime(),
     resolvedAt: row.resolved_at?.getTime() ?? null,
+    refireCount: row.refire_count,
+    flapping: row.refire_count >= FLAPPING_REFIRES,
     detail: row.detail,
   };
 }
@@ -397,10 +615,11 @@ export async function claimRecoveryRetries(): Promise<AlertForMessage[]> {
     `update monitor_alerts set recovery_attempted_at = now()
      where resolved_at is not null and recovery_notified_at is null
        and notified_at is not null
+       and refire_count < $3 and rule <> all($4::text[])
        and coalesce(recovery_attempted_at, '-infinity') < now() - $1::interval
        and resolved_at > now() - $2::interval
      returning ${ALERT_COLUMNS}`,
-    [RETRY_AFTER, RETRY_FOR],
+    [RETRY_AFTER, RETRY_FOR, FLAPPING_REFIRES, RECOVERS_SILENTLY],
   );
   return rows.map(toAlert);
 }
@@ -470,8 +689,10 @@ export type AlertToDiagnose = AlertForMessage & { subject: string; attempts: num
  * alert itself always goes first), still open, and never diagnosed, due a
  * retry, or claimed by a call that went quiet. A rig alert whose detail does
  * not say who was seated (stored before AlertDetail.driver existed) is never
- * claimed, since its text may name a driver the redaction cannot know. One statement, and SKIP LOCKED,
- * so two evaluations cannot both call for one alert.
+ * claimed, since its text may name a driver the redaction cannot know, and
+ * neither is a muted one: its announcement was the flapping line, and the
+ * three openings before it were diagnosed already. One statement, and SKIP
+ * LOCKED, so two evaluations cannot both call for one alert.
  */
 export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
   const rows = await query<AlertRow & { subject: string; attempts: number }>(
@@ -483,7 +704,7 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
      where a.id in (
        select id from monitor_alerts
        where severity = 'urgent' and notified_at is not null and resolved_at is null
-         and opened_at > now() - $1::interval
+         and opened_at > now() - $1::interval and refire_count < $5
          and (subject not like 'rig:%' or detail ? 'driver')
          and (diagnosis is null
            or (diagnosis->>'status' = 'retry' and (diagnosis->>'at')::timestamptz < now() - $2::interval)
@@ -492,7 +713,7 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
        limit $4
        for update skip locked)
      returning ${ALERT_COLUMNS}, subject, (diagnosis->>'attempts')::int as attempts`,
-    [RETRY_FOR, RETRY_AFTER, DIAGNOSIS_STALE, DIAGNOSES_PER_EVALUATION],
+    [RETRY_FOR, RETRY_AFTER, DIAGNOSIS_STALE, DIAGNOSES_PER_EVALUATION, FLAPPING_REFIRES],
   );
   return rows.map((row) => ({ ...toAlert(row), subject: row.subject, attempts: row.attempts }));
 }

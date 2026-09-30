@@ -5,7 +5,7 @@ import { incidentContext } from "./diagnosis/context";
 import type { ProviderName } from "./diagnosis/provider";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
 import { diagnosisMessage, handoffMessage, handoffText } from "./handoff";
-import { alertMessage, recoveryMessage, type AlertForMessage } from "./messages";
+import { openingMessage, recoveryMessage, type AlertForMessage } from "./messages";
 import { evaluateRules } from "./rules";
 import {
   alertsById,
@@ -63,13 +63,13 @@ export async function runMonitor(): Promise<MonitorRun> {
   const { findings, won } = evaluation;
 
   const mention = alertUserId();
-  let announced = await deliver(await alertsById(won.announce), (a) => alertMessage(a, mention), markAnnounced);
+  let announced = await deliver(await alertsById(won.announce), (a) => openingMessage(a, mention), markAnnounced);
   let recovered = await deliver(await alertsById(won.recover), recoveryMessage, markRecoveryAnnounced);
   // Without a webhook nothing was sent and nothing will be, so there is
   // nothing to retry - and a preview must not keep claiming the posts that
   // production's evaluations should make.
   if (discordConfigured()) {
-    announced += await deliver(await claimAnnounceRetries(), (a) => alertMessage(a, mention), markAnnounced);
+    announced += await deliver(await claimAnnounceRetries(), (a) => openingMessage(a, mention), markAnnounced);
     recovered += await deliver(await claimRecoveryRetries(), recoveryMessage, markRecoveryAnnounced);
   }
 

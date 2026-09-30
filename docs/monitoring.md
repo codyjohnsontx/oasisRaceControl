@@ -38,8 +38,15 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 | 2 | iRacing not connected while a driver is signed in | a seated rig's agent has reported iRacing disconnected for 3 min (counted from when the driver sat down) | iRacing connects, or the stint ends | urgent |
 | 3a | Laps queued but not reaching the site | a lap has waited over 2 min while at least two heartbeats got through | the queue drains | urgent |
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
+| 5a | Laps with nobody signed in | 2 laps inside 10 min that the agent said nobody was signed in for, since the rig's last lap that reached a driver | a lap reaches a driver, or 15 min pass without another | warning; urgent in event mode |
+| 5b | Unusually long stint | a driver has been signed in longer than `monitor_state.long_stint_minutes` (2 h unless staff change it) | the stint ends | warning |
+| 6 | Repeated sign-in failures | 3 walk-up sign-ins refused on one rig inside 5 min; the message names the kinds (wrong PIN or name, locked out, ...) | 10 min without one | warning |
+| 7 | Wrong car or track | today has a featured combo, and a seated rig's iRacing session is on another car or track, or the rig's last 3 laps inside 15 min were all refused for the combo | the session matches, or a valid lap lands | warning; urgent in event mode |
 | 10 | Rig agent restarting repeatedly | 3 agent starts within 15 min | the starts age out of the 15 min | urgent |
+| 11 | Outdated rig agent | the rig reports an agent build other than `CURRENT_AGENT_VERSION` | it reports the current build | warning |
 | 12 | Rig clock is off | the rig's clock is over 5 min from the server's | under 2 min | urgent |
+| 13 | Driver moved rigs mid-session | a driver signed in on another rig, and within 10 min the rig they left, with nobody signed in, is still in an iRacing session | 10 min after the move | warning |
+| 14 | Implausibly fast lap | a valid lap over 3% under the best any other driver had on that car and track before it, once 5 other drivers have one | never announced: the alert closes quietly once the lap is 15 min old | warning |
 | 15 | Lap reading stopped | the agent says its iRacing reader faulted | the agent restarts without the fault | urgent |
 | 16 | Sign-out not saved | the agent could not save a sign-out | it is saved | warning |
 | 17 | iRacing build missing variables | iRacing does not publish a variable the agent reads | an attached iRacing publishes them all | warning |
@@ -71,9 +78,50 @@ Details worth knowing:
   the agent forgets what iRacing publishes whenever iRacing goes; with none in
   view an open alert holds. The rest are about a running agent and stop at
   goodbye.
+- **Event mode raises rules 5a and 7 to urgent.** Event mode itself arrives
+  with plan PR 4; until then it is off everywhere (`inEventMode` in
+  `rules.ts` is the one place that reads it), so both stay warnings.
+- **Rules 5a, 5b, 7 (its laps half), 13 and 14 need nothing new from the
+  rig**: they read laps, stints and today's combo, so they work for an agent
+  too old to send more than its version. Rule 7's session half and rule 6
+  need `rig-agent/0.4-monitor`.
+- **Rule 7 judges the combo exactly as ingestion does** (`comboMismatch` in
+  `validity.ts`), so it never calls a session right whose laps will be
+  refused. Its message names today's combo and which part is wrong, never the
+  rig's own session strings.
+- **Rule 11's version is `CURRENT_AGENT_VERSION`** in
+  `src/lib/monitor/agent-version.ts`, a copy of `AgentVersion` in
+  `apps/rig-agent/OasisRigAgent.Core/AgentConfig.cs` that
+  `agent-version.test.ts` keeps equal. Bump both in the agent's release
+  commit: from its deploy on, every rig still on the old build shows a quiet
+  warning until the new exe is installed. A rig not heard from in 12 h is
+  off, not outdated, and is not warned about. It fires once per rig, not per
+  version: a rig moved from one old build to another keeps its open alert.
+- **Rule 13 is the move, not two stints at once.** A driver cannot hold two
+  stints: `one_open_assignment_per_driver` in `0001_core_schema.sql` forbids
+  it, and signing in on a second rig ends the first with `end_reason =
+  'moved'`. What goes wrong is the rig left behind: whoever is still driving
+  it is now signed in as nobody.
+- **Rule 14 never changes a lap.** It flags the lap for staff to look at;
+  validity is decided once, at ingestion, and a flagged lap ranks until staff
+  invalidate it by hand. Each lap is its own alert, compared only with laps
+  stored before it, so a later lap never changes the verdict on an earlier
+  one.
 - **A driver is named in an alert only while their account is active.** A
   name under review (or a banned driver) reads "a driver (name under review)",
   in Discord and in `monitor_alerts`, as the public leaderboard hides them.
+
+## Flapping
+
+An alert that opens for the fourth time on the same rule and rig within an
+hour - three re-fires after the first - is flapping. Instead of itself it
+posts one quiet line, `🔕 Flapping: <rule> - <rig> has fired 4 times in the
+last hour; muted for 1 h`, and for the hour after that line nothing on that
+rule and rig is posted: no openings, recoveries, rises or AI diagnosis. The
+alerts are still stored (`monitor_alerts.refire_count` counts each one's
+earlier openings in the hour) and still open while the problem lasts, so the
+Rig health page shows them. Once the hour has passed the rule posts normally
+again; if it is still flapping, the next mute line says so.
 
 ## Discord
 
