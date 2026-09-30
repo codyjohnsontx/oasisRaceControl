@@ -126,9 +126,10 @@ vouch for (`diagnosis/context.ts`): the heartbeats' numbers, true/false
 flags and enum values; the agent version only when it has a version's
 shape; agent notices only as codes of the notices the agent is known to
 raise, counted, with a fixed summary; and the alert's own words - the rule,
-the rig's name and the headline and numbers the rules wrote, with the seated
+the rig's number ("Rig 7", never its display name; see the rig-alert issue
+below) and the headline and numbers the rules wrote, with the seated
 driver's name replaced by `driver-<4 hex>`. The alert message above still
-names the driver, as it always has: that is the staff channel.
+names the rig and the driver, as it always has: that is the staff channel.
 
 **The handoff keeps its shape.** The model read rig data, so its answer is
 treated as untrusted too: the prompt marks the incident as data, never
