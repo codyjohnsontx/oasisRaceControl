@@ -2,6 +2,9 @@ import { unstable_cache } from "next/cache";
 import { redirect } from "next/navigation";
 import { query, queryOne } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
+import { eventBoardLink } from "@/lib/board-ticket";
+import { boardName } from "@/lib/monitor/event-mode";
+import { tvHostKeys } from "@/lib/tv-host-logo";
 import { venueMonthName, venueToday } from "@/lib/venue";
 import {
   countRoundDrivers,
@@ -75,10 +78,18 @@ export default async function StaffPage() {
     ),
   ]);
 
-  const [recentRounds, openRoundDrivers, comboOptions] = await Promise.all([
+  const [recentRounds, openRoundDrivers, comboOptions, eventBoardLinks] = await Promise.all([
     season ? listSeasonRounds(season.id) : Promise.resolve([]),
     openRound ? countRoundDrivers(openRound.id) : Promise.resolve(0),
     listRecentCombos(),
+    // Only a board opened from one of these turns the rig monitor's event
+    // mode on (lib/board-ticket.ts); the public /tv?event=1 never does.
+    Promise.all(
+      [null, ...tvHostKeys()].map(async (host) => ({
+        label: boardName({ mode: "event", host }),
+        href: await eventBoardLink(host),
+      })),
+    ),
   ]);
 
   return (
@@ -88,6 +99,7 @@ export default async function StaffPage() {
       staffName={staff.displayName}
       rigs={rigs}
       laps={laps}
+      eventBoardLinks={eventBoardLinks}
       league={{
         seasonName: season?.name ?? null,
         nextSeasonName: venueMonthName(),

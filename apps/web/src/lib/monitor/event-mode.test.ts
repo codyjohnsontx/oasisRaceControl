@@ -11,11 +11,12 @@ import {
 } from "./event-mode";
 
 /**
- * Event mode is on while an event board is open, and staff can force it either
- * way until venue midnight. What must hold: a board that went dark keeps the
- * event on (or rule 8a could never fire), a goodbye ends it - but not a
- * reload's goodbye - yesterday's boards count for nothing, and an override
- * that has lapsed is ignored to the millisecond.
+ * Event mode is on while an event board is open and heard from, and staff can
+ * force it either way until venue midnight. What must hold: a board not heard
+ * from for three minutes no longer holds it (a phone left locked on the board
+ * must not keep the venue mid-event), a goodbye ends it - but not a reload's
+ * goodbye - yesterday's boards count for nothing, and an override that has
+ * lapsed is ignored to the millisecond.
  */
 
 const NOW = Date.parse("2026-10-04T21:00:00Z");
@@ -58,10 +59,13 @@ describe("eventMode", () => {
     expect(eventMode(input({ boards: [board({ mode: "rotation" })] })).on).toBe(false);
   });
 
-  it("stays on when the event board goes dark without a goodbye, so the dark board can be reported", () => {
-    const dark = board({ lastSeenAt: NOW - 40 * MIN });
+  it("is held only by a board heard from within three minutes, not by one gone dark without a goodbye", () => {
+    const last = board({ lastSeenAt: NOW - BOARD_DARK_AFTER_MS });
+    const dark = board({ lastSeenAt: NOW - BOARD_DARK_AFTER_MS - 1 });
+    expect(eventMode(input({ boards: [last] })).on).toBe(true);
     expect(boardState(dark, NOW)).toBe("dark");
-    expect(eventMode(input({ boards: [dark] })).on).toBe(true);
+    expect(eventMode(input({ boards: [dark] }))).toEqual({ on: false, cause: "none" });
+    expect(eventMode(input({ boards: [dark, board({ id: "live" })] }))).toMatchObject({ board: { id: "live" } });
   });
 
   it("ends on the board's goodbye, once a reload's grace has passed", () => {
@@ -72,9 +76,9 @@ describe("eventMode", () => {
   });
 
   it("ends at venue midnight: a board last heard yesterday counts for nothing", () => {
-    const yesterday = board({ lastSeenAt: DAY_START - 1 });
-    expect(eventMode(input({ boards: [yesterday] })).on).toBe(false);
-    expect(eventMode(input({ boards: [board({ lastSeenAt: DAY_START })] })).on).toBe(true);
+    const justBefore = input({ now: DAY_START + MIN });
+    expect(eventMode({ ...justBefore, boards: [board({ lastSeenAt: DAY_START - 1 })] }).on).toBe(false);
+    expect(eventMode({ ...justBefore, boards: [board({ lastSeenAt: DAY_START })] }).on).toBe(true);
   });
 
   it("follows a staff override over the boards until it expires, and the boards after", () => {

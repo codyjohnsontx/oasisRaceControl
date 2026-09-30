@@ -184,6 +184,7 @@ describe("routineUpdateMessage", () => {
     venueDayStart: Date.parse("2026-10-04T05:00:00Z"),
     featuredCombo: SESSION,
     override: null,
+    eventModeSince: null,
     boards: [
       {
         id: "b",

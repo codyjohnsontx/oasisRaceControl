@@ -286,14 +286,17 @@ the last statement's result); its pinned values are tested against the
 migration, and a verify fingerprints only the columns its own migration
 created, so a later `alter table` does not fail an earlier verify.
 
-Every `/tv` page heartbeats too (`components/tv/board-heartbeat.tsx`, beside
-the engine, never inside it - `tv-screen.tsx` stays untouched), with a ticket
-the page's server render signed (`lib/board-ticket.ts`): the route is public
-and believes board, mode and host only from that ticket. Feed health comes
-from wrapping each registered board type's `load` (`lib/tv-feed-health.ts`),
-not from the engine. An open event board is event mode (`eventMode()` in
-`monitor/event-mode.ts`, pure, shared like the rules); a dark board keeps it
-on until a goodbye, venue midnight or staff, or rule 8a could never fire.
+The shop wall's `/tv` heartbeats too (`components/tv/board-heartbeat.tsx`,
+beside the engine, never inside it - `tv-screen.tsx` stays untouched), with a
+ticket the page's server render signed (`lib/board-ticket.ts`): the route is
+public and believes board, mode and host only from that ticket. The event view
+gets a ticket only when opened from the signed link on `/staff` - the owner's
+rule, so no stranger can switch the channel into event mode or page him - and
+the public `/tv?event=1` reports nothing. Feed health comes from wrapping each
+registered board type's `load` (`lib/tv-feed-health.ts`), not from the engine.
+An event board heard within 3 minutes is event mode (`eventMode()` in
+`monitor/event-mode.ts`, pure, shared like the rules); a dark one is rule 8a,
+which is judged without event mode because the dark board no longer holds it.
 Verify board-heartbeat changes with `npm run tv:heartbeat-check`.
 
 ## The twenty-rig soak

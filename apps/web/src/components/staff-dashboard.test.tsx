@@ -48,6 +48,7 @@ function render(rigs: RigStatusRow[]): string {
       staffName="Staff"
       rigs={rigs}
       laps={[]}
+      eventBoardLinks={[]}
       unattributedLaps={[]}
       unattributedLapTotal={0}
       league={{

@@ -122,6 +122,9 @@ export async function loadSnapshot(
       db,
       `select (extract(epoch from ${VENUE_DAY_START}) * 1000)::float8 as venue_day_start_ms,
               s.event_mode_override, s.override_expires_at, su.display_name as override_set_by,
+              case when s.event_mode
+                then (extract(epoch from s.event_mode_changed_at) * 1000)::float8
+              end as event_mode_since_ms,
               fc.track_name, fc.track_config, fc.car_name
        from (select 1) one
        left join monitor_state s on s.id = 1
@@ -249,6 +252,7 @@ export async function loadSnapshot(
             setBy: venue!.override_set_by,
           }
         : null,
+    eventModeSince: venue!.event_mode_since_ms,
     boards: boardRows.map(toBoard),
     openAlerts,
   };
@@ -271,6 +275,7 @@ type VenueRow = {
   event_mode_override: EventModeOverride["mode"] | null;
   override_expires_at: Date | null;
   override_set_by: string | null;
+  event_mode_since_ms: number | null;
   track_name: string | null;
   track_config: string | null;
   car_name: string | null;

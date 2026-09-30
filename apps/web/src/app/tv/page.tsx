@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { mintBoardTicket } from "@/lib/board-ticket";
+import { EVENT_BOARD_LINK_PARAM, pageBoardTicket } from "@/lib/board-ticket";
 import { listBoards } from "@/lib/leaderboards-queries";
 import { tvMode } from "@/lib/tv-rotation";
 import { tvHostLogo } from "@/lib/tv-host-logo";
@@ -21,9 +20,11 @@ import { TvScreen } from "@/components/tv/tv-screen";
  * The rotation list is seeded here so the first paint already has a board; the
  * client re-reads it periodically as new tracks get driven.
  *
- * Every page load is also a board the rig monitor watches: it gets its own id
- * and a signed ticket here, and heartbeats with them (`board-heartbeat.tsx`).
- * An open event view is what turns the monitor's event mode on.
+ * Every page load of the shop wall, and of an event view opened from the staff
+ * link, is also a board the rig monitor watches: it gets its own id and a
+ * signed ticket here, and heartbeats with them (`board-heartbeat.tsx`). An
+ * open event board is what turns the monitor's event mode on; the public
+ * event view reports nothing (`lib/board-ticket.ts`).
  */
 export const dynamic = "force-dynamic";
 
@@ -52,10 +53,10 @@ export default async function TvPage({ searchParams }: Props) {
   // Without a ticket the wall still works; the monitor just cannot see it.
   let ticket: string | null = null;
   try {
-    ticket = await mintBoardTicket({
-      boardId: randomUUID(),
+    ticket = await pageBoardTicket({
       mode,
       host: hostLogo ? (params.host as string) : null,
+      link: params[EVENT_BOARD_LINK_PARAM],
     });
   } catch (error) {
     console.error("[tv] cannot mint a board ticket", (error as Error).message);

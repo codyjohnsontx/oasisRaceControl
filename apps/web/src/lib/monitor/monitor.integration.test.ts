@@ -551,10 +551,10 @@ describeDb("rig monitor against real Postgres", () => {
       expect(await alerts()).toEqual([]);
     });
 
-    it("alerts once, urgently, when the event board goes dark without a goodbye", async () => {
+    it("alerts once, urgently, when the event board goes dark without a goodbye, though event mode ends", async () => {
       await setCombo();
       await board({ lastSeenAgoS: 4 * 60 });
-      await nextEvaluation();
+      await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: false });
       await nextEvaluation();
       await nextEvaluation();
       const dark = posts.filter((p) => p.content?.includes("has not been heard from"));
@@ -562,6 +562,24 @@ describeDb("rig monitor against real Postgres", () => {
         `<@${OWNER}> 🔴 Event board (Cadillac) has not been heard from for 4 min - laptop asleep, browser closed, or offline?`,
       ]);
       expect(await alerts()).toMatchObject([{ rule: "board_dark", subject: "board:event", resolved: false }]);
+    });
+
+    it("pages about a rig heard since event mode began, never about one quiet since before it", async () => {
+      await setCombo();
+      const rig = await seedRig(4);
+      for (const ago of [900, 840, 780, 720, 660, 600, 540, 480, 420, 360, 300]) await heartbeat(rig, ago);
+      await board();
+
+      // Event mode comes on now, five minutes after the rig went quiet.
+      await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: true });
+      await nextEvaluation();
+      expect(await alerts()).toEqual([]);
+
+      // Had it come on ten minutes ago, the same silence is mid-event.
+      await testDb().query("update monitor_state set event_mode_changed_at = now() - interval '10 minutes'");
+      await nextEvaluation();
+      expect(await alerts()).toMatchObject([{ rule: "rig_silent", resolved: false }]);
+      expect(contents().filter((c) => c?.includes("silent"))).toEqual([`<@${OWNER}> 🔴 Rig 04 has been silent for 5 min`]);
     });
 
     it("retries an event-mode line Discord refused on a later evaluation, once", async () => {

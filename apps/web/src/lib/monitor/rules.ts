@@ -3,7 +3,6 @@ import {
   boardName,
   boardState,
   boardsToday,
-  eventDisplays,
   eventMode,
   type BoardSnapshot,
   type EventMode,
@@ -151,6 +150,11 @@ export type MonitorSnapshot = {
   featuredCombo: FeaturedCombo | null;
   /** The staff event-mode override, expired or not; eventMode() judges it. */
   override: EventModeOverride | null;
+  /**
+   * When the channel was told event mode came on, or null while it was last
+   * told off - so the evaluation that turns it on finds it began just now.
+   */
+  eventModeSince: number | null;
   /** The /tv pages heard from since the venue day began. */
   boards: BoardSnapshot[];
   openAlerts: ReadonlyArray<{ rule: string; subject: string }>;
@@ -187,9 +191,10 @@ export function evaluateRules(snapshot: MonitorSnapshot): Finding[] {
   const isOpen = (rule: RuleKey, subject: string) => open.has(`${rule}|${subject}`);
   const rigs = snapshot.rigs.map((rig) => ({ rig, state: rigState(rig.heartbeats) }));
   const mode = eventMode(snapshot);
+  const eventSince = mode.on ? (snapshot.eventModeSince ?? snapshot.now) : null;
 
   return [
-    ...silence(snapshot.now, rigs, mode.on, isOpen),
+    ...silence(snapshot.now, rigs, eventSince, isOpen),
     ...rigs.flatMap(({ rig, state }) =>
       state ? rigFindings(snapshot.now, rig, state, isOpen) : [],
     ),
@@ -200,14 +205,17 @@ export function evaluateRules(snapshot: MonitorSnapshot): Finding[] {
 
 /**
  * Rule 1: rigs that stopped reaching the site without saying goodbye. In
- * event mode every silent rig is urgent at once and there is no "venue
- * closed?" note: mid-event, rigs going quiet together is an outage, not
- * closing time.
+ * event mode (`eventSince`, when it began) a rig heard since it began is
+ * urgent at once and never part of the "venue closed?" note: mid-event, rigs
+ * going quiet together is an outage, not closing time. A rig last heard
+ * before the event began - switched off last night, not switched on yet - is
+ * judged as on any other day, so turning event mode on pages about nothing
+ * nobody has turned on.
  */
 function silence(
   now: number,
   rigs: Rig[],
-  eventModeOn: boolean,
+  eventSince: number | null,
   isOpen: (rule: RuleKey, subject: string) => boolean,
 ): Finding[] {
   const findings: Finding[] = [];
@@ -254,7 +262,7 @@ function silence(
   const unexplained: Rig[] = [];
   for (const r of silent) {
     const subject = rigSubject(r.rig.id);
-    if (r.rig.seated || eventModeOn) {
+    if (r.rig.seated || (eventSince !== null && r.rig.lastSeenAt! >= eventSince)) {
       findings.push(rigSilent(now, r, "urgent"));
     } else if (isOpen("rig_silent", subject)) {
       findings.push(rigSilent(now, r, "warning"));
@@ -275,8 +283,7 @@ function silence(
   // until the venue is heard again; a rig heard since then is judged on its own.
   const covered =
     !anyLive && (together || (venueOpen && heardAgainAt === -Infinity)) ? unexplained : [];
-  // In event mode every silent rig was urgent above, so there is no note.
-  if (!eventModeOn && ((!anyLive && (together || venueOpen)) || venueRecovering)) {
+  if ((!anyLive && (together || venueOpen)) || venueRecovering) {
     const names = [...dark, ...covered].map(({ rig }) => rig.name);
     findings.push({
       rule: "venue_silent",
@@ -592,11 +599,15 @@ export function boardSubject(mode: BoardSnapshot["mode"]): string {
 /**
  * Rules 8a and 8b, about the screen the room watches rather than a rig.
  *
- * 8a, only in event mode: the event's display (eventDisplays) went dark - not
- * heard from for BOARD_DARK_AFTER_MS without a goodbye - and no other board of
- * the same kind is live, so a browser that was killed and restored as a new
- * page is not reported. Only boards heard from today count. Outside event mode
- * the shop wall being switched off at closing is not news.
+ * 8a: of today's event boards - each opened from the staff link, so each one
+ * is an event someone set up - the one heard from most recently went dark:
+ * not heard from for BOARD_DARK_AFTER_MS, without a goodbye. The most recent,
+ * so a browser killed and restored as a new page, or a tab closed after a
+ * phone was left locked on the board, is judged by the board the room is
+ * watching. It does not wait on event mode, which a dark board no longer
+ * holds, and it is urgent: the board it reports was holding the event. Staff
+ * forcing event mode off silences it. The shop wall switched off at closing
+ * is not news, and is never judged.
  *
  * 8b, in any mode: a live board says its last FEED_FAILURES_TO_ALERT loads
  * failed. It reached the site to say so, so the site is up and the feed is
@@ -606,14 +617,12 @@ function boardFindings(snapshot: MonitorSnapshot, mode: EventMode): Finding[] {
   const { now } = snapshot;
   const findings: Finding[] = [];
 
-  if (mode.on) {
-    const displays = eventDisplays(snapshot);
-    const dark = displays
-      .filter((b) => boardState(b, now) === "dark")
-      .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
-    const live = displays.some((b) => boardState(b, now) === "live");
-    const board = dark[0];
-    if (board && !live) {
+  const forcedOff = mode.cause === "override" && !mode.on;
+  if (!forcedOff) {
+    const board = boardsToday(snapshot)
+      .filter((b) => b.mode === "event")
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+    if (board && boardState(board, now) === "dark") {
       findings.push({
         rule: "board_dark",
         subject: boardSubject(board.mode),

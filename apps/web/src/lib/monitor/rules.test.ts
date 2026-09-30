@@ -107,6 +107,7 @@ function evaluate(
     venueDayStart: VENUE_DAY_START,
     featuredCombo: COMBO,
     override: null,
+    eventModeSince: null,
     boards: [],
     ...venue,
     rigs,
@@ -784,11 +785,13 @@ function board(overrides: Partial<BoardSnapshot> = {}): BoardSnapshot {
     ...overrides,
   };
 }
-const EVENT = { boards: [board()] };
+/** An event under way for the last hour. */
+const EVENT = { boards: [board()], eventModeSince: NOW - 60 * MIN };
 
 describe("rule 1 in event mode", () => {
   const quiet = (number: number, quietFor: number) =>
     rig(number, { heartbeats: minutely(quietFor + 14 * MIN, quietFor) });
+  const venueOpen = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
 
   it("is urgent for an empty rig as soon as it passes two minutes, with no correlation wait", () => {
     expect(evaluate([quiet(1, 2 * MIN + 5 * S), rig(2)])).toEqual([]);
@@ -800,15 +803,51 @@ describe("rule 1 in event mode", () => {
   it("reads rigs going quiet together mid-event as an outage, not as the venue closing", () => {
     const rigs = [quiet(1, 3 * MIN), quiet(2, 4 * MIN)];
     expect(rulesOf(evaluate(rigs))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
-    expect(rulesOf(evaluate(rigs, [{ rule: "venue_silent", subject: VENUE_SUBJECT }], EVENT))).toEqual([
+    expect(rulesOf(evaluate(rigs, [], EVENT))).toEqual([
       "rig_silent rig:rig-1 urgent",
       "rig_silent rig:rig-2 urgent",
     ]);
   });
 
   it("follows a staff override just as it follows the board", () => {
-    const on = { override: { mode: "on" as const, expiresAt: NOW + 60 * MIN, setBy: "Cody" } };
+    const on = {
+      override: { mode: "on" as const, expiresAt: NOW + 60 * MIN, setBy: "Cody" },
+      eventModeSince: NOW - 60 * MIN,
+    };
     expect(rulesOf(evaluate([quiet(1, 3 * MIN), rig(2)], [], on))).toEqual(["rig_silent rig:rig-1 urgent"]);
+  });
+
+  it("pages about none of the rigs switched off last night when the event board opens in the morning", () => {
+    // Power cut at closing, eleven and a half hours ago, no goodbyes: the
+    // venue note has been open since.
+    const lastNight = [quiet(1, 11.5 * 60 * MIN), quiet(2, 11.5 * 60 * MIN - 2 * MIN), quiet(3, 11.5 * 60 * MIN)];
+    const opening = { boards: [board()], eventModeSince: null };
+    expect(rulesOf(evaluate(lastNight, venueOpen, opening))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+    expect(rulesOf(evaluate(lastNight, venueOpen, { ...opening, eventModeSince: NOW - 10 * MIN }))).toEqual([
+      `venue_silent ${VENUE_SUBJECT} warning`,
+    ]);
+  });
+
+  it("keeps a rig that went dark with the venue quiet, and pages about one switched on since", () => {
+    /** Heard up to `lostAt` ago, then nothing until `backAt` ago, and every minute since. */
+    const back = (number: number, lostAt: number, backAt: number) =>
+      rig(number, { heartbeats: [...minutely(lostAt + 10 * MIN, lostAt), ...minutely(backAt)] });
+    const neverSwitchedOn = quiet(3, 10 * 60 * MIN);
+    const switchedOnThenDied = rig(2, {
+      heartbeats: [...minutely(10 * 60 * MIN + 10 * MIN, 10 * 60 * MIN), ...minutely(40 * MIN, 5 * MIN)],
+    });
+    const rigs = [back(1, 10 * 60 * MIN, 45 * MIN), switchedOnThenDied, neverSwitchedOn];
+    expect(rulesOf(evaluate(rigs, [], { ...EVENT, eventModeSince: NOW - 30 * MIN }))).toEqual([
+      "rig_silent rig:rig-2 urgent",
+    ]);
+  });
+
+  it("judges a rig that went quiet before the event began as on any other day", () => {
+    const early = { ...EVENT, eventModeSince: NOW - 4 * MIN };
+    expect(evaluate([quiet(1, 5 * MIN), rig(2)], [], early)).toEqual([]);
+    expect(rulesOf(evaluate([quiet(1, 8 * MIN), rig(2)], [], early))).toEqual([
+      "rig_silent rig:rig-1 warning",
+    ]);
   });
 });
 
@@ -867,7 +906,7 @@ describe("rule 4: no featured combo today", () => {
 describe("rule 8a: TV board went dark", () => {
   const dark = board({ lastSeenAt: NOW - 4 * MIN });
 
-  it("fires urgent when the event board stops without a goodbye", () => {
+  it("fires urgent when the event board stops without a goodbye, though it no longer holds event mode", () => {
     const findings = evaluate([rig(1)], [], { boards: [dark] });
     expect(rulesOf(findings)).toEqual(["board_dark board:event urgent"]);
     expect(findings[0]!.detail.headline).toBe(
@@ -891,14 +930,21 @@ describe("rule 8a: TV board went dark", () => {
     expect(evaluate([rig(1)], [], { boards: [yesterday], override })).toEqual([]);
   });
 
-  it("watches the shop wall only when the event has no board of its own, and only in event mode", () => {
-    const wall = board({ mode: "rotation", host: null, lastSeenAt: NOW - 30 * MIN });
-    expect(evaluate([rig(1)], [], { boards: [wall] })).toEqual([]);
-    const override = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
-    expect(rulesOf(evaluate([rig(1)], [], { boards: [wall], override }))).toEqual([
-      "board_dark board:rotation urgent",
+  it("judges the board the room is watching: a phone left locked on it is not news once the laptop's tab closes", () => {
+    const lockedPhone = board({ id: "phone", lastSeenAt: NOW - 90 * MIN });
+    const laptop = board({ id: "laptop", lastSeenAt: NOW - 10 * MIN, closedAt: NOW - 10 * MIN });
+    expect(evaluate([rig(1)], [], { boards: [lockedPhone, laptop] })).toEqual([]);
+    const killedLaptop = board({ id: "laptop", lastSeenAt: NOW - 10 * MIN });
+    expect(rulesOf(evaluate([rig(1)], [], { boards: [lockedPhone, killedLaptop] }))).toEqual([
+      "board_dark board:event urgent",
     ]);
-    expect(rulesOf(evaluate([rig(1)], [], { boards: [wall, board()], override }))).toEqual([]);
+  });
+
+  it("never watches the shop wall, even with event mode forced on", () => {
+    const wall = board({ mode: "rotation", host: null, lastSeenAt: NOW - 30 * MIN });
+    const override = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
+    expect(evaluate([rig(1)], [], { boards: [wall] })).toEqual([]);
+    expect(evaluate([rig(1)], [], { boards: [wall], override, featuredCombo: COMBO })).toEqual([]);
   });
 
   it("clears when staff stop the event, or a board is heard again", () => {

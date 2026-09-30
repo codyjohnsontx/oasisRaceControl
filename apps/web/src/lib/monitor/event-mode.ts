@@ -6,9 +6,12 @@ import { tvHostLogo } from "@/lib/tv-host-logo";
  * health page all call these on the same snapshot, so none of them can
  * disagree about whether the venue is mid-event.
  *
- * Event mode is on while an event board (/tv?event=1) is open - opening the
+ * Event mode is on while an event board is open and heard from - opening the
  * board is already part of setting up an event, so nobody has to remember a
- * second step (owner's decision R8). Staff can force it on or off; the
+ * second step (owner's decision R8). An event board is one opened from the
+ * staff link (lib/board-ticket.ts): the public /tv?event=1 view is only
+ * watched, never reported, so a stranger cannot switch the venue's channel.
+ * Staff can force it on or off; the
  * override lasts until venue midnight and no longer, because a takeover the
  * venue day does not bound owns the channel until somebody notices
  * (AGENTS.md, the /tv board rotation).
@@ -84,13 +87,15 @@ export function eventMode(input: EventModeInput): EventMode {
 }
 
 /**
- * An event board holds event mode until it says goodbye, whether or not it is
- * still heard: a board that went dark mid-event is exactly what rule 8a
- * exists to report, and it could not if the dark board had already ended the
- * event. What ends it is the goodbye, venue midnight, or staff.
+ * An event board holds event mode while it is live, and for a reload's grace
+ * after its goodbye. A board that went dark stops holding it: a phone left
+ * locked on the board must not keep the venue mid-event until midnight. The
+ * dark board is still reported, by rule 8a, which does not wait on event mode.
  */
 function holdsEventMode(board: BoardSnapshot, now: number): boolean {
-  return board.closedAt === null || now - board.closedAt < BOARD_RELOAD_GRACE_MS;
+  return board.closedAt === null
+    ? boardState(board, now) === "live"
+    : now - board.closedAt < BOARD_RELOAD_GRACE_MS;
 }
 
 export type BoardState = "live" | "dark" | "closed";
