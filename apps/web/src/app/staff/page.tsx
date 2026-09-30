@@ -2,7 +2,7 @@ import { unstable_cache } from "next/cache";
 import { redirect } from "next/navigation";
 import { query, queryOne } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
-import { eventBoardLink } from "@/lib/board-ticket";
+import { staffBoardLink } from "@/lib/board-ticket";
 import { boardName } from "@/lib/monitor/event-mode";
 import { tvHostKeys } from "@/lib/tv-host-logo";
 import { venueMonthName, venueToday } from "@/lib/venue";
@@ -78,16 +78,19 @@ export default async function StaffPage() {
     ),
   ]);
 
-  const [recentRounds, openRoundDrivers, comboOptions, eventBoardLinks] = await Promise.all([
+  const [recentRounds, openRoundDrivers, comboOptions, boardLinks] = await Promise.all([
     season ? listSeasonRounds(season.id) : Promise.resolve([]),
     openRound ? countRoundDrivers(openRound.id) : Promise.resolve(0),
     listRecentCombos(),
-    // Only a board opened from one of these turns the rig monitor's event
-    // mode on (lib/board-ticket.ts); the public /tv?event=1 never does.
+    // Only a board opened from one of these reports to the rig monitor
+    // (lib/board-ticket.ts); the public /tv and /tv?event=1 never do.
     Promise.all(
-      [null, ...tvHostKeys()].map(async (host) => ({
-        label: boardName({ mode: "event", host }),
-        href: await eventBoardLink(host),
+      [
+        { mode: "rotation" as const, host: null },
+        ...[null, ...tvHostKeys()].map((host) => ({ mode: "event" as const, host })),
+      ].map(async (board) => ({
+        label: boardName(board),
+        href: await staffBoardLink(board.mode, board.host),
       })),
     ),
   ]);
@@ -99,7 +102,7 @@ export default async function StaffPage() {
       staffName={staff.displayName}
       rigs={rigs}
       laps={laps}
-      eventBoardLinks={eventBoardLinks}
+      boardLinks={boardLinks}
       league={{
         seasonName: season?.name ?? null,
         nextSeasonName: venueMonthName(),

@@ -817,15 +817,40 @@ describe("rule 1 in event mode", () => {
     expect(rulesOf(evaluate([quiet(1, 3 * MIN), rig(2)], [], on))).toEqual(["rig_silent rig:rig-1 urgent"]);
   });
 
-  it("pages about none of the rigs switched off last night when the event board opens in the morning", () => {
-    // Power cut at closing, eleven and a half hours ago, no goodbyes: the
-    // venue note has been open since.
-    const lastNight = [quiet(1, 11.5 * 60 * MIN), quiet(2, 11.5 * 60 * MIN - 2 * MIN), quiet(3, 11.5 * 60 * MIN)];
-    const opening = { boards: [board()], eventModeSince: null };
-    expect(rulesOf(evaluate(lastNight, venueOpen, opening))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
-    expect(rulesOf(evaluate(lastNight, venueOpen, { ...opening, eventModeSince: NOW - 10 * MIN }))).toEqual([
-      `venue_silent ${VENUE_SUBJECT} warning`,
-    ]);
+  describe("the event board opening at 09:30, before the rigs boot, after the shop closed at 22:00", () => {
+    // Now is 09:30. The power strips cut every rig at 22:00, eleven and a
+    // half hours ago, with no goodbyes, and the venue note has been open since.
+    const CLOSE = 11.5 * 60 * MIN;
+    /** A staff-linked event board just opened: event mode comes on now, or came on ten minutes ago. */
+    const openings = [
+      { boards: [board({ firstSeenAt: NOW - 20 * S })], eventModeSince: null },
+      { boards: [board({ firstSeenAt: NOW - 10 * MIN })], eventModeSince: NOW - 10 * MIN },
+    ];
+    const urgent = (findings: Finding[]) => findings.filter((f) => f.severity === "urgent");
+
+    it("pages about none of the rigs switched off at closing", () => {
+      const lastNight = [quiet(1, CLOSE), quiet(2, CLOSE - 2 * MIN), quiet(3, CLOSE)];
+      for (const opening of openings) {
+        const findings = evaluate(lastNight, venueOpen, opening);
+        expect(urgent(findings)).toEqual([]);
+        expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+      }
+    });
+
+    it("pages about none of them either when the venue had come back from a blip earlier that evening", () => {
+      // A power blip at 21:40, back at 21:43, then the close at 22:00: the
+      // venue last came back before the rigs went dark with it.
+      const blipThenClose = (number: number) =>
+        rig(number, {
+          heartbeats: [...minutely(12 * 60 * MIN, CLOSE + 20 * MIN), ...minutely(CLOSE + 17 * MIN, CLOSE)],
+        });
+      const lastNight = [blipThenClose(1), blipThenClose(2), blipThenClose(3)];
+      for (const opening of openings) {
+        const findings = evaluate(lastNight, venueOpen, opening);
+        expect(urgent(findings)).toEqual([]);
+        expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+      }
+    });
   });
 
   it("keeps a rig that went dark with the venue quiet, and pages about one switched on since", () => {
@@ -840,9 +865,13 @@ describe("rule 1 in event mode", () => {
     expect(rulesOf(evaluate(rigs, [], { ...EVENT, eventModeSince: NOW - 30 * MIN }))).toEqual([
       "rig_silent rig:rig-2 urgent",
     ]);
+    // Heard since the venue came back, though it died before event mode began.
+    expect(rulesOf(evaluate(rigs, [], { ...EVENT, eventModeSince: NOW - 2 * MIN }))).toEqual([
+      "rig_silent rig:rig-2 urgent",
+    ]);
   });
 
-  it("judges a rig that went quiet before the event began as on any other day", () => {
+  it("judges a rig that went quiet before the event began, with no venue silence behind it, as on any other day", () => {
     const early = { ...EVENT, eventModeSince: NOW - 4 * MIN };
     expect(evaluate([quiet(1, 5 * MIN), rig(2)], [], early)).toEqual([]);
     expect(rulesOf(evaluate([quiet(1, 8 * MIN), rig(2)], [], early))).toEqual([

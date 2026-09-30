@@ -205,12 +205,13 @@ export function evaluateRules(snapshot: MonitorSnapshot): Finding[] {
 
 /**
  * Rule 1: rigs that stopped reaching the site without saying goodbye. In
- * event mode (`eventSince`, when it began) a rig heard since it began is
- * urgent at once and never part of the "venue closed?" note: mid-event, rigs
- * going quiet together is an outage, not closing time. A rig last heard
- * before the event began - switched off last night, not switched on yet - is
- * judged as on any other day, so turning event mode on pages about nothing
- * nobody has turned on.
+ * event mode (`eventSince`, when it began) a rig switched on for it - heard
+ * since event mode began, or since the venue came back from its last silence
+ * while it has not gone silent again - is urgent at once and never part of
+ * the "venue closed?" note: mid-event, rigs going quiet together is an
+ * outage, not closing time. A rig that went dark with the venue - switched
+ * off last night, not switched on yet - is judged as on any other day, so
+ * turning event mode on never pages about a rig nobody has turned on.
  */
 function silence(
   now: number,
@@ -257,12 +258,16 @@ function silence(
 
   // A rig whose last word came before that, and that has not been heard since,
   // went dark with the venue - closed for the night, or cut off - and is not
-  // warned about on its own.
+  // warned about on its own. So did every rig, while the venue is silent now.
+  const venueBackSince = afterVenueSilence(now) ? Infinity : heardAgainAt;
+  const switchedOnForEvent = ({ rig }: Rig) =>
+    eventSince !== null &&
+    (rig.lastSeenAt! >= eventSince || (venueBackSince > -Infinity && rig.lastSeenAt! >= venueBackSince));
   const dark: Rig[] = [];
   const unexplained: Rig[] = [];
   for (const r of silent) {
     const subject = rigSubject(r.rig.id);
-    if (r.rig.seated || (eventSince !== null && r.rig.lastSeenAt! >= eventSince)) {
+    if (r.rig.seated || switchedOnForEvent(r)) {
       findings.push(rigSilent(now, r, "urgent"));
     } else if (isOpen("rig_silent", subject)) {
       findings.push(rigSilent(now, r, "warning"));

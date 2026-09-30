@@ -2,7 +2,8 @@
  * Proves the event board's heartbeat end to end, in a real browser against a
  * real server, the four ways the rig monitor needs it to behave:
  *
- * - the public `/tv?event=1` sends nothing, so it can never hold event mode;
+ * - the public `/tv` and `/tv?event=1` send nothing, so no stranger's page
+ *   can hold event mode or raise an alert;
  * - the event board opened from the staff link heartbeats on its 30-second
  *   cadence;
  * - closing the tab sends a goodbye, and no "board went dark" alert follows;
@@ -29,7 +30,7 @@
  */
 import { chromium, type Page } from "playwright-core";
 import { Pool } from "pg";
-import { eventBoardLink } from "../src/lib/board-ticket";
+import { staffBoardLink } from "../src/lib/board-ticket";
 
 function arg(name: string, fallback: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -115,22 +116,24 @@ async function main() {
     Boolean(databaseUrl && cronSecret && process.env.SESSION_SECRET),
     "set DATABASE_URL, CRON_SECRET and SESSION_SECRET to the server's own",
   );
-  const url = new URL(await eventBoardLink(null), origin).toString();
+  const url = new URL(await staffBoardLink("event", null), origin).toString();
   const db = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
-    // 0. The public event view shows the board and reports nothing.
+    // 0. The public pages show the board and report nothing.
     let since = (await db.query<{ now: Date }>("select now()")).rows[0]!.now;
     const watcher = await chromium.launch({ channel: "chrome", headless: true });
     try {
-      const beats = await open(await watcher.newPage(), new URL("/tv?event=1", origin).toString());
-      await sleep(5_000);
-      expect(beats.length === 0, `the public event view sent ${beats.length} heartbeat(s)`);
+      for (const path of ["/tv", "/tv?event=1"]) {
+        const beats = await open(await watcher.newPage(), new URL(path, origin).toString());
+        await sleep(5_000);
+        expect(beats.length === 0, `the public ${path} sent ${beats.length} heartbeat(s)`);
+      }
     } finally {
       await watcher.close();
     }
     const stray = await newBoards(db, since);
     expect(stray.length === 0, `the public event view stored a board: ${JSON.stringify(stray)}`);
-    console.log("public: ok - no heartbeat");
+    console.log("public: ok - no heartbeat from /tv or /tv?event=1");
 
     // 1. Cadence, then a closed tab: goodbye, and no alert past the threshold.
     since = (await db.query<{ now: Date }>("select now()")).rows[0]!.now;

@@ -286,13 +286,13 @@ the last statement's result); its pinned values are tested against the
 migration, and a verify fingerprints only the columns its own migration
 created, so a later `alter table` does not fail an earlier verify.
 
-The shop wall's `/tv` heartbeats too (`components/tv/board-heartbeat.tsx`,
+A `/tv` page opened from its signed staff link on `/staff` (the shop wall,
+or the event board) heartbeats too (`components/tv/board-heartbeat.tsx`,
 beside the engine, never inside it - `tv-screen.tsx` stays untouched), with a
 ticket the page's server render signed (`lib/board-ticket.ts`): the route is
-public and believes board, mode and host only from that ticket. The event view
-gets a ticket only when opened from the signed link on `/staff` - the owner's
-rule, so no stranger can switch the channel into event mode or page him - and
-the public `/tv?event=1` reports nothing. Feed health comes from wrapping each
+public and believes board, mode and host only from that ticket. The public
+`/tv` and `/tv?event=1` get no ticket and report nothing - the owner's rule,
+so no stranger can switch the channel into event mode or page him. Feed health comes from wrapping each
 registered board type's `load` (`lib/tv-feed-health.ts`), not from the engine.
 An event board heard within 3 minutes is event mode (`eventMode()` in
 `monitor/event-mode.ts`, pure, shared like the rules); a dark one is rule 8a,

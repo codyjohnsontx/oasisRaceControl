@@ -153,8 +153,8 @@ held on it. The featured combo needs enough laps today for the list to
 overflow the screen. It takes a little over two minutes.
 
 `npm run tv:heartbeat-check` proves the board's heartbeat to the rig monitor
-(`docs/monitoring.md`): the public event view sends nothing, the event board
-opened from the staff link heartbeats every 30 seconds, closing its tab sends
+(`docs/monitoring.md`): the public `/tv` and `/tv?event=1` send nothing, the
+event board opened from the staff link heartbeats every 30 seconds, closing its tab sends
 a goodbye and raises no alert, and killing the browser raises exactly one
 "board went dark" alert three minutes later. It signs the staff link itself,
 reads the server's database and calls the monitor tick, so run the server as

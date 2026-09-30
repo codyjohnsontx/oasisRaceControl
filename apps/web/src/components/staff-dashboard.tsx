@@ -51,7 +51,7 @@ export function StaffDashboard({
   staffName,
   rigs,
   laps,
-  eventBoardLinks,
+  boardLinks,
   unattributedLaps,
   unattributedLapTotal,
   league,
@@ -59,8 +59,8 @@ export function StaffDashboard({
   staffName: string;
   rigs: RigStatusRow[];
   laps: StaffLapRow[];
-  /** Signed /tv?event=1 links: a board opened from one turns event mode on. */
-  eventBoardLinks: Array<{ label: string; href: string }>;
+  /** Signed /tv links: only a board opened from one reports to the rig monitor. */
+  boardLinks: Array<{ label: string; href: string }>;
   unattributedLaps: UnattributedLapRow[];
   unattributedLapTotal: number;
   league: StaffLeagueProps;
@@ -182,10 +182,10 @@ export function StaffDashboard({
 
       <section>
         <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">
-          Event board
+          TV boards
         </h2>
         <div className="flex flex-wrap gap-3">
-          {eventBoardLinks.map((link) => (
+          {boardLinks.map((link) => (
             <a
               key={link.label}
               href={link.href}
@@ -196,8 +196,10 @@ export function StaffDashboard({
           ))}
         </div>
         <p className="text-muted text-xs mt-2">
-          Open the event laptop&apos;s board from here: that is what starts event mode and the
-          20-minute updates. The public /tv?event=1 link only shows the board.
+          Open the shop wall and the event laptop&apos;s board from here: only a board opened
+          from these links is watched by the rig monitor, and the event board is what starts
+          event mode and the 20-minute updates. The public /tv and /tv?event=1 only show the
+          board.
         </p>
       </section>
 

@@ -1,4 +1,4 @@
-import { EVENT_BOARD_LINK_PARAM, pageBoardTicket } from "@/lib/board-ticket";
+import { STAFF_BOARD_LINK_PARAM, pageBoardTicket } from "@/lib/board-ticket";
 import { listBoards } from "@/lib/leaderboards-queries";
 import { tvMode } from "@/lib/tv-rotation";
 import { tvHostLogo } from "@/lib/tv-host-logo";
@@ -20,11 +20,11 @@ import { TvScreen } from "@/components/tv/tv-screen";
  * The rotation list is seeded here so the first paint already has a board; the
  * client re-reads it periodically as new tracks get driven.
  *
- * Every page load of the shop wall, and of an event view opened from the staff
- * link, is also a board the rig monitor watches: it gets its own id and a
- * signed ticket here, and heartbeats with them (`board-heartbeat.tsx`). An
- * open event board is what turns the monitor's event mode on; the public
- * event view reports nothing (`lib/board-ticket.ts`).
+ * Every page load opened from a staff link on /staff is also a board the rig
+ * monitor watches: it gets its own id and a signed ticket here, and
+ * heartbeats with them (`board-heartbeat.tsx`). An open event board is what
+ * turns the monitor's event mode on. The public /tv and /tv?event=1 report
+ * nothing (`lib/board-ticket.ts`).
  */
 export const dynamic = "force-dynamic";
 
@@ -56,7 +56,7 @@ export default async function TvPage({ searchParams }: Props) {
     ticket = await pageBoardTicket({
       mode,
       host: hostLogo ? (params.host as string) : null,
-      link: params[EVENT_BOARD_LINK_PARAM],
+      link: params[STAFF_BOARD_LINK_PARAM],
     });
   } catch (error) {
     console.error("[tv] cannot mint a board ticket", (error as Error).message);
