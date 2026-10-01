@@ -155,6 +155,17 @@ npx tsx scripts/soak.ts --rigs 20 --minutes 30 --base http://127.0.0.1:3111 \
 two-minute run is enough to check the harness itself before spending real time
 on it.
 
+`--race` adds league night's race to the load ([live-race.md](live-race.md)).
+Every rig drives one car of a single simulated race and posts its race status
+every 2.5 s. Before the workers stop, `GET /api/race/live` is read once. It
+must show every rig in one race, each with a place inside the field, in race
+order, and each under the driver checked in on its rig. Two more checks hold
+race-report latency under the 2.5 s cadence (p95) and under the feed's 15 s
+stale threshold (max). Places that two cars report at once are listed but do
+not fail the run, because rigs sampled either side of a pass do that on the
+night as well. The committed result above predates `--race` and has none of
+these checks.
+
 ### What the script does
 
 1. Provisions N rigs (numbered from 101, clear of the seed's 1-3), one guest
