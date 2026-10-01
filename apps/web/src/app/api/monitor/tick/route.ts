@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { runMonitor } from "@/lib/monitor/run";
+import { runMonitor, scheduleDiagnoses } from "@/lib/monitor/run";
 import { monitorStatus } from "@/lib/monitor/store";
 import { probeDatabase } from "@/lib/readiness";
 
@@ -19,7 +19,9 @@ import { probeDatabase } from "@/lib/readiness";
  * The database is probed first under the readiness deadline, so an outage
  * answers 503 in about two seconds rather than hanging the scheduler's
  * request; the evaluation itself is throttled with every other one
- * (`evaluated: false` means one ran moments ago).
+ * (`evaluated: false` means one ran moments ago). An evaluation that ran is
+ * followed by its urgent alerts' diagnoses once the answer has gone, so a
+ * slow model never makes the scheduler's request time out.
  */
 export async function GET(request: Request) {
   const secret = process.env.CRON_SECRET?.trim();
@@ -38,6 +40,7 @@ export async function GET(request: Request) {
 
   try {
     const run = await runMonitor();
+    if (run.evaluated) scheduleDiagnoses();
     return Response.json({ status: "ok", evaluated: run.evaluated, ...(await monitorStatus()) });
   } catch (error) {
     console.error("[monitor/tick] evaluation failed", (error as Error).message);

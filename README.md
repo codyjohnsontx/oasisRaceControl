@@ -153,12 +153,14 @@ held on it. The featured combo needs enough laps today for the list to
 overflow the screen. It takes a little over two minutes.
 
 `npm run tv:heartbeat-check` proves the board's heartbeat to the rig monitor
-(`docs/monitoring.md`): the event view heartbeats every 30 seconds, closing
-the tab sends a goodbye and raises no alert, and killing the browser raises
-exactly one "board went dark" alert three minutes later. It reads the server's
-database and calls the monitor tick, so run the server as a production build
-with `SESSION_SECRET` and `CRON_SECRET`, no `DISCORD_WEBHOOK_URL`, and a
-throwaway `DATABASE_URL` that the script is given too. About eight minutes.
+(`docs/monitoring.md`): the public `/tv` and `/tv?event=1` send nothing, the
+event board opened from the staff link heartbeats every 30 seconds, closing its tab sends
+a goodbye and raises no alert, and killing the browser raises exactly one
+"board went dark" alert three minutes later. It signs the staff link itself,
+reads the server's database and calls the monitor tick, so run the server as
+a production build with `SESSION_SECRET` and `CRON_SECRET`, no
+`DISCORD_WEBHOOK_URL`, and a throwaway `DATABASE_URL`, and give the script the
+same three. About eight minutes.
 
 `npm run leaderboards:check` does the same for the page the shop rotation's
 code opens: it loads `/leaderboards` at 390x844 (`--viewport` for another

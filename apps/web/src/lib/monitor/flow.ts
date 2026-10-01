@@ -3,6 +3,7 @@ import { isRunning, rigLabel } from "./rig-health";
 import { rigState } from "./rig-state";
 import {
   duration,
+  flapScope,
   monitorGap,
   rigSubject,
   type Finding,
@@ -23,8 +24,10 @@ import {
  * nothing itself. The server, database, feed and board are shared by every
  * rig, so they are modelled (and drawn) once.
  *
- * Pure, like the rules: the page passes the snapshot, the findings and the
- * laps it already reads, and every state is tested from a hand-built snapshot.
+ * Pure, like the rules: the page passes the snapshot and the findings it shows
+ * the tiles (shownFindings: fresh findings and alerts still open), and the
+ * traffic is the snapshot's own heartbeats and laps, so the view adds no
+ * query. Every state is tested from a hand-built snapshot.
  */
 
 export type FlowState = "green" | "yellow" | "red" | "grey";
@@ -63,11 +66,20 @@ export const RULE_PLACE: Record<RuleKey, { node?: RigNode | SharedNode; edge?: E
   rig_silent: { node: "agent", edge: 2 },
   // Its subject is the venue; it is drawn on each rig that went quiet.
   venue_silent: { edge: 2 },
+  agent_outdated: { node: "agent" },
+  sign_in_failures: { node: "agent" },
+  long_stint: { node: "agent" },
+  // The stint it left ended while that rig's sim is still in a session.
+  driver_moved: { node: "iracing" },
   clock_skew: { node: "network", edge: 2 },
   // The rig reaches the site (its heartbeats arrive) and its laps are not
   // being stored: the break is at the server, not on the network.
   laps_stuck: { edge: 3 },
   laps_refused: { edge: 3 },
+  // Laps the site stored but cannot rank as they are, or must have looked at.
+  unattributed_laps: { edge: 3 },
+  wrong_combo: { edge: 3 },
+  fast_lap: { edge: 3 },
   no_featured_combo: { node: "feed", edge: 5 },
   board_dark: { node: "board", edge: 6 },
   board_feed_failing: { node: "board", edge: 6 },
@@ -78,17 +90,6 @@ export const RULE_PLACE: Record<RuleKey, { node?: RigNode | SharedNode; edge?: E
  * age over this window: fresh at the start, this old at the end.
  */
 export const TRAFFIC_WINDOW_MS = 10 * 60_000;
-
-/** A stored lap, as the page reads it (store.ts rigLaps). */
-export type FlowLap = {
-  id: string;
-  rigId: string;
-  /** created_at: when the site stored it, on the database's clock. */
-  receivedAt: number;
-  lapTimeMs: number;
-  valid: boolean;
-  unattributed: boolean;
-};
 
 export type LapStatus = "accepted" | "invalid" | "unattributed";
 
@@ -133,7 +134,7 @@ const SHARED_NODES: SharedNode[] = ["server", "database", "feed", "board"];
 export function flowModel(
   snapshot: MonitorSnapshot,
   findings: readonly Finding[],
-  input: { laps: readonly FlowLap[]; lastEvaluatedAt: number | null },
+  lastEvaluatedAt: number | null,
 ): FlowModel {
   const { now } = snapshot;
   const venueSilent = findings.find((f) => f.rule === "venue_silent");
@@ -154,7 +155,9 @@ export function flowModel(
       base(running),
     ];
 
-    const mine = findings.filter((f) => f.subject === rigSubject(rig.id));
+    // A rule may name something finer than the rig (rule 11 a build, rule 14
+    // a lap); flapScope is the rig it is about.
+    const mine = findings.filter((f) => flapScope(f.subject) === rigSubject(rig.id));
     // A quiet rig, not closed on purpose, that the venue note covers.
     if (venueSilent && rig.lastSeenAt !== null && !running && !state?.shuttingDown) {
       mine.push(venueSilent);
@@ -187,14 +190,14 @@ export function flowModel(
             ageMs: Math.max(0, now - h.receivedAt),
             goodbye: h.shuttingDown,
           })),
-        ...input.laps
+        ...snapshot.laps
           .filter((l) => l.rigId === rig.id && now - l.receivedAt < TRAFFIC_WINDOW_MS)
           .map((l): Traveller => ({
             kind: "lap",
             id: l.id,
             ageMs: Math.max(0, now - l.receivedAt),
             lapTimeMs: l.lapTimeMs,
-            status: l.valid ? "accepted" : l.unattributed ? "unattributed" : "invalid",
+            status: l.valid ? "accepted" : l.driver === null ? "unattributed" : "invalid",
           })),
       ],
       held: [
@@ -204,7 +207,7 @@ export function flowModel(
     };
   });
 
-  return { now, lanes, shared: sharedParts(snapshot, findings, input.lastEvaluatedAt) };
+  return { now, lanes, shared: sharedParts(snapshot, findings, lastEvaluatedAt) };
 }
 
 function sharedParts(

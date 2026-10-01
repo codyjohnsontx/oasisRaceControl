@@ -51,6 +51,7 @@ export function StaffDashboard({
   staffName,
   rigs,
   laps,
+  boardLinks,
   unattributedLaps,
   unattributedLapTotal,
   league,
@@ -58,6 +59,8 @@ export function StaffDashboard({
   staffName: string;
   rigs: RigStatusRow[];
   laps: StaffLapRow[];
+  /** Signed /tv links: only a board opened from one reports to the rig monitor. */
+  boardLinks: Array<{ label: string; href: string }>;
   unattributedLaps: UnattributedLapRow[];
   unattributedLapTotal: number;
   league: StaffLeagueProps;
@@ -120,9 +123,9 @@ export function StaffDashboard({
     // Below xl the floating Screens button reaches over the header's right end
     // (the staff name), so the page starts under it - as /leaderboards does.
     <main className="flex-1 flex flex-col gap-8 p-6 pt-20 xl:pt-6 max-w-5xl w-full mx-auto">
-      <header className="flex items-center justify-between">
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <h1 className="text-2xl font-black">Race Control — Staff</h1>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 whitespace-nowrap">
           <Link href="/staff/rigs" className="text-muted text-sm underline underline-offset-4">
             Rig health
           </Link>
@@ -178,6 +181,29 @@ export function StaffDashboard({
             );
           })}
         </div>
+      </section>
+
+      <section>
+        <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">
+          TV boards
+        </h2>
+        <div className="flex flex-wrap gap-3">
+          {boardLinks.map((link) => (
+            <a
+              key={link.label}
+              href={link.href}
+              className="text-sm font-bold border border-edge rounded-md px-3 py-2"
+            >
+              {link.label}
+            </a>
+          ))}
+        </div>
+        <p className="text-muted text-xs mt-2">
+          Open the shop wall and the event laptop&apos;s board from here: only a board opened
+          from these links is watched by the rig monitor, and the event board is what starts
+          event mode and the 20-minute updates. The public /tv and /tv?event=1 only show the
+          board.
+        </p>
       </section>
 
       <StaffLeaguePanel {...league} />

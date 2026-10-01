@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { holdingSince, rigState, sentBefore, type Heartbeat } from "./rig-state";
+import { holdingSince, inSendOrder, lastSent, rigState, sentBefore, type Heartbeat } from "./rig-state";
 
 const T = Date.parse("2026-10-04T21:00:00Z");
 const STARTED = T - 3_600_000;
@@ -21,6 +21,9 @@ function hb(id: string, receivedAt: number, overrides: Partial<Heartbeat> = {}):
     oldestPendingAgeS: null,
     rejectedLaps: 0,
     checkout: "none",
+    signInFailures: 0,
+    signInFailureKinds: [],
+    signInFailureSeqs: null,
     missingVariables: [],
     agentCpuPercent: 0.2,
     agentMemoryMb: 40,
@@ -57,6 +60,19 @@ describe("sentBefore", () => {
   it("proves nothing between heartbeats that carry no order", () => {
     expect(sentBefore(v1("a", T), v1("b", T + 1000))).toBe(false);
     expect(sentBefore(v1("b", T + 1000), v1("a", T))).toBe(false);
+  });
+});
+
+describe("inSendOrder and lastSent", () => {
+  it("move a late heartbeat back to where it was sent, and leave the rest in arrival order", () => {
+    const rows = [
+      hb("2", T, { sequence: 2, simConnected: true }),
+      hb("3", T + 60_000, { sequence: 3, shuttingDown: true }),
+      hb("1", T + 61_000, { sequence: 1, simConnected: true }),
+      v1("v1", T + 62_000),
+    ];
+    expect(inSendOrder(rows).map((h) => h.id)).toEqual(["1", "2", "3", "v1"]);
+    expect(lastSent(rows.slice(0, 3), (h) => !h.shuttingDown)?.id).toBe("2");
   });
 });
 

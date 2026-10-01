@@ -1,24 +1,27 @@
 import { redirect } from "next/navigation";
 import { StaffRigHealth, type RigHealthAlert } from "@/components/staff-rig-health";
 import { boardName, boardState, boardsToday, eventMode } from "@/lib/monitor/event-mode";
-import { eventModeLine, venueDate, venueTime } from "@/lib/monitor/messages";
+import { REPOSITORY } from "@/lib/monitor/handoff";
 import { flowModel } from "@/lib/monitor/flow";
-import { rigTiles } from "@/lib/monitor/rig-health";
-import { duration, evaluateRules, rigSubject, RULES } from "@/lib/monitor/rules";
+import { eventModeLine, venueDate, venueTime } from "@/lib/monitor/messages";
+import { problems, rigTiles, shownFindings } from "@/lib/monitor/rig-health";
+import { duration, evaluateRules, flapScope, rigSubject, RULES } from "@/lib/monitor/rules";
 import {
+  lastLapAtByRig,
   loadSnapshot,
   monitorClock,
   recentAlerts,
-  rigLaps,
   type RecentAlert,
 } from "@/lib/monitor/store";
+import { withTransaction } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
 
 /**
  * Rig health: one tile per rig, event mode, and the monitor's alerts. It reads
- * the snapshot the monitor reads and calls the same evaluateRules on it, so a
- * tile is red exactly when the channel has been (or is about to be) told
- * something urgent about that rig. It only reads - an evaluation that posts
+ * the snapshot the monitor reads and calls the same evaluateRules on it, and
+ * keeps showing an alert until its row is resolved, so a tile is red exactly
+ * when the channel has been (or is about to be) told something urgent about
+ * that rig and has not yet been told it recovered. It only reads - an evaluation that posts
  * is the "Run checks now" button's job, throttled with every other one.
  */
 export default async function RigHealthPage() {
@@ -26,14 +29,21 @@ export default async function RigHealthPage() {
   if (!staff) redirect("/staff/login");
 
   // Failures throw to the error boundary: an empty page that is really a
-  // failed query would read as a venue with nothing wrong.
-  const clock = await monitorClock();
-  const [snapshot, laps, alerts] = await Promise.all([
-    loadSnapshot(clock.now),
-    rigLaps(),
-    recentAlerts(),
-  ]);
-  const findings = evaluateRules(snapshot);
+  // failed query would read as a venue with nothing wrong. One read-only
+  // snapshot of the database for all of it, so the tiles and the Alerts list
+  // cannot straddle an evaluation that opened or resolved something.
+  const { clock, snapshot, lastLaps, alerts } = await withTransaction(async (client) => {
+    await client.query("set transaction isolation level repeatable read, read only");
+    const clock = await monitorClock(client);
+    const [snapshot, lastLaps, alerts] = await Promise.all([
+      loadSnapshot(client, clock.now),
+      lastLapAtByRig(client),
+      recentAlerts(client),
+    ]);
+    return { clock, snapshot, lastLaps, alerts };
+  });
+  // What the rules find now, and what the channel still has open.
+  const findings = shownFindings(evaluateRules(snapshot), snapshot.openAlerts);
   const { now } = snapshot;
   const mode = eventMode(snapshot);
   // Everything else - the venue, the TV boards - is listed above the tiles.
@@ -42,14 +52,9 @@ export default async function RigHealthPage() {
   return (
     <StaffRigHealth
       staffName={staff.displayName}
-      flow={flowModel(snapshot, findings, {
-        laps: laps.recent,
-        lastEvaluatedAt: clock.lastEvaluatedAt,
-      })}
-      tiles={rigTiles(snapshot, findings, laps.lastLapAt)}
-      venueProblems={findings
-        .filter((f) => !rigSubjects.has(f.subject))
-        .map((f) => ({ severity: f.severity, headline: f.detail.headline }))}
+      flow={flowModel(snapshot, findings, clock.lastEvaluatedAt)}
+      tiles={rigTiles(snapshot, findings, lastLaps)}
+      venueProblems={problems(findings.filter((f) => !rigSubjects.has(flapScope(f.subject))))}
       event={{
         on: mode.on,
         // The channel's own wording, less its "⚪ Event mode on:" - the page shows on or off beside it.
@@ -90,7 +95,14 @@ function alertRow(alert: RecentAlert, now: number): RigHealthAlert {
     headline: alert.headline,
     opened: stamp(alert.openedAt, now),
     recovered: alert.resolvedAt === null ? null : stamp(alert.resolvedAt, now),
-    githubIssueNumber: alert.githubIssueNumber,
+    muted: alert.muted,
+    issue:
+      alert.githubIssueNumber === null
+        ? null
+        : {
+            number: alert.githubIssueNumber,
+            href: `https://github.com/${REPOSITORY}/issues/${alert.githubIssueNumber}`,
+          },
   };
 }
 

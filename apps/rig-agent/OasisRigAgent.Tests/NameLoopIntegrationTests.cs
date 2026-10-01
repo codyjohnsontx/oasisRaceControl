@@ -42,7 +42,7 @@ public sealed class NameLoopIntegrationTests
 
         // Person one types a new name and picks a PIN: registered, and the
         // rig's seat is theirs.
-        var first = await checkIn.CheckInAsync($"Loop A {tag}", "4821", CancellationToken.None);
+        var first = (await checkIn.CheckInNewAsync($"Loop A {tag}", "4821", CancellationToken.None))!;
         Assert.False(first.Returning);
         var seat = (await backend.GetAssignmentAsync(CancellationToken.None)).Assignment;
         Assert.NotNull(seat);
@@ -56,22 +56,21 @@ public sealed class NameLoopIntegrationTests
 
         // They come back for another go: the same name and PIN log the SAME
         // driver back in, so their laps stay on one leaderboard row.
-        var again = await checkIn.CheckInAsync($"Loop A {tag}", "4821", CancellationToken.None);
+        var again = (await checkIn.CheckInReturningAsync($"Loop A {tag}", "4821", CancellationToken.None))!;
         Assert.True(again.Returning);
         Assert.Equal(first.DriverId, again.DriverId);
         Assert.NotEqual(first.AssignmentId, again.AssignmentId);
         await AssertLapCredited(backend, again.AssignmentId, $"loop-{tag}-2");
 
-        // Somebody else typing that name with the wrong PIN is refused, and the
-        // seat stays with the driver who is in it.
-        var wrong = await Assert.ThrowsAsync<CheckInRefusedException>(
-            () => checkIn.CheckInAsync($"Loop A {tag}", "0000", CancellationToken.None));
-        Assert.Contains("different PIN", wrong.Message);
+        // Somebody else typing that name with the wrong PIN is refused, cannot
+        // sign it up as new either, and the seat stays with the driver who is in it.
+        Assert.Null(await checkIn.CheckInReturningAsync($"Loop A {tag}", "0000", CancellationToken.None));
+        Assert.Null(await checkIn.CheckInNewAsync($"Loop A {tag}", "0000", CancellationToken.None));
         Assert.Equal(again.AssignmentId, (await backend.GetAssignmentAsync(CancellationToken.None)).Assignment!.Id);
 
         // A different name registers separately, and the takeover is confirmed
         // automatically, so the seat moves without a sign-out in between.
-        var next = await checkIn.CheckInAsync($"Loop B {tag}", "4821", CancellationToken.None);
+        var next = (await checkIn.CheckInNewAsync($"Loop B {tag}", "4821", CancellationToken.None))!;
         Assert.False(next.Returning);
         Assert.NotEqual(first.DriverId, next.DriverId);
         seat = (await backend.GetAssignmentAsync(CancellationToken.None)).Assignment;

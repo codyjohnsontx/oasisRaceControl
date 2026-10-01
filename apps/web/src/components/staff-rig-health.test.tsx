@@ -36,6 +36,7 @@ function tile(n: number, overrides: Partial<RigTile>): RigTile {
     clockSkew: null,
     heartbeat: "heartbeat 12 s ago",
     oldAgent: false,
+    outdated: false,
     ...overrides,
   };
 }
@@ -49,7 +50,8 @@ const ALERTS: RigHealthAlert[] = [
     headline: "Rig 03: lap reading stopped",
     opened: "3:40 PM",
     recovered: null,
-    githubIssueNumber: 57,
+    muted: false,
+    issue: { number: 57, href: "https://github.com/codyjohnsontx/oasisRaceControl/issues/57" },
   },
   {
     id: "1",
@@ -59,7 +61,8 @@ const ALERTS: RigHealthAlert[] = [
     headline: "Rig 02: the rig agent is using 200 MB",
     opened: "Oct 3 9:12 PM",
     recovered: "Oct 3 9:30 PM",
-    githubIssueNumber: null,
+    muted: true,
+    issue: null,
   },
 ];
 
@@ -104,21 +107,33 @@ describe("StaffRigHealth", () => {
     tile(2, { colour: "yellow", problems: [{ severity: "warning", headline: "Rig 02: 200 MB" }] }),
     tile(3, { colour: "red", problems: [{ severity: "urgent", headline: "Rig 03: lap reading stopped" }] }),
     tile(4, { colour: "grey", status: "never seen" }),
-    tile(5, { oldAgent: true, agent: "agent 0.3-event", iracing: "iRacing: agent too old to report" }),
+    tile(5, {
+      oldAgent: true,
+      outdated: true,
+      agent: "agent 0.3-event",
+      iracing: "iRacing: agent too old to report",
+      footprint: "CPU and MB: agent too old to report",
+      clockSkew: "clock: agent too old to report",
+    }),
+    tile(6, { colour: "yellow", outdated: true, agent: "agent 0.4-monitor" }),
   ]);
 
   it("gives every tile the colour it was handed", () => {
     const colours = [...html.matchAll(/data-colour="(\w+)"[^>]*>.*?font-black">(R\d+)</g)].map(
       ([, colour, label]) => `${label} ${colour}`,
     );
-    expect(colours).toEqual(["R01 green", "R02 yellow", "R03 red", "R04 grey", "R05 green"]);
+    expect(colours).toEqual(["R01 green", "R02 yellow", "R03 red", "R04 grey", "R05 green", "R06 yellow"]);
     expect(html).toContain("border-invalid");
     expect(html).toContain("border-gold");
   });
 
-  it("badges an agent too old to report", () => {
+  it("badges an agent too old to report, and an outdated build once", () => {
     expect(html).toContain("old agent");
+    // R05 is both: the stronger badge alone. R06 is outdated only.
+    expect(html.match(/>outdated</g)).toHaveLength(1);
     expect(html).toContain("iRacing: agent too old to report");
+    expect(html).toContain("CPU and MB: agent too old to report");
+    expect(html).toContain("clock: agent too old to report");
   });
 
   it("shows venue problems, event mode with the active override pressed, and the checks", () => {
@@ -135,6 +150,7 @@ describe("StaffRigHealth", () => {
     expect(html).toContain("Rule 15 · Rig 03 · opened 3:40 PM");
     expect(html).toMatch(/opened 3:40 PM · <span[^>]*>open<\/span>/);
     expect(html).toContain("recovered Oct 3 9:30 PM");
+    expect(html).toContain("muted (flapping)");
     expect(html).toContain('href="https://github.com/codyjohnsontx/oasisRaceControl/issues/57"');
   });
 

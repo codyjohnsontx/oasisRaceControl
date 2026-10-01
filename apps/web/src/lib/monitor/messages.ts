@@ -1,14 +1,18 @@
 import { formatLapTime } from "@/lib/time";
+import { comboMismatch } from "@/lib/validity";
 import { clip, DISCORD_LIMITS, type DiscordMessage } from "./discord";
 import { boardName, boardState, eventDisplays, type EventMode } from "./event-mode";
 import { rigState } from "./rig-state";
 import {
+  comboLabel,
   driverName,
   duration,
+  nameOf,
   RULES,
   SILENT_AFTER_MS,
   SILENT_LOOKBACK_MS,
   type AlertDetail,
+  type FeaturedCombo,
   type MonitorSnapshot,
   type RigSnapshot,
   type Severity,
@@ -27,6 +31,10 @@ export type AlertForMessage = {
   severity: Severity;
   openedAt: number;
   resolvedAt: number | null;
+  /** Earlier openings on the same rule and flapping scope (flapScope) in the hour before this one. */
+  refireCount: number;
+  /** Inside a flapping mute right now: announced by flappingMessage, and not recovered aloud. */
+  flapping: boolean;
   detail: AlertDetail;
 };
 
@@ -198,6 +206,25 @@ export function routineUpdateMessage(
   };
 }
 
+/**
+ * What announces an alert that opened once too often in an hour: one quiet
+ * line in place of the alert, saying the rule and rig (flapScope) are muted
+ * for the hour. Everything on them in that hour stays in monitor_alerts (and
+ * on the Rig health page) without being posted; rule 14's laps are then listed
+ * once, in fastLapSummaryMessages.
+ */
+export function flappingMessage(alert: AlertForMessage): DiscordMessage {
+  const rule = ruleOf(alert.rule);
+  return {
+    content: clip(
+      `🔕 Flapping: ${rule.title} - ${alert.detail.where} has fired ${alert.refireCount + 1} times ` +
+        `in the last hour; muted for 1 h (alert #${alert.id} · rule ${rule.number})`,
+      DISCORD_LIMITS.content,
+    ),
+    allowed_mentions: { parse: [] },
+  };
+}
+
 /** The event's display, as the update's first line names it. */
 function boardSummary(snapshot: MonitorSnapshot): string {
   const displays = eventDisplays(snapshot);
@@ -267,4 +294,93 @@ function initials(name: string): string {
     .map((word) => word[0]?.toUpperCase() ?? "")
     .filter(Boolean);
   return letters.length > 0 ? `${letters.join(".")}.` : "?";
+}
+
+/** How an alert opening is announced: itself, or the flapping line that mutes it. */
+export function openingMessage(alert: AlertForMessage, mentionUserId: string | null): DiscordMessage {
+  return alert.flapping ? flappingMessage(alert) : alertMessage(alert, mentionUserId);
+}
+
+/** Every lap of one rule 14 flapping mute, read when the mute ends (claimFastLapSummaries). */
+export type FastLapSummary = {
+  /** The alert that started the mute. */
+  id: string;
+  rigName: string;
+  /** Today's featured combo, or null when none is set. */
+  featuredCombo: FeaturedCombo | null;
+  laps: Array<{ lapTimeMs: number; driver: { name: string; status: string } | null; combo: FeaturedCombo }>;
+};
+
+/** The most messages one rule 14 summary posts. */
+export const FAST_LAP_SUMMARY_PARTS = 3;
+/** Laps listed in each of them. */
+export const FAST_LAP_SUMMARY_LAPS_PER_PART = 25;
+
+/**
+ * The quiet messages that end a rule 14 mute: the laps flagged while it held,
+ * so a run of fast laps reaches staff once instead of flooding the channel.
+ * The list is split on whole lines across at most FAST_LAP_SUMMARY_PARTS
+ * messages of FAST_LAP_SUMMARY_LAPS_PER_PART laps, each marked "part i of N"
+ * when there is more than one; laps past them are counted on the last line
+ * instead - a rig flagging that many has a broken detector, and the count is
+ * what staff act on. Which laps a part holds depends only on how many laps the
+ * mute flagged, never on how the lines read, so a part retried after the
+ * featured combo or a driver's status changed resumes at the same lap. Each
+ * line is only the rig, the lap time and the driver; where the laps were
+ * driven is said once, in every message's first line. A lap's car and track
+ * are the rig's own strings, so they are never shown: laps on today's featured
+ * combo are counted under the combo's label, and any others as "another car
+ * and track".
+ */
+export function fastLapSummaryMessages(summary: FastLapSummary): DiscordMessage[] {
+  const rule = ruleOf("fast_lap");
+  const featured = summary.featuredCombo;
+  const lines = summary.laps.map((lap) => {
+    const driver = lap.driver ? nameOf(lap.driver.name, lap.driver.status) : "nobody signed in";
+    return `• ${summary.rigName} · ${formatLapTime(lap.lapTimeMs)} by ${driver}`;
+  });
+  const onFeatured = featured
+    ? summary.laps.filter(
+        (lap) =>
+          comboMismatch(
+            { track_name: featured.trackName, track_config: featured.trackConfig, car_name: featured.carName },
+            lap.combo,
+          ) === null,
+      ).length
+    : 0;
+  const featuredPlace = featured ? `today's featured combo (${comboLabel(featured)})` : "";
+  const where =
+    onFeatured === 0
+      ? "on another car and track"
+      : onFeatured === summary.laps.length
+        ? `on ${featuredPlace}`
+        : `${onFeatured} on ${featuredPlace} and ${summary.laps.length - onFeatured} on another car and track`;
+
+  const parts = Array.from(
+    { length: Math.min(FAST_LAP_SUMMARY_PARTS, Math.ceil(lines.length / FAST_LAP_SUMMARY_LAPS_PER_PART)) },
+    (_, i) => lines.slice(i * FAST_LAP_SUMMARY_LAPS_PER_PART, (i + 1) * FAST_LAP_SUMMARY_LAPS_PER_PART),
+  );
+  const unlisted = lines.length - FAST_LAP_SUMMARY_PARTS * FAST_LAP_SUMMARY_LAPS_PER_PART;
+  if (unlisted > 0) {
+    parts.at(-1)!.push(`and ${unlisted} more implausible ${unlisted === 1 ? "lap" : "laps"} on ${summary.rigName} this hour`);
+  }
+
+  const count = summary.laps.length === 1 ? "1 lap" : `${summary.laps.length} laps`;
+  return parts.map((part, i) => ({
+    content: clip(
+      `🟡 ${summary.rigName}: ${count} flagged as implausibly fast while the rule was muted, ${where} - ` +
+        "worth a look; they rank unless staff invalidate them" +
+        (parts.length > 1 ? ` (part ${i + 1} of ${parts.length})` : ""),
+      DISCORD_LIMITS.content,
+    ),
+    embeds: [
+      {
+        title: clip(rule.title, DISCORD_LIMITS.embedTitle),
+        color: YELLOW,
+        description: part.join("\n"),
+        footer: { text: `alert #${summary.id} · rule ${rule.number}` },
+      },
+    ],
+    allowed_mentions: { parse: [] },
+  }));
 }

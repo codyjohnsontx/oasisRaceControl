@@ -44,6 +44,11 @@ const HOST_LOGOS: Record<string, TvHostLogo> = {
   },
 };
 
+/** Every bundled host's name, as its logo's alt text says it. */
+export function tvHostNames(): string[] {
+  return Object.values(HOST_LOGOS).map((logo) => logo.alt);
+}
+
 /**
  * Reads the host off the page's `host` search parameter: the logo to draw, or
  * null for no parameter, a repeated one, or a name that is not bundled.
@@ -51,4 +56,9 @@ const HOST_LOGOS: Record<string, TvHostLogo> = {
 export function tvHostLogo(host: string | string[] | undefined): TvHostLogo | null {
   if (typeof host !== "string") return null;
   return Object.prototype.hasOwnProperty.call(HOST_LOGOS, host) ? HOST_LOGOS[host] : null;
+}
+
+/** Every bundled host's key, for the staff page's event board links. */
+export function tvHostKeys(): string[] {
+  return Object.keys(HOST_LOGOS);
 }

@@ -22,11 +22,14 @@ every driver with a lap today in the featured combo, scrolling on its own
 (`auto-scroll.tsx`), no rotation. It is a second rotation *list* (`TvMode` in
 `tv-rotation.ts`, chosen by `buildRotation`), not a second engine or a second
 board type - the tonight board plays it with `everyone: true`, asking the
-tonight feed for its `TONIGHT_FEED_MAX_ROWS` ceiling. It exists because at an
-off-site event the venue rotation shows the same laps under three headings:
-a league slide with no season, which is counted in the footer but never
-plays, then "Fastest tonight" and "All-time best laps", identical when every
-lap the database holds was driven today. Plain `/tv` is unchanged by it.
+tonight feed for `limit=all`. Do not give it a row ceiling back:
+`v_fastest_tonight` is already bounded by the day's drivers, and any fixed cap
+drops the next driver silently (pinned by the tonight route's
+`route.integration.test.ts`). It exists because at an off-site event the
+venue rotation shows the same laps under three headings: a league slide with
+no season, which is counted in the footer but never plays, then "Fastest
+tonight" and "All-time best laps", identical when every lap the database holds
+was driven today. Plain `/tv` is unchanged by it.
 
 Sizing is one composition, not per-element pixels. The wall renders at
 **1272x601** - not 1080p - so `/tv` is written entirely in `em` of the
@@ -270,8 +273,10 @@ of a rule, the same discipline as `/tv` ranking. Its data-flow view
 (`lib/monitor/flow.ts`) likewise only places findings, and a new rule does not
 compile until `RULE_PLACE` gives it a node or edge. "Fires once, recovers once"
 is enforced by `monitor_alerts_one_open` (`db/migrations/0006_monitor.sql`)
-and single-statement transitions in `store.ts`, not by locks or by the
-throttle; only the evaluation whose statement won posts. A rig's state is its
+and single-statement transitions in `store.ts`, not by the throttle; only the
+evaluation whose statement won posts. The `monitor_state` row lock the claim
+takes is load-bearing too: it serializes evaluations, so an older snapshot is
+never applied after a newer one (`store.ts` header). A rig's state is its
 latest heartbeat *by send order* (`rigState`), never by arrival: an ordinary
 heartbeat that lands after the goodbye it was sent before must not turn a
 clean shutdown into a silent rig. There is no Vercel cron (Hobby runs one a
@@ -282,16 +287,41 @@ reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
 migration, and a verify fingerprints only the columns its own migration
-created, so a later `alter table` does not fail an earlier verify.
+created, so a later `alter table` does not fail an earlier verify. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
+GitHub issue (`diagnosis/`, `handoff.ts`, `github.ts`) are written from
+`incidentContext`, an allowlist of what the server can vouch for - numbers,
+flags, enum values, known agent notices as codes - that never carries a rig's
+own strings (plan decision D9:
+the free Gemini tier may train on prompts, and the handoff is pasted into a
+coding harness and this public repository's issues). Do not add a rig string
+to it behind a redaction regex; add a field of a vouchable kind, and keep
+model text going through `modelText`. The rig is named there by
+`rigs.rig_number`, never its staff-typed display name, which only the Discord
+alert shows. One issue serves every alert of a rule within 24 hours, on any
+rig - a software fault is venue-wide, and one bug must start one fix worker,
+not twenty - while Discord stays per rig. Issue writes are serialized per rule
+(`lockFault`) and carry a hidden marker (`rigAlertMarker`, naming the rule and
+every alert the write covers) that a retry looks for before writing again,
+trusted only as the last line of a write by the token's own account;
+keep both on any new GitHub write. A rule that compares a rig with
+today's combo uses ingestion's own `comboMismatch` (`validity.ts`), never a
+second comparison. Bumping the agent's `AgentVersion` (`AgentConfig.cs`)
+bumps `CURRENT_AGENT_VERSION` (`monitor/agent-version.ts`) in the same
+commit - `agent-version.test.ts` fails otherwise - and from that deploy
+every rig on the old build shows rule 11's warning until the exe is
+replaced.
 
-Every `/tv` page heartbeats too (`components/tv/board-heartbeat.tsx`, beside
-the engine, never inside it - `tv-screen.tsx` stays untouched), with a ticket
-the page's server render signed (`lib/board-ticket.ts`): the route is public
-and believes board, mode and host only from that ticket. Feed health comes
-from wrapping each registered board type's `load` (`lib/tv-feed-health.ts`),
-not from the engine. An open event board is event mode (`eventMode()` in
-`monitor/event-mode.ts`, pure, shared like the rules); a dark board keeps it
-on until a goodbye, venue midnight or staff, or rule 8a could never fire.
+A `/tv` page opened from its signed staff link on `/staff` (the shop wall,
+or the event board) heartbeats too (`components/tv/board-heartbeat.tsx`,
+beside the engine, never inside it - `tv-screen.tsx` stays untouched), with a
+ticket the page's server render signed (`lib/board-ticket.ts`): the route is
+public and believes board, mode and host only from that ticket. The public
+`/tv` and `/tv?event=1` get no ticket and report nothing - the owner's rule,
+so no stranger can switch the channel into event mode or page him. Feed
+health comes from wrapping each registered board type's `load` (`lib/tv-feed-health.ts`), not from the engine.
+An event board heard within 3 minutes is event mode (`eventMode()` in
+`monitor/event-mode.ts`, pure, shared like the rules); a dark one is rule 8a,
+which is judged without event mode because the dark board no longer holds it.
 Verify board-heartbeat changes with `npm run tv:heartbeat-check`.
 
 ## The twenty-rig soak
@@ -397,6 +427,23 @@ unnamed checkout would close whatever stint is open on the rig. The
 loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
 test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
 `OASIS_TEST_BACKEND_URL`).
+
+A PIN chosen for a new name is typed twice before anything is registered, on
+the rig and on the web's sign-up and guest "Save profile" forms
+(`apps/web/src/lib/new-pin.ts`): a PIN mistyped once is one its owner can
+never sign back in with, and only staff can fix it, with Reset PIN on
+`/staff` (2026-09-28). The
+rig asks "Raced here before?" instead of guessing from a failed login - that
+guess is what told chuy to use a different name - and its sign-in is one small
+state machine, `SignInState` in `DriverPrompt.cs`, over the client's separate
+`CheckInReturningAsync` (login only) and `CheckInNewAsync` (register only).
+The rules are documented on the enum and every sequence is a row of
+`EverySignInSequenceEndsWhereTheRulesSay`, so change a rule and its row
+together. The load-bearing ones: the returning path never registers and makes
+at most two failed logins per name for the whole sign-in - typing the name
+again gets no fresh tries - so a stranger cannot lock the real driver out
+(the backend locks at five) from one sign-in; the new path never logs in, and compares its two
+PINs on the rig. The website says the same in `driver-auth-refusal.ts`.
 
 ## Rig heartbeat
 

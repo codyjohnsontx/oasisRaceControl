@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { RigFlow } from "./rig-flow";
 import type { FlowModel } from "@/lib/monitor/flow";
-import type { RigTile, TileColour } from "@/lib/monitor/rig-health";
+import type { Problem, RigTile, TileColour } from "@/lib/monitor/rig-health";
+import { RigFlow } from "./rig-flow";
 import type { Severity } from "@/lib/monitor/rules";
 
 export type RigHealthAlert = {
@@ -16,7 +16,9 @@ export type RigHealthAlert = {
   headline: string;
   opened: string;
   recovered: string | null;
-  githubIssueNumber: number | null;
+  /** Flapping: kept here, not posted, for the hour. */
+  muted: boolean;
+  issue: { number: number; href: string } | null;
 };
 
 export type RigHealthBoard = {
@@ -27,8 +29,6 @@ export type RigHealthBoard = {
 };
 
 type Notice = { ok: boolean; text: string; area: "event" | "monitor" };
-
-const REPO_ISSUES = "https://github.com/codyjohnsontx/oasisRaceControl/issues";
 
 const TILE_BORDER: Record<TileColour, string> = {
   red: "border-invalid",
@@ -71,7 +71,7 @@ export function StaffRigHealth({
   staffName: string;
   flow: FlowModel;
   tiles: RigTile[];
-  venueProblems: Array<{ severity: Severity; headline: string }>;
+  venueProblems: Problem[];
   event: { on: boolean; line: string; override: "on" | "off" | null };
   boards: RigHealthBoard[];
   checks: string;
@@ -247,6 +247,9 @@ export function StaffRigHealth({
                 {tile.oldAgent && (
                   <span className="ml-1 font-bold uppercase text-gold">old agent</span>
                 )}
+                {tile.outdated && !tile.oldAgent && (
+                  <span className="ml-1 font-bold uppercase text-gold">outdated</span>
+                )}
               </p>
               {tile.footprint && <p className="text-muted text-[10px]">{tile.footprint}</p>}
               {tile.clockSkew && <p className="text-muted text-[10px]">{tile.clockSkew}</p>}
@@ -336,14 +339,12 @@ export function StaffRigHealth({
                 ) : (
                   <span className="font-bold uppercase text-ink">open</span>
                 )}
-                {a.githubIssueNumber !== null && (
+                {a.muted && " · muted (flapping)"}
+                {a.issue !== null && (
                   <>
                     {" · "}
-                    <a
-                      href={`${REPO_ISSUES}/${a.githubIssueNumber}`}
-                      className="underline underline-offset-4"
-                    >
-                      issue #{a.githubIssueNumber}
+                    <a href={a.issue.href} className="underline underline-offset-4">
+                      issue #{a.issue.number}
                     </a>
                   </>
                 )}

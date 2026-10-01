@@ -48,8 +48,10 @@ export async function POST(request: Request) {
   if (!board) return Response.json({ error: "invalid_ticket" }, { status: 401 });
 
   try {
-    // A heartbeat after a goodbye (the page restored from the back-forward
-    // cache) reopens the board: closed_at follows whichever came last.
+    // A goodbye is final for its board. A heartbeat that was in flight as the
+    // tab closed can land after the beacon and must not undo it, and a page
+    // restored from the back-forward cache reloads as a new board rather than
+    // reopening this one (board-heartbeat.tsx).
     await query(
       `insert into board_heartbeats (board_id, mode, host, visible, feed_ok, feed_failures, closed_at)
        values ($1, $2, $3, $4, $5, $6, case when $7 then now() end)
@@ -58,7 +60,7 @@ export async function POST(request: Request) {
          visible = excluded.visible,
          feed_ok = excluded.feed_ok,
          feed_failures = excluded.feed_failures,
-         closed_at = excluded.closed_at`,
+         closed_at = coalesce(board_heartbeats.closed_at, excluded.closed_at)`,
       [
         board.boardId,
         board.mode,

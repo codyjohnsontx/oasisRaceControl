@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { CURRENT_AGENT_VERSION } from "./agent-version";
 import type { BoardSnapshot } from "./event-mode";
-import { flowModel, RULE_PLACE, type FlowLap, type FlowModel } from "./flow";
+import { flowModel, RULE_PLACE, type FlowModel } from "./flow";
+import { shownFindings } from "./rig-health";
 import type { Heartbeat } from "./rig-state";
-import { evaluateRules, RULES, type MonitorSnapshot, type RigSnapshot } from "./rules";
+import {
+  evaluateRules,
+  RULES,
+  SILENT_AFTER_MS,
+  type LapSnapshot,
+  type MonitorSnapshot,
+  type RigSnapshot,
+} from "./rules";
 
 /**
  * The data-flow view's model. What must hold: every rule has a place in the
@@ -33,7 +42,7 @@ function hb(ago: number, overrides: Partial<Heartbeat> = {}): Heartbeat {
     clockSkewMs: 0,
     processStartedAt: STARTED,
     sequence: Math.round((receivedAt - STARTED) / MIN),
-    agentVersion: "rig-agent/0.4-monitor",
+    agentVersion: CURRENT_AGENT_VERSION,
     telemetryMode: "iracing",
     simConnected: true,
     telemetryFaulted: false,
@@ -42,6 +51,9 @@ function hb(ago: number, overrides: Partial<Heartbeat> = {}): Heartbeat {
     oldestPendingAgeS: null,
     rejectedLaps: 0,
     checkout: "none",
+    signInFailures: 0,
+    signInFailureKinds: [],
+    signInFailureSeqs: null,
     missingVariables: [],
     agentCpuPercent: 0.3,
     agentMemoryMb: 42,
@@ -57,6 +69,17 @@ function minutely(from: number, to = 0, overrides: Partial<Heartbeat> = {}): Hea
   return rows;
 }
 
+/** Each unbroken run of heartbeats, as loadSnapshot builds RigSnapshot.heard. */
+function runsOf(heartbeats: Heartbeat[]): RigSnapshot["heard"] {
+  const runs: RigSnapshot["heard"] = [];
+  for (const { receivedAt } of heartbeats) {
+    const last = runs.at(-1);
+    if (last && receivedAt - last.to <= SILENT_AFTER_MS) last.to = receivedAt;
+    else runs.push({ from: receivedAt, to: receivedAt });
+  }
+  return runs;
+}
+
 function rig(number: number, heartbeats: Heartbeat[], overrides: Partial<RigSnapshot> = {}): RigSnapshot {
   return {
     id: `rig-${number}`,
@@ -65,6 +88,7 @@ function rig(number: number, heartbeats: Heartbeat[], overrides: Partial<RigSnap
     lastSeenAt: heartbeats.at(-1)?.receivedAt ?? null,
     seated: { driverName: "Matt G", driverStatus: "active", startedAt: NOW - 40 * MIN },
     heartbeats,
+    heard: runsOf(heartbeats),
     ...overrides,
   };
 }
@@ -84,25 +108,43 @@ function board(overrides: Partial<BoardSnapshot> = {}): BoardSnapshot {
   };
 }
 
+const COMBO = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" };
+
 function snapshot(rigs: RigSnapshot[], overrides: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
   return {
     now: NOW,
     venueDayStart: DAY_START,
     rigs,
-    featuredCombo: { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" },
+    featuredCombo: COMBO,
+    longStintMinutes: 120,
+    laps: [],
+    lapBests: [],
+    moves: [],
     override: null,
+    eventModeSince: NOW - 2 * 60 * MIN,
     boards: [board()],
     openAlerts: [],
     ...overrides,
   };
 }
 
-function model(
-  snap: MonitorSnapshot,
-  laps: FlowLap[] = [],
-  lastEvaluatedAt: number | null = NOW - 20 * S,
-): FlowModel {
-  return flowModel(snap, evaluateRules(snap), { laps, lastEvaluatedAt });
+function model(snap: MonitorSnapshot, lastEvaluatedAt: number | null = NOW - 20 * S): FlowModel {
+  return flowModel(snap, evaluateRules(snap), lastEvaluatedAt);
+}
+
+/** A lap the site stored `ago` ago. */
+function lap(id: string, rigId: string, ago: number, lapTimeMs: number, kind: "accepted" | "invalid" | "unattributed"): LapSnapshot {
+  return {
+    id,
+    rigId,
+    receivedAt: NOW - ago,
+    driver: kind === "unattributed" ? null : { id: "d1", name: "Matt G", status: "active" },
+    combo: COMBO,
+    lapTimeMs,
+    valid: kind === "accepted",
+    invalidReason: kind === "accepted" ? null : kind === "unattributed" ? "UNATTRIBUTED" : "OFF_TRACK",
+    unattributedCause: kind === "unattributed" ? "nobody_checked_in" : null,
+  };
 }
 
 /** A lane or the shared half as one line per part: "iracing green", "e2 red dim". */
@@ -268,6 +310,26 @@ describe("flowModel", () => {
     expect(m.lanes[0]!.broken).toBeNull();
   });
 
+  it("places a finding about something finer than the rig on that rig (rule 11, per build)", () => {
+    const m = model(snapshot([rig(1, minutely(14 * MIN, 0, { agentVersion: "rig-agent/0.1-old" }))]));
+    expect(m.lanes[0]!.nodes.agent).toMatchObject({ state: "yellow", reason: expect.stringMatching(/outdated rig agent/) });
+  });
+
+  it("keeps drawing an alert the channel still has open, as the tiles do (shownFindings)", () => {
+    const snap = snapshot([rig(1, minutely(14 * MIN))]);
+    const open = [
+      {
+        rule: "rig_silent",
+        subject: "rig:rig-1",
+        severity: "urgent" as const,
+        detail: { headline: "Rig 01 has been silent for 3 min", where: "Rig 01", fields: [] },
+      },
+    ];
+    const m = flowModel(snap, shownFindings(evaluateRules(snap), open), NOW - 20 * S);
+    expect(m.lanes[0]!.broken).toBe(2);
+    expect(m.lanes[0]!.edges[1]).toMatchObject({ state: "red", reason: "Rig 01 has been silent for 3 min" });
+  });
+
   it("does not let a warning upstream hide a red break further down", () => {
     const m = model(
       snapshot([rig(1, minutely(14 * MIN, 0, { missingVariables: ["X"], rejectedLaps: 1 }))]),
@@ -276,7 +338,7 @@ describe("flowModel", () => {
   });
 
   it("marks the database yellow when the monitor stopped running", () => {
-    const m = model(snapshot([rig(1, minutely(14 * MIN))]), [], NOW - 30 * MIN);
+    const m = model(snapshot([rig(1, minutely(14 * MIN))]), NOW - 30 * MIN);
     expect(m.shared.broken).toBe(4);
     expect(m.shared.nodes.database.state).toBe("yellow");
     expect(m.shared.edges[0].reason).toMatch(/has not run for 30 min/);
@@ -293,14 +355,14 @@ describe("flowModel", () => {
   });
 
   it("carries the last ten minutes of traffic, placed by age, with each lap's status", () => {
-    const laps: FlowLap[] = [
-      { id: "a", rigId: "rig-1", receivedAt: NOW - 1 * MIN, lapTimeMs: 137_217, valid: true, unattributed: false },
-      { id: "b", rigId: "rig-1", receivedAt: NOW - 4 * MIN, lapTimeMs: 140_001, valid: false, unattributed: false },
-      { id: "c", rigId: "rig-1", receivedAt: NOW - 6 * MIN, lapTimeMs: 139_500, valid: false, unattributed: true },
-      { id: "d", rigId: "rig-1", receivedAt: NOW - 11 * MIN, lapTimeMs: 138_000, valid: true, unattributed: false },
-      { id: "e", rigId: "rig-2", receivedAt: NOW - 1 * MIN, lapTimeMs: 150_000, valid: true, unattributed: false },
+    const laps = [
+      lap("a", "rig-1", 1 * MIN, 137_217, "accepted"),
+      lap("b", "rig-1", 4 * MIN, 140_001, "invalid"),
+      lap("c", "rig-1", 6 * MIN, 139_500, "unattributed"),
+      lap("d", "rig-1", 11 * MIN, 138_000, "accepted"),
+      lap("e", "rig-2", 1 * MIN, 150_000, "accepted"),
     ];
-    const m = model(snapshot([rig(1, minutely(14 * MIN))]), laps);
+    const m = model(snapshot([rig(1, minutely(14 * MIN))], { laps }));
     const traffic = m.lanes[0]!.traffic;
     expect(traffic.filter((t) => t.kind === "heartbeat").map((t) => t.ageMs)).toEqual(
       [9, 8, 7, 6, 5, 4, 3, 2, 1, 0].map((n) => n * MIN),
