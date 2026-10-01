@@ -1978,6 +1978,27 @@ describeDb("rig monitor against real Postgres", () => {
     ]);
   });
 
+  it("lists every open alert on the Rig health page, however many newer ones recovered", async () => {
+    await testDb().query(
+      `insert into monitor_alerts (rule, subject, severity, detail, opened_at, resolved_at)
+       values ('agent_outdated', 'rig:old', 'warning', '{"headline": "still open"}', now() - interval '3 days', null)`,
+    );
+    await testDb().query(
+      `insert into monitor_alerts (rule, subject, severity, detail, opened_at, resolved_at)
+       select 'fast_lap', 'rig:new|' || n, 'warning', '{"headline": "recovered"}',
+              now() - n * interval '1 minute', now() - n * interval '1 minute' + interval '30 seconds'
+       from generate_series(1, 3) as n`,
+    );
+
+    const alerts = await recentAlerts(2);
+    expect(alerts.map((a) => [a.headline, a.resolvedAt === null])).toEqual([
+      ["still open", true],
+      ["recovered", false],
+      ["recovered", false],
+    ]);
+    expect(alerts[1]!.openedAt).toBeGreaterThan(alerts[2]!.openedAt);
+  });
+
   it("passes the read-only verify the owner runs after hand-applying 0006", async () => {
     // db/verify/0006_monitor.sql pins fingerprints of every object the
     // migration creates; this database was built from the migration itself, so

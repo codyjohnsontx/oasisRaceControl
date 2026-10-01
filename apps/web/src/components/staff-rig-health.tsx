@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { RigTile, TileColour } from "@/lib/monitor/rig-health";
+import type { Problem, RigTile, TileColour } from "@/lib/monitor/rig-health";
 import type { Severity } from "@/lib/monitor/rules";
 
 export type RigHealthAlert = {
@@ -57,7 +57,7 @@ export function StaffRigHealth({
 }: {
   staffName: string;
   tiles: RigTile[];
-  venueProblems: Array<{ severity: Severity; headline: string }>;
+  venueProblems: Problem[];
   event: { on: boolean; line: string; override: "on" | "off" | null };
   boards: RigHealthBoard[];
   checks: string;

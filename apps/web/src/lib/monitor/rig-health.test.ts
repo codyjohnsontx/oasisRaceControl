@@ -173,9 +173,23 @@ describe("rig tile colour", () => {
       if (expected) expect(tile.colour).toBe(expected);
       else expect(["green", "grey"]).toContain(tile.colour);
       expect(tile.problems.map((p) => p.headline).sort()).toEqual(
-        mine.map((f) => f.detail.headline).sort(),
+        [...new Set(mine.map((f) => f.detail.headline))].sort(),
       );
     }
+  });
+
+  it("says once what two findings say alike: rule 11 open for the previous build and the current one", () => {
+    const outdated = rig(9, minutely(10 * MIN, (ago) => hb(ago, { agentVersion: "rig-agent/0.4-monitor" })));
+    const snap = {
+      ...snapshot([outdated]),
+      openAlerts: [{ rule: "agent_outdated", subject: `${rigSubject(outdated.id)}|rig-agent/0.4-previous` }],
+    };
+    const findings = evaluateRules(snap);
+    expect(findings.filter((f) => f.rule === "agent_outdated")).toHaveLength(2);
+    const [tile] = rigTiles(snap, findings, new Map());
+    expect(tile!.problems).toEqual([
+      { severity: "warning", headline: `Rig 09 runs an outdated rig agent - install ${CURRENT_AGENT_VERSION} on it` },
+    ]);
   });
 
   it("turns grey, not green, for a rig quiet past the silence line that no rule reports", () => {

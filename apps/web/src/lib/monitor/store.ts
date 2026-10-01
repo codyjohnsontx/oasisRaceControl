@@ -1084,7 +1084,7 @@ export type RecentAlert = {
   githubIssueNumber: number | null;
 };
 
-/** The latest alerts, open or recovered, newest first. */
+/** The newest `limit` alerts and every open one however old: open first, newest first within each. */
 export async function recentAlerts(limit = 50): Promise<RecentAlert[]> {
   const rows = await query<{
     id: string;
@@ -1099,7 +1099,10 @@ export async function recentAlerts(limit = 50): Promise<RecentAlert[]> {
   }>(
     `select id::text, rule, severity, detail->>'where' as where, detail->>'headline' as headline,
             opened_at, resolved_at, ${MUTED} as muted, github_issue_number
-     from monitor_alerts order by opened_at desc, id desc limit $1`,
+     from monitor_alerts
+     where resolved_at is null
+        or id in (select id from monitor_alerts order by opened_at desc, id desc limit $1)
+     order by resolved_at is null desc, opened_at desc, id desc`,
     [limit],
   );
   return rows.map((row) => ({

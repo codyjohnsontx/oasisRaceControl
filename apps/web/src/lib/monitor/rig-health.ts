@@ -25,6 +25,8 @@ import {
 
 export type TileColour = "red" | "yellow" | "green" | "grey";
 
+export type Problem = { severity: Severity; headline: string };
+
 export type RigTile = {
   id: string;
   label: string;
@@ -32,7 +34,7 @@ export type RigTile = {
   /** "online", "agent closed", "silent 4 min", "never seen". */
   status: string;
   /** What the rules found on this rig, worst first. */
-  problems: Array<{ severity: Severity; headline: string }>;
+  problems: Problem[];
   driver: string | null;
   iracing: string;
   lastLap: string;
@@ -93,9 +95,7 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
         : running
           ? "online"
           : `silent ${duration(quiet!)}`,
-    problems: [...mine]
-      .sort((a, b) => Number(b.severity === "urgent") - Number(a.severity === "urgent"))
-      .map((f) => ({ severity: f.severity, headline: f.detail.headline })),
+    problems: problems(mine),
     driver: rig.seated
       ? `${driverName(rig.seated)} · ${duration(now - rig.seated.startedAt)}`
       : null,
@@ -120,6 +120,23 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
     oldAgent,
     outdated: mine.some((f) => f.rule === "agent_outdated"),
   };
+}
+
+/**
+ * Findings as lines, urgent first, each headline once: two findings can say
+ * the same thing (rule 11 still open for the previous build and new for the
+ * current one both say which build to install).
+ */
+export function problems(findings: readonly Finding[]): Problem[] {
+  const lines = new Map<string, Problem>();
+  for (const f of [...findings].sort(
+    (a, b) => Number(b.severity === "urgent") - Number(a.severity === "urgent"),
+  )) {
+    if (!lines.has(f.detail.headline)) {
+      lines.set(f.detail.headline, { severity: f.severity, headline: f.detail.headline });
+    }
+  }
+  return [...lines.values()];
 }
 
 /** A v1 heartbeat: the rules that need its fields cannot fire on this rig. */

@@ -3,7 +3,7 @@ import { StaffRigHealth, type RigHealthAlert } from "@/components/staff-rig-heal
 import { boardName, boardState, boardsToday, eventMode } from "@/lib/monitor/event-mode";
 import { REPOSITORY } from "@/lib/monitor/handoff";
 import { eventModeLine, venueDate, venueTime } from "@/lib/monitor/messages";
-import { rigTiles } from "@/lib/monitor/rig-health";
+import { problems, rigTiles } from "@/lib/monitor/rig-health";
 import { duration, evaluateRules, flapScope, rigSubject, RULES } from "@/lib/monitor/rules";
 import {
   lastLapAtByRig,
@@ -44,9 +44,7 @@ export default async function RigHealthPage() {
     <StaffRigHealth
       staffName={staff.displayName}
       tiles={rigTiles(snapshot, findings, lastLaps)}
-      venueProblems={findings
-        .filter((f) => !rigSubjects.has(flapScope(f.subject)))
-        .map((f) => ({ severity: f.severity, headline: f.detail.headline }))}
+      venueProblems={problems(findings.filter((f) => !rigSubjects.has(flapScope(f.subject))))}
       event={{
         on: mode.on,
         // The channel's own wording, less its "⚪ Event mode on:" - the page shows on or off beside it.
