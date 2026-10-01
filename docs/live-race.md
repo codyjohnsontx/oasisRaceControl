@@ -74,24 +74,29 @@ unit-tested there:
   The **largest group is the race**. A tie goes to the group heard from most
   recently. `otherRigs` counts the rigs reporting from anywhere else, such as a
   rig still in practice or one that joined the wrong server.
-- In a **race** it orders by how far round each car is: `lapsCompleted`, then
-  `lapDistPct`, with iRacing's position only breaking a tie. iRacing's
+- In a **race under green** (`SessionState` racing, as the leader's report
+  reads it) it orders by how far round each car is: `lapsCompleted`,
+  then `lapDistPct`, with iRacing's position only breaking a tie. iRacing's
   position moves only when a car crosses the line, so ordering by it would
-  hold a pass made mid-lap off the board for up to a lap. In any other
-  session it orders by iRacing's **position**, and a car iRacing has not
-  classified yet goes after every classified car, by how far round it is.
+  hold a pass made mid-lap off the board for up to a lap. Everywhere else -
+  any other session, and a race on the grid, the parade lap or after the
+  chequered flag - it orders by iRacing's **position**, and a car iRacing has
+  not classified yet goes after every classified car, by how far round it is.
+  After the flag that is the finishing order: a winner who slows, pits or
+  leaves the car would otherwise fall behind cars still driving round.
+  `session.byTrack` says which order `rows` are in.
 - `session` is the leader's report: type, state, flags, time and laps
-  remaining. It uses the first car that is still reporting, so a silent
-  leader's frozen clock is never shown. `isRace` is true when any rig in the
+  remaining. The leader is the first car still reporting in iRacing's
+  position order, so a silent leader's frozen clock is never shown. `isRace` is true when any rig in the
   group reads the session type as exactly `Race`.
 - `gapToLeaderS` and `intervalS` are only filled in a race. Outside one,
   iRacing puts a lap time in the same variable. `intervalS` is the gap to the
   row above, rounded to the millisecond and never negative. It is null for the
   leader, and null to or from a stale car.
 - `ageS` is how long ago each rig's report arrived. `stale` is true past 15 s:
-  show that row dimmed. In a race a stale car stays where its last report put
+  show that row dimmed. Under green a stale car stays where its last report put
   it on track, and any car still reporting that gets further round goes ahead
-  of it. Outside a race it keeps its last position, because usually only its
+  of it. Otherwise it keeps its last position, because usually only its
   agent stopped while the car is still out there; if another car reports that
   same position, the car still reporting goes first.
 - `driverId` and `driverName` come from whoever is checked in on the rig right
@@ -99,10 +104,10 @@ unit-tested there:
   `rigNumber`.
 
 **Number the board by `place`, not `position`.** `place` is the row's number
-in this ordering, from 1, and never repeats. In a race it is the running order
-on track, so a pass shows at the next report from each car, while iRacing's
-position for both cars still reads as it did at the line until each crosses
-it. Outside a race two neighbours can report the same position for up to one
+in this ordering, from 1, and never repeats. In a race under green it is the
+running order on track, so a pass shows at the next report from each car,
+while iRacing's position for both cars still reads as it did at the line until
+each crosses it. Otherwise two neighbours can report the same position for up to one
 cadence, because each rig samples its own car at its own instant, and `place`
 puts them in order.
 

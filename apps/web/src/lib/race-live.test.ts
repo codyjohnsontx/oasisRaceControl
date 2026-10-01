@@ -60,6 +60,39 @@ describe("liveRace", () => {
     ]);
   });
 
+  it("after the chequered flag, keeps iRacing's finishing order when the winner trails P2 round the lap", () => {
+    const race = liveRace([
+      report({ rig_number: 1, session_state: 5, position: 1, laps_completed: 20, lap_dist_pct: 0.1 }),
+      report({ rig_number: 2, session_state: 5, position: 2, laps_completed: 20, lap_dist_pct: 0.3 }),
+      report({ rig_number: 3, session_state: 5, position: 3, laps_completed: 20, lap_dist_pct: null }),
+    ]);
+    expect(race.session?.byTrack).toBe(false);
+    expect(race.rows.map((r) => [r.rigNumber, r.place])).toEqual([
+      [1, 1],
+      [2, 2],
+      [3, 3],
+    ]);
+  });
+
+  it("on the grid, keeps iRacing's grid order whatever the lap counters read", () => {
+    const race = liveRace([
+      report({ rig_number: 1, session_state: 3, position: 1, laps_completed: 0, lap_dist_pct: 0.02 }),
+      report({ rig_number: 2, session_state: 3, position: 2, laps_completed: 0, lap_dist_pct: 0.98 }),
+    ]);
+    expect(race.rows.map((r) => r.rigNumber)).toEqual([1, 2]);
+  });
+
+  it("takes the chequered flag from the leader's report before the cars behind have read it", () => {
+    const rows = [
+      report({ rig_number: 1, session_state: 5, position: 1, lap_dist_pct: 0.1 }),
+      report({ rig_number: 2, session_state: 4, position: 2, lap_dist_pct: 0.3 }),
+    ];
+    for (const race of [liveRace(rows), liveRace([...rows].reverse())]) {
+      expect(race.session).toMatchObject({ sessionState: 5, byTrack: false });
+      expect(race.rows.map((r) => r.rigNumber)).toEqual([1, 2]);
+    }
+  });
+
   it("in a race, puts any car still reporting that gets further round ahead of a silent one", () => {
     const race = liveRace([
       report({ rig_number: 1, position: 1, laps_completed: 4, lap_dist_pct: 0.5, age_s: 30 }),
@@ -156,6 +189,7 @@ describe("liveRace", () => {
       sessionNum: 2,
       sessionType: "Race",
       isRace: true,
+      byTrack: false,
       sessionState: 5,
       sessionFlags: 1,
       timeRemainS: 600,

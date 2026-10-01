@@ -571,10 +571,11 @@ async function readLiveRace(): Promise<RaceFeedRead> {
  * and in race order, each car under the driver provisioned into its seat.
  * Named rather than counted, so a failure says which rig to look at.
  *
- * Race order is how far round each car is, the order the feed promises in a
- * race. It does NOT require iRacing's positions to follow that order or to be
- * held once each: a reported position only moves when the car crosses the
- * line, as iRacing's does (docs/live-race.md). The positions shared at the
+ * Race order is the one the feed says it is in: how far round each car is
+ * under green, iRacing's position on the grid and after the flag. Under green
+ * it does NOT require iRacing's positions to follow that order or to be held
+ * once each: a reported position only moves when the car crosses the line, as
+ * iRacing's does (docs/live-race.md). The positions shared at the
  * moment of the read are reported, not failed.
  */
 function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
@@ -589,8 +590,10 @@ function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
     .map((row) => row.rigNumber);
   const positions = feed.rows.map((row) => row.position);
   const outside = positions.filter((p) => p === null || p < 1 || p > rigs.length);
-  const progress = feed.rows.map((row) => (row.lapsCompleted ?? -1) + (row.lapDistPct ?? 0));
-  const inOrder = progress.every((p, i) => i === 0 || progress[i - 1]! >= p);
+  const order = feed.session?.byTrack
+    ? feed.rows.map((row) => -((row.lapsCompleted ?? -1) + (row.lapDistPct ?? 0)))
+    : positions.map((p) => p ?? Infinity);
+  const inOrder = order.every((p, i) => i === 0 || order[i - 1]! <= p);
   const shared = positions.filter((p, i) => positions.indexOf(p) !== i).length;
   const misnamed = rigs
     .filter((rig) => shown.has(rig.rigNumber) && shown.get(rig.rigNumber)!.driverName !== rig.driverName)
