@@ -159,7 +159,7 @@ public sealed class SessionInfoParserTests
     [Fact]
     public void ReadsEachSessionsTypeBySessionNum()
     {
-        var types = SessionInfoParser.ParseSessionTypes(Weekend);
+        var types = SessionInfoParser.Scan(Weekend).SessionTypes;
         Assert.Equal(new Dictionary<int, string> { [0] = "Practice", [1] = "Open Qualify", [2] = "Race" }, types);
         // The combo is read from the same document unchanged.
         Assert.Equal("FIA F4", SessionInfoParser.Parse(Weekend)!.CarScreenName);
@@ -177,14 +177,14 @@ public sealed class SessionInfoParserTests
                  SessionType: Race
                SessionType: Practice
             """;
-        Assert.Equal("Practice", SessionInfoParser.ParseSessionTypes(yaml)[0]);
+        Assert.Equal("Practice", SessionInfoParser.Scan(yaml).SessionTypes[0]);
     }
 
     [Fact]
     public void NoSessionsListedYetIsAnEmptyMap()
     {
-        Assert.Empty(SessionInfoParser.ParseSessionTypes(Cota.Replace("SessionType: Practice", "")));
-        Assert.Empty(SessionInfoParser.ParseSessionTypes("WeekendInfo:\n TrackName: test\n"));
-        Assert.Equal("Practice", SessionInfoParser.ParseSessionTypes(Cota)[0]);
+        Assert.Empty(SessionInfoParser.Scan(Cota.Replace("SessionType: Practice", "")).SessionTypes);
+        Assert.Empty(SessionInfoParser.Scan("WeekendInfo:\n TrackName: test\n").SessionTypes);
+        Assert.Equal("Practice", SessionInfoParser.Scan(Cota).SessionTypes[0]);
     }
 }

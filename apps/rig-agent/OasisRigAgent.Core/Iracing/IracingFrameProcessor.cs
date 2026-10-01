@@ -228,12 +228,13 @@ public sealed class IracingFrameProcessor
         _sessionReadTick = parsed.TickCount;
         var yaml = SessionInfoParser.Decode(bytes);
         var playerIdx = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
-        var combo = SessionInfoParser.Parse(yaml, playerIdx);
-        if (_race is not null) _race.SessionTypes = SessionInfoParser.ParseSessionTypes(yaml);
+        var scan = SessionInfoParser.Scan(yaml, playerIdx);
+        var combo = scan.Combo;
+        if (_race is not null) _race.SessionTypes = scan.SessionTypes;
         _sessionNamed = combo is not null;
         if (combo is null)
         {
-            var found = SessionInfoParser.DescribeFound(yaml, playerIdx);
+            var found = scan.Found;
             if (_detector.Combo is null && found != _reportedIncomplete)
             {
                 _reportedIncomplete = found;
