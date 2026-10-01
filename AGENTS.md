@@ -171,8 +171,9 @@ outbox, because a queued position is a wrong one. The upsert keeps the report
 that arrived last, never the newest by the rig's clock, because a clock stepped
 back would freeze a racing car until it aged off the board. Grouping,
 ordering, staleness and intervals live only in `lib/race-live.ts`, and a board
-numbers its rows by `place`, not `position`: a race is ordered by how far round
-each car is, because iRacing's position only catches up with a pass at the line.
+numbers its rows by `place`, not `position`: a race under green is ordered by
+how far round each car is, because iRacing's position only catches up with a
+pass at the line; the grid and the finish keep iRacing's own order.
 
 ## Lap attribution
 
