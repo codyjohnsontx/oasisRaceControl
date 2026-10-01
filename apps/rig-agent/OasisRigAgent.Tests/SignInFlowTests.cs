@@ -120,17 +120,6 @@ public sealed class SignInFlowTests
     }
 
     [Fact]
-    public void TheButtonsAnswerRacedHereBeforeLikeYAndN()
-    {
-        var returning = new SignInFlow();
-        returning.ChooseReturning(true);
-        Assert.Equal((SignInStep.AskName, true), (returning.Step, returning.Returning));
-        var fresh = new SignInFlow();
-        fresh.ChooseReturning(false);
-        Assert.Equal((SignInStep.AskName, false), (fresh.Step, fresh.Returning));
-    }
-
-    [Fact]
     public void ThePendingRequestCarriesExactlyWhatWasTyped()
     {
         var flow = new SignInFlow();

@@ -27,7 +27,7 @@ using OasisRigAgent.Windows;
 if (args.Contains("--diagnose"))
 {
 #if WINDOWS
-    ConsoleWindow.Ensure();
+    ConsoleWindow.Open();
 #endif
     return Diagnose();
 }
@@ -68,8 +68,9 @@ catch (Exception ex)
 {
     var problem = $"Configuration error: {ex.Message}\nCreate {configPath} (see agent.config.sample.json) or set OASIS_* env vars.";
 #if WINDOWS
-    // A double-clicked window build has no console to print to.
-    if (!ConsoleWindow.Ensure())
+    // Started from a terminal, the error goes there; double-clicked, there is
+    // no console to print to.
+    if (!ConsoleWindow.AttachToParent())
     {
         MessageBox.Show(problem, "Oasis Rig Agent", MessageBoxButtons.OK, MessageBoxIcon.Error);
         return 1;
@@ -88,7 +89,7 @@ await using var agent = agentInit;
 var window = false;
 #if WINDOWS
 window = config.RigQrToken is not null && !args.Contains("--console");
-if (!window) ConsoleWindow.Ensure();
+if (!window) ConsoleWindow.Open();
 #endif
 
 // Walk-up mode's screen exists before the agent starts, so nothing the sim or

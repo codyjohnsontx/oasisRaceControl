@@ -369,10 +369,10 @@ never wait on the window.
 `OasisRigAgent.exe --console` runs the same mode in a console window instead -
 the event-night fallback, unchanged since 2026-09-28 apart from running over
 the shared state machine. The `net8.0` build (macOS, Linux) is console-only and
-treats `--console` as given. On Windows the console build attaches to the
-terminal it was started from, or opens its own console window when started from
-a shortcut; a shortcut to `OasisRigAgent.exe --console` is the easiest way to
-run it.
+treats `--console` as given. On Windows it always opens a console window of
+its own, even when started from a command prompt, so nothing a driver types is
+read by the prompt instead; a shortcut to `OasisRigAgent.exe --console` is the
+easiest way to run it.
 
 The console is two screens, and it is cleared whenever it moves between
 them.
@@ -670,7 +670,9 @@ prompt in that folder). With `rigQrToken` set it opens the sign-in window; a
 second shortcut to `OasisRigAgent.exe --console` is the fallback. It must run
 as the same Windows user that runs iRacing, because the shared-memory map is
 per session. Run `OasisRigAgent.exe --diagnose` first on any new rig (it opens
-a console of its own when started from a shortcut).
+a console window of its own, which closes when Enter stops it - copy any lines
+to send before pressing Enter). A configuration error is printed to the command
+prompt the exe was started from, or shown in a message box when double-clicked.
 
 ### Verify the window on a rig
 

@@ -116,9 +116,6 @@ public sealed class SignInFlow
     /// <summary>Whether the flow is waiting on the driver rather than the backend.</summary>
     public bool AwaitsDriver => Step is not (SignInStep.LogIn or SignInStep.Register or SignInStep.SignedIn);
 
-    /// <summary>The returning (y) or new (n) answer, as the window's two buttons give it.</summary>
-    public void ChooseReturning(bool returning) => Submit(returning ? "y" : "n");
-
     /// <summary>What the driver typed or chose at the current prompt. Empty
     /// goes back one step. Ignored while the flow waits on the backend.</summary>
     public void Submit(string typed)
