@@ -63,6 +63,15 @@ internal sealed class MemoryFixture
         return this;
     }
 
+    /// <summary>Element <paramref name="index"/> of an array variable added at
+    /// <paramref name="valueOffset"/> with a count above one.</summary>
+    internal MemoryFixture SetElement(int valueOffset, IracingVariableType type, int index, object value)
+    {
+        var size = type switch { IracingVariableType.Char or IracingVariableType.Bool => 1, IracingVariableType.Double => 8, _ => 4 };
+        WriteValue(BufferOffset + valueOffset + index * size, type, value);
+        return this;
+    }
+
     internal void WriteInt(int offset, int value) => BinaryPrimitives.WriteInt32LittleEndian(Bytes.AsSpan(offset, 4), value);
 
     private void WriteValue(int offset, IracingVariableType type, object value)

@@ -122,6 +122,67 @@ public sealed class IracingMemoryParserTests
     }
 
     [Fact]
+    public void ReadsOneElementOfAnArrayAtOffsetPlusIndexTimesElementSize()
+    {
+        // CarIdxF2Time is a 64-float array; only the player's element is wanted.
+        var fixture = new MemoryFixture()
+            .AddVariable("PlayerCarIdx", IracingVariableType.Int, 0, 7)
+            .AddVariable("CarIdxF2Time", IracingVariableType.Float, 16, 0f, count: 64)
+            .AddVariable("CarIdxPosition", IracingVariableType.Int, 16 + 64 * 4, 0, count: 64)
+            .SetElement(16, IracingVariableType.Float, 6, 1.5f)
+            .SetElement(16, IracingVariableType.Float, 7, 2.341f)
+            .SetElement(16, IracingVariableType.Float, 63, 99f)
+            .SetElement(16 + 64 * 4, IracingVariableType.Int, 7, 3);
+        var parser = new IracingMemoryParser(new ByteArrayMemoryReader(fixture.Bytes));
+        var frame = parser.Parse(new HashSet<string> { "PlayerCarIdx" });
+
+        Assert.Equal(2.341f, parser.ReadElement(frame, "CarIdxF2Time", 7));
+        Assert.Equal(1.5f, parser.ReadElement(frame, "CarIdxF2Time", 6));
+        Assert.Equal(99f, parser.ReadElement(frame, "CarIdxF2Time", 63));
+        Assert.Equal(3, parser.ReadElement(frame, "CarIdxPosition", 7));
+        // Index 0 of an array is the scalar read: what Parse returns for it.
+        Assert.Equal(0f, parser.Parse(new HashSet<string> { "CarIdxF2Time" }).Values["CarIdxF2Time"]);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(64)]
+    [InlineData(int.MaxValue)]
+    public void AnIndexOutsideTheDeclaredArrayIsUnknownNotARead(int index)
+    {
+        var fixture = new MemoryFixture().AddVariable("CarIdxF2Time", IracingVariableType.Float, 0, 0f, count: 64);
+        var parser = new IracingMemoryParser(new ByteArrayMemoryReader(fixture.Bytes));
+        Assert.Null(parser.ReadElement(parser.Parse(new HashSet<string>()), "CarIdxF2Time", index));
+    }
+
+    [Fact]
+    public void AnElementOfAVariableThisBuildDoesNotPublishOrOfANotConnectedFrameIsUnknown()
+    {
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        var parser = new IracingMemoryParser(new ByteArrayMemoryReader(fixture.Bytes));
+        Assert.Null(parser.ReadElement(parser.Parse(new HashSet<string>()), "CarIdxF2Time", 0));
+
+        fixture.WriteInt(4, 0);
+        var notConnected = parser.Parse(new HashSet<string>());
+        Assert.Null(parser.ReadElement(notConnected, "LapCompleted", 0));
+    }
+
+    [Fact]
+    public void AnElementIsReadFromTheSameNewestBufferAsTheScalars()
+    {
+        var fixture = new MemoryFixture()
+            .AddVariable("CarIdxF2Time", IracingVariableType.Float, 0, 0f, count: 64)
+            .SetElement(0, IracingVariableType.Float, 5, 1f);
+        fixture.WriteInt(32, 2);
+        fixture.WriteInt(64, 101);
+        fixture.WriteInt(68, MemoryFixture.BufferOffset + MemoryFixture.BufferLength);
+        fixture.WriteInt(MemoryFixture.BufferOffset + MemoryFixture.BufferLength + 5 * 4, BitConverter.SingleToInt32Bits(2f));
+
+        var parser = new IracingMemoryParser(new ByteArrayMemoryReader(fixture.Bytes));
+        Assert.Equal(2f, parser.ReadElement(parser.Parse(new HashSet<string>()), "CarIdxF2Time", 5));
+    }
+
+    [Fact]
     public void AMappedViewReadsTheSameBlockAsTheByteArrayFixture()
     {
         var fixture = new MemoryFixture()

@@ -42,6 +42,9 @@ public sealed class IracingFrameProcessor
     public static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(30);
 
     private readonly LapDetector _detector;
+    private readonly RaceStatusSampler? _race;
+    private readonly IReadOnlySet<string> _watched;
+    private readonly IReadOnlyList<string> _expected;
     private readonly Func<long> _nowMs;
     private int? _progressTick;
     private long _progressAtMs;
@@ -58,10 +61,17 @@ public sealed class IracingFrameProcessor
     private string? _lastRejection;
 
     /// <param name="nowMs">A monotonic millisecond clock; defaults to <see cref="Environment.TickCount64"/>.</param>
-    public IracingFrameProcessor(LapDetector detector, Func<long>? nowMs = null)
+    /// <param name="race">Also fed every new tick, with the race channels read
+    /// beside the lap detector's; without one, none of them is read.</param>
+    public IracingFrameProcessor(LapDetector detector, Func<long>? nowMs = null, RaceStatusSampler? race = null)
     {
         _detector = detector;
+        _race = race;
         _nowMs = nowMs ?? (() => Environment.TickCount64);
+        _watched = race is null
+            ? TelemetryTick.VariableNames
+            : new HashSet<string>(TelemetryTick.VariableNames.Concat(RaceTick.VariableNames), StringComparer.Ordinal);
+        _expected = race is null ? _watched.ToList() : _watched.Concat(RaceTick.ElementNames).ToList();
     }
 
     public bool Connected { get; private set; }
@@ -105,7 +115,7 @@ public sealed class IracingFrameProcessor
             }
 
             _parser ??= new IracingMemoryParser(reader);
-            var parsed = _parser.Parse(TelemetryTick.VariableNames);
+            var parsed = _parser.Parse(_watched);
             if (!parsed.IsConnected)
             {
                 _progressTick = null;
@@ -136,7 +146,7 @@ public sealed class IracingFrameProcessor
             if (!_reportedMissing)
             {
                 _reportedMissing = true;
-                var missing = TelemetryTick.VariableNames.Where(n => !parsed.Variables.ContainsKey(n)).Order().ToList();
+                var missing = _expected.Where(n => !parsed.Variables.ContainsKey(n)).Order().ToList();
                 if (missing.Count > 0) MissingVariables?.Invoke(missing);
             }
 
@@ -156,6 +166,7 @@ public sealed class IracingFrameProcessor
             {
                 _lastTick = parsed.TickCount;
                 _detector.Observe(TelemetryTick.FromValues(parsed.Values));
+                if (_race is not null) ObserveRace(parsed);
             }
             return FrameOutcome.Frame;
         }
@@ -198,6 +209,16 @@ public sealed class IracingFrameProcessor
         return now - _progressAtMs >= (long)StallTimeout.TotalMilliseconds;
     }
 
+    /// <summary>The race channels of this frame, the player's three array
+    /// elements read from the same buffer as the scalars.</summary>
+    private void ObserveRace(ParsedMemorySnapshot parsed)
+    {
+        var player = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
+        var parser = _parser!;
+        _race!.Observe(RaceTick.FromValues(parsed.Values,
+            name => player is int carIdx ? parser.ReadElement(parsed, name, carIdx) : null));
+    }
+
     /// <summary>False when the sim left the session before its session info could be read.</summary>
     private bool ReadSessionInfo(ParsedMemorySnapshot parsed)
     {
@@ -208,6 +229,7 @@ public sealed class IracingFrameProcessor
         var yaml = SessionInfoParser.Decode(bytes);
         var playerIdx = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
         var combo = SessionInfoParser.Parse(yaml, playerIdx);
+        if (_race is not null) _race.SessionTypes = SessionInfoParser.ParseSessionTypes(yaml);
         _sessionNamed = combo is not null;
         if (combo is null)
         {
@@ -249,6 +271,7 @@ public sealed class IracingFrameProcessor
         {
             _detector.Reset();
             _detector.Combo = null;
+            _race?.Reset();
             _lastTick = int.MinValue;
             _sessionReadUpdate = int.MinValue;
             _sessionNamed = false;

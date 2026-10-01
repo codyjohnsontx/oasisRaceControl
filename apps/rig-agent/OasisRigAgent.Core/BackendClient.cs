@@ -263,6 +263,15 @@ public sealed class BackendClient
         return json?["ended"]?.GetValue<bool>() ?? false;
     }
 
+    /// <summary>Post this rig's live race status (<see cref="RaceStatusReport"/>).
+    /// Throws on anything but success; the caller drops the report either way,
+    /// because the next sample replaces it.</summary>
+    public async Task PostRaceStatusAsync(RaceStatusReport report, CancellationToken ct)
+    {
+        using var res = await PostJsonAsync("api/agent/race-status", report.ToJson(), ct);
+        res.EnsureSuccessStatusCode();
+    }
+
     private Task<HttpResponseMessage> PostJsonAsync(string path, JsonNode body, CancellationToken ct)
     {
         var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");

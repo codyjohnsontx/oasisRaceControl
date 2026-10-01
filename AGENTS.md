@@ -464,6 +464,22 @@ Walk-up sign-in failures are counted from the check-in routes' HTTP answers
 (`SignInFailureWatch`), not inside `DriverCheckInClient`. The on-rig FPS check
 is in `apps/rig-agent/README.md` (Heartbeat and footprint).
 
+## Live race position
+
+For the league-night race board each rig reports its own car every 2.5 s while
+iRacing is in a session: `RaceStatusReport` (`OasisRigAgent.Core/RaceStatus.cs`)
+mirrors `raceStatusEvent` in `apps/web/src/lib/events.ts`, and both change
+together. The row is built only by the pure `RaceStatusSampler`
+(`Iracing/RaceStatusSampler.cs`), which also nulls iRacing's sentinels and
+clamps to the schema, since one field past it 400s the report and the car
+leaves the board. Three rules are easy to undo: there is no outbox and no
+retry (the next sample replaces a dropped one); the loop never touches the
+agent's online/offline state; and an unchanged row still goes within
+`RaceStatusThrottle.KeepAlive`, under the feed's 10 s ceiling, or a parked car
+dims. The `AgentService` change is one `RunLoop` and should stay that way.
+What still needs a real rig in a hosted session is the checklist in
+`apps/rig-agent/README.md` (Live race position).
+
 ## Local dev
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which
