@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CURRENT_AGENT_VERSION } from "./agent-version";
 import type { Heartbeat } from "./rig-state";
-import { rigTiles, type TileColour } from "./rig-health";
+import { rigTiles, shownFindings, type OpenAlertShown, type TileColour } from "./rig-health";
 import {
   evaluateRules,
   flapScope,
@@ -207,6 +207,56 @@ describe("rig tile colour", () => {
     const [tile] = tiles([silent]);
     expect(tile!.colour).toBe("red");
     expect(tile!.status).toBe("silent 4 min");
+  });
+});
+
+describe("an alert still open after its problem cleared", () => {
+  // The rules find nothing on a healthy rig, but the alert is open in
+  // monitor_alerts until a second evaluation without it (store.ts), and the
+  // channel and the Alerts list still show it open.
+  function shown(rigs: RigSnapshot[], open: OpenAlertShown[]) {
+    const snap = snapshot(rigs);
+    return rigTiles(snap, shownFindings(evaluateRules(snap), open), new Map());
+  }
+  const stored = (severity: "urgent" | "warning", headline: string): OpenAlertShown => ({
+    rule: severity === "urgent" ? "telemetry_faulted" : "footprint_high",
+    subject: rigSubject("rig-1"),
+    severity,
+    detail: { headline, where: "Rig 01", fields: [] },
+  });
+
+  it("keeps the tile red, with the stored problem, while an urgent alert is open", () => {
+    const [tile] = shown([FIXTURES.green!], [stored("urgent", "Rig 01: lap reading stopped")]);
+    expect(tile).toMatchObject({
+      colour: "red",
+      status: "online",
+      problems: [{ severity: "urgent", headline: "Rig 01: lap reading stopped" }],
+    });
+  });
+
+  it("keeps the tile yellow while a warning is open", () => {
+    const [tile] = shown([FIXTURES.green!], [stored("warning", "Rig 01: 200 MB")]);
+    expect(tile).toMatchObject({ colour: "yellow", problems: [{ severity: "warning", headline: "Rig 01: 200 MB" }] });
+  });
+
+  it("goes green once nothing is found and nothing is open", () => {
+    expect(shown([FIXTURES.green!], [])[0]!.colour).toBe("green");
+  });
+
+  it("says how things stand now where the rules still find the open alert's problem", () => {
+    const faulted = rig(1, minutely(10 * MIN, (ago) => hb(ago, { telemetryFaulted: true })));
+    const [tile] = shown([faulted], [stored("urgent", "an older wording")]);
+    expect(tile!.problems.map((p) => p.headline)).not.toContain("an older wording");
+    expect(tile!.problems).toHaveLength(1);
+    expect(tile!.colour).toBe("red");
+  });
+
+  it("puts an open alert about the rig's build or lap on that rig's tile", () => {
+    const [tile] = shown(
+      [FIXTURES.green!],
+      [{ ...stored("warning", "Rig 01 runs an outdated rig agent"), rule: "agent_outdated", subject: `${rigSubject("rig-1")}|rig-agent/0.4-monitor` }],
+    );
+    expect(tile).toMatchObject({ colour: "yellow", outdated: true });
   });
 });
 

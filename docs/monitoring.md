@@ -15,12 +15,16 @@ alerts use, so a tile and the channel can never disagree.
 ## The Rig health page
 
 `/staff/rigs` (staff sign-in; linked from the staff dashboard's header)
-refreshes every 15 s. It reads the monitor's snapshot and runs `evaluateRules`
-on it without claiming an evaluation, so opening it posts nothing.
+refreshes every 15 s. It reads the monitor's snapshot in one read-only
+transaction and runs `evaluateRules` on it without claiming an evaluation, so
+opening it posts nothing.
 
 - **A tile per rig** (`lib/monitor/rig-health.ts`): red when a rule finds
   something urgent on the rig, yellow for a warning, and the finding's
-  headline on the tile. With no finding it is green while the rig is running,
+  headline on the tile. An alert that is still open keeps its colour and its
+  stored headline after the rules stop finding it, until the evaluation that
+  resolves it, so a tile never goes green while the channel and the Alerts
+  list still have the alert open (`shownFindings`). With neither it is green while the rig is running,
   grey when it is not (never seen, closed, or off for the day). Then who is
   seated and for how long, iRacing's session, the last lap today, the upload
   queue and parked laps, the agent build, its CPU and memory, clock skew and
@@ -38,7 +42,8 @@ on it without claiming an evaluation, so opening it posts nothing.
   says what happened: sent, no `DISCORD_WEBHOOK_URL` on this deployment, or
   Discord's refusal and its reason.
 - **Alerts**: every open alert first, however old, then the rest of the
-  newest 50, open or recovered (`recentAlerts`), marked when a flapping mute
+  newest 50 by id, open or recovered (`recentAlerts`: the open-alert index and a
+  backward primary-key scan, so it never sorts the whole history), marked when a flapping mute
   is keeping them out of the channel, with a link to the GitHub issue when one
   was filed.
 

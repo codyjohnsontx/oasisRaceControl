@@ -3,7 +3,7 @@ import { StaffRigHealth, type RigHealthAlert } from "@/components/staff-rig-heal
 import { boardName, boardState, boardsToday, eventMode } from "@/lib/monitor/event-mode";
 import { REPOSITORY } from "@/lib/monitor/handoff";
 import { eventModeLine, venueDate, venueTime } from "@/lib/monitor/messages";
-import { problems, rigTiles } from "@/lib/monitor/rig-health";
+import { problems, rigTiles, shownFindings } from "@/lib/monitor/rig-health";
 import { duration, evaluateRules, flapScope, rigSubject, RULES } from "@/lib/monitor/rules";
 import {
   lastLapAtByRig,
@@ -12,14 +12,15 @@ import {
   recentAlerts,
   type RecentAlert,
 } from "@/lib/monitor/store";
-import { db } from "@/lib/db";
+import { withTransaction } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
 
 /**
  * Rig health: one tile per rig, event mode, and the monitor's alerts. It reads
- * the snapshot the monitor reads and calls the same evaluateRules on it, so a
- * tile is red exactly when the channel has been (or is about to be) told
- * something urgent about that rig. It only reads - an evaluation that posts
+ * the snapshot the monitor reads and calls the same evaluateRules on it, and
+ * keeps showing an alert until its row is resolved, so a tile is red exactly
+ * when the channel has been (or is about to be) told something urgent about
+ * that rig and has not yet been told it recovered. It only reads - an evaluation that posts
  * is the "Run checks now" button's job, throttled with every other one.
  */
 export default async function RigHealthPage() {
@@ -27,14 +28,21 @@ export default async function RigHealthPage() {
   if (!staff) redirect("/staff/login");
 
   // Failures throw to the error boundary: an empty page that is really a
-  // failed query would read as a venue with nothing wrong.
-  const clock = await monitorClock();
-  const [snapshot, lastLaps, alerts] = await Promise.all([
-    loadSnapshot(db(), clock.now),
-    lastLapAtByRig(),
-    recentAlerts(),
-  ]);
-  const findings = evaluateRules(snapshot);
+  // failed query would read as a venue with nothing wrong. One read-only
+  // snapshot of the database for all of it, so the tiles and the Alerts list
+  // cannot straddle an evaluation that opened or resolved something.
+  const { clock, snapshot, lastLaps, alerts } = await withTransaction(async (client) => {
+    await client.query("set transaction isolation level repeatable read, read only");
+    const clock = await monitorClock(client);
+    const [snapshot, lastLaps, alerts] = await Promise.all([
+      loadSnapshot(client, clock.now),
+      lastLapAtByRig(client),
+      recentAlerts(client),
+    ]);
+    return { clock, snapshot, lastLaps, alerts };
+  });
+  // What the rules find now, and what the channel still has open.
+  const findings = shownFindings(evaluateRules(snapshot), snapshot.openAlerts);
   const { now } = snapshot;
   const mode = eventMode(snapshot);
   // Everything else - the venue, the TV boards - is listed above the tiles.

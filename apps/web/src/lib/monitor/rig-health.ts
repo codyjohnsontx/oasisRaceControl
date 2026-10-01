@@ -6,19 +6,22 @@ import {
   flapScope,
   rigSubject,
   SILENT_AFTER_MS,
+  type AlertDetail,
   type Finding,
   type MonitorSnapshot,
   type RigSnapshot,
+  type RuleKey,
   type Severity,
 } from "./rules";
 
 /**
  * The staff Rig health page's tiles, from the same snapshot and the same
- * findings the Discord alerts come from (evaluateRules). A tile's colour is
- * the rules' answer and nothing else: red when a rule finds something urgent
- * on the rig, yellow for a warning. With no finding it is green while the rig
- * is running, and grey when it is not - never seen, closed, or quiet in a way
- * no rule calls a problem (off for the day, or a lone rig inside the venue
+ * findings the Discord alerts come from (evaluateRules), together with the
+ * alerts still open (shownFindings). A tile's colour is the monitor's answer
+ * and nothing else: red when something urgent is found or still open on the
+ * rig, yellow for a warning. With neither it is green while the rig is
+ * running, and grey when it is not - never seen, closed, or quiet in a way no
+ * rule calls a problem (off for the day, or a lone rig inside the venue
  * silence window). Pure, like the rules, so every state is tested from a
  * hand-built snapshot.
  */
@@ -50,6 +53,37 @@ export type RigTile = {
 };
 
 const TOO_OLD = "agent too old to report";
+
+/** An alert still open in monitor_alerts, with what it said when last seen. */
+export type OpenAlertShown = { rule: string; subject: string; severity: Severity; detail: AlertDetail };
+
+/**
+ * What the page shows as found: this evaluation's findings, plus every alert
+ * still open that they no longer include. An alert recovers only after two
+ * evaluations without its problem (store.ts), so for that stretch the
+ * channel and the Alerts list still have it open; a tile that went green
+ * then would contradict both. Until the row is resolved, the open alert
+ * keeps its severity and its stored headline. Where both exist, the fresh
+ * finding wins, since it says how things stand now.
+ */
+export function shownFindings(
+  findings: readonly Finding[],
+  openAlerts: readonly OpenAlertShown[],
+): Finding[] {
+  const found = new Set(findings.map((f) => `${f.rule}|${f.subject}`));
+  return [
+    ...findings,
+    ...openAlerts
+      .filter((a) => !found.has(`${a.rule}|${a.subject}`))
+      .map((a) => ({
+        rule: a.rule as RuleKey,
+        subject: a.subject,
+        severity: a.severity,
+        level: 0,
+        detail: a.detail,
+      })),
+  ];
+}
 
 export function rigTiles(
   snapshot: MonitorSnapshot,

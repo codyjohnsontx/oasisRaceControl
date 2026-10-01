@@ -1,5 +1,5 @@
 import type { QueryResult, QueryResultRow } from "pg";
-import { query, queryOne } from "@/lib/db";
+import { db as pool, query, queryOne } from "@/lib/db";
 import type { HeartbeatRow as DiagnosisHeartbeat } from "./diagnosis/context";
 import {
   BOARD_DARK_AFTER_MS,
@@ -210,11 +210,13 @@ export async function claimEvaluation(
 }
 
 export type OpenAlert = { id: string; rule: string; subject: string };
+/** An open alert as loadSnapshot reads it: also what it said, for the staff Rig health page. */
+export type OpenAlertDetail = OpenAlert & { severity: Severity; detail: AlertDetail };
 
 export async function loadSnapshot(
   db: Db,
   now: number,
-): Promise<MonitorSnapshot & { openAlerts: OpenAlert[] }> {
+): Promise<MonitorSnapshot & { openAlerts: OpenAlertDetail[] }> {
   // One client runs one statement at a time; these queue on it in order.
   const [rigRows, heartbeatRows, heardRows, openAlerts, [venue], lapRows, bestRows, moveRows, boardRows] =
     await Promise.all([
@@ -281,9 +283,9 @@ export async function loadSnapshot(
        order by rig_id, heard_from`,
       [`${HEARD_HISTORY_MS / 1000} seconds`, `${SILENT_AFTER_MS / 1000} seconds`],
     ),
-    rows<OpenAlert>(
+    rows<OpenAlertDetail>(
       db,
-      "select id::text, rule, subject from monitor_alerts where resolved_at is null",
+      "select id::text, rule, subject, severity, detail from monitor_alerts where resolved_at is null",
     ),
     rows<VenueRow>(
       db,
@@ -1049,12 +1051,13 @@ export async function loadRoutineFacts(): Promise<RoutineFacts> {
 }
 
 /** When each rig's latest lap today was completed, by rig id. */
-export async function lastLapAtByRig(): Promise<Map<string, number>> {
-  const rows = await query<{ rig_id: string; last_lap_at: Date }>(
+export async function lastLapAtByRig(db: Db = pool()): Promise<Map<string, number>> {
+  const laps = await rows<{ rig_id: string; last_lap_at: Date }>(
+    db,
     `select rig_id, max(completed_at) as last_lap_at from laps
      where completed_at >= ${VENUE_DAY_START} group by rig_id`,
   );
-  return new Map(rows.map((row) => [row.rig_id, row.last_lap_at.getTime()]));
+  return new Map(laps.map((row) => [row.rig_id, row.last_lap_at.getTime()]));
 }
 
 /**
@@ -1062,8 +1065,9 @@ export async function lastLapAtByRig(): Promise<Map<string, number>> {
  * evaluated: what the staff Rig health page reads before loadSnapshot, since
  * it evaluates without claiming an evaluation (it posts nothing).
  */
-export async function monitorClock(): Promise<{ now: number; lastEvaluatedAt: number | null }> {
-  const row = await queryOne<{ now_ms: number; last_evaluated_ms: number | null }>(
+export async function monitorClock(db: Db): Promise<{ now: number; lastEvaluatedAt: number | null }> {
+  const [row] = await rows<{ now_ms: number; last_evaluated_ms: number | null }>(
+    db,
     `select (extract(epoch from now()) * 1000)::float8 as now_ms,
             (select (extract(epoch from last_evaluated_at) * 1000)::float8
              from monitor_state where id = 1) as last_evaluated_ms`,
@@ -1084,9 +1088,16 @@ export type RecentAlert = {
   githubIssueNumber: number | null;
 };
 
-/** The newest `limit` alerts and every open one however old: open first, newest first within each. */
-export async function recentAlerts(limit = 50): Promise<RecentAlert[]> {
-  const rows = await query<{
+/**
+ * Every open alert however old, then the newest `limit` of the rest: open
+ * first, newest first within each. The staff Rig health page reads it every
+ * 15 s and monitor_alerts is never pruned, so neither half may scan the whole
+ * history: open alerts are few, and the newest are read backwards along the
+ * primary key (identity ids follow opening order), so only the final sort of
+ * those few rows remains.
+ */
+export async function recentAlerts(db: Db, limit = 50): Promise<RecentAlert[]> {
+  const alerts = await rows<{
     id: string;
     rule: string;
     severity: Severity;
@@ -1097,15 +1108,20 @@ export async function recentAlerts(limit = 50): Promise<RecentAlert[]> {
     muted: boolean;
     github_issue_number: number | null;
   }>(
+    db,
     `select id::text, rule, severity, detail->>'where' as where, detail->>'headline' as headline,
             opened_at, resolved_at, ${MUTED} as muted, github_issue_number
      from monitor_alerts
-     where resolved_at is null
-        or id in (select id from monitor_alerts order by opened_at desc, id desc limit $1)
-     order by resolved_at is null desc, opened_at desc, id desc`,
+     where id in (
+       select id from monitor_alerts where resolved_at is null
+       union
+       (select id from monitor_alerts order by id desc limit $1)
+     )
+     -- The table's id, not the text column above: as text, "9" sorts after "10".
+     order by resolved_at is null desc, opened_at desc, monitor_alerts.id desc`,
     [limit],
   );
-  return rows.map((row) => ({
+  return alerts.map((row) => ({
     id: row.id,
     rule: row.rule,
     severity: row.severity,
