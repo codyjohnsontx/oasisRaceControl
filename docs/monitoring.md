@@ -37,8 +37,9 @@ on it without claiming an evaluation, so opening it posts nothing.
   **Send test message to Discord** posts one line naming who pressed it and
   says what happened: sent, no `DISCORD_WEBHOOK_URL` on this deployment, or
   Discord's refusal and its reason.
-- **Alerts**: the last 50, open or recovered, marked when a flapping mute is
-  keeping them out of the channel, with a link to the GitHub issue when one
+- **Alerts**: every open alert first, however old, then the rest of the
+  newest 50, open or recovered (`recentAlerts`), marked when a flapping mute
+  is keeping them out of the channel, with a link to the GitHub issue when one
   was filed.
 
 ## When it runs
