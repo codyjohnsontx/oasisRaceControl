@@ -96,11 +96,12 @@ Details worth knowing:
   `validity.ts`), so it never calls a session right whose laps will be
   refused. Its message names today's combo and which part is wrong, never the
   rig's own session strings. Its two inputs are signals at the moment each was
-  heard - the live session at its heartbeat, a run of 3 refused laps at the
-  last of them, a valid lap at its arrival - and the newest decides, so
-  putting the car right clears the alert at the next heartbeat even with the
-  refused laps still in view, and a wrong session heard after a valid lap
-  opens it again.
+  heard - a wrong session at its heartbeat while a driver is seated, the
+  last right session the rig reported, a run of 3 refused laps at the last
+  of them, a valid lap at its arrival - and the newest decides, so putting
+  the car right clears the alert at the next heartbeat even with the refused
+  laps still in view, it stays clear when the driver then signs out or quits
+  iRacing, and a wrong session heard after a valid lap opens it again.
 - **Rule 11's version is `CURRENT_AGENT_VERSION`** in
   `src/lib/monitor/agent-version.ts`, a copy of `AgentVersion` in
   `apps/rig-agent/OasisRigAgent.Core/AgentConfig.cs` that

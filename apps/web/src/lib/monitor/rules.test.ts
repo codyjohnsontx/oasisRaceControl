@@ -1056,6 +1056,21 @@ describe("rule 7: wrong car or track", () => {
       expect(evaluate([rig(1, { seated: SEATED, heartbeats: fixedAt(2 * MIN) })], [], { ...combo, laps: streak })).toEqual([]);
     });
 
+    it("stays clear once the session was put right and the seat empties or the sim closes", () => {
+      const signedOut = rig(1, { heartbeats: fixedAt(2 * MIN) });
+      const quit = rig(1, {
+        seated: SEATED,
+        heartbeats: [...fixedAt(2 * MIN).slice(0, -1), hb(0, { simConnected: false, session: null })],
+      });
+      const dark = rig(1, {
+        seated: SEATED,
+        heartbeats: [...minutely(14 * MIN, 3 * MIN, () => ({ session: wrongCar })), hb(150 * S, { session: COMBO })],
+      });
+      for (const after of [signedOut, quit, dark]) {
+        expect(only(evaluate([after], [], { ...combo, laps: streak }), "wrong_combo")).toBeUndefined();
+      }
+    });
+
     it("clears when a valid lap lands after a wrong session, before the next heartbeat says so", () => {
       const heartbeats = minutely(14 * MIN, MIN, () => ({ session: wrongCar }));
       const laps = [...streak, lap(1, 30 * S)];

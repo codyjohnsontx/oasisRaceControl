@@ -788,26 +788,24 @@ function seatAndLapFindings(
   // laps are refused. Without a combo nothing is wrong (rule 4's business).
   //
   // Each input is a signal at the moment it was heard, and the newest
-  // definitive one decides: the live session (wrong or right) at its
-  // heartbeat, a run of COMBO_REJECTED_LAPS combo-refused laps at the last of
-  // them, a valid lap at its arrival. So fixing the car clears the alert at
-  // the next heartbeat even with the refused laps still in view, a valid lap
-  // clears it even before the next heartbeat, and a wrong session heard after
-  // either opens it again. On a tie the wrong signal wins.
+  // definitive one decides: a wrong live session while a driver is seated, the
+  // last right session the rig reported (live, seated or not), a run of
+  // COMBO_REJECTED_LAPS combo-refused laps at the last of them, a valid lap at
+  // its arrival. So fixing the car clears the alert at the next heartbeat even
+  // with the refused laps still in view - and it stays clear once the seat
+  // empties or the sim closes - a valid lap clears it even before the next
+  // heartbeat, and a wrong session heard after either opens it again. On a tie
+  // the wrong signal wins.
   const combo = snapshot.featuredCombo;
   if (combo) {
     type Signal = { at: number; wrong: string | null; from: "session" | "laps" };
     const signals: Signal[] = [];
-    if (rig.seated && live?.simConnected === true && live.session) {
-      signals.push({
-        at: live.receivedAt,
-        from: "session",
-        wrong: comboMismatch(
-          { track_name: combo.trackName, track_config: combo.trackConfig, car_name: combo.carName },
-          live.session,
-        ),
-      });
-    }
+    const mismatch = (session: NonNullable<Heartbeat["session"]>) =>
+      comboMismatch({ track_name: combo.trackName, track_config: combo.trackConfig, car_name: combo.carName }, session);
+    const wrongSession = rig.seated && live?.simConnected === true && live.session ? mismatch(live.session) : null;
+    if (wrongSession) signals.push({ at: live!.receivedAt, from: "session", wrong: wrongSession });
+    const right = lastSent(rig.heartbeats, (h) => h.simConnected === true && h.session !== null && !mismatch(h.session));
+    if (right) signals.push({ at: right.receivedAt, from: "session", wrong: null });
     const recent = rigLaps.filter((lap) => now - lap.receivedAt <= COMBO_REJECTED_WINDOW_MS);
     const last = recent.slice(-COMBO_REJECTED_LAPS);
     if (last.length === COMBO_REJECTED_LAPS && last.every((lap) => COMBO_REASONS.has(lap.invalidReason ?? ""))) {
