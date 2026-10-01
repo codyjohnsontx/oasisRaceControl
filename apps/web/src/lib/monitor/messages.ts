@@ -15,7 +15,7 @@ export type AlertForMessage = {
   severity: Severity;
   openedAt: number;
   resolvedAt: number | null;
-  /** Earlier openings on the same rule and subject in the hour before this one. */
+  /** Earlier openings on the same rule and flapping scope (flapScope) in the hour before this one. */
   refireCount: number;
   /** Inside a flapping mute right now: announced by flappingMessage, and not recovered aloud. */
   flapping: boolean;
@@ -72,9 +72,10 @@ export function recoveryMessage(alert: AlertForMessage): DiscordMessage {
 
 /**
  * What announces an alert that opened once too often in an hour: one quiet
- * line in place of the alert, saying the rule and subject are muted for the
- * hour. Everything on them in that hour stays in monitor_alerts (and on the
- * Rig health page) without being posted.
+ * line in place of the alert, saying the rule and rig (flapScope) are muted
+ * for the hour. Everything on them in that hour stays in monitor_alerts (and
+ * on the Rig health page) without being posted; rule 14's laps are then listed
+ * once, in fastLapSummaryMessages.
  */
 export function flappingMessage(alert: AlertForMessage): DiscordMessage {
   const rule = ruleOf(alert.rule);
