@@ -64,10 +64,17 @@ Built and verified end-to-end against the live backend:
   [iRacing telemetry](#iracing-telemetry) below, including what has and has
   not been verified against the real sim.
 
-The current host is a **console app** (runs on macOS/Linux/Windows, so it can be
-tested anywhere; the iRacing source itself only reads on Windows). A tray-icon
-+ status-window Windows shell is a later UI pass that wraps the same
-`OasisRigAgent.Core`.
+- ✅ **Sign-in window** (`0.6`): on the rig the walk-up sign-in and driving
+  screens are a WinForms window - "Raced here before?", name, masked PIN,
+  the driver's name and laps, a Log out button - over the same Core and the
+  same server routes as the console screens, which stay one flag away
+  (`--console`). See [Walk-up mode](#walk-up-mode-the-rig-is-the-check-in).
+
+One host, two builds. The `net8.0` build is a console program that runs on
+macOS, Linux and Windows, so the whole agent can be tested anywhere (the
+iRacing source itself only reads on Windows); the `net8.0-windows` build is the
+same program plus the sign-in window, and is what the rig runs. Both are
+`OasisRigAgent/Program.cs` over `OasisRigAgent.Core`.
 
 ## iRacing telemetry
 
@@ -258,10 +265,22 @@ parked. They cost one row each and keep the record of what the rig captured.
 ## Projects
 
 ```text
-OasisRigAgent.Core    # cross-platform: config, queue, backend client, orchestrator, iRacing source
-OasisRigAgent         # console host (+ --diagnose)
-OasisRigAgent.Tests   # xUnit (queue reliability, client contract, lap detection, session-info parsing)
+OasisRigAgent.Core    # cross-platform: config, queue, backend client, orchestrator, iRacing source,
+                      #   and WalkUp/ - the sign-in state machine, lap board and window model
+OasisRigAgent         # the host: console screens (+ --diagnose) in every build; Windows/ adds the
+                      #   WinForms sign-in window to the net8.0-windows build only
+OasisRigAgent.Tests   # xUnit (queue reliability, client contract, lap detection, session-info
+                      #   parsing, the sign-in rules, the window's model, the console as a process)
 ```
+
+The rules of walk-up mode live once, in `OasisRigAgent.Core/WalkUp/`:
+`SignInFlow` is the sign-in state machine (`SignInStep` documents every step and
+move), `SignInAttempt` maps the check-in client's answers, `LapBoard` is the
+driver's laps as queued/posted rows, `WalkUpRules` holds the warnings, the
+log-out wording and the seat-emptying on start, and `WalkUpViewModel` is
+everything the window draws. The console loop (`DriverPrompt.cs`) and the
+window (`Windows/WalkUpForm.cs`) are both thin fronts over them, so a rule
+changes in one place and `SignInFlowTests` pins it for both.
 
 ## Configure
 
@@ -274,7 +293,7 @@ executable, or use env vars (which override the file):
 | `rigToken` | `OASIS_RIG_TOKEN` | the rig's secret bearer token |
 | `rigNumber` | `OASIS_RIG_NUMBER` | e.g. `1` |
 | `telemetry` | `OASIS_TELEMETRY` | `iracing` (read the sim), `simulated` (fake laps, testing only), `none` (heartbeat and driver display only) |
-| `rigQrToken` | `OASIS_RIG_QR_TOKEN` | this rig's check-in slug (the `/r/<token>` on its QR code). Set it to run [walk-up mode](#walk-up-mode-the-rig-is-the-check-in); leave it out for the staff console |
+| `rigQrToken` | `OASIS_RIG_QR_TOKEN` | this rig's check-in slug (the `/r/<token>` on its QR code). Set it to run [walk-up mode](#walk-up-mode-the-rig-is-the-check-in) - the sign-in window on the rig build, or the console screens with `--console`; leave it out for the staff console |
 | `simulateTelemetry` | `OASIS_SIMULATE=1` | older spelling of `telemetry: "simulated"`; ignored when `telemetry` is set |
 
 Two rigs against the hosted app, tokens rotated on the backend first
@@ -295,10 +314,65 @@ slugs were inserted for the event, use those.
 
 ## Walk-up mode: the rig is the check-in
 
-With `rigQrToken` set, the console runs the loop the owner asked for: "the
-user types their name and then as they make laps it assigns it accordingly.
-When they are done, they just exit out the program and then it waits for the
-next person."
+With `rigQrToken` set, the rig runs the loop the owner asked for: "the user
+types their name and then as they make laps it assigns it accordingly. When
+they are done, they just exit out the program and then it waits for the next
+person." Since `0.6` it is a window; the console screens the 2026-09-27/28
+event ran are the fallback, one flag away.
+
+### The sign-in window
+
+`OasisRigAgent.exe` on the rig opens one window, sized to be read from the
+seat: the rig number in the header, the warnings standing right now under it
+in amber, one prompt at a time in large type with the error on its own line in
+red above it, and the last few lines the console would have printed in small
+grey type at the bottom (lap skipped and why, iRacing connected, the status
+line when it changes).
+
+**Sign in.** "Raced here before?" with two buttons (y and n on the keyboard
+answer it too); then the name, Enter or Next; then the PIN - a masked field
+that takes four digits and nothing else, Enter or Sign in. A new driver picks
+a PIN and types it again before anything is registered. Back goes one step,
+as Enter alone does on the console. A refused sign-in - wrong PIN, name taken,
+two tries used, backend unreachable, the previous log-out still owed - comes
+back to the name with the reason on the red line; the words and the rules are
+the console's exactly (below). The window shows "Signing in Mike..." while
+the backend is asked and takes no input until it answers.
+
+**Driving.** The driver's name large and green, the welcome line, their laps
+as a list - lap number, time, incidents, and `queued` until the backend has
+the lap, then `posted` - and one **Log out** button. Only laps stamped with
+this driver's stint are listed; a lap read while nobody was signed in appears
+in the grey lines as "lap not counted - sign in first", as on the console.
+Log out ends the stint here at once, tells the backend now or when it can be
+reached, and returns to the sign-in screen, which thanks the driver and says
+what the backend has been told.
+
+**Closing.** The window's close button, Alt+F4, Task Manager's End task and a
+Windows shutdown all run the same exit work as the console's Ctrl+C, close
+button and shutdown: the seated driver's sign-out and the goodbye heartbeat,
+each waited for up to three seconds. The sign-out is recorded in the outbox
+before the network is touched, so a backend that does not answer gets it on
+the next start. A Windows shutdown reaches the window as `FormClosing` while
+Windows is still waiting for the answer, which is what gives the sign-out
+its three seconds.
+
+The window is deliberately light: plain WinForms controls, no web view, no
+timer, no animation, a redraw only when something changed, in a process that
+already runs below normal priority - iRacing keeps the CPU and the frame rate
+(see [Heartbeat and footprint](#heartbeat-and-footprint)). Everything it
+shows comes from `WalkUpViewModel.Snapshot()` in Core, and the agent's loops
+never wait on the window.
+
+### The console screens (`--console`)
+
+`OasisRigAgent.exe --console` runs the same mode in a console window instead -
+the event-night fallback, unchanged since 2026-09-28 apart from running over
+the shared state machine. The `net8.0` build (macOS, Linux) is console-only and
+treats `--console` as given. On Windows the console build attaches to the
+terminal it was started from, or opens its own console window when started from
+a shortcut; a shortcut to `OasisRigAgent.exe --console` is the easiest way to
+run it.
 
 The console is two screens, and it is cleared whenever it moves between
 them.
@@ -509,8 +583,9 @@ else running:
    frame times.
 2. **Baseline, three runs.** Agent not running. Drive five timed minutes per
    run; record average FPS and 1% low.
-3. **With the agent, three runs.** `OasisRigAgent.exe` in walk-up mode, a
-   driver signed in, backend reachable. Same protocol.
+3. **With the agent, three runs.** `OasisRigAgent.exe` in walk-up mode (the
+   sign-in window), a driver signed in, backend reachable. Same protocol. One
+   more run with `--console` tells the window's share from the agent's.
 4. **Agent footprint during step 3** - in PowerShell, one sample every 5 s for
    5 minutes:
    ```powershell
@@ -518,12 +593,14 @@ else running:
    ```
    In Task Manager > Details, the `OasisRigAgent.exe` row must show priority
    "Below normal" and 0 in the GPU column (add the columns with a right-click
-   on the header). The console's first lines also print
-   `Priority: below normal (iRacing comes first)`.
+   on the header). The console's first lines, and the window's grey log
+   lines, also print `Priority: below normal (iRacing comes first)`.
 5. **Offline, one run.** Unplug the rig's network for five minutes mid-run:
    the agent's CPU must not rise and the FPS capture must not change.
 6. **Pass when** the agent averages at most 1% of one core, its private working
-   set stays at or under 60 MB, the with-agent average FPS and 1% low sit within
+   set stays at or under 60 MB with `--console` (the window build has not been
+   measured on a rig yet - record its number on the first run and set its bar
+   from that; WinForms adds memory, not CPU), the with-agent average FPS and 1% low sit within
    the spread of the three baseline runs, no lap in the agent log is skipped
    for missed ticks, and the heartbeat's `agentCpuPercent` agrees with the
    counter within half a point (both are percent of one core).
@@ -565,11 +642,17 @@ the rest from `dotnet-counters` (`System.Runtime`, 5-second samples).
 ```bash
 export PATH="$HOME/.dotnet:$PATH"
 cd apps/rig-agent
-dotnet test                          # unit tests
+dotnet test                          # unit tests (net8.0 build; runs on a Mac)
 OASIS_BACKEND_URL=https://oasis-race-control.vercel.app \
 OASIS_RIG_TOKEN=dev-rig-1-secret OASIS_RIG_NUMBER=1 OASIS_TELEMETRY=simulated \
-  dotnet run --project OasisRigAgent -c Release
+  dotnet run --project OasisRigAgent -f net8.0 -c Release
 ```
+
+`-f net8.0` is needed because the project builds two targets; `dotnet build`
+of the solution compiles the `net8.0-windows` window too, on any OS
+(`EnableWindowsTargeting` fetches the Windows Desktop reference pack), but it
+only runs on Windows: there, `dotnet run --project OasisRigAgent -f
+net8.0-windows` opens the window with `OASIS_RIG_QR_TOKEN` set.
 
 `s` + Enter switches driver, `q` quits.
 
@@ -577,15 +660,51 @@ OASIS_RIG_TOKEN=dev-rig-1-secret OASIS_RIG_NUMBER=1 OASIS_TELEMETRY=simulated \
 
 ```bash
 cd apps/rig-agent/OasisRigAgent
-dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
-# → bin/Release/net8.0/win-x64/publish/OasisRigAgent.exe  (no .NET install needed on the rig)
+dotnet publish -c Release -f net8.0-windows -r win-x64 --self-contained -p:PublishSingleFile=true
+# → bin/Release/net8.0-windows/win-x64/publish/OasisRigAgent.exe  (no .NET install needed on the rig)
 ```
 
 Copy `OasisRigAgent.exe` and `e_sqlite3.dll` from that folder to the rig PC,
-put `agent.config.json` beside them, and run the exe (a command prompt in that
-folder, or a shortcut). It must run as the same Windows user that runs iRacing,
-because the shared-memory map is per session. Run `OasisRigAgent.exe --diagnose`
-first on any new rig.
+put `agent.config.json` beside them, and run the exe (a shortcut, or a command
+prompt in that folder). With `rigQrToken` set it opens the sign-in window; a
+second shortcut to `OasisRigAgent.exe --console` is the fallback. It must run
+as the same Windows user that runs iRacing, because the shared-memory map is
+per session. Run `OasisRigAgent.exe --diagnose` first on any new rig (it opens
+a console of its own when started from a shortcut).
+
+### Verify the window on a rig
+
+The window cannot run on the Mac that builds it, so these are checked on the
+rig before the night, with the hosted backend and the rig's real
+`agent.config.json`:
+
+1. **Start.** Double-click the exe. One window, no console behind it; "Rig NN"
+   in the header; "Connecting to Oasis Race Control..." then "Raced here
+   before?" within a few seconds; `/staff` shows the rig's seat empty even if
+   someone was checked in before.
+2. **Returning driver.** Yes, a known name, the PIN masked as dots, a wrong
+   PIN says "That PIN does not match "<name>". Type it again." with the name
+   kept; a second wrong one says to ask staff; the right one shows the name in
+   green and `/staff` shows them checked in on this rig.
+3. **New driver.** No, a free name, a PIN typed twice (two that differ are
+   both asked again, nothing registered); the driver appears in `/staff`
+   and the name is taken from then on.
+4. **Laps.** Drive one: the row appears `queued` and turns `posted`; the lap
+   is on `/leaderboards` under the driver. Pull the network, drive one, the
+   amber warning appears and the row stays `queued`; plug it back and it
+   posts.
+5. **Log out.** The button returns to sign-in with "Thanks <name>, you are
+   logged out."; `/staff` shows the seat empty.
+6. **Every way out.** With a driver signed in: close button; Alt+F4; Task
+   Manager End task; a Windows restart. After each, `/staff` shows the seat
+   empty and the rig monitor shows a goodbye, not a silent rig. Start the exe
+   again each time and check step 1 clears a seat left open.
+7. **Fallback.** `OasisRigAgent.exe --console` from a shortcut opens a console
+   window with the screens of the event night; closing it signs the driver
+   out the same way.
+8. **Footprint.** Task Manager > Details: priority "Below normal", GPU 0,
+   and the window idle at 0% CPU with a driver signed in; iRacing's frame
+   rate as in [Checking the footprint](#checking-the-footprint-on-a-rig-with-iracing).
 
 The project owner lifted the Phase 0 venue-safety gate for this project's
 software on Oasis computers on 2026-09-26 ("disregard that rule we are past

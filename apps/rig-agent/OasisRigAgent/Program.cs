@@ -2,19 +2,35 @@ using System.Runtime.InteropServices;
 using OasisRigAgent;
 using OasisRigAgent.Core;
 using OasisRigAgent.Core.Iracing;
+using OasisRigAgent.Core.WalkUp;
+#if WINDOWS
+using OasisRigAgent.Windows;
+#endif
 
-// Oasis Race Control - Rig Agent (console host).
+// Oasis Race Control - Rig Agent.
 //
 // Runs the agent against the backend: heartbeat, current-driver display,
 // durable lap queue, and - with "telemetry": "iracing" - laps read from the
-// sim's shared memory on this PC. The tray/window UI is a later pass that
-// wraps this same Core.
+// sim's shared memory on this PC. The same Core drives two fronts:
 //
-//   OasisRigAgent.exe              run the agent (needs agent.config.json)
+//   OasisRigAgent.exe              run the agent (needs agent.config.json). With
+//                                  rigQrToken set, the Windows build opens the
+//                                  walk-up sign-in window; without it, the
+//                                  staff console (s/q).
+//   OasisRigAgent.exe --console    walk-up mode in a console window instead of
+//                                  the sign-in window (the event-night fallback)
 //   OasisRigAgent.exe --diagnose   read iRacing and print what it sees; posts nothing
+//
+// The net8.0 build (macOS, Linux, the tests) is console-only and treats
+// --console as given.
 
 if (args.Contains("--diagnose"))
+{
+#if WINDOWS
+    ConsoleWindow.Ensure();
+#endif
     return Diagnose();
+}
 
 // iRacing comes first on this PC: the agent runs below normal priority, so the
 // scheduler gives the sim the CPU whenever both want it. The agent waits on the
@@ -50,8 +66,16 @@ try
 }
 catch (Exception ex)
 {
-    Console.Error.WriteLine($"Configuration error: {ex.Message}");
-    Console.Error.WriteLine($"Create {configPath} (see agent.config.sample.json) or set OASIS_* env vars.");
+    var problem = $"Configuration error: {ex.Message}\nCreate {configPath} (see agent.config.sample.json) or set OASIS_* env vars.";
+#if WINDOWS
+    // A double-clicked window build has no console to print to.
+    if (!ConsoleWindow.Ensure())
+    {
+        MessageBox.Show(problem, "Oasis Rig Agent", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        return 1;
+    }
+#endif
+    Console.Error.WriteLine(problem);
     return 1;
 }
 
@@ -59,23 +83,57 @@ using var queue = queueInit;
 using var http = httpInit;
 await using var agent = agentInit;
 
+// The walk-up window is the Windows build's front for a rig with a QR token;
+// --console keeps the console screens of the event nights as the fallback.
+var window = false;
+#if WINDOWS
+window = config.RigQrToken is not null && !args.Contains("--console");
+if (!window) ConsoleWindow.Ensure();
+#endif
+
 // Walk-up mode's screen exists before the agent starts, so nothing the sim or
 // the agent reports in the first moments is printed where a redraw erases it.
 WalkUpScreen? walkUp = null;
+WalkUpViewModel? model = null;
+DriverCheckInClient? checkInClient = null;
+if (config.RigQrToken is { } qrToken)
+{
+    // Every sign-in the backend turns away is counted for the heartbeat, by
+    // the answers it gives; a fresh cookie jar per check-in, as the client's
+    // own default, so one person's session never leaks into the next.
+    checkInClient = new DriverCheckInClient(config.BackendBaseUrl, qrToken, () => new SignInFailureWatch(
+        agent.RecordSignInFailure,
+        new HttpClientHandler { UseCookies = true, CookieContainer = new System.Net.CookieContainer() }));
+}
 if (config.RigQrToken is null)
 {
     agent.StatusChanged += s => Console.WriteLine(StatusLine(s));
     agent.Notice += Console.Error.WriteLine;
 }
+else if (window)
+{
+    var m = new WalkUpViewModel(agent, checkInClient!, config.RigNumber);
+    model = m;
+    if (telemetry is IracingTelemetrySource iracing) AttachDriverLog(iracing, m.Log, m.Standing);
+    agent.StatusChanged += OnlyWhenItMatters(s => m.Log(StatusLine(s)));
+}
 else
 {
     var screen = new WalkUpScreen(new SystemPromptConsole(), agent);
     walkUp = screen;
-    if (telemetry is IracingTelemetrySource iracing) AttachDriverLog(iracing, screen);
+    if (telemetry is IracingTelemetrySource iracing) AttachDriverLog(iracing, screen.Log, screen.Standing);
     agent.StatusChanged += OnlyWhenItMatters(s => screen.Log(StatusLine(s)));
     agent.Notice += screen.Log;
 }
 agent.Start();
+
+#if WINDOWS
+if (model is { } vm)
+{
+    using var walkUpModel = vm;
+    return RunWindow(vm, agent, priority);
+}
+#endif
 
 Console.WriteLine($"Oasis Rig Agent - Rig {config.RigNumber:D2}  ({config.BackendBaseUrl})");
 Console.WriteLine(config.TelemetryMode switch
@@ -109,17 +167,11 @@ using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, context =
 using var onShutdown = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; FinishBeforeExit(); });
 AppDomain.CurrentDomain.ProcessExit += (_, _) => FinishBeforeExit();
 
-if (walkUp is not null && config.RigQrToken is { } qrToken)
+if (walkUp is not null && checkInClient is { } checkIn)
 {
     // Walk-up mode: the rig itself is the check-in.
     Console.WriteLine("Walk-up mode: type your name and a 4-digit PIN to start driving, press Enter to log out.");
     Console.WriteLine(new string('-', 60));
-    // Every sign-in the backend turns away is counted for the heartbeat, by
-    // the answers it gives; a fresh cookie jar per check-in, as the client's
-    // own default, so one person's session never leaks into the next.
-    var checkIn = new DriverCheckInClient(config.BackendBaseUrl, qrToken, () => new SignInFailureWatch(
-        agent.RecordSignInFailure,
-        new HttpClientHandler { UseCookies = true, CookieContainer = new System.Net.CookieContainer() }));
     await DriverPrompt.RunAsync(agent, checkIn, config.RigNumber, walkUp, quit.Token);
     await exitWork.Value;
     Console.WriteLine("Shutting down...");
@@ -256,16 +308,71 @@ static Action<AgentStatus> OnlyWhenItMatters(Action<AgentStatus> render)
 /// print, because only it knows whether the lap was queued for a driver and
 /// when the backend took it. The exact combo strings
 /// are for staff and live in --diagnose and the staff console.</summary>
-static void AttachDriverLog(IracingTelemetrySource source, WalkUpScreen screen)
+static void AttachDriverLog(IracingTelemetrySource source, Action<string> log, Action<string> standing)
 {
-    source.ConnectionChanged += up => screen.Log(up ? "iRacing connected." : "iRacing is not running or not in a session - laps resume when it is back.");
-    source.MissingVariables += names => screen.Standing($"WARNING: this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected. Tell staff.");
+    source.ConnectionChanged += up => log(up ? "iRacing connected." : "iRacing is not running or not in a session - laps resume when it is back.");
+    source.MissingVariables += names => standing($"WARNING: this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected. Tell staff.");
     source.LapDecided += d =>
     {
-        if (d.Lap is null) screen.Log($"Lap {d.LapCompleted} not counted: {d.SkipReason}");
+        if (d.Lap is null) log($"Lap {d.LapCompleted} not counted: {d.SkipReason}");
     };
-    source.Faulted += ex => screen.Standing($"ERROR: lap reading stopped: {ex.Message} - tell staff to restart the program.");
+    source.Faulted += ex => standing($"ERROR: lap reading stopped: {ex.Message} - tell staff to restart the program.");
 }
+
+#if WINDOWS
+/// <summary>The walk-up window, with every way out of it - the Log out button
+/// is the model's, and the close button, Alt+F4, Task Manager's End task and a
+/// Windows shutdown (FormClosing, raised at WM_QUERYENDSESSION while Windows
+/// still waits for the answer) and the runtime's own exit all run the same
+/// exit work once, as the console host's signal handlers do: the seated
+/// driver's sign-out and the goodbye heartbeat, each bounded to three seconds,
+/// so a backend that does not answer cannot hold the window open. The exit
+/// work starts on the thread pool, never on the UI thread, because the closing
+/// handler waits for it synchronously and an await continuation posted back
+/// to the blocked UI thread would be a deadlock.</summary>
+static int RunWindow(WalkUpViewModel model, AgentService agent, string priority)
+{
+    model.Log(priority);
+    var quit = new CancellationTokenSource();
+    var exitWork = new Lazy<Task>(() => Task.Run(() => Task.WhenAll(
+        WalkUpRules.SignOutOnExitAsync(agent),
+        agent.SendGoodbyeAsync(TimeSpan.FromSeconds(3)))));
+    void FinishBeforeExit()
+    {
+        quit.Cancel();
+        exitWork.Value.GetAwaiter().GetResult();
+    }
+    // The console-control routes still exist when --console gave the process a
+    // console; a windowed process without one simply never hears them.
+    using var onClose = PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => { context.Cancel = true; FinishBeforeExit(); });
+    using var onShutdown = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; FinishBeforeExit(); });
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => FinishBeforeExit();
+
+    Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+    Application.EnableVisualStyles();
+    Application.SetCompatibleTextRenderingDefault(false);
+    // An exception in a UI handler is logged on the window, not raised as the
+    // runtime's error dialog, which nobody at an unattended rig would answer.
+    Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+    Application.ThreadException += (_, e) => model.Log($"[window] {e.Exception.GetType().Name}: {e.Exception.Message}");
+
+    using var form = new WalkUpForm(model);
+    form.FormClosing += (_, _) => FinishBeforeExit();
+    // A signal that ran the exit work while the window is up closes it too.
+    using var closeOnQuit = quit.Token.Register(() =>
+    {
+        if (!form.IsDisposed && form.IsHandleCreated)
+        {
+            try { form.BeginInvoke(form.Close); }
+            catch (InvalidOperationException) { }
+        }
+    });
+    _ = model.StartAsync(quit.Token);
+    Application.Run(form);
+    exitWork.Value.GetAwaiter().GetResult();
+    return 0;
+}
+#endif
 
 /// <summary>What the normal run prints about the sim, on top of the status
 /// line: connection changes, the combo strings exactly as they will be posted,

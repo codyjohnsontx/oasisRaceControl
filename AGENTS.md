@@ -421,9 +421,25 @@ in through the backend's existing login, register and check-in routes as an
 HTTP client with a cookie jar (`OasisRigAgent.Core/DriverCheckInClient.cs`),
 so a returning driver keeps one row and it works against whatever web commit
 is deployed without a server change - verify request shapes against the
-served commit, not only main. In this mode the agent stamps laps only with a
-stint its own check-in created in this process (`AgentService`), and every
-start ends whatever is open on the rig before the name prompt; do not let the
+served commit, not only main.
+
+The rig shows it as a WinForms window since 0.6, and the console screens of
+the 2026-09-27/28 event stay behind `--console` as the fallback. Both are thin
+fronts over `OasisRigAgent.Core/WalkUp/`: the sign-in rules are `SignInFlow`
+(one state machine, pinned by `SignInFlowTests` for both fronts - never write
+a second one in a view), `WalkUpViewModel` is everything the window draws, and
+`WalkUpRules` holds the warnings, log-out wording and seat-emptying. The host
+project multi-targets: `net8.0` is the console build the tests run as a
+process on macOS, `net8.0-windows` adds `OasisRigAgent/Windows/` and is what
+the rig runs (publish with `-f net8.0-windows`); the window cannot run on a
+Mac, so the checklist in the agent README (Verify the window on a rig) is the
+check it gets. Exit work in the window host starts on the thread pool, never
+the UI thread, because `FormClosing` waits for it synchronously and a UI-thread
+continuation would deadlock.
+
+In this mode the agent stamps laps only with a stint its own check-in created
+in this process (`AgentService`), and every start ends whatever is open on
+the rig before the name prompt; do not let the
 poll adopt a stint again, or a restart credits the departed driver. Every
 exit path in `Program.cs` signs out the seated driver durably and waits for
 it, and sends nothing when nobody is seated (`SignOutSeatedDriverAsync`) - an

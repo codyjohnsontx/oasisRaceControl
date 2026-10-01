@@ -1,15 +1,36 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Two builds of one host. net8.0 is the console program the tests drive on
+    any platform (ConsoleShutdownTests runs it as a process on macOS). The
+    net8.0-windows build is the same program plus the WinForms sign-in window
+    the rig runs; it compiles anywhere (EnableWindowsTargeting pulls the
+    Windows Desktop reference pack from NuGet) but only runs on Windows, and
+    the test project binds to the net8.0 build. Publish the rig exe with
+    -f net8.0-windows (README: Build the Windows exe).
+  -->
   <PropertyGroup>
+    <TargetFrameworks>net8.0;net8.0-windows</TargetFrameworks>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <InvariantGlobalization>true</InvariantGlobalization>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <AssemblyName>OasisRigAgent</AssemblyName>
     <RootNamespace>OasisRigAgent</RootNamespace>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
+
+  <!-- A windowed process (no console of its own); -console and -diagnose
+       attach to or open one. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net8.0-windows'">
+    <Compile Remove="Windows\**" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\OasisRigAgent.Core\OasisRigAgent.Core.csproj" />
