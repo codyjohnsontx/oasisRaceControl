@@ -846,6 +846,10 @@ export async function countOpenAlerts(): Promise<number> {
  * `attempts` counts calls; `diagnosisPostedAt` and `handoffPostedAt` record
  * the two messages separately, so a post that fails half way is finished
  * later without the half that got through being posted twice.
+ *
+ * The rig-alert issue is filed from the handoff, so its claims live here too:
+ * `issueAttemptedAt` claims filing it (the number itself is
+ * github_issue_number), and `issueRecovery*` the recovery comment.
  */
 export type DiagnosisState = {
   status: "pending" | "retry" | "done";
@@ -856,6 +860,9 @@ export type DiagnosisState = {
   result?: unknown;
   diagnosisPostedAt?: string;
   handoffPostedAt?: string;
+  issueAttemptedAt?: string;
+  issueRecoveryAttemptedAt?: string;
+  issueRecoveryCommentedAt?: string;
 };
 
 /** A call that never reported back (its function died) is retried after this. */
@@ -898,14 +905,15 @@ export async function claimDiagnoses(): Promise<AlertToDiagnose[]> {
 }
 
 /**
- * A rig's latest heartbeats, newest first, for the diagnosis to read. The
- * ingestion route stores the fields the rules filter on in their own columns
+ * A rig's latest heartbeats, newest first, for the diagnosis to read - or,
+ * given `until`, the latest received by then. The ingestion route stores the
+ * fields the rules filter on in their own columns
  * and only the rest in `payload`, so the columns are put back under their
  * wire names here. A null column is a field the heartbeat did not carry,
  * except `assignment_id`: a current agent always says whether anyone is
  * seated (`assignmentKnown`), so there null means nobody.
  */
-export async function recentHeartbeats(subject: string): Promise<DiagnosisHeartbeat[]> {
+export async function recentHeartbeats(subject: string, until?: string): Promise<DiagnosisHeartbeat[]> {
   const rigId = subject.match(/^rig:([0-9a-f-]{36})$/i)?.[1];
   if (!rigId) return [];
   const rows = await query<{ received_ms: number; clock_skew_ms: number | null; payload: Record<string, unknown> }>(
@@ -927,8 +935,10 @@ export async function recentHeartbeats(subject: string): Promise<DiagnosisHeartb
             || case when assignment_id is not null or (payload->>'assignmentKnown')::boolean
                     then jsonb_build_object('assignmentId', assignment_id) else '{}'::jsonb end
               as payload
-     from rig_heartbeats where rig_id = $1 order by received_at desc, id desc limit 15`,
-    [rigId],
+     from rig_heartbeats
+     where rig_id = $1 and ($2::timestamptz is null or received_at <= $2::timestamptz)
+     order by received_at desc, id desc limit 15`,
+    [rigId, until ?? null],
   );
   return rows.map((r) => ({ receivedAt: r.received_ms, clockSkewMs: r.clock_skew_ms, payload: r.payload }));
 }
@@ -951,7 +961,7 @@ export async function saveDiagnosis(id: string, state: DiagnosisState, handoff: 
 
 export async function markDiagnosisPosted(
   id: string,
-  which: "diagnosisPostedAt" | "handoffPostedAt",
+  which: "diagnosisPostedAt" | "handoffPostedAt" | "issueRecoveryCommentedAt",
 ): Promise<void> {
   await query(
     "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object($2::text, now()) where id = $1",
@@ -977,4 +987,144 @@ export async function claimDiagnosisPostRetries(): Promise<DiagnosisToPost[]> {
     [RETRY_AFTER, RETRY_FOR],
   );
   return rows.map((row) => ({ id: row.id, diagnosis: row.diagnosis, handoff: row.handoff, alert: toAlert(row) }));
+}
+
+/** An alert of a rule this soon after another shares that alert's issue. */
+const REFIRE_WINDOW = "24 hours";
+
+/** `handoffAt` is when the handoff was written: the done state's `at`. */
+export type AlertToFile = AlertForMessage & { subject: string; handoff: string; handoffAt: string };
+
+/**
+ * Claims the urgent alerts whose handoff should become a rig-alert issue: a
+ * rule where software is a plausible cause, or a diagnosis that says it is
+ * (decision D8). Claimed as the Discord retries are, so two evaluations
+ * cannot both file one, and a failure is retried after RETRY_AFTER for
+ * RETRY_FOR.
+ */
+export async function claimIssues(softwareRules: readonly string[]): Promise<AlertToFile[]> {
+  const rows = await query<AlertRow & { subject: string; handoff: string; handoff_at: string }>(
+    `update monitor_alerts
+     set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now())
+     where id in (
+       select id from monitor_alerts
+       where severity = 'urgent' and diagnosis->>'status' = 'done' and handoff is not null
+         and github_issue_number is null
+         and (rule = any($1::text[]) or diagnosis->'result'->>'causeClass' = 'software')
+         and coalesce((diagnosis->>'issueAttemptedAt')::timestamptz, '-infinity') < now() - $2::interval
+         and opened_at > now() - $3::interval
+       order by id
+       for update skip locked)
+     returning ${ALERT_COLUMNS}, subject, handoff, diagnosis->>'at' as handoff_at`,
+    [softwareRules, RETRY_AFTER, RETRY_FOR],
+  );
+  return rows
+    .map((row) => ({ ...toAlert(row), subject: row.subject, handoff: row.handoff, handoffAt: row.handoff_at }))
+    .sort((a, b) => Number(a.id) - Number(b.id));
+}
+
+/**
+ * Takes the lock that serializes filing for one rule - one fault, however many
+ * rigs it hits - for the rest of `db`'s transaction, or answers false when
+ * another filer holds it (that filer's alerts are retried after RETRY_AFTER).
+ * Held from the issue lookup through the GitHub write to the record, so two
+ * alerts of one rule filed at once cannot both find no issue and both open
+ * one. It holds nothing any evaluation waits on, only other filers of the
+ * same rule.
+ */
+export async function lockFault(db: Db, rule: string): Promise<boolean> {
+  const [row] = await rows<{ locked: boolean }>(
+    db,
+    "select pg_try_advisory_xact_lock(hashtext('rig-alert-issue'), hashtext($1)) as locked",
+    [rule],
+  );
+  return row?.locked ?? false;
+}
+
+/**
+ * The issue another alert of `rule`, opened within REFIRE_WINDOW either side
+ * of one of `ids`, has already filed - on any rig, since a software fault is
+ * one fault wherever it shows. Read at filing time, under lockFault, so an
+ * alert filed out of order still finds it.
+ */
+export async function refireTarget(db: Db, rule: string, ids: readonly string[]): Promise<number | null> {
+  const [row] = await rows<{ n: number }>(
+    db,
+    `select p.github_issue_number as n
+     from monitor_alerts p
+     where p.rule = $1 and p.github_issue_number is not null and p.id <> all($2::bigint[])
+       and exists (
+         select 1 from monitor_alerts a
+         where a.id = any($2::bigint[])
+           and p.opened_at between a.opened_at - $3::interval and a.opened_at + $3::interval)
+     order by p.id desc limit 1`,
+    [rule, ids, REFIRE_WINDOW],
+  );
+  return row?.n ?? null;
+}
+
+/**
+ * Records `ids` as filed on the numbered issue. An alert already recorded
+ * keeps its issue: the ids a found issue's marker names may include one
+ * a later filing put elsewhere.
+ */
+export async function recordIssue(db: Db, ids: readonly string[], number: number): Promise<void> {
+  await db.query(
+    "update monitor_alerts set github_issue_number = $2 where id = any($1::bigint[]) and github_issue_number is null",
+    [ids, number],
+  );
+}
+
+/** Which of `ids` no issue has recorded yet. */
+export async function unfiledAlerts(db: Db, ids: readonly string[]): Promise<string[]> {
+  const found = await rows<{ id: string }>(
+    db,
+    "select id::text from monitor_alerts where id = any($1::bigint[]) and github_issue_number is null",
+    [ids],
+  );
+  return found.map((row) => row.id);
+}
+
+/**
+ * Claims the alerts owed a recovery comment, once every alert on their issue
+ * has recovered and no alert of its rule is still to be filed on it: one
+ * claimIssues could yet take (urgent, opened within RETRY_FOR, software by
+ * rule or by diagnosis, and diagnosed - even if it has recovered since), or
+ * one it could take once its diagnosis is done: open and not diagnosed yet,
+ * or recovered while its diagnosis call is in flight (a pending claim not yet
+ * DIAGNOSIS_STALE, since a recovered alert is never claimed again). So an issue
+ * shared by many rigs gets one comment when the last of them recovers, not
+ * one per rig. The issue is never closed: closing it would cancel a fix in progress.
+ */
+export async function claimIssueRecoveries(
+  softwareRules: readonly string[],
+): Promise<Array<AlertForMessage & { issue: number }>> {
+  const rows = await query<AlertRow & { github_issue_number: number }>(
+    `update monitor_alerts m
+     set diagnosis = m.diagnosis || jsonb_build_object('issueRecoveryAttemptedAt', now())
+     from (
+       select github_issue_number as n, min(rule) as rule from monitor_alerts
+       where github_issue_number is not null
+       group by github_issue_number
+       having bool_and(resolved_at is not null)
+         and bool_or(diagnosis->>'issueRecoveryCommentedAt' is null and resolved_at > now() - $2::interval)
+     ) due
+     where m.github_issue_number = due.n
+       and m.diagnosis->>'issueRecoveryCommentedAt' is null
+       and coalesce((m.diagnosis->>'issueRecoveryAttemptedAt')::timestamptz, '-infinity') < now() - $1::interval
+       and not exists (
+         select 1 from monitor_alerts o
+         where o.rule = due.rule and o.github_issue_number is null
+           and o.severity = 'urgent' and o.opened_at > now() - $2::interval
+           and (o.rule = any($3::text[]) or o.diagnosis->'result'->>'causeClass' = 'software'
+                or coalesce(o.diagnosis->>'status', '') <> 'done')
+           and (o.resolved_at is null
+                or (o.diagnosis->>'status' = 'done' and o.handoff is not null)
+                or (o.diagnosis->>'status' = 'pending' and (o.diagnosis->>'at')::timestamptz > now() - $4::interval)))
+     returning m.id::text, m.rule, m.severity, m.opened_at, m.resolved_at, m.detail, m.github_issue_number`,
+    [RETRY_AFTER, RETRY_FOR, softwareRules, DIAGNOSIS_STALE],
+  );
+  return rows
+    .map((row) => ({ ...toAlert(row), issue: row.github_issue_number }))
+    .sort((a, b) => Number(a.id) - Number(b.id));
 }

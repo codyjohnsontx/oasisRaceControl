@@ -5,6 +5,9 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { db } from "@/lib/db";
 import { CURRENT_AGENT_VERSION } from "./agent-version";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
+import commentCreated from "./fixtures/github-comment-created.json";
+import issueCreated from "./fixtures/github-issue-created.json";
+import { markedAlerts, rigAlertMarker } from "./handoff";
 import { runDiagnoses, runMonitor } from "./run";
 import { openingMessage } from "./messages";
 import {
@@ -559,12 +562,17 @@ describeDb("rig monitor against real Postgres", () => {
 
   describe("AI diagnosis and the copy-paste handoff", () => {
     const GEMINI = "https://generativelanguage.googleapis.com/";
-    let geminiAnswers: Array<"timeout" | "answer"> = [];
+    /** "hold" answers only once `releaseModel` is called, and resolves `modelHeld` when it starts waiting. */
+    let geminiAnswers: Array<"timeout" | "answer" | "hold"> = [];
     let prompts: string[] = [];
+    let releaseModel: () => void = () => {};
+    let holdingModel: () => void = () => {};
+    let modelHeld: Promise<void>;
 
     beforeEach(() => {
       geminiAnswers = [];
       prompts = [];
+      modelHeld = new Promise((resolve) => (holdingModel = resolve));
       vi.stubEnv("GEMINI_API_KEY", "test-gemini-key");
       vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "9b4fd5d0c0ffee");
       vi.stubGlobal(
@@ -573,7 +581,13 @@ describeDb("rig monitor against real Postgres", () => {
           if (!url.startsWith(GEMINI)) return fetchMock(url, init);
           prompts.push(init.body as string);
           // What AbortSignal.timeout() rejects with when the 20 s run out.
-          if (geminiAnswers.shift() !== "answer") throw new DOMException("timed out", "TimeoutError");
+          const answer = geminiAnswers.shift();
+          if (answer === "hold") {
+            holdingModel();
+            await new Promise<void>((resolve) => (releaseModel = resolve));
+          } else if (answer !== "answer") {
+            throw new DOMException("timed out", "TimeoutError");
+          }
           return Response.json(geminiAnswer);
         }),
       );
@@ -598,11 +612,12 @@ describeDb("rig monitor against real Postgres", () => {
       );
     }
 
-    async function seatedSilentRig() {
-      const rig = await seedRig(2);
-      const driver = await seedDriver("Matt G");
+    async function seatedSilentRig(rigNumber = 2, driverName = "Matt G") {
+      const rig = await seedRig(rigNumber);
+      const driver = await seedDriver(driverName);
       await openAssignment(rig.id, driver.id);
       for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) await heartbeat(rig, ago);
+      return rig;
     }
 
     it("posts the alert alone when the model times out, retries once, then posts diagnosis and handoff", async () => {
@@ -629,7 +644,7 @@ describeDb("rig monitor against real Postgres", () => {
         embeds: [{ title: "Likely cause (Gemini, confidence medium)" }],
         allowed_mentions: { parse: [] },
       });
-      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 02\)\n/);
+      expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 2\)\n/);
       expect(posts[2]!.content).toContain("Site commit: 9b4fd5d");
       expect(posts[2]!.content).toContain("Likely cause (AI, confidence medium): The lap ingestion route");
       expect(posts[2]!.allowed_mentions).toEqual({ parse: [] });
@@ -709,6 +724,7 @@ describeDb("rig monitor against real Postgres", () => {
           detail: {
             headline: "Rig 09 has been silent for 3 min with Matt G signed in",
             where: "Rig 09",
+            rigNumber: 9,
             fields: [{ name: "Driver", value: "Matt G (seated 18 min)" }],
             ...(driver === undefined ? {} : { driver }),
           },
@@ -723,7 +739,7 @@ describeDb("rig monitor against real Postgres", () => {
       await nextEvaluation();
 
       expect(prompts).toHaveLength(1);
-      expect(prompts[0]).toContain("Rig 09 has been silent for 3 min with driver-");
+      expect(prompts[0]).toContain("Rig 9 has been silent for 3 min with driver-");
       expect(prompts[0]).not.toContain("Matt G");
       expect(await diagnosis()).toMatchObject([{ diagnosis: null }, { diagnosis: { status: "done" } }]);
     });
@@ -750,6 +766,643 @@ describeDb("rig monitor against real Postgres", () => {
       expect(heartbeats).toContain('"pendingLaps": 0');
       expect(heartbeats).toContain('"driverSeated": true');
       expect(heartbeats).not.toContain(assignmentId);
+    });
+
+    describe("the rig-alert GitHub issue", () => {
+      const GITHUB = "https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues";
+      const TOKEN = "github_pat_test_never_logged";
+      /**
+       * A fake GitHub that keeps what is written to it, so the marker lookups
+       * read back what was filed. Each write takes the next answer:
+       * a status (201/200 when none is queued); "lost", which lands the write
+       * and then times out, as a dropped answer does; "hold", which lands it
+       * only once `release` is called; or "echo", a 502 whose body quotes the
+       * token and the request.
+       */
+      type Answer = number | "lost" | "hold" | "echo";
+      const MONITOR = "oasis-monitor";
+      type FakeComment = { body: string; user: { login: string } };
+      type FakeIssue = {
+        number: number;
+        created_at: string;
+        state: string;
+        body: string;
+        user: { login: string };
+        labels: Array<{ name: string }>;
+        comments: FakeComment[];
+      };
+      /** GitHub files the next issue without its label, as it does when the label is missing. */
+      let dropLabel = false;
+      let issues: Map<number, FakeIssue>;
+      /** Every write to GitHub, in order; the reads are in `reads`. */
+      let calls: Array<{ method: string; url: string; body: Record<string, unknown> }> = [];
+      let reads: string[] = [];
+      let githubAnswers: Answer[] = [];
+      let release: () => void = () => {};
+      let held: Promise<void>;
+      let holding: () => void = () => {};
+
+      function write(method: string, url: string, body: Record<string, unknown>): unknown {
+        const path = url.slice(GITHUB.length);
+        if (method === "POST" && path === "") {
+          const number = 42 + issues.size;
+          const labels = dropLabel ? [] : [{ name: "rig-alert" }];
+          issues.set(number, {
+            number,
+            created_at: new Date().toISOString(),
+            state: "open",
+            body: body.body as string,
+            user: { login: MONITOR },
+            labels,
+            comments: [],
+          });
+          return { ...issueCreated, number, title: body.title, body: body.body, labels };
+        }
+        const [, n, comments] = path.match(/^\/(\d+)(\/comments)?$/)!;
+        const issue = issues.get(Number(n))!;
+        if (comments) {
+          issue.comments.push({ body: body.body as string, user: { login: MONITOR } });
+          return commentCreated;
+        }
+        if (typeof body.state === "string") issue.state = body.state;
+        return { ...issueCreated, number: issue.number, state: issue.state };
+      }
+
+      function read(url: string): unknown {
+        const path = url.slice(GITHUB.length);
+        // Every list fits on its first page here; the paging itself is unit-tested.
+        const firstPage = new URL(url).searchParams.get("page") === "1";
+        if (path.startsWith("?")) return firstPage ? [...issues.values()].reverse().map((i) => ({ ...issueCreated, ...i })) : [];
+        const [, n, comments] = path.match(/^\/(\d+)(\/comments)?(\?.*)?$/)!;
+        const issue = issues.get(Number(n))!;
+        if (comments) return firstPage ? issue.comments : [];
+        return { ...issueCreated, number: issue.number, state: issue.state };
+      }
+
+      beforeEach(() => {
+        issues = new Map();
+        dropLabel = false;
+        calls = [];
+        reads = [];
+        githubAnswers = [];
+        held = new Promise((resolve) => (holding = resolve));
+        vi.stubEnv("GITHUB_RIG_ALERT_TOKEN", TOKEN);
+        const others = globalThis.fetch;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string, init: RequestInit) => {
+            if (url === "https://api.github.com/user") return Response.json({ login: MONITOR });
+            if (!url.startsWith(GITHUB)) return others(url, init);
+            const method = init.method ?? "GET";
+            if (method === "GET") {
+              reads.push(url);
+              return Response.json(read(url), { status: 200 });
+            }
+            const body = JSON.parse(init.body as string) as Record<string, unknown>;
+            const answer = githubAnswers.shift() ?? (method === "POST" ? 201 : 200);
+            if (answer === "echo") {
+              return new Response(`upstream echoed ${TOKEN} ${JSON.stringify(body)}`, { status: 502 });
+            }
+            if (typeof answer === "number" && answer >= 300) return Response.json({ message: "Server Error" }, { status: answer });
+            if (answer === "hold") {
+              holding();
+              await new Promise<void>((resolve) => (release = resolve));
+            }
+            calls.push({ method, url, body });
+            const result = write(method, url, body);
+            if (answer === "lost") throw new DOMException("timed out", "TimeoutError");
+            return Response.json(result, { status: answer === "hold" ? 201 : answer });
+          }),
+        );
+      });
+
+      async function issueNumbers() {
+        const { rows } = await testDb().query<{ n: number | null }>(
+          "select github_issue_number as n from monitor_alerts order by id",
+        );
+        return rows.map((r) => r.n);
+      }
+
+      /** The rig heartbeats again, and two evaluations resolve its alert. */
+      async function recover(rig: SeededRig) {
+        await heartbeat(rig, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+      }
+
+      /** And goes silent again: its latest heartbeat is the 3-minute-old one once more. */
+      async function silentAgain(rig: SeededRig) {
+        await testDb().query("delete from rig_heartbeats where received_at > now() - interval '60 seconds'");
+        await testDb().query("update rigs set last_seen_at = now() - interval '180 seconds' where id = $1", [rig.id]);
+      }
+
+      it("opens one issue when the diagnosis says software, comments a re-fire and a recovery, and never closes it", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+
+        await nextEvaluation();
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.url).toBe(GITHUB);
+        expect(calls[0]!.body).toMatchObject({
+          title: "[rig-alert] Rig silent - Rig 2",
+          labels: ["rig-alert"],
+        });
+        const body = calls[0]!.body.body as string;
+        expect(body).toMatch(/```text\nOasis rig alert #\d+ - rule 1: Rig silent \(Rig 2\)\n/);
+        expect(body).toContain("<details><summary>Latest heartbeats (allowlisted fields, oldest first)</summary>");
+        expect(body).not.toContain("Matt G");
+        expect(body).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
+        expect(await issueNumbers()).toEqual([42]);
+
+        // Nothing more while it stays open.
+        await nextEvaluation();
+        expect(calls).toHaveLength(1);
+
+        await recover(rig);
+        expect(calls).toHaveLength(2);
+        expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
+        expect(calls[1]!.body.body).toMatch(
+          /^Every rig on this issue has recovered: alert \d+ \(Rig 2\) after \d+ s\. The issue stays open/,
+        );
+
+        // The same rule within a day: a comment, not a second issue.
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(calls).toHaveLength(3);
+        expect(calls[2]!.url).toBe(`${GITHUB}/42/comments`);
+        expect(calls[2]!.body.body).toMatch(/^Fired again as alert \d+ \(Rig 2\)\.\n\n```text\nOasis rig alert #/);
+        expect(await issueNumbers()).toEqual([42, 42]);
+
+        // The open issue was read, not reopened; every call filed or commented, none closed anything.
+        expect(reads.filter((url) => url === `${GITHUB}/42`)).toHaveLength(1);
+        expect(calls.every((c) => c.method === "POST" && !("state" in c.body))).toBe(true);
+      });
+
+      it("reopens the issue a re-fire comments on when it was closed", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+
+        await nextEvaluation();
+        await recover(rig);
+        expect(calls).toHaveLength(2);
+
+        issues.get(42)!.state = "closed";
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(calls.slice(2)).toMatchObject([
+          { method: "PATCH", url: `${GITHUB}/42`, body: { state: "open" } },
+          { method: "POST", url: `${GITHUB}/42/comments`, body: { body: expect.stringMatching(/^Fired again as alert \d+ \(Rig 2\)\./) } },
+        ]);
+        expect(issues.get(42)!.state).toBe("open");
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("files a refused issue's retry with only the heartbeats its handoff was written from", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = [500];
+
+        await nextEvaluation();
+        const { rows } = await testDb().query<{ at: string }>("select diagnosis->>'at' as at from monitor_alerts");
+        const handoffAt = Date.parse(rows[0]!.at);
+        await heartbeat(rig, 0, { agentVersion: "9.9.9" });
+        await testDb().query(
+          "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now() - interval '90 seconds')",
+        );
+        await nextEvaluation();
+
+        const body = calls[0]!.body.body as string;
+        const heartbeats = JSON.parse(body.match(/```json\n([\s\S]*?)\n```/)![1]!) as Array<{ receivedAt: number }>;
+        expect(heartbeats.length).toBeGreaterThan(0);
+        expect(heartbeats.every((h) => h.receivedAt <= handoffAt)).toBe(true);
+        expect(body).not.toContain("9.9.9");
+      });
+
+      it("retries an issue GitHub refused on a later evaluation, once", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = [500];
+
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([null]);
+        await nextEvaluation();
+        expect(calls).toHaveLength(0);
+
+        await testDb().query(
+          "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now() - interval '90 seconds')",
+        );
+        await nextEvaluation();
+        await nextEvaluation();
+        expect(calls).toHaveLength(1);
+        expect(await issueNumbers()).toEqual([42]);
+      });
+
+      /** Makes a refused issue due for its retry now. */
+      async function retryDue() {
+        await testDb().query(
+          "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now() - interval '90 seconds') where github_issue_number is null",
+        );
+      }
+
+      it("files one issue naming both when a refused alert's retry and its re-fire are filed together", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+        githubAnswers = [500];
+
+        await nextEvaluation();
+        await recover(rig);
+        await silentAgain(rig);
+        await retryDue();
+        await nextEvaluation();
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.url).toBe(GITHUB);
+        expect(calls[0]!.body.body).toMatch(/^Filed by the rig monitor for alert \d+ \(Rig 2\), alert \d+ \(Rig 2\)\./);
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("comments a refused alert's retry on the issue its later re-fire opened", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+        githubAnswers = [500];
+
+        await nextEvaluation();
+        await recover(rig);
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([null, 42]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
+        expect(calls[1]!.body.body).toMatch(/^Fired again as alert \d+ \(Rig 2\)\./);
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("records an issue whose create landed but whose answer was lost, instead of filing it again", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = ["lost"];
+
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([null]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([42]);
+      });
+
+      it("reconciles lost writes when the seated driver is named after the rule key", async () => {
+        const rig = await seatedSilentRig(2, "rig_silent");
+        geminiAnswers = ["answer", "answer"];
+        githubAnswers = ["lost"];
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+
+        // The marker names the rule the lock and re-fire lookup use, not the driver's stand-in.
+        const trailer = (body: string) => body.trimEnd().split("\n").at(-1)!;
+        const { rows } = await testDb().query<{ id: string; rule: string }>("select id::text, rule from monitor_alerts");
+        expect(rows[0]!.rule).toBe("rig_silent");
+        expect(markedAlerts(trailer(issues.get(42)!.body), "issue", rows[0]!.rule)).toEqual([rows[0]!.id]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([42]);
+
+        await recover(rig);
+        githubAnswers = ["lost"];
+        await silentAgain(rig);
+        await nextEvaluation();
+        await retryDue();
+        await nextEvaluation();
+        const refires = issues.get(42)!.comments.filter((c) => c.body.startsWith("Fired again"));
+        expect(refires).toHaveLength(1);
+        expect(markedAlerts(trailer(refires[0]!.body), "refire", "rig_silent")).toHaveLength(1);
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("never repeats a recovery or re-fire comment whose answer was lost", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+
+        await nextEvaluation();
+        githubAnswers = ["lost"];
+        await recover(rig);
+        expect(issues.get(42)!.comments).toHaveLength(1);
+        await testDb().query(
+          "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueRecoveryAttemptedAt', now() - interval '90 seconds')",
+        );
+        await nextEvaluation();
+        expect(issues.get(42)!.comments).toHaveLength(1);
+        const { rows } = await testDb().query<{ done: boolean }>(
+          "select diagnosis ? 'issueRecoveryCommentedAt' as done from monitor_alerts",
+        );
+        expect(rows).toEqual([{ done: true }]);
+
+        githubAnswers = ["lost"];
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(issues.get(42)!.comments).toHaveLength(2);
+        expect(await issueNumbers()).toEqual([42, null]);
+        await retryDue();
+        await nextEvaluation();
+        expect(issues.get(42)!.comments).toHaveLength(2);
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("files its own issue when a stranger's issue carries the alert's exact marker", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = [500];
+        await nextEvaluation();
+        const { rows } = await testDb().query<{ id: string }>("select id::text from monitor_alerts");
+        issues.set(7, {
+          number: 7,
+          created_at: new Date().toISOString(),
+          state: "open",
+          body: `please fix\n\n${rigAlertMarker("issue", "rig_silent", [rows[0]!.id])}`,
+          user: { login: "someone-else" },
+          labels: [{ name: "rig-alert" }],
+          comments: [],
+        });
+
+        await retryDue();
+        await nextEvaluation();
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(await issueNumbers()).toEqual([43]);
+      });
+
+      it("records a re-fire comment that landed and leaves the issue closed since then alone", async () => {
+        const rig = await seatedSilentRig();
+        geminiAnswers = ["answer", "answer"];
+        await nextEvaluation();
+        await recover(rig);
+        githubAnswers = ["lost"];
+        await silentAgain(rig);
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, null]);
+
+        // The owner closes the issue before the retry.
+        issues.get(42)!.state = "closed";
+        await retryDue();
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+        expect(issues.get(42)!.state).toBe("closed");
+        expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(0);
+        expect(issues.get(42)!.comments.filter((c) => c.body.startsWith("Fired again"))).toHaveLength(1);
+      });
+
+      it("warns when the issue it finds by marker was filed without the label", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        dropLabel = true;
+        githubAnswers = ["lost"];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([null]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42]);
+        expect(issues.size).toBe(1);
+        const logged = consoleError.mock.calls.map((args: unknown[]) => args.join(" ")).join("\n");
+        expect(logged).toContain("issue #42 for alert");
+        expect(logged).toContain("without the rig-alert label");
+      });
+
+      it("files one issue when two rigs' alerts of one rule are filed by concurrent runs", async () => {
+        await seatedSilentRig(2, "Matt G");
+        await seatedSilentRig(7, "Ana R");
+        geminiAnswers = ["answer", "answer"];
+        // Both alerts' first filing is refused, so neither has an issue.
+        githubAnswers = [500];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([null, null]);
+
+        // The first run takes the older alert and stalls inside its create...
+        const { rows } = await testDb().query<{ id: string }>("select id::text from monitor_alerts order by id");
+        const [older, newer] = rows.map((r) => r.id);
+        const due = (id: string) =>
+          testDb().query(
+            "update monitor_alerts set diagnosis = diagnosis || jsonb_build_object('issueAttemptedAt', now() - interval '90 seconds') where id = $1",
+            [id],
+          );
+        await due(older!);
+        githubAnswers = ["hold"];
+        const first = runDiagnoses();
+        await held;
+        // ...while a second run takes the other rig's.
+        await due(newer!);
+        await runDiagnoses();
+        release();
+        await first;
+
+        expect(calls.filter((c) => c.url === GITHUB)).toHaveLength(1);
+        expect(await issueNumbers()).toEqual([42, null]);
+        await retryDue();
+        await runDiagnoses();
+        expect(issues.size).toBe(1);
+        const bodies = issues.get(42)!.comments.map((c) => c.body);
+        expect(bodies).toHaveLength(1);
+        expect(bodies[0]).toMatch(/^Fired again as alert \d+ \(Rig 7\)\./);
+        expect(await issueNumbers()).toEqual([42, 42]);
+      });
+
+      it("never announces as a re-fire the alert whose lost create another rig's alert adopted", async () => {
+        await seatedSilentRig(2, "Matt G");
+        geminiAnswers = ["answer", "answer"];
+        githubAnswers = ["lost"];
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+        expect(await issueNumbers()).toEqual([null]);
+
+        // Another rig's alert of the rule is filed before the first one's retry is due.
+        await seatedSilentRig(7, "Ana R");
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+
+        await retryDue();
+        await nextEvaluation();
+        expect(issues.size).toBe(1);
+        const refires = issues.get(42)!.comments.filter((c) => c.body.startsWith("Fired again"));
+        expect(refires.map((c) => c.body.split("\n")[0])).toEqual([expect.stringMatching(/^Fired again as alert \d+ \(Rig 7\)\.$/)]);
+      });
+
+      it("says nothing of recovery while another rig's alert of the rule is still to be filed", async () => {
+        const first = await seatedSilentRig(2, "Matt G");
+        geminiAnswers = ["answer"];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42]);
+
+        // The second rig's diagnosis times out, so its alert waits for a retry while the first recovers.
+        const second = await seatedSilentRig(7, "Ana R");
+        await recover(first);
+        expect(await issueNumbers()).toEqual([42, null]);
+        const recoveries = () =>
+          issues.get(42)!.comments.filter((c) => c.body.startsWith("Every rig on this issue has recovered"));
+        expect(recoveries()).toHaveLength(0);
+
+        geminiAnswers = ["answer"];
+        await age(90);
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+        await recover(second);
+        expect(recoveries()).toHaveLength(1);
+        expect(recoveries()[0]!.body.split("\n")[0]!.match(/\(Rig \d+\)/g)).toEqual(["(Rig 2)", "(Rig 7)"]);
+      });
+
+      it("holds the recovery for an alert whose filing waits, though its rig recovered first", async () => {
+        const first = await seatedSilentRig(2, "Matt G");
+        geminiAnswers = ["answer", "answer"];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42]);
+
+        // The second rig's alert is diagnosed, but GitHub refuses its re-fire comment.
+        const second = await seatedSilentRig(7, "Ana R");
+        githubAnswers = [500];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, null]);
+
+        // Every rig recovers before the refused filing is retried.
+        await heartbeat(first, 0);
+        await heartbeat(second, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+        expect((await alerts()).every((a) => a.resolved)).toBe(true);
+        const comments = () => issues.get(42)!.comments.map((c) => c.body);
+        const recoveries = () => comments().filter((b) => b.startsWith("Every rig on this issue has recovered"));
+        expect(recoveries()).toHaveLength(0);
+
+        await retryDue();
+        await nextEvaluation();
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+        expect(recoveries()).toHaveLength(1);
+        expect(recoveries()[0]!.split("\n")[0]!.match(/\(Rig \d+\)/g)).toEqual(["(Rig 2)", "(Rig 7)"]);
+        expect(comments().at(-1)).toBe(recoveries()[0]);
+        expect(comments().filter((b) => b.startsWith("Fired again"))).toHaveLength(1);
+      });
+
+      it("holds the recovery for an alert whose rig recovered while its diagnosis was in flight", async () => {
+        const first = await seatedSilentRig(2, "Matt G");
+        geminiAnswers = ["answer"];
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42]);
+
+        // The second rig's diagnosis call is still running...
+        const second = await seatedSilentRig(7, "Ana R");
+        geminiAnswers = ["hold"];
+        const diagnosing = nextEvaluation();
+        await modelHeld;
+
+        // ...when every rig recovers and another run looks for recoveries.
+        await heartbeat(first, 0);
+        await heartbeat(second, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+        expect((await alerts()).every((a) => a.resolved)).toBe(true);
+        const comments = () => issues.get(42)!.comments.map((c) => c.body);
+        const recoveries = () => comments().filter((b) => b.startsWith("Every rig on this issue has recovered"));
+        expect(recoveries()).toHaveLength(0);
+
+        releaseModel();
+        await diagnosing;
+        await nextEvaluation();
+        expect(await issueNumbers()).toEqual([42, 42]);
+        expect(recoveries()).toHaveLength(1);
+        expect(recoveries()[0]!.split("\n")[0]!.match(/\(Rig \d+\)/g)).toEqual(["(Rig 2)", "(Rig 7)"]);
+        expect(comments().at(-1)).toBe(recoveries()[0]);
+        expect(comments().filter((b) => b.startsWith("Fired again"))).toHaveLength(1);
+      });
+
+      it("files one issue for a rule firing on twenty rigs, one comment per pass, and one recovery once all recover", async () => {
+        const rigs: SeededRig[] = [];
+        for (let n = 1; n <= 20; n++) rigs.push(await seatedSilentRig(n, `Driver ${n}`));
+        geminiAnswers = Array.from({ length: 20 }, () => "answer" as const);
+
+        let passes = 0;
+        const filed = async () => (await issueNumbers()).filter((n) => n !== null).length;
+        while ((await filed()) < 20 && passes < 20) {
+          await nextEvaluation();
+          passes++;
+        }
+        expect(await issueNumbers()).toEqual(Array.from({ length: 20 }, () => 42));
+        expect(issues.size).toBe(1);
+        const issue = issues.get(42)!;
+        const refires = issue.comments.filter((c) => c.body.startsWith("Fired again"));
+        expect(refires.length).toBeLessThanOrEqual(passes - 1);
+        expect(refires.length).toBeLessThan(19);
+        // Every rig is named once, in the issue or the comment of the pass it joined in.
+        const named = [issue.body, ...refires.map((c) => c.body)].flatMap((b) => b.split("\n")[0]!.match(/\(Rig \d+\)/g) ?? []);
+        expect(named).toHaveLength(20);
+        expect(new Set(named).size).toBe(20);
+
+        // Nineteen recover: the issue says nothing while one rig is still down.
+        const recoveries = () => issue.comments.filter((c) => c.body.startsWith("Every rig on this issue has recovered"));
+        for (const rig of rigs.slice(0, 19)) await heartbeat(rig, 0);
+        await nextEvaluation();
+        await nextEvaluation();
+        expect(recoveries()).toHaveLength(0);
+
+        await recover(rigs[19]!);
+        expect(recoveries()).toHaveLength(1);
+        expect(recoveries()[0]!.body.split("\n")[0]!.match(/\(Rig \d+\)/g)).toHaveLength(20);
+        await nextEvaluation();
+        expect(recoveries()).toHaveLength(1);
+        expect(issues.size).toBe(1);
+        expect(calls.every((c) => !("state" in c.body))).toBe(true);
+      });
+
+      it("logs only the status when GitHub's error body echoes the token and the issue", async () => {
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+        githubAnswers = ["echo"];
+
+        await nextEvaluation();
+        const logged = consoleError.mock.calls.map((args: unknown[]) => args.join(" ")).join("\n");
+        expect(logged).toContain("HTTP 502");
+        expect(logged).not.toContain(TOKEN);
+        expect(logged).not.toContain("rig-alert]");
+        expect(logged).not.toContain("Oasis rig alert");
+      });
+
+      it("opens no issue when neither the rule nor the diagnosis says software", async () => {
+        await seatedSilentRig();
+        const text = geminiAnswer.candidates[0]!.content.parts[0]!.text.replace('"software"', '"operational"');
+        const operational = structuredClone(geminiAnswer);
+        operational.candidates[0]!.content.parts[0]!.text = text;
+        const gemini = globalThis.fetch;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string, init: RequestInit) =>
+            url.startsWith("https://generativelanguage.googleapis.com/") ? Response.json(operational) : gemini(url, init),
+          ),
+        );
+
+        await nextEvaluation();
+        expect(posts).toHaveLength(3);
+        expect(calls).toHaveLength(0);
+        expect(await issueNumbers()).toEqual([null]);
+      });
+
+      it("files nothing without a token, and Discord still gets the alert, diagnosis and handoff", async () => {
+        vi.stubEnv("GITHUB_RIG_ALERT_TOKEN", "");
+        await seatedSilentRig();
+        geminiAnswers = ["answer"];
+
+        await nextEvaluation();
+        await nextEvaluation();
+        expect(calls).toHaveLength(0);
+        expect(posts).toHaveLength(3);
+        expect(posts[2]!.content).toMatch(/^```text\nOasis rig alert #/);
+        expect(await issueNumbers()).toEqual([null]);
+      });
     });
 
     it("makes no call without a key, and posts the alert as before", async () => {

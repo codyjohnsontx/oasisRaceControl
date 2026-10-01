@@ -243,9 +243,10 @@ vouch for (`diagnosis/context.ts`): the heartbeats' numbers, true/false
 flags and enum values; the agent version only when it has a version's
 shape; agent notices only as codes of the notices the agent is known to
 raise, counted, with a fixed summary; and the alert's own words - the rule,
-the rig's name and the headline and numbers the rules wrote, with the seated
+the rig's number ("Rig 7", never its display name; see the rig-alert issue
+below) and the headline and numbers the rules wrote, with the seated
 driver's name replaced by `driver-<4 hex>`. The alert message above still
-names the driver, as it always has: that is the staff channel.
+names the rig and the driver, as it always has: that is the staff channel.
 
 **The handoff keeps its shape.** The model read rig data, so its answer is
 treated as untrusted too: the prompt marks the incident as data, never
@@ -264,6 +265,72 @@ the length clip never cuts, and labels the model's three lines AI.
 
 Production only, like the webhook. Google may use free-tier prompts to
 improve its products, which is why the allowlist above is not optional.
+
+## The rig-alert GitHub issue
+
+When software may be to blame, the handoff also becomes a GitHub issue on
+this repository, labelled `rig-alert`, for the coding harness to pick up and
+turn into a pull request; the owner still approves every merge. The Discord
+handoff stays either way, as the fallback when the harness is offline.
+
+- **Which alerts:** an urgent alert whose rule names software as a plausible
+  cause (3a, 3b, 10, 15, 16, 17 and 18; `software` in `rules.ts`, though 16,
+  17 and 18 are warnings today and so never file), or any urgent alert the
+  diagnosis classes as `software`. An unplugged rig or a closed iRacing files
+  nothing. The issue's body is the handoff, so it also needs what the handoff
+  needs: `DISCORD_WEBHOOK_URL` and the diagnosis key (`GEMINI_API_KEY`, or
+  `ANTHROPIC_API_KEY` with `DIAGNOSIS_PROVIDER=anthropic`). Without either, no
+  issue is filed, even on a software rule.
+- **The rig is named by its number** ("Rig 7", `rigs.rig_number`) in the
+  issue and in the handoff, never by its display name: that is free text staff
+  typed, and a plain sentence or a person's name there would otherwise be
+  published. Only the Discord alert itself shows the display name.
+- **One issue per fault, not per rig.** Every alert of the same rule within
+  24 hours shares one issue, whichever rig it is on: a software fault shows on
+  every rig at once, and one bug must start one fix, not twenty.
+- **The issue:** titled `[rig-alert] <rule> - <rigs>`, it names each alert it
+  was filed for and its rig, and its body is the first alert's handoff
+  exactly as Discord got it, plus the heartbeat facts it was written from (the
+  same allowlisted fields, as JSON, and only heartbeats received by the time
+  the handoff was written, so a retry an hour later adds none from after) in
+  a `<details>` block. Both sit in code blocks, so no rig string reaches the
+  issue and nothing in it can @mention anyone or link anywhere; the rule and
+  rig names outside them are made inert.
+  The number is stored in `monitor_alerts.github_issue_number` of every alert
+  it covers. Discord still gets each rig's own alert, diagnosis and handoff.
+- **Further alerts** of that rule within 24 hours, on the same rig or another,
+  join the issue with one comment per filing pass naming every rig that
+  joined (and the first one's handoff) instead of opening another, and reopen
+  it first if it was closed - a fix that did not hold goes back to the harness
+  on the same thread.
+- **A recovery** comments on the issue once every alert on it has recovered
+  and no rig's alert of that rule is still waiting to join it (including one
+  whose rig recovered before its filing went through, or while its diagnosis
+  was still being written), not once per rig, and leaves it open: closing it
+  would cancel a fix in progress. Close it yourself when the fix has merged.
+- A call GitHub refuses is retried like a Discord post, and only its status
+  code is logged - never GitHub's answer, which could quote the request.
+- **No duplicates.** Filing is serialized per rule, so two alerts of one
+  rule filed at once, on one rig or two, make one issue and one comment.
+  Every issue and comment carries a hidden marker as its last line naming the
+  rule and every alert it was written for; a write whose answer was lost (a
+  timeout, a function that died) is found by that marker on the retry and
+  recorded, not written again. A marker counts only on an issue or comment
+  written by the token's own GitHub account (read once from `GET /user`), so
+  nobody else can type one into this public repository to stop an issue
+  being filed. The lookup pages through the issue and comment lists, not
+  search, up to ten pages of 100; past that it retries later rather than
+  guess. A re-fire comment that already landed is recorded as it is, without
+  reopening an issue you closed since.
+
+| Variable | What it is |
+|---|---|
+| `GITHUB_RIG_ALERT_TOKEN` | a fine-grained personal access token: github.com > Settings > Developer settings > Personal access tokens > Fine-grained tokens > Generate new token. Resource owner: you. Repository access: Only select repositories > `oasisRaceControl`. Permissions: Repository > Issues > Read and write, nothing else. Expiration: 1 year, with the renewal date in your calendar. Without it no issue is filed and the Discord handoff is the whole story. It files nothing on its own either: the webhook and the diagnosis key must be set too |
+
+Production only, like the webhook. Create the label once, before the first
+issue: `gh label create rig-alert --color B60205 --description "Opened by the
+rig monitor; a fix worker picks it up"`. The monitor logs an error if GitHub
+files an issue without it.
 
 ## The outside clock
 

@@ -25,25 +25,32 @@ import { holdingSince, lastSent, rigState, type Heartbeat } from "./rig-state";
 
 export type Severity = "urgent" | "warning";
 
+/**
+ * `software`: a code defect is a plausible cause (the plan's "handoff" column,
+ * decision D8), so an urgent alert on this rule opens a rig-alert GitHub issue
+ * for the coding harness (github.ts). A rule without it opens one only when the
+ * AI diagnosis classifies the cause as software - an unplugged rig must not
+ * start a fix worker.
+ */
 export const RULES = {
-  rig_silent: { number: "1", title: "Rig silent" },
-  venue_silent: { number: "1", title: "Every rig went quiet" },
-  sim_disconnected: { number: "2", title: "iRacing not connected while a driver is signed in" },
-  laps_stuck: { number: "3a", title: "Laps queued but not reaching the site" },
-  laps_refused: { number: "3b", title: "Laps refused by the site" },
-  unattributed_laps: { number: "5a", title: "Laps with nobody signed in" },
-  long_stint: { number: "5b", title: "Unusually long stint" },
-  sign_in_failures: { number: "6", title: "Repeated sign-in failures" },
-  wrong_combo: { number: "7", title: "Wrong car or track" },
-  agent_restarting: { number: "10", title: "Rig agent restarting repeatedly" },
-  agent_outdated: { number: "11", title: "Outdated rig agent" },
-  clock_skew: { number: "12", title: "Rig clock is off" },
-  driver_moved: { number: "13", title: "Driver moved rigs mid-session" },
-  fast_lap: { number: "14", title: "Implausibly fast lap" },
-  telemetry_faulted: { number: "15", title: "Lap reading stopped" },
-  checkout_not_saved: { number: "16", title: "Sign-out not saved" },
-  missing_variables: { number: "17", title: "iRacing build missing variables" },
-  footprint_high: { number: "18", title: "Rig agent footprint high" },
+  rig_silent: { number: "1", title: "Rig silent", software: false },
+  venue_silent: { number: "1", title: "Every rig went quiet", software: false },
+  sim_disconnected: { number: "2", title: "iRacing not connected while a driver is signed in", software: false },
+  laps_stuck: { number: "3a", title: "Laps queued but not reaching the site", software: true },
+  laps_refused: { number: "3b", title: "Laps refused by the site", software: true },
+  unattributed_laps: { number: "5a", title: "Laps with nobody signed in", software: false },
+  long_stint: { number: "5b", title: "Unusually long stint", software: false },
+  sign_in_failures: { number: "6", title: "Repeated sign-in failures", software: false },
+  wrong_combo: { number: "7", title: "Wrong car or track", software: false },
+  agent_restarting: { number: "10", title: "Rig agent restarting repeatedly", software: true },
+  agent_outdated: { number: "11", title: "Outdated rig agent", software: false },
+  clock_skew: { number: "12", title: "Rig clock is off", software: false },
+  driver_moved: { number: "13", title: "Driver moved rigs mid-session", software: false },
+  fast_lap: { number: "14", title: "Implausibly fast lap", software: false },
+  telemetry_faulted: { number: "15", title: "Lap reading stopped", software: true },
+  checkout_not_saved: { number: "16", title: "Sign-out not saved", software: true },
+  missing_variables: { number: "17", title: "iRacing build missing variables", software: true },
+  footprint_high: { number: "18", title: "Rig agent footprint high", software: true },
 } as const;
 
 export type RuleKey = keyof typeof RULES;
@@ -221,8 +228,14 @@ export function inEventMode(snapshot: MonitorSnapshot): boolean {
 export type AlertDetail = {
   /** One line: the whole alert, as a phone notification shows it. */
   headline: string;
-  /** Which rig, or "Venue". */
+  /** Which rig, by its staff-set display name, or "Venue". */
   where: string;
+  /**
+   * The rig's server-owned number (rigs.rig_number), which is how anything
+   * public names the rig: the display name is free text staff typed, and
+   * only the private Discord alert shows it (diagnosis/context.ts).
+   */
+  rigNumber?: number;
   fields: Array<{ name: string; value: string }>;
   /**
    * The seated driver's name when the text above uses it, so the AI
@@ -1039,6 +1052,7 @@ function finding(
     detail: {
       headline,
       where: rig.name,
+      rigNumber: rig.number,
       fields,
       driver: rig.seated?.driverStatus === "active" ? rig.seated.driverName : null,
     },
