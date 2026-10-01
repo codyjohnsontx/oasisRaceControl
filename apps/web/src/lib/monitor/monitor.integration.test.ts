@@ -17,12 +17,17 @@ import {
   claimDiagnoses,
   claimEvaluation,
   LAP_BESTS_SQL,
+  lastLapAtByRig,
+  loadSnapshot,
   markAnnounced,
+  monitorClock,
   nextVenueMidnightSql,
   RECENT_LAPS_SQL,
+  recentAlerts,
   type OpenAlert,
 } from "./store";
-import type { Finding, Severity } from "./rules";
+import { rigTiles, shownFindings } from "./rig-health";
+import { evaluateRules, type Finding, type Severity } from "./rules";
 import {
   closeTestDb,
   describeDb,
@@ -1937,6 +1942,82 @@ describeDb("rig monitor against real Postgres", () => {
       // The three recent laps found, then this combo's twenty older ones.
       expect(rowsRead(await explain(LAP_BESTS_SQL), "laps")).toBeLessThanOrEqual(30);
     });
+  });
+
+  it("shows the Rig health page the channel's answer: a red tile and the open alert", async () => {
+    const rig = await seedRig(2);
+    const driver = await seedDriver("Matt G");
+    await openAssignment(rig.id, driver.id);
+    for (const ago of [600, 540, 480, 420, 360, 300, 240, 180]) await heartbeat(rig, ago);
+    await nextEvaluation();
+    await testDb().query("update monitor_alerts set github_issue_number = 57");
+
+    // What the page reads, without claiming an evaluation.
+    const clock = await monitorClock(db());
+    expect(clock.lastEvaluatedAt).not.toBeNull();
+    expect(clock.now - clock.lastEvaluatedAt!).toBeLessThan(60_000);
+    const tileNow = async () => {
+      const snapshot = await loadSnapshot(db(), (await monitorClock(db())).now);
+      const shown = shownFindings(evaluateRules(snapshot), snapshot.openAlerts);
+      return rigTiles(snapshot, shown, await lastLapAtByRig(db()))[0]!;
+    };
+    const silent = "Rig 02 has been silent for 3 min with Matt G signed in";
+    expect(await tileNow()).toMatchObject({
+      label: "R02",
+      colour: "red",
+      status: "silent 3 min",
+      problems: [{ severity: "urgent", headline: silent }],
+    });
+
+    expect(await recentAlerts(db())).toEqual([
+      {
+        id: expect.any(String),
+        rule: "rig_silent",
+        severity: "urgent",
+        where: "Rig 02",
+        headline: "Rig 02 has been silent for 3 min with Matt G signed in",
+        openedAt: expect.any(Number),
+        resolvedAt: null,
+        muted: false,
+        githubIssueNumber: 57,
+      },
+    ]);
+
+    // Heard again. The rules find nothing now, but the alert stays open until
+    // a second evaluation without it, and the tile says so until then.
+    await heartbeat(rig, 0);
+    await nextEvaluation();
+    expect(await alerts()).toMatchObject([{ rule: "rig_silent", resolved: false }]);
+    expect(await tileNow()).toMatchObject({
+      colour: "red",
+      status: "online",
+      problems: [{ severity: "urgent", headline: silent }],
+    });
+
+    await nextEvaluation();
+    expect(await alerts()).toMatchObject([{ rule: "rig_silent", resolved: true }]);
+    expect(await tileNow()).toMatchObject({ colour: "green", problems: [] });
+  });
+
+  it("lists every open alert on the Rig health page, however many newer ones recovered", async () => {
+    await testDb().query(
+      `insert into monitor_alerts (rule, subject, severity, detail, opened_at, resolved_at)
+       values ('agent_outdated', 'rig:old', 'warning', '{"headline": "still open"}', now() - interval '3 days', null)`,
+    );
+    await testDb().query(
+      `insert into monitor_alerts (rule, subject, severity, detail, opened_at, resolved_at)
+       select 'fast_lap', 'rig:new|' || n, 'warning', '{"headline": "recovered"}',
+              now() - n * interval '1 minute', now() - n * interval '1 minute' + interval '30 seconds'
+       from generate_series(1, 3) as n`,
+    );
+
+    const listed = await recentAlerts(db(), 2);
+    expect(listed.map((a) => [a.headline, a.resolvedAt === null])).toEqual([
+      ["still open", true],
+      ["recovered", false],
+      ["recovered", false],
+    ]);
+    expect(listed[1]!.openedAt).toBeGreaterThan(listed[2]!.openedAt);
   });
 
   it("passes the read-only verify the owner runs after hand-applying 0006", async () => {

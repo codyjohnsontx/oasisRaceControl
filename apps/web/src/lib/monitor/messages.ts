@@ -104,6 +104,11 @@ export function venueTime(at: number): string {
   return venueClock.format(at);
 }
 
+/** "Oct 4", the venue's calendar day. */
+export function venueDate(at: number): string {
+  return venueDay.format(at);
+}
+
 /** One grey line, no embed and no mention: event mode flips and the monitor's own notes. */
 export function noteMessage(text: string): DiscordMessage {
   return { content: clip(text, DISCORD_LIMITS.content), allowed_mentions: { parse: [] } };

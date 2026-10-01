@@ -123,9 +123,12 @@ export function StaffDashboard({
     // Below xl the floating Screens button reaches over the header's right end
     // (the staff name), so the page starts under it - as /leaderboards does.
     <main className="flex-1 flex flex-col gap-8 p-6 pt-20 xl:pt-6 max-w-5xl w-full mx-auto">
-      <header className="flex items-center justify-between">
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <h1 className="text-2xl font-black">Race Control — Staff</h1>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 whitespace-nowrap">
+          <Link href="/staff/rigs" className="text-muted text-sm underline underline-offset-4">
+            Rig health
+          </Link>
           <Link
             href="/leaderboards"
             className="text-muted text-sm underline underline-offset-4"

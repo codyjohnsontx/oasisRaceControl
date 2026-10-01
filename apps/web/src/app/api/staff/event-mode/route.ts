@@ -9,8 +9,8 @@ import { getStaffUser } from "@/lib/staff";
  * Staff's hand on event mode (docs/monitoring.md). `on` and `off` override
  * whatever the TV boards say until venue midnight - no longer, so a forgotten
  * "Start event" cannot keep the 20-minute updates posting all week; `auto`
- * hands the decision back to the boards. The staff Rig health page, not yet
- * built, will call it; the answer says when the override lapses.
+ * hands the decision back to the boards. The staff Rig health page
+ * (/staff/rigs) calls it; the answer says when the override lapses.
  */
 const body = z.object({
   mode: z.enum(["on", "off", "auto"]),

@@ -1,5 +1,5 @@
 import type { QueryResult, QueryResultRow } from "pg";
-import { query, queryOne } from "@/lib/db";
+import { db as pool, query, queryOne } from "@/lib/db";
 import type { HeartbeatRow as DiagnosisHeartbeat } from "./diagnosis/context";
 import {
   BOARD_DARK_AFTER_MS,
@@ -210,11 +210,13 @@ export async function claimEvaluation(
 }
 
 export type OpenAlert = { id: string; rule: string; subject: string };
+/** An open alert as loadSnapshot reads it: also what it said, for the staff Rig health page. */
+export type OpenAlertDetail = OpenAlert & { severity: Severity; detail: AlertDetail };
 
 export async function loadSnapshot(
   db: Db,
   now: number,
-): Promise<MonitorSnapshot & { openAlerts: OpenAlert[] }> {
+): Promise<MonitorSnapshot & { openAlerts: OpenAlertDetail[] }> {
   // One client runs one statement at a time; these queue on it in order.
   const [rigRows, heartbeatRows, heardRows, openAlerts, [venue], lapRows, bestRows, moveRows, boardRows] =
     await Promise.all([
@@ -281,9 +283,9 @@ export async function loadSnapshot(
        order by rig_id, heard_from`,
       [`${HEARD_HISTORY_MS / 1000} seconds`, `${SILENT_AFTER_MS / 1000} seconds`],
     ),
-    rows<OpenAlert>(
+    rows<OpenAlertDetail>(
       db,
-      "select id::text, rule, subject from monitor_alerts where resolved_at is null",
+      "select id::text, rule, subject, severity, detail from monitor_alerts where resolved_at is null",
     ),
     rows<VenueRow>(
       db,
@@ -1033,10 +1035,7 @@ export async function loadRoutineFacts(): Promise<RoutineFacts> {
     queryOne<{ laps: number }>(
       "select count(*)::int as laps from laps where completed_at > now() - interval '20 minutes'",
     ),
-    query<{ rig_id: string; last_lap_at: Date }>(
-      `select rig_id, max(completed_at) as last_lap_at from laps
-       where completed_at >= ${VENUE_DAY_START} group by rig_id`,
-    ),
+    lastLapAtByRig(),
     query<{ severity: Severity; headline: string }>(
       `select severity, detail->>'headline' as headline from monitor_alerts
        where resolved_at is null order by opened_at, id`,
@@ -1046,9 +1045,93 @@ export async function loadRoutineFacts(): Promise<RoutineFacts> {
     driversToday: top[0]?.drivers ?? 0,
     top: top.map((row) => ({ displayName: row.display_name, lapTimeMs: row.lap_time_ms })),
     lapsLast20Min: recent?.laps ?? 0,
-    lastLapAtByRig: new Map(lastLaps.map((row) => [row.rig_id, row.last_lap_at.getTime()])),
+    lastLapAtByRig: lastLaps,
     activeAlerts: open,
   };
+}
+
+/** When each rig's latest lap today was completed, by rig id. */
+export async function lastLapAtByRig(db: Db = pool()): Promise<Map<string, number>> {
+  const laps = await rows<{ rig_id: string; last_lap_at: Date }>(
+    db,
+    `select rig_id, max(completed_at) as last_lap_at from laps
+     where completed_at >= ${VENUE_DAY_START} group by rig_id`,
+  );
+  return new Map(laps.map((row) => [row.rig_id, row.last_lap_at.getTime()]));
+}
+
+/**
+ * The database's clock, which every rule judges by, and when the monitor last
+ * evaluated: what the staff Rig health page reads before loadSnapshot, since
+ * it evaluates without claiming an evaluation (it posts nothing).
+ */
+export async function monitorClock(db: Db): Promise<{ now: number; lastEvaluatedAt: number | null }> {
+  const [row] = await rows<{ now_ms: number; last_evaluated_ms: number | null }>(
+    db,
+    `select (extract(epoch from now()) * 1000)::float8 as now_ms,
+            (select (extract(epoch from last_evaluated_at) * 1000)::float8
+             from monitor_state where id = 1) as last_evaluated_ms`,
+  );
+  return { now: row!.now_ms, lastEvaluatedAt: row!.last_evaluated_ms };
+}
+
+export type RecentAlert = {
+  id: string;
+  rule: string;
+  severity: Severity;
+  where: string;
+  headline: string;
+  openedAt: number;
+  resolvedAt: number | null;
+  /** Inside a flapping mute: kept here, not posted (FLAPPING_REFIRES). */
+  muted: boolean;
+  githubIssueNumber: number | null;
+};
+
+/**
+ * Every open alert however old, then the newest `limit` of the rest: open
+ * first, newest first within each. The staff Rig health page reads it every
+ * 15 s and monitor_alerts is never pruned, so neither half may scan the whole
+ * history: open alerts are few, and the newest are read backwards along the
+ * primary key (identity ids follow opening order), so only the final sort of
+ * those few rows remains.
+ */
+export async function recentAlerts(db: Db, limit = 50): Promise<RecentAlert[]> {
+  const alerts = await rows<{
+    id: string;
+    rule: string;
+    severity: Severity;
+    where: string;
+    headline: string;
+    opened_at: Date;
+    resolved_at: Date | null;
+    muted: boolean;
+    github_issue_number: number | null;
+  }>(
+    db,
+    `select id::text, rule, severity, detail->>'where' as where, detail->>'headline' as headline,
+            opened_at, resolved_at, ${MUTED} as muted, github_issue_number
+     from monitor_alerts
+     where id in (
+       select id from monitor_alerts where resolved_at is null
+       union
+       (select id from monitor_alerts order by id desc limit $1)
+     )
+     -- The table's id, not the text column above: as text, "9" sorts after "10".
+     order by resolved_at is null desc, opened_at desc, monitor_alerts.id desc`,
+    [limit],
+  );
+  return alerts.map((row) => ({
+    id: row.id,
+    rule: row.rule,
+    severity: row.severity,
+    where: row.where,
+    headline: row.headline,
+    openedAt: row.opened_at.getTime(),
+    resolvedAt: row.resolved_at?.getTime() ?? null,
+    muted: row.muted,
+    githubIssueNumber: row.github_issue_number,
+  }));
 }
 
 /**

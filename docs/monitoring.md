@@ -9,8 +9,46 @@ too, so the monitor also sees the screen the room is watching, and an open
 event board puts it in **event mode** (below).
 
 The code is `apps/web/src/lib/monitor/`. The rules are one pure module,
-`rules.ts`, which the staff Rig health page will call on the same snapshot the
+`rules.ts`, which the staff Rig health page calls on the same snapshot the
 alerts use, so a tile and the channel can never disagree.
+
+## The Rig health page
+
+`/staff/rigs` (staff sign-in; linked from the staff dashboard's header)
+refreshes every 15 s. It reads the monitor's snapshot in one read-only
+transaction and runs `evaluateRules` on it without claiming an evaluation, so
+opening it posts nothing.
+
+- **A tile per rig** (`lib/monitor/rig-health.ts`): red when a rule finds
+  something urgent on the rig, yellow for a warning, and the finding's
+  headline on the tile. An alert that is still open keeps its colour and its
+  stored headline after the rules stop finding it, until the evaluation that
+  resolves it, so a tile never goes green while the channel and the Alerts
+  list still have the alert open (`shownFindings`). While the rules still find
+  it, the tile shows their current wording at the worse of the two severities,
+  so a seated rig's urgent silence stays red after the driver signs out. With neither it is green while the rig is running,
+  grey when it is not (never seen, closed, or off for the day). Then who is
+  seated and for how long, iRacing's session (or how long since the rig was
+  last heard, once it is not running), the last lap today, the upload
+  queue and parked laps, the agent build, its CPU and memory, clock skew and
+  the last heartbeat. An agent older than `rig-agent/0.4-monitor` sends none of that
+  and is badged **old agent**, its iRacing, queue, CPU and memory and clock
+  skew lines reading "agent too old to report" rather than shown as blanks;
+  any build other than `CURRENT_AGENT_VERSION` is badged **outdated** (rule 11). A finding
+  about something finer than the rig - rule 11's build, rule 14's lap - is
+  on its rig's tile (`flapScope`).
+- **Venue** problems (no featured combo, a dark board) above the tiles.
+- **Event mode**: on or off and why, with Start event / Stop event / Auto
+  (the override below) and today's TV boards.
+- **Run checks now** runs one evaluation, throttled with every other one.
+  **Send test message to Discord** posts one line naming who pressed it and
+  says what happened: sent, no `DISCORD_WEBHOOK_URL` on this deployment, or
+  Discord's refusal and its reason.
+- **Alerts**: every open alert first, however old, then the rest of the
+  newest 50 by id, open or recovered (`recentAlerts`: the open-alert index and a
+  backward primary-key scan, so it never sorts the whole history), marked when a flapping mute
+  is keeping them out of the channel, with a link to the GitHub issue when one
+  was filed.
 
 ## When it runs
 
@@ -187,7 +225,7 @@ message, across at most three messages, each marked "part 1 of 3" and so on (a
 summary that fits in one message carries no mark). If laps remain after three
 messages, the last one ends with "and N more implausible laps on Rig X this
 hour": a rig flagging that many laps has a broken detector, and the count is
-what staff act on. The full list belongs on the planned Rig health page.
+what staff act on. Each lap is still its own alert on the Rig health page.
 
 The summary posts once per mute. A part Discord refuses is retried like any
 other post, starting from that part, so a part Discord already took is not
@@ -410,7 +448,7 @@ by `eventMode()` in `event-mode.ts`, pure, from the same snapshot as the rules:
   same rule rig silence follows). On an ordinary day the wall is not judged.
 - **Staff can force it** on or off with `POST /api/staff/event-mode`
   (`{"mode":"on"|"off"|"auto","reason":"..."}`, staff session, same-origin JSON;
-  no page has buttons for it yet - the Rig health page will). `on` and `off`
+  the Rig health page's Start event / Stop event / Auto buttons). `on` and `off`
   last until venue midnight, never longer; `auto` hands it back to the
   boards. Every change writes an audit row. Use `off` when a board was left
   open by mistake: it also silences rule 8a for the rest of the day.
