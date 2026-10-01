@@ -80,6 +80,7 @@ The repo is a monorepo; the app lives in `apps/web`.
    | `DISCORD_ALERT_USER_ID` | the owner's Discord user id | optional: without it urgent alerts still post, with no @mention |
    | `CRON_SECRET` | long random string | the bearer token `GET /api/monitor/tick` requires. Optional: without it the tick refuses every call, while rig heartbeats still run evaluations |
    | `GEMINI_API_KEY` (and optionally `DIAGNOSIS_PROVIDER`, `DIAGNOSIS_MODEL`, `ANTHROPIC_API_KEY`) | see [monitoring.md](./monitoring.md#ai-diagnosis-and-the-copy-paste-handoff) | the urgent alerts' AI diagnosis and handoff. Optional: without a key, alerts post without them. Production only |
+   | `GITHUB_RIG_ALERT_TOKEN` | see [monitoring.md](./monitoring.md#the-rig-alert-github-issue) | files urgent software alerts as `rig-alert` issues. Optional: without it, Discord only. Production only |
 
    Both are read lazily on the request paths that use them — a missing
    `DATABASE_URL` throws the first time a route touches the database, and a

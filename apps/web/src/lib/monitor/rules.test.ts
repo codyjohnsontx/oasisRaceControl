@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { BoardSnapshot } from "./event-mode";
 import type { Heartbeat } from "./rig-state";
+import { CURRENT_AGENT_VERSION } from "./agent-version";
 import {
   evaluateRules,
   featuredComboSql,
   monitorGap,
+  inEventMode,
+  outdatedAgentSubject,
+  RECOVERS_SILENTLY,
   rigSubject,
   VENUE_SUBJECT,
+  type FeaturedCombo,
   type Finding,
+  type LapSnapshot,
   type MonitorSnapshot,
   type RigSnapshot,
   type RuleKey,
@@ -38,7 +44,7 @@ function hb(ago: number, overrides: Partial<Heartbeat> = {}): Heartbeat {
     clockSkewMs: 0,
     processStartedAt: STARTED,
     sequence: Math.round((receivedAt - STARTED) / MIN),
-    agentVersion: "rig-agent/0.4-monitor",
+    agentVersion: CURRENT_AGENT_VERSION,
     telemetryMode: "iracing",
     simConnected: true,
     telemetryFaulted: false,
@@ -47,6 +53,9 @@ function hb(ago: number, overrides: Partial<Heartbeat> = {}): Heartbeat {
     oldestPendingAgeS: null,
     rejectedLaps: 0,
     checkout: "none",
+    signInFailures: 0,
+    signInFailureKinds: [],
+    signInFailureSeqs: null,
     missingVariables: [],
     agentCpuPercent: 0.2,
     agentMemoryMb: 40,
@@ -95,25 +104,39 @@ const SEATED = { driverName: "Matt G", driverStatus: "active", startedAt: NOW - 
 
 /** 2026-10-04 began at 05:00Z in the venue's zone (CDT). */
 const VENUE_DAY_START = Date.parse("2026-10-04T05:00:00Z");
-const COMBO = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" };
+
+/**
+ * A snapshot with nothing but rigs: today's featured combo set (so rule 4
+ * stays out of the way unless a test clears it), no laps, no moves, no boards.
+ */
+function snapshotOf(
+  rigs: RigSnapshot[],
+  openAlerts: Array<{ rule: RuleKey; subject: string }> = [],
+  rest: Partial<MonitorSnapshot> = {},
+): MonitorSnapshot {
+  return {
+    now: NOW,
+    rigs,
+    featuredCombo: COMBO,
+    longStintMinutes: 120,
+    laps: [],
+    lapBests: [],
+    moves: [],
+    venueDayStart: VENUE_DAY_START,
+    override: null,
+    eventModeSince: null,
+    boards: [],
+    openAlerts,
+    ...rest,
+  };
+}
 
 function evaluate(
   rigs: RigSnapshot[],
   openAlerts: Array<{ rule: RuleKey; subject: string }> = [],
-  venue: Partial<Omit<MonitorSnapshot, "rigs" | "openAlerts">> = {},
+  rest: Partial<MonitorSnapshot> = {},
 ): Finding[] {
-  const snapshot: MonitorSnapshot = {
-    now: NOW,
-    venueDayStart: VENUE_DAY_START,
-    featuredCombo: COMBO,
-    override: null,
-    eventModeSince: null,
-    boards: [],
-    ...venue,
-    rigs,
-    openAlerts,
-  };
-  return evaluateRules(snapshot);
+  return evaluateRules(snapshotOf(rigs, openAlerts, rest));
 }
 
 function rulesOf(findings: Finding[]): string[] {
@@ -765,6 +788,526 @@ describe("rule 18: rig agent footprint", () => {
   it("clears when the latest heartbeat is back under both", () => {
     const heartbeats = minutely(14 * MIN, 0, (ago) => ({ agentCpuPercent: ago > 0 ? 4 : 0.3 }));
     expect(evaluate([rig(1, { heartbeats })])).toEqual([]);
+  });
+});
+
+const COMBO: FeaturedCombo = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" };
+const DRIVER = { id: "driver-matt", name: "Matt G", status: "active" };
+
+/** A lap stored `ago` before now on `rig`, valid and owned by Matt G unless told otherwise. */
+function lap(rigNumber: number, ago: number, overrides: Partial<LapSnapshot> = {}): LapSnapshot {
+  return {
+    id: `lap-${++nextId}`,
+    rigId: `rig-${rigNumber}`,
+    receivedAt: NOW - ago,
+    driver: DRIVER,
+    combo: COMBO,
+    lapTimeMs: 137_000,
+    valid: true,
+    invalidReason: null,
+    unattributedCause: null,
+    ...overrides,
+  };
+}
+
+/** A lap the agent said nobody was checked in for. */
+const nobodyLap = (rigNumber: number, ago: number) =>
+  lap(rigNumber, ago, {
+    driver: null,
+    valid: false,
+    invalidReason: "UNATTRIBUTED",
+    unattributedCause: "nobody_checked_in",
+  });
+
+describe("event mode", () => {
+  const eventBoard = {
+    id: "board-1",
+    mode: "event" as const,
+    host: null,
+    firstSeenAt: NOW - 60 * MIN,
+    lastSeenAt: NOW - 20 * S,
+    visible: true,
+    feedOk: true,
+    feedFailures: 0,
+    closedAt: null,
+  };
+
+  it("is eventMode(): off with no staff-linked event board, on while one is live", () => {
+    expect(inEventMode(snapshotOf([rig(1)]))).toBe(false);
+    expect(inEventMode(snapshotOf([rig(1)], [], { boards: [eventBoard] }))).toBe(true);
+  });
+
+  it("raises rule 5a to urgent while it is on", () => {
+    const laps = [nobodyLap(1, 6 * MIN), nobodyLap(1, 2 * MIN)];
+    const combo = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" };
+    expect(rulesOf(evaluate([rig(1)], [], { laps, boards: [eventBoard], featuredCombo: combo }))).toEqual([
+      "unattributed_laps rig:rig-1 urgent",
+    ]);
+  });
+});
+
+describe("rule 5a: laps with nobody signed in", () => {
+  it("warns on two such laps inside ten minutes", () => {
+    const findings = evaluate([rig(1)], [], { laps: [nobodyLap(1, 6 * MIN), nobodyLap(1, 2 * MIN)] });
+    expect(rulesOf(findings)).toEqual(["unattributed_laps rig:rig-1 warning"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Rig 01: 2 laps in the last 10 min landed with nobody signed in - they will not rank; laps rank again once someone signs in on the rig",
+    );
+    expect(findings[0]!.detail.fields).toContainEqual({ name: "Laps with nobody signed in", value: "2" });
+  });
+
+  it("does not fire on one, on two far apart, or on other kinds of unattributed lap", () => {
+    expect(evaluate([rig(1)], [], { laps: [nobodyLap(1, 2 * MIN)] })).toEqual([]);
+    expect(evaluate([rig(1)], [], { laps: [nobodyLap(1, 12 * MIN), nobodyLap(1, 2 * MIN)] })).toEqual([]);
+    const skewed = (ago: number) => ({ ...nobodyLap(1, ago), unattributedCause: "outside_assignment_window" });
+    expect(evaluate([rig(1)], [], { laps: [skewed(4 * MIN), skewed(2 * MIN)] })).toEqual([]);
+  });
+
+  it("counts each rig's laps on their own", () => {
+    expect(evaluate([rig(1), rig(2)], [], { laps: [nobodyLap(1, 4 * MIN), nobodyLap(2, 2 * MIN)] })).toEqual([]);
+  });
+
+  it("holds an open alert for fifteen minutes after the last one", () => {
+    const open = [{ rule: "unattributed_laps" as const, subject: rigSubject("rig-1") }];
+    const laps = [nobodyLap(1, 14 * MIN)];
+    expect(rulesOf(evaluate([rig(1)], open, { laps }))).toEqual(["unattributed_laps rig:rig-1 warning"]);
+    expect(evaluate([rig(1)], [], { laps })).toEqual([]);
+  });
+
+  it("clears as soon as an attributed lap lands after them", () => {
+    const open = [{ rule: "unattributed_laps" as const, subject: rigSubject("rig-1") }];
+    const laps = [nobodyLap(1, 6 * MIN), nobodyLap(1, 4 * MIN), lap(1, MIN)];
+    expect(evaluate([rig(1)], open, { laps })).toEqual([]);
+  });
+
+  it("judges laps from an agent too old to heartbeat anything but its version", () => {
+    const v1 = minutely(14 * MIN, 0, () => ({ telemetryMode: null, simConnected: null, agentVersion: CURRENT_AGENT_VERSION }));
+    const findings = evaluate([rig(1, { heartbeats: v1 })], [], { laps: [nobodyLap(1, 3 * MIN), nobodyLap(1, MIN)] });
+    expect(rulesOf(findings)).toEqual(["unattributed_laps rig:rig-1 warning"]);
+  });
+});
+
+describe("rule 5b: unusually long stint", () => {
+  const seatedFor = (d: number) => ({ ...SEATED, startedAt: NOW - d });
+
+  it("warns once a driver has been seated past the threshold", () => {
+    const findings = evaluate([rig(1, { seated: seatedFor(2 * 60 * MIN + 5 * MIN) })]);
+    expect(rulesOf(findings)).toEqual(["long_stint rig:rig-1 warning"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Rig 01: Matt G has been signed in for 2 h 5 min - still driving, or a missed sign-out?",
+    );
+  });
+
+  it("reads the threshold staff set, not a fixed two hours", () => {
+    const seated = seatedFor(100 * MIN);
+    expect(evaluate([rig(1, { seated })])).toEqual([]);
+    expect(rulesOf(evaluate([rig(1, { seated })], [], { longStintMinutes: 90 }))).toEqual([
+      "long_stint rig:rig-1 warning",
+    ]);
+  });
+
+  it("holds while the stint stays open, even on a rig that has gone quiet, and clears when it ends", () => {
+    const open = [{ rule: "long_stint" as const, subject: rigSubject("rig-1") }];
+    const quiet = rig(1, { seated: seatedFor(3 * 60 * MIN), heartbeats: minutely(60 * MIN, 50 * MIN) });
+    expect(rulesOf(evaluate([quiet], open))).toContain("long_stint rig:rig-1 warning");
+    expect(evaluate([rig(1)], open)).toEqual([]);
+  });
+
+  it("stays quiet about a stint left open at closing until the rig is switched on again", () => {
+    const seated = seatedFor(3 * 60 * MIN);
+    const closed = [...minutely(90 * MIN, 61 * MIN), hb(60 * MIN, { shuttingDown: true })];
+    expect(only(evaluate([rig(1, { seated, heartbeats: closed })]), "long_stint")).toBeUndefined();
+    const dark = minutely(90 * MIN, 60 * MIN);
+    expect(only(evaluate([rig(1, { seated, heartbeats: dark })]), "long_stint")).toBeUndefined();
+    const backOn = [...closed, ...minutely(2 * MIN)];
+    expect(rulesOf(evaluate([rig(1, { seated, heartbeats: backOn })]))).toEqual(["long_stint rig:rig-1 warning"]);
+  });
+
+  it("never names a driver whose name is under review", () => {
+    const flagged = { ...seatedFor(3 * 60 * MIN), driverStatus: "name_flagged" };
+    const finding = only(evaluate([rig(1, { seated: flagged })]), "long_stint")!;
+    expect(finding.detail.headline).toContain("a driver (name under review)");
+    expect(finding.detail.driver).toBeNull();
+  });
+});
+
+describe("rule 6: repeated sign-in failures", () => {
+  /** One refusal reported at each of `at`, numbered as rig-agent/0.5-monitor numbers them. */
+  const failing = (at: number[], kinds: string[] = ["wrong_pin_or_name"]) =>
+    minutely(14 * MIN, 0, (ago) =>
+      at.includes(ago) ? { signInFailures: 1, signInFailureKinds: kinds, signInFailureSeqs: [ago] } : {},
+    );
+
+  it("warns on three inside five minutes, naming the kinds", () => {
+    const heartbeats = minutely(14 * MIN, 0, (ago) =>
+      ago === 4 * MIN
+        ? {
+            signInFailures: 2,
+            signInFailureKinds: ["wrong_pin_or_name", "wrong_pin_or_name"],
+            signInFailureSeqs: [1, 2],
+          }
+        : ago === MIN
+          ? { signInFailures: 1, signInFailureKinds: ["locked"], signInFailureSeqs: [3] }
+          : {},
+    );
+    const findings = evaluate([rig(1, { heartbeats })]);
+    expect(rulesOf(findings)).toEqual(["sign_in_failures rig:rig-1 warning"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Rig 01: 3 walk-up sign-ins refused in 5 min (wrong PIN or name, locked out)",
+    );
+  });
+
+  it("does not fire on two, or on three spread past five minutes", () => {
+    expect(evaluate([rig(1, { heartbeats: failing([3 * MIN, MIN]) })])).toEqual([]);
+    expect(evaluate([rig(1, { heartbeats: failing([8 * MIN, 3 * MIN, MIN]) })])).toEqual([]);
+  });
+
+  it("counts failures re-reported after a lost answer once, by the agent's own failure sequence", () => {
+    // Two refusals reported, the answer lost, and the retry ten seconds later
+    // reporting the same two under a new heartbeat sequence.
+    const reported = { signInFailures: 2, signInFailureKinds: ["wrong_pin_or_name"], signInFailureSeqs: [4, 5] };
+    const heartbeats = [
+      ...minutely(14 * MIN, 3 * MIN),
+      hb(2 * MIN + 50 * S, { ...reported, sequence: 1_001 }),
+      hb(2 * MIN + 40 * S, { ...reported, sequence: 1_002 }),
+      ...minutely(MIN),
+    ];
+    expect(evaluate([rig(1, { heartbeats })])).toEqual([]);
+
+    const third = hb(30 * S, { signInFailures: 1, signInFailureKinds: ["locked"], signInFailureSeqs: [9], sequence: 1_003 });
+    const findings = evaluate([rig(1, { heartbeats: [...heartbeats, third].sort((a, b) => a.receivedAt - b.receivedAt) })]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Rig 01: 3 walk-up sign-ins refused in 5 min (wrong PIN or name, locked out)",
+    );
+  });
+
+  it("keys the failure sequence by agent process, since a restarted agent counts from 1 again", () => {
+    const reported = (ago: number, processStartedAt: number, signInFailureSeqs: number[]) =>
+      hb(ago, { processStartedAt, signInFailures: signInFailureSeqs.length, signInFailureKinds: ["other"], signInFailureSeqs });
+    const heartbeats = [reported(3 * MIN, STARTED, [1, 2]), reported(MIN, NOW - 2 * MIN, [1, 2])];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })]))).toEqual(["sign_in_failures rig:rig-1 warning"]);
+  });
+
+  it("holds while any came inside ten minutes, and clears after ten quiet ones", () => {
+    const open = [{ rule: "sign_in_failures" as const, subject: rigSubject("rig-1") }];
+    expect(rulesOf(evaluate([rig(1, { heartbeats: failing([9 * MIN]) })], open))).toEqual([
+      "sign_in_failures rig:rig-1 warning",
+    ]);
+    expect(evaluate([rig(1, { heartbeats: failing([11 * MIN]) })], open)).toEqual([]);
+  });
+
+  it("counts the refusals a goodbye reports", () => {
+    const heartbeats = [
+      ...minutely(14 * MIN, MIN),
+      hb(0, { signInFailures: 3, signInFailureKinds: ["unreachable"], signInFailureSeqs: [1, 2, 3], shuttingDown: true }),
+    ];
+    expect(rulesOf(evaluate([rig(1, { heartbeats })]))).toEqual(["sign_in_failures rig:rig-1 warning"]);
+  });
+
+  it("does not count an agent's reports that carry no failure sequences, which it replays after a lost answer", () => {
+    // rig-agent/0.4-monitor: two refusals reported, the answer lost, and the
+    // same two reported again - four by count, two in fact.
+    const legacy = { signInFailures: 2, signInFailureKinds: ["wrong_pin_or_name"], signInFailureSeqs: null };
+    const heartbeats = [
+      ...minutely(14 * MIN, 3 * MIN),
+      hb(2 * MIN + 50 * S, { ...legacy, agentVersion: "rig-agent/0.4-monitor", sequence: 1_001 }),
+      hb(2 * MIN + 40 * S, { ...legacy, agentVersion: "rig-agent/0.4-monitor", sequence: 1_002 }),
+      ...minutely(MIN, 0, () => ({ agentVersion: "rig-agent/0.4-monitor" })),
+    ];
+    const findings = evaluate([rig(1, { heartbeats })]);
+    expect(only(findings, "sign_in_failures")).toBeUndefined();
+    // Rule 11 is what asks for the build that brings the rig into rule 6.
+    expect(only(findings, "agent_outdated")).toBeDefined();
+  });
+});
+
+describe("rule 7: wrong car or track", () => {
+  const inSession = (session: FeaturedCombo | null) => minutely(14 * MIN, 0, () => ({ session }));
+  const wrongCar = { ...COMBO, carName: "Mazda MX-5" };
+  const combo = { featuredCombo: COMBO };
+
+  it("warns when a seated rig's session is not today's combo, saying which part", () => {
+    const findings = evaluate([rig(1, { seated: SEATED, heartbeats: inSession(wrongCar) })], [], combo);
+    expect(rulesOf(findings)).toEqual(["wrong_combo rig:rig-1 warning"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Rig 01 is in an iRacing session on the wrong car for today's featured combo while Matt G is signed in - their laps will not rank",
+    );
+    expect(findings[0]!.detail.fields).toContainEqual({
+      name: "Today's combo",
+      value: "Circuit of the Americas Grand Prix · FIA F4",
+    });
+  });
+
+  it("never puts the rig's own session strings in the alert", () => {
+    const findings = evaluate([rig(1, { seated: SEATED, heartbeats: inSession(wrongCar) })], [], combo);
+    expect(JSON.stringify(findings)).not.toContain("Mazda");
+  });
+
+  it("judges the layout as ingestion does: a missing config and an empty one are the same", () => {
+    const noConfig = { featuredCombo: { ...COMBO, trackConfig: null } };
+    const empty = inSession({ ...COMBO, trackConfig: "" });
+    expect(evaluate([rig(1, { seated: SEATED, heartbeats: empty })], [], noConfig)).toEqual([]);
+    const otherLayout = inSession({ ...COMBO, trackConfig: "National" });
+    expect(only(evaluate([rig(1, { seated: SEATED, heartbeats: otherLayout })], [], combo), "wrong_combo")!.detail.headline)
+      .toContain("wrong track or layout");
+  });
+
+  it("does not judge a session with nobody seated, a session on a silent rig, or a day with no combo", () => {
+    expect(evaluate([rig(1, { heartbeats: inSession(wrongCar) })], [], combo)).toEqual([]);
+    const quiet = minutely(14 * MIN, 4 * MIN, () => ({ session: wrongCar }));
+    expect(only(evaluate([rig(1, { seated: SEATED, heartbeats: quiet })], [], combo), "wrong_combo")).toBeUndefined();
+    // With no combo there is nothing to be wrong against; rule 4 is what
+    // speaks for that day.
+    const noCombo = evaluate([rig(1, { seated: SEATED, heartbeats: inSession(wrongCar) })], [], { featuredCombo: null });
+    expect(only(noCombo, "wrong_combo")).toBeUndefined();
+    expect(rulesOf(noCombo)).toEqual(["no_featured_combo venue urgent"]);
+  });
+
+  it("warns when the rig's last three laps were all refused for the combo", () => {
+    const rejected = (ago: number) => lap(1, ago, { valid: false, invalidReason: "WRONG_CAR" });
+    const laps = [rejected(9 * MIN), rejected(6 * MIN), rejected(3 * MIN)];
+    const findings = evaluate([rig(1)], [], { ...combo, laps });
+    expect(rulesOf(findings)).toEqual(["wrong_combo rig:rig-1 warning"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Rig 01: its last 3 laps were on the wrong car for today's featured combo, so none of them rank",
+    );
+    expect(findings[0]!.detail.fields).toContainEqual({ name: "Combo-rejected laps", value: "3" });
+  });
+
+  it("does not count two, laps refused for incidents, or laps past fifteen minutes", () => {
+    const rejected = (ago: number, reason = "WRONG_TRACK_CONFIGURATION") =>
+      lap(1, ago, { valid: false, invalidReason: reason });
+    expect(evaluate([rig(1)], [], { ...combo, laps: [rejected(6 * MIN), rejected(3 * MIN)] })).toEqual([]);
+    const incidents = [rejected(9 * MIN), rejected(6 * MIN, "INCIDENT_LIMIT_EXCEEDED"), rejected(3 * MIN)];
+    expect(evaluate([rig(1)], [], { ...combo, laps: incidents })).toEqual([]);
+    expect(evaluate([rig(1)], [], { ...combo, laps: [rejected(16 * MIN), rejected(6 * MIN), rejected(3 * MIN)] })).toEqual([]);
+  });
+
+  describe("with both its signals in view, the newest decides", () => {
+    const rejected = (ago: number) => lap(1, ago, { valid: false, invalidReason: "WRONG_CAR" });
+    const streak = [rejected(9 * MIN), rejected(6 * MIN), rejected(3 * MIN)];
+    /** Heartbeats every minute up to now, the session wrong until `fixedAgo` and right after it. */
+    const fixedAt = (fixedAgo: number) =>
+      minutely(14 * MIN, 0, (ago) => ({ session: ago > fixedAgo ? wrongCar : COMBO }));
+
+    it("keeps the rig's current wrong session over an earlier right one that arrived after it", () => {
+      // Sequence 1002 (wrong car) lands first; 1001 (right car), sent before
+      // it, is delayed and lands 30 s later. The rig is on the wrong car.
+      const heartbeats = [
+        ...minutely(14 * MIN, 2 * MIN, () => ({ session: wrongCar })),
+        hb(MIN, { sequence: 1_002, session: wrongCar }),
+        hb(30 * S, { sequence: 1_001, session: COMBO }),
+      ];
+      expect(rulesOf(evaluate([rig(1, { seated: SEATED, heartbeats })], [], combo))).toEqual([
+        "wrong_combo rig:rig-1 warning",
+      ]);
+    });
+
+    it("clears when the session is put right, with the refused laps still in view", () => {
+      expect(evaluate([rig(1, { seated: SEATED, heartbeats: fixedAt(2 * MIN) })], [], { ...combo, laps: streak })).toEqual([]);
+    });
+
+    it("stays clear once the session was put right and the seat empties or the sim closes", () => {
+      const signedOut = rig(1, { heartbeats: fixedAt(2 * MIN) });
+      const quit = rig(1, {
+        seated: SEATED,
+        heartbeats: [...fixedAt(2 * MIN).slice(0, -1), hb(0, { simConnected: false, session: null })],
+      });
+      const dark = rig(1, {
+        seated: SEATED,
+        heartbeats: [...minutely(14 * MIN, 3 * MIN, () => ({ session: wrongCar })), hb(150 * S, { session: COMBO })],
+      });
+      for (const after of [signedOut, quit, dark]) {
+        expect(only(evaluate([after], [], { ...combo, laps: streak }), "wrong_combo")).toBeUndefined();
+      }
+    });
+
+    it("stays quiet on a switched-off rig when today's combo changes after the session was put right", () => {
+      // The right-car session is re-judged against the new combo and stops
+      // counting, so the older refused run would decide again - but the rig
+      // said goodbye, and a dark rig stays quiet until it is switched on.
+      const off = rig(1, { heartbeats: [...fixedAt(2 * MIN).slice(0, -1), hb(0, { shuttingDown: true, session: null })] });
+      const changed = { featuredCombo: { ...COMBO, carName: "BMW M4 GT3" }, laps: streak };
+      expect(only(evaluate([off], [], changed), "wrong_combo")).toBeUndefined();
+    });
+
+    it("clears when a valid lap lands after a wrong session, before the next heartbeat says so", () => {
+      const heartbeats = minutely(14 * MIN, MIN, () => ({ session: wrongCar }));
+      const laps = [...streak, lap(1, 30 * S)];
+      expect(evaluate([rig(1, { seated: SEATED, heartbeats })], [], { ...combo, laps })).toEqual([]);
+    });
+
+    it("opens again on a wrong session heard after the lap that cleared it", () => {
+      const heartbeats = minutely(14 * MIN, 0, () => ({ session: wrongCar }));
+      const laps = [...streak, lap(1, 30 * S)];
+      const findings = evaluate([rig(1, { seated: SEATED, heartbeats })], [], { ...combo, laps });
+      expect(rulesOf(findings)).toEqual(["wrong_combo rig:rig-1 warning"]);
+      expect(findings[0]!.detail.headline).toContain("is in an iRacing session on the wrong car");
+    });
+
+    it("opens again on a refused run after the session was put right", () => {
+      const later = [rejected(2 * MIN), rejected(MIN), rejected(30 * S)];
+      const heartbeats = minutely(14 * MIN, MIN, (ago) => ({ session: ago > 10 * MIN ? wrongCar : COMBO }));
+      const findings = evaluate([rig(1, { seated: SEATED, heartbeats })], [], { ...combo, laps: later });
+      expect(findings[0]!.detail.headline).toBe(
+        "Rig 01: its last 3 laps were on the wrong car for today's featured combo, so none of them rank",
+      );
+    });
+  });
+
+  it("clears when a valid lap lands, or when the session matches", () => {
+    const rejected = (ago: number) => lap(1, ago, { valid: false, invalidReason: "WRONG_CAR" });
+    const laps = [rejected(9 * MIN), rejected(6 * MIN), rejected(3 * MIN), lap(1, MIN)];
+    expect(evaluate([rig(1)], [], { ...combo, laps })).toEqual([]);
+    expect(evaluate([rig(1, { seated: SEATED, heartbeats: inSession(COMBO) })], [], combo)).toEqual([]);
+  });
+});
+
+describe("rule 11: outdated rig agent", () => {
+  const running = (agentVersion: string | null) => minutely(14 * MIN, 0, () => ({ agentVersion }));
+
+  const outdated = `agent_outdated ${outdatedAgentSubject("rig-1")} warning`;
+
+  it("warns about a rig on any build but the current one, once per rig per version", () => {
+    const findings = evaluate([rig(1, { heartbeats: running("rig-agent/0.3-event") })]);
+    expect(rulesOf(findings)).toEqual([outdated]);
+    expect(findings[0]!.subject).toBe(`rig:rig-1|${CURRENT_AGENT_VERSION}`);
+    expect(findings[0]!.detail.headline).toBe(
+      `Rig 01 runs an outdated rig agent - install ${CURRENT_AGENT_VERSION} on it`,
+    );
+    expect(findings[0]!.detail.fields).toContainEqual({ name: "Agent", value: "rig-agent/0.3-event" });
+  });
+
+  it("clears once the rig reports the current build, and says nothing for a rig that reports none", () => {
+    expect(evaluate([rig(1, { heartbeats: running(CURRENT_AGENT_VERSION) })])).toEqual([]);
+    expect(evaluate([rig(1, { heartbeats: running(null) })])).toEqual([]);
+  });
+
+  it("does not open on a goodbye or a silent rig, but holds an alert already open through either", () => {
+    const goodbye = [...running("rig-agent/0.3-event"), hb(-S, { agentVersion: "rig-agent/0.3-event", shuttingDown: true })];
+    const closed = rig(1, { heartbeats: goodbye, lastSeenAt: NOW });
+    const dark = rig(1, { heartbeats: minutely(60 * MIN, 30 * MIN, () => ({ agentVersion: "rig-agent/0.3-event" })) });
+    const open = [{ rule: "agent_outdated" as const, subject: outdatedAgentSubject("rig-1") }];
+    for (const off of [closed, dark]) {
+      expect(only(evaluate([off]), "agent_outdated")).toBeUndefined();
+      expect(rulesOf(evaluate([off], open).filter((f) => f.rule === "agent_outdated"))).toEqual([outdated]);
+    }
+  });
+
+  it("posts nothing for switched-off rigs when a new build is released after closing", () => {
+    const closed = (n: number) =>
+      rig(n, {
+        heartbeats: [
+          ...minutely(90 * MIN, 61 * MIN, () => ({ agentVersion: "rig-agent/0.3-event" })),
+          hb(60 * MIN, { agentVersion: "rig-agent/0.3-event", shuttingDown: true }),
+        ],
+      });
+    // Rig 1 was told to install the previous release; rig 2 never was.
+    const previous = [{ rule: "agent_outdated" as const, subject: "rig:rig-1|rig-agent/0.3-previous" }];
+    const findings = evaluate([closed(1), closed(2)], previous);
+    expect(findings.map((f) => `${f.rule} ${f.subject}`)).toEqual(["agent_outdated rig:rig-1|rig-agent/0.3-previous"]);
+  });
+
+  it("opens a fresh alert naming a new release on a live rig, holding the earlier one until the rig is current", () => {
+    const previous = [{ rule: "agent_outdated" as const, subject: "rig:rig-1|rig-agent/0.3-previous" }];
+    const behind = evaluate([rig(1, { heartbeats: running("rig-agent/0.3-event") })], previous);
+    expect(behind.map((f) => f.subject).sort()).toEqual(["rig:rig-1|rig-agent/0.3-previous", outdatedAgentSubject("rig-1")]);
+    expect(evaluate([rig(1, { heartbeats: running(CURRENT_AGENT_VERSION) })], previous)).toEqual([]);
+  });
+});
+
+describe("rule 13: a driver moved rigs while the rig they left is still racing", () => {
+  const move = (ago: number, overrides: Partial<MonitorSnapshot["moves"][number]> = {}) => ({
+    fromRigId: "rig-1",
+    toRigId: "rig-2",
+    endedAt: NOW - ago,
+    driverName: "Matt G",
+    driverStatus: "active",
+    ...overrides,
+  });
+  const racing = minutely(14 * MIN, 0, () => ({ session: COMBO }));
+  const idle = minutely(14 * MIN, 0, () => ({ session: null }));
+
+  it("warns when the rig left behind is still in a session with nobody signed in", () => {
+    const findings = evaluate([rig(1, { heartbeats: racing }), rig(2, { seated: SEATED })], [], { moves: [move(3 * MIN)] });
+    expect(rulesOf(findings)).toEqual(["driver_moved rig:rig-1 warning"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Matt G signed in on Rig 02 while still seated on Rig 01, which is still in an iRacing session - is someone driving it without signing in?",
+    );
+    expect(findings[0]!.detail.driver).toBe("Matt G");
+  });
+
+  it("does not fire when the rig left behind is idle, has a new driver, or was last heard before the move", () => {
+    expect(evaluate([rig(1, { heartbeats: idle }), rig(2)], [], { moves: [move(3 * MIN)] })).toEqual([]);
+    expect(evaluate([rig(1, { heartbeats: racing, seated: SEATED }), rig(2)], [], { moves: [move(3 * MIN)] })).toEqual([]);
+    const before = minutely(14 * MIN, 4 * MIN, () => ({ session: COMBO }));
+    expect(only(evaluate([rig(1, { heartbeats: before }), rig(2)], [], { moves: [move(3 * MIN)] }), "driver_moved")).toBeUndefined();
+  });
+
+  it("holds for ten minutes after the move, then clears", () => {
+    const open = [{ rule: "driver_moved" as const, subject: rigSubject("rig-1") }];
+    expect(rulesOf(evaluate([rig(1, { heartbeats: idle }), rig(2)], open, { moves: [move(9 * MIN)] }))).toEqual([
+      "driver_moved rig:rig-1 warning",
+    ]);
+    expect(evaluate([rig(1, { heartbeats: racing }), rig(2)], open, { moves: [move(11 * MIN)] })).toEqual([]);
+  });
+
+  it("never names a driver whose name is under review", () => {
+    const finding = only(
+      evaluate([rig(1, { heartbeats: racing }), rig(2)], [], { moves: [move(3 * MIN, { driverStatus: "banned" })] }),
+      "driver_moved",
+    )!;
+    expect(finding.detail.headline).toContain("a driver (name under review) signed in on Rig 02");
+    expect(finding.detail.driver).toBeNull();
+  });
+});
+
+describe("rule 14: implausibly fast lap", () => {
+  /** Best laps by `n` other drivers, the fastest 2:00.000. */
+  const field = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ combo: COMBO, driverId: `other-${i}`, lapTimeMs: 120_000 + i * 1_000 }));
+
+  it("flags a valid lap more than 3% under the best any other driver had, as its own subject", () => {
+    const fast = lap(1, 2 * MIN, { lapTimeMs: 115_000 });
+    const findings = evaluate([rig(1)], [], { laps: [fast], lapBests: field(5) });
+    expect(rulesOf(findings)).toEqual([`fast_lap rig:rig-1|lap:${fast.id} warning`]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Rig 01: a 1:55.000 lap by Matt G is 4% under the best any other driver had on this car and track (2:00.000) - worth a look; it ranks unless staff invalidate it",
+    );
+  });
+
+  it("closes without a recovered message", () => {
+    expect(RECOVERS_SILENTLY).toEqual(["fast_lap"]);
+  });
+
+  it("does not flag a lap within 3%, or before five other drivers have driven the combo", () => {
+    expect(evaluate([rig(1)], [], { laps: [lap(1, MIN, { lapTimeMs: 117_000 })], lapBests: field(5) })).toEqual([]);
+    expect(evaluate([rig(1)], [], { laps: [lap(1, MIN, { lapTimeMs: 100_000 })], lapBests: field(4) })).toEqual([]);
+  });
+
+  it("compares with other drivers only: a driver beating their own best is not news", () => {
+    const own = [...field(4), { combo: COMBO, driverId: DRIVER.id, lapTimeMs: 150_000 }];
+    expect(evaluate([rig(1)], [], { laps: [lap(1, MIN, { lapTimeMs: 100_000 })], lapBests: own })).toEqual([]);
+  });
+
+  it("compares with the same car and track only", () => {
+    const elsewhere = field(5).map((b) => ({ ...b, combo: { ...COMBO, carName: "Mazda MX-5" } }));
+    expect(evaluate([rig(1)], [], { laps: [lap(1, MIN, { lapTimeMs: 100_000 })], lapBests: elsewhere })).toEqual([]);
+  });
+
+  it("counts recent laps driven before this one, and not the ones after it", () => {
+    const others = Array.from({ length: 5 }, (_, i) =>
+      lap(2, 10 * MIN - i * S, { driver: { id: `other-${i}`, name: `O${i}`, status: "active" }, lapTimeMs: 120_000 }),
+    );
+    const fast = lap(1, 5 * MIN, { lapTimeMs: 110_000 });
+    const later = lap(2, MIN, { driver: { id: "late", name: "Late", status: "active" }, lapTimeMs: 109_000 });
+    const findings = evaluate([rig(1), rig(2)], [], { laps: [...others, fast, later] });
+    expect(rulesOf(findings)).toEqual([`fast_lap rig:rig-1|lap:${fast.id} warning`]);
+  });
+
+  it("never flags an invalid or unattributed lap", () => {
+    const invalid = lap(1, MIN, { lapTimeMs: 100_000, valid: false, invalidReason: "OFF_TRACK" });
+    expect(evaluate([rig(1)], [], { laps: [invalid], lapBests: field(5) })).toEqual([]);
   });
 });
 

@@ -19,11 +19,14 @@ import { RULES, type AlertDetail, type Severity } from "../rules";
  * - the agent version, only when it has a version's shape;
  * - agent notices, only as codes of the notices the agent is known to raise
  *   (`NOTICE_CODES`), counted, each with a fixed summary written here;
- * - the alert's own words: the rule, the rig's name (set by staff), and the
- *   headline and numeric fields the rules wrote from those numbers. The seated
- *   driver's name, the one person-derived value a headline carries, becomes
- *   `driver-<4 hex>`; the Driver and Agent fields are dropped, since the first
- *   is that name again and the second is a rig string.
+ * - the alert's own words: the rule, and the headline and numeric fields the
+ *   rules wrote from those numbers. The rig is named by its server-owned
+ *   number ("Rig 7"), never its display name: that is free text staff typed,
+ *   which could hold an instruction or a person's name, so it is replaced in
+ *   the headline and a headline it would survive in is swapped for a fixed
+ *   one. The seated driver's name becomes `driver-<4 hex>`; the Driver and
+ *   Agent fields are dropped, since the first is that name again and the
+ *   second is a rig string.
  *
  * Every string is also flattened to one line, so nothing here can pose as a
  * line of the handoff frame.
@@ -123,7 +126,15 @@ export const NOTICE_CODES = {
 export type NoticeCode = keyof typeof NOTICE_CODES;
 
 /** The alert fields that are numbers the rules computed, never a rig's words. */
-const NUMERIC_FIELDS = new Set(["Last heard", "Queued laps", "Parked laps", "Starts", "Clock skew"]);
+const NUMERIC_FIELDS = new Set([
+  "Last heard",
+  "Queued laps",
+  "Parked laps",
+  "Starts",
+  "Clock skew",
+  "Laps with nobody signed in",
+  "Combo-rejected laps",
+]);
 
 const TELEMETRY_MODES = ["iracing", "simulated", "none"];
 const CHECKOUTS = ["none", "queued", "not_queued"];
@@ -145,17 +156,23 @@ export function incidentContext(
   heartbeats: readonly HeartbeatRow[],
   commit: string | null,
 ): IncidentContext {
-  const text = serverText(alert.detail.driver);
   const rule = RULES[alert.rule as keyof typeof RULES] ?? { number: "?", title: alert.rule };
   const oldestFirst = [...heartbeats].reverse();
+  const where = publicRig(alert.detail);
+  const driver = alert.detail.driver ? oneLine(alert.detail.driver) : "";
+  const seated: StandIn[] = driver ? [[driver, pseudonym(driver)]] : [];
+  const text = serverText(seated);
 
   return {
     alertId: alert.id,
-    rule: { key: text(alert.rule), number: rule.number, title: text(rule.title) },
+    // The rule's key and title are the monitor's own words, never a driver's:
+    // the key names the issue's marker, lock and re-fire lookup, which must
+    // agree whatever name the seated driver chose.
+    rule: { key: alert.rule, number: rule.number, title: oneLine(rule.title) },
     severity: alert.severity,
     openedAt: alert.openedAt,
-    where: text(alert.detail.where),
-    headline: text(alert.detail.headline),
+    where,
+    headline: publicHeadline(alert.detail.headline, alert.detail.where, seated, where, rule.title),
     fields: alert.detail.fields
       .filter((field) => NUMERIC_FIELDS.has(field.name))
       .map((field) => ({ name: field.name, value: text(field.value) })),
@@ -163,6 +180,39 @@ export function incidentContext(
     notices: noticeCounts(oldestFirst),
     commit: commit && /^[0-9a-f]{7,40}$/i.test(commit) ? commit : null,
   };
+}
+
+/**
+ * The rig as anything public names it: "Rig 7" from the server-owned number.
+ * The venue note's "Venue" is the monitor's own word; a rig alert stored
+ * before the number was recorded is "a rig", never its display name.
+ */
+export function publicRig(detail: AlertDetail): string {
+  if (typeof detail.rigNumber === "number" && Number.isInteger(detail.rigNumber)) return `Rig ${detail.rigNumber}`;
+  return detail.where === "Venue" ? "Venue" : "a rig";
+}
+
+/**
+ * The headline with the rig's display name replaced by its public name and
+ * the driver's by its stand-in, in one pass so neither can swallow part of
+ * the other. The rules put the name in verbatim, so the replacement catches
+ * it; should any of it survive - a name inside another word - the headline
+ * becomes a fixed one.
+ */
+function publicHeadline(
+  headline: string,
+  displayName: string,
+  seated: readonly StandIn[],
+  where: string,
+  title: string,
+): string {
+  // The venue note's headline lists rigs by display name; it is never
+  // diagnosed (it is a warning), but it is not made public either.
+  if (where === "Venue") return `${title} (${where})`;
+  const name = oneLine(displayName);
+  const standIns: StandIn[] = name ? [...seated, [name, where]] : [...seated];
+  const survivor = name && serverText(standIns.map(([n]) => [n, " "]))(headline).includes(name);
+  return survivor ? `${title} (${where})` : serverText(standIns)(headline);
 }
 
 function facts(row: HeartbeatRow): HeartbeatFacts {
@@ -231,18 +281,25 @@ export function noticeCode(notice: string): NoticeCode {
   return "other";
 }
 
+/** A one-lined name and what replaces it. */
+type StandIn = readonly [name: string, standIn: string];
+
 /**
  * The monitor's own words, made safe to send: one line, no control
- * characters, and the seated driver's name replaced by its stand-in.
+ * characters, and each name replaced by its stand-in as a whole word, the
+ * longest name first so a name that holds another is replaced whole.
  */
-function serverText(driver: string | null | undefined) {
-  const normalized = driver ? oneLine(driver) : "";
-  const name = normalized
-    ? new RegExp(`(?<![\\p{L}\\p{N}])${escape(normalized)}(?![\\p{L}\\p{N}])`, "giu")
-    : null;
+function serverText(standIns: readonly StandIn[]) {
+  const names = [...standIns].sort(([a], [b]) => b.length - a.length);
+  const alternatives = names.map(([name]) => `(${escape(name)})`).join("|");
+  const pattern = names.length ? new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives})(?![\\p{L}\\p{N}])`, "giu") : null;
   return (s: string) => {
     const line = oneLine(s);
-    return name ? line.replace(name, pseudonym(normalized)) : line;
+    if (!pattern) return line;
+    return line.replace(pattern, (...groups: unknown[]) => {
+      const matched = groups.slice(1, names.length + 1).findIndex((group) => group !== undefined);
+      return names[matched][1];
+    });
   };
 }
 

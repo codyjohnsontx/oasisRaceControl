@@ -30,6 +30,7 @@ const ALERT: AlertForDiagnosis = {
   detail: {
     headline: `Rig 02: 4 laps waiting 6 min to reach the site while the rig is online`,
     where: "Rig 02",
+    rigNumber: 2,
     fields: [
       { name: "Driver", value: `${DRIVER} (seated 18 min)` },
       { name: "Last heard", value: "4 s ago" },
@@ -95,7 +96,8 @@ describe("redaction before the call (D9)", () => {
     expect(body).not.toContain(RIG);
     // What the model does get: the rule, the rig and its heartbeats.
     expect(body).toContain("Laps queued but not reaching the site");
-    expect(body).toContain("Rig 02");
+    expect(body).toContain("Rig 2");
+    expect(body).not.toContain("Rig 02");
     expect(body).toContain("pendingLaps");
     expect(body).toContain('\\"driverSeated\\": true');
   });
@@ -128,8 +130,37 @@ describe("redaction before the call (D9)", () => {
       [],
       null,
     );
-    expect(context.headline).toBe(`Rig 02: ${pseudonym("Jo Smith")} is seated`);
+    expect(context.headline).toBe(`Rig 2: ${pseudonym("Jo Smith")} is seated`);
     expect(handoffText(context, { ok: false, error: "timed out" })).not.toMatch(/jo\s*smith/i);
+  });
+
+  it("replaces a display name that holds the seated driver's name", () => {
+    const where = "Jo Smith - back office PC";
+    const context = incidentContext(
+      { ...ALERT, detail: { ...ALERT.detail, headline: `${where}: Jo Smith is seated`, where, driver: "Jo Smith" } },
+      [],
+      null,
+    );
+    expect(context.headline).toBe(`Rig 2: ${pseudonym("Jo Smith")} is seated`);
+  });
+
+  it("replaces a driver's name that holds the rig's display name", () => {
+    const where = "Pod 3";
+    const driver = "Pod 3 King";
+    const context = incidentContext(
+      {
+        ...ALERT,
+        detail: { ...ALERT.detail, headline: `${where} has been silent with ${driver} signed in`, where, driver },
+      },
+      [],
+      null,
+    );
+    expect(context.headline).toBe(`Rig 2 has been silent with ${pseudonym(driver)} signed in`);
+  });
+
+  it.each(["laps_stuck", "laps", "site"])("never redacts the rule's own key or title, even for a driver named %s", (driver) => {
+    const context = incidentContext({ ...ALERT, detail: { ...ALERT.detail, driver } }, [], null);
+    expect(context.rule).toEqual({ key: "laps_stuck", number: "3a", title: "Laps queued but not reaching the site" });
   });
 
   it("keeps the handoff free of names and ids too", () => {

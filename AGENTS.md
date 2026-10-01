@@ -284,15 +284,29 @@ reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
 migration, and a verify fingerprints only the columns its own migration
-created, so a later `alter table` does not fail an earlier verify. An urgent
-alert's AI diagnosis and copy-paste handoff (`diagnosis/`, `handoff.ts`) are
-written from `incidentContext`, an allowlist
-of what the server can vouch for - numbers, flags, enum values, known agent
-notices as codes - that never carries a rig's own strings (plan decision D9:
+created, so a later `alter table` does not fail an earlier verify. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
+GitHub issue (`diagnosis/`, `handoff.ts`, `github.ts`) are written from
+`incidentContext`, an allowlist of what the server can vouch for - numbers,
+flags, enum values, known agent notices as codes - that never carries a rig's
+own strings (plan decision D9:
 the free Gemini tier may train on prompts, and the handoff is pasted into a
 coding harness and this public repository's issues). Do not add a rig string
 to it behind a redaction regex; add a field of a vouchable kind, and keep
-model text going through `modelText`.
+model text going through `modelText`. The rig is named there by
+`rigs.rig_number`, never its staff-typed display name, which only the Discord
+alert shows. One issue serves every alert of a rule within 24 hours, on any
+rig - a software fault is venue-wide, and one bug must start one fix worker,
+not twenty - while Discord stays per rig. Issue writes are serialized per rule
+(`lockFault`) and carry a hidden marker (`rigAlertMarker`, naming the rule and
+every alert the write covers) that a retry looks for before writing again,
+trusted only as the last line of a write by the token's own account;
+keep both on any new GitHub write. A rule that compares a rig with
+today's combo uses ingestion's own `comboMismatch` (`validity.ts`), never a
+second comparison. Bumping the agent's `AgentVersion` (`AgentConfig.cs`)
+bumps `CURRENT_AGENT_VERSION` (`monitor/agent-version.ts`) in the same
+commit - `agent-version.test.ts` fails otherwise - and from that deploy
+every rig on the old build shows rule 11's warning until the exe is
+replaced.
 
 A `/tv` page opened from its signed staff link on `/staff` (the shop wall,
 or the event board) heartbeats too (`components/tv/board-heartbeat.tsx`,

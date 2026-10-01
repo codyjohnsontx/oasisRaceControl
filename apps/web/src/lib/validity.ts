@@ -30,15 +30,8 @@ export function computeValidity(
   combo: FeaturedCombo | null,
 ): ValidityResult {
   if (combo) {
-    const trackMatches =
-      combo.track_name === lap.trackName &&
-      (combo.track_config ?? "") === (lap.trackConfig ?? "");
-    if (!trackMatches) {
-      return { isValid: false, invalidReason: "WRONG_TRACK_CONFIGURATION" };
-    }
-    if (combo.car_name !== lap.carName) {
-      return { isValid: false, invalidReason: "WRONG_CAR" };
-    }
+    const mismatch = comboMismatch(combo, lap);
+    if (mismatch) return { isValid: false, invalidReason: mismatch };
     if ((lap.incidentDelta ?? 0) > combo.incident_limit) {
       return { isValid: false, invalidReason: "INCIDENT_LIMIT_EXCEEDED" };
     }
@@ -50,4 +43,23 @@ export function computeValidity(
     return { isValid: false, invalidReason: "INCIDENT_LIMIT_EXCEEDED" };
   }
   return { isValid: true, invalidReason: null };
+}
+
+/**
+ * Whether a track and car are the featured combo's, and if not which part is
+ * wrong. The one definition of "the right combo": ingestion judges every lap
+ * with it, and the rig monitor (rule 7) judges a rig's live session with it,
+ * so the monitor can never call a session right whose laps will be refused.
+ * A missing config and an empty one are the same layout.
+ */
+export function comboMismatch(
+  combo: Pick<FeaturedCombo, "track_name" | "track_config" | "car_name">,
+  lap: { trackName: string; trackConfig?: string | null; carName: string },
+): "WRONG_TRACK_CONFIGURATION" | "WRONG_CAR" | null {
+  const trackMatches =
+    combo.track_name === lap.trackName &&
+    (combo.track_config ?? "") === (lap.trackConfig ?? "");
+  if (!trackMatches) return "WRONG_TRACK_CONFIGURATION";
+  if (combo.car_name !== lap.carName) return "WRONG_CAR";
+  return null;
 }

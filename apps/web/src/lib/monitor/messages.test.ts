@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { formatLapTime } from "@/lib/time";
+import { DISCORD_LIMITS } from "./discord";
 import {
   alertMessage,
   eventModeLine,
+  fastLapSummaryMessages,
   monitorGapLine,
   noteMessage,
   recoveryMessage,
@@ -20,6 +23,8 @@ const URGENT: AlertForMessage = {
   severity: "urgent",
   openedAt: OPENED,
   resolvedAt: null,
+  refireCount: 0,
+  flapping: false,
   detail: {
     headline: "Rig 02 has been silent for 2 min with Matt G signed in",
     where: "Rig 02",
@@ -157,6 +162,9 @@ describe("routineUpdateMessage", () => {
     simConnected: true,
     telemetryFaulted: false,
     session: null,
+    signInFailures: 0,
+    signInFailureKinds: [],
+    signInFailureSeqs: null,
     pendingLaps: 0,
     oldestPendingAgeS: null,
     rejectedLaps: 0,
@@ -185,6 +193,10 @@ describe("routineUpdateMessage", () => {
     featuredCombo: SESSION,
     override: null,
     eventModeSince: null,
+    longStintMinutes: 120,
+    laps: [],
+    lapBests: [],
+    moves: [],
     boards: [
       {
         id: "b",
@@ -270,5 +282,101 @@ describe("routineUpdateMessage", () => {
       "Active alerts: 🟡 Rig 02: a sign-out could not be saved",
       "🔴 Event board (Cadillac) has not been heard from for 5 min",
     ]);
+  });
+});
+
+describe("fastLapSummaryMessages", () => {
+  const combo = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" };
+
+  it("lists every lap quietly, masks a name under review, and says once where the laps were, never echoing their own strings", () => {
+    const [message, ...more] = fastLapSummaryMessages({
+      id: "7",
+      rigName: "Rig 03",
+      featuredCombo: combo,
+      laps: [
+        { lapTimeMs: 110_000, driver: { name: "Ada", status: "active" }, combo },
+        { lapTimeMs: 111_000, driver: { name: "Rude Name", status: "name_flagged" }, combo },
+        { lapTimeMs: 99_000, driver: { name: "Ada", status: "active" }, combo: { ...combo, carName: "Mazda MX-5" } },
+      ],
+    });
+    expect(more).toEqual([]);
+    expect(message!.allowed_mentions).toEqual({ parse: [] });
+    expect(message!.content).toBe(
+      "🟡 Rig 03: 3 laps flagged as implausibly fast while the rule was muted, 2 on today's featured combo " +
+        "(Circuit of the Americas Grand Prix · FIA F4) and 1 on another car and track - worth a look; " +
+        "they rank unless staff invalidate them",
+    );
+    expect(message!.embeds![0]!.description).toBe(
+      ["• Rig 03 · 1:50.000 by Ada", "• Rig 03 · 1:51.000 by a driver (name under review)", "• Rig 03 · 1:39.000 by Ada"].join(
+        "\n",
+      ),
+    );
+    expect(JSON.stringify(message)).not.toMatch(/Rude Name|Mazda/);
+  });
+
+  it("calls every lap another car and track on a day with no featured combo, judging the layout as ingestion does", () => {
+    const lap = { lapTimeMs: 110_000, driver: { name: "Ada", status: "active" }, combo: { ...combo, trackConfig: "" } };
+    const [none] = fastLapSummaryMessages({ id: "7", rigName: "Rig 03", featuredCombo: null, laps: [lap] });
+    expect(none!.content).toMatch(/ was muted, on another car and track - /);
+    expect(none!.embeds![0]!.description).toBe("• Rig 03 · 1:50.000 by Ada");
+    const [noLayout] = fastLapSummaryMessages({
+      id: "7",
+      rigName: "Rig 03",
+      featuredCombo: { ...combo, trackConfig: null },
+      laps: [lap],
+    });
+    expect(noLayout!.content).toMatch(/ was muted, on today's featured combo \(Circuit of the Americas · FIA F4\) - /);
+  });
+
+  it("splits a long list on whole lines over three messages and counts the laps that do not fit", () => {
+    const driver = { name: "Alexandria Montgomery-Fitzgerald", status: "active" };
+    const laps = Array.from({ length: 120 }, (_, i) => ({ lapTimeMs: 110_000 + i, driver, combo }));
+    const messages = fastLapSummaryMessages({ id: "7", rigName: "Rig 01", featuredCombo: combo, laps });
+    const every = laps.map((lap) => `• Rig 01 · ${formatLapTime(lap.lapTimeMs)} by Alexandria Montgomery-Fitzgerald`);
+
+    expect(messages).toHaveLength(3);
+    messages.forEach((message, i) => {
+      expect(message.allowed_mentions).toEqual({ parse: [] });
+      expect(message.content).toMatch(
+        new RegExp(`^🟡 Rig 01: 120 laps flagged .*, on today's featured combo \\(.*\\) - .* \\(part ${i + 1} of 3\\)$`),
+      );
+      expect(message.content!.length).toBeLessThanOrEqual(DISCORD_LIMITS.content);
+      const embed = message.embeds![0]!;
+      expect(embed.description!.length).toBeLessThanOrEqual(DISCORD_LIMITS.embedDescription);
+      const embedText = (embed.title ?? "") + (embed.description ?? "") + (embed.footer?.text ?? "");
+      expect(embedText.length).toBeLessThanOrEqual(6000);
+    });
+    const listed = messages.flatMap((m) => m.embeds![0]!.description!.split("\n"));
+    const remainder = listed.pop()!;
+    expect(listed).toEqual(every.slice(0, 75));
+    expect(remainder).toBe("and 45 more implausible laps on Rig 01 this hour");
+  });
+
+  it("keeps every part on the same laps however the lines read, so a retry resumes where Discord stopped", () => {
+    const laps = Array.from({ length: 120 }, (_, i) => ({
+      lapTimeMs: 110_000 + i,
+      driver: { name: "Ada", status: i % 2 ? "name_flagged" : "active" },
+      combo,
+    }));
+    const lapTimes = (featuredCombo: typeof combo | null) =>
+      fastLapSummaryMessages({ id: "7", rigName: "Rig 01", featuredCombo, laps }).map((m) =>
+        m.embeds![0]!.description!.match(/\d:\d{2}\.\d{3}/g),
+      );
+    expect(lapTimes(null)).toEqual(lapTimes(combo));
+    expect(lapTimes(null).map((part) => part!.length)).toEqual([25, 25, 25]);
+  });
+
+  it("uses fewer messages, and no more line, when every lap fits", () => {
+    const driver = { name: "Ada", status: "active" };
+    const laps = Array.from({ length: 50 }, (_, i) => ({ lapTimeMs: 110_000 + i, driver, combo }));
+    const messages = fastLapSummaryMessages({ id: "7", rigName: "Rig 01", featuredCombo: combo, laps });
+    expect(messages).toHaveLength(2);
+    expect(messages.map((m) => m.content)).toEqual([
+      expect.stringMatching(/ \(part 1 of 2\)$/),
+      expect.stringMatching(/ \(part 2 of 2\)$/),
+    ]);
+    const listed = messages.flatMap((m) => m.embeds![0]!.description!.split("\n"));
+    expect(listed).toHaveLength(50);
+    expect(listed.every((line) => line.startsWith("• Rig 01 · "))).toBe(true);
   });
 });

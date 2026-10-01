@@ -5,17 +5,35 @@ import { incidentContext } from "./diagnosis/context";
 import type { ProviderName } from "./diagnosis/provider";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
 import { eventMode, type EventMode } from "./event-mode";
-import { diagnosisMessage, handoffMessage, handoffText } from "./handoff";
 import {
-  alertMessage,
+  commentMarkers,
+  commentOnIssue,
+  findIssueWithMarker,
+  githubConfigured,
+  openIssue,
+  reopenIssue,
+  type GitHubResult,
+} from "./github";
+import {
+  diagnosisMessage,
+  handoffMessage,
+  handoffText,
+  markedAlerts,
+  recoveryComment,
+  refireComment,
+  rigAlertIssue,
+} from "./handoff";
+import {
   eventModeLine,
+  fastLapSummaryMessages,
   monitorGapLine,
   noteMessage,
+  openingMessage,
   recoveryMessage,
   routineUpdateMessage,
   type AlertForMessage,
 } from "./messages";
-import { evaluateRules, monitorGap, type MonitorSnapshot } from "./rules";
+import { evaluateRules, monitorGap, RULES, type MonitorSnapshot } from "./rules";
 import {
   alertsById,
   applyFindings,
@@ -24,26 +42,50 @@ import {
   claimDiagnosisPostRetries,
   claimEvaluation,
   claimEventModeFlip,
+  claimIssueRecoveries,
+  claimIssues,
+  claimFastLapSummaries,
   claimRecoveryRetries,
   claimRoutineUpdate,
   loadRoutineFacts,
   loadSnapshot,
+  lockFault,
   markAnnounced,
   markDiagnosisPosted,
+  markFastLapSummaryPart,
   markRecoveryAnnounced,
   pruneHeartbeats,
   recentHeartbeats,
+  recordIssue,
+  refireTarget,
   releaseEventModeFlip,
   type EventModeFlip,
   releaseRoutineUpdate,
   saveDiagnosis,
+  unfiledAlerts,
   type AlertToDiagnose,
+  type AlertToFile,
   type DiagnosisState,
   type RoutineClaim,
 } from "./store";
 
 /** Calls per alert: the first, and one retry (plan section 10). */
 export const DIAGNOSIS_ATTEMPTS = 2;
+
+/**
+ * How far before an alert opened its marker is looked for: past any clock
+ * difference between this database and GitHub.
+ */
+const MARKER_LOOKBACK_MS = 60 * 60_000;
+
+/**
+ * Rules where software is a plausible cause: their urgent alerts get an issue
+ * whatever the diagnosis says - once there is a handoff to file, which needs
+ * the diagnosis key and the Discord webhook.
+ */
+const SOFTWARE_RULES = Object.entries(RULES)
+  .filter(([, rule]) => rule.software)
+  .map(([key]) => key);
 
 /**
  * One monitor evaluation, end to end: claim it, read the snapshot, run the
@@ -92,14 +134,15 @@ export async function runMonitor(): Promise<MonitorRun> {
   const { claim, snapshot, findings, won, mode, flip, routine } = evaluation;
 
   const mention = alertUserId();
-  let announced = await deliver(await alertsById(won.announce), (a) => alertMessage(a, mention), markAnnounced);
+  let announced = await deliver(await alertsById(won.announce), (a) => openingMessage(a, mention), markAnnounced);
   let recovered = await deliver(await alertsById(won.recover), recoveryMessage, markRecoveryAnnounced);
   // Without a webhook nothing was sent and nothing will be, so there is
   // nothing to retry - and a preview must not keep claiming the posts that
   // production's evaluations should make.
   if (discordConfigured()) {
-    announced += await deliver(await claimAnnounceRetries(), (a) => alertMessage(a, mention), markAnnounced);
+    announced += await deliver(await claimAnnounceRetries(), (a) => openingMessage(a, mention), markAnnounced);
     recovered += await deliver(await claimRecoveryRetries(), recoveryMessage, markRecoveryAnnounced);
+    announced += await deliverFastLapSummaries();
   }
 
   if (flip !== null) await announceEventMode(mode, flip);
@@ -157,11 +200,11 @@ async function postNote(text: string, what: string): Promise<boolean> {
 }
 
 /**
- * Urgent alerts' diagnoses and handoffs, and the retry of any that Discord
- * refused. Runs after an evaluation, so every alert and recovery has had its
- * turn first and a slow or failing model delays nothing; the claims keep two
- * concurrent runs from diagnosing or posting the same alert. Returns how many
- * diagnoses were made.
+ * Urgent alerts' diagnoses and handoffs, the retry of any that Discord
+ * refused, and the rig-alert issues filed from those handoffs. Runs after an
+ * evaluation, so every alert and recovery has had its turn first and a slow
+ * or failing model delays nothing; the claims keep two concurrent runs from
+ * diagnosing or posting the same alert. Returns how many diagnoses were made.
  */
 export async function runDiagnoses(): Promise<number> {
   if (!discordConfigured()) return 0;
@@ -175,6 +218,16 @@ export async function runDiagnoses(): Promise<number> {
   for (const row of await claimDiagnosisPostRetries()) {
     await postDiagnosis(row.alert, row.diagnosis, row.handoff);
   }
+
+  // The rig-alert issue comes last: it carries the handoff written above, and
+  // a slow GitHub delays no Discord post. Without a token nothing is claimed
+  // and the Discord handoff is the whole story.
+  if (githubConfigured()) {
+    for (const alerts of groupBy(await claimIssues(SOFTWARE_RULES), (alert) => alert.rule)) await fileIssue(alerts);
+    for (const alerts of groupBy(await claimIssueRecoveries(SOFTWARE_RULES), (alert) => alert.issue)) {
+      await commentRecovery(alerts[0]!.issue, alerts);
+    }
+  }
   return diagnosed;
 }
 
@@ -186,16 +239,40 @@ export async function runDiagnoses(): Promise<number> {
 async function deliver(
   alerts: AlertForMessage[],
   render: (alert: AlertForMessage) => Parameters<typeof postDiscord>[0],
-  record: (id: string) => Promise<void>,
+  record: (alert: AlertForMessage) => Promise<void>,
 ): Promise<number> {
   let sent = 0;
   for (const alert of alerts) {
     const result = await postDiscord(render(alert));
     if (result.status === "sent") {
-      await record(alert.id);
+      await record(alert);
       sent++;
     } else if (result.status === "failed") {
       console.error(`[monitor] could not post alert #${alert.id} to Discord: ${result.reason}`);
+    }
+  }
+  return sent;
+}
+
+/**
+ * Posts each due rule 14 summary's parts in order, from the first one Discord
+ * has not taken, recording each as it goes; a refused part stops its summary
+ * for a later evaluation to resume there.
+ */
+async function deliverFastLapSummaries(): Promise<number> {
+  let sent = 0;
+  for (const summary of await claimFastLapSummaries()) {
+    const parts = fastLapSummaryMessages(summary);
+    for (let part = summary.partsPosted; part < parts.length; part++) {
+      const result = await postDiscord(parts[part]!);
+      if (result.status !== "sent") {
+        if (result.status === "failed") {
+          console.error(`[monitor] could not post the fast-lap summary of alert #${summary.id}: ${result.reason}`);
+        }
+        break;
+      }
+      await markFastLapSummaryPart(summary.id, part + 1, parts.length);
+      sent++;
     }
   }
   return sent;
@@ -208,11 +285,7 @@ async function deliver(
  * wants something to paste. Returns whether a diagnosis was made.
  */
 async function diagnoseAlert(alert: AlertToDiagnose, config: DiagnosisConfig): Promise<boolean> {
-  const context = incidentContext(
-    alert,
-    await recentHeartbeats(alert.subject),
-    process.env.VERCEL_GIT_COMMIT_SHA?.trim() || null,
-  );
+  const context = await contextOf(alert);
   const base = { provider: config.provider, model: config.model };
   // Past the attempts only when a claimed call never reported back.
   const result =
@@ -252,6 +325,119 @@ async function postDiagnosis(alert: AlertForMessage, state: DiagnosisState, hand
     if (sent.status !== "sent") return logFailedPost(alert.id, sent);
     await markDiagnosisPosted(alert.id, "handoffPostedAt");
   }
+}
+
+/**
+ * Files one rule's claimed alerts: opens the rule's rig-alert issue, or - when
+ * an alert of the same rule within a day, on any rig, already has one -
+ * comments on that one instead, reopening it if it was closed, so one fault
+ * makes one issue however many rigs it hits and one comment however many of
+ * them join at once. The heartbeats are the ones each handoff was written
+ * from, not any received since.
+ *
+ * Runs under the rule's lock (lockFault), from the issue lookup to the
+ * record, so concurrent filers of one rule cannot open two issues; a filer
+ * that finds it held leaves its alerts for a later evaluation. And each write
+ * is looked for by its marker first, so a write whose answer was lost is
+ * recorded, not repeated. A failure is retried by a later evaluation.
+ */
+async function fileIssue(claimed: AlertToFile[]): Promise<void> {
+  const rule = claimed[0]!.rule;
+  const prepared = await Promise.all(
+    claimed.map(async (alert) => ({ context: await contextOf(alert, alert.handoffAt), handoff: alert.handoff })),
+  );
+  await withTransaction(async (client) => {
+    if (!(await lockFault(client, rule))) return;
+    // Another filer may have recorded some of these since they were claimed.
+    const unfiled = new Set(await unfiledAlerts(client, claimed.map((alert) => alert.id)));
+    const alerts = claimed.filter((alert) => unfiled.has(alert.id));
+    if (alerts.length === 0) return;
+    const ids = alerts.map((alert) => alert.id);
+    const filings = prepared.filter(({ context }) => unfiled.has(context.alertId));
+    // Everything the monitor wrote for these alerts is newer than their opening.
+    const since = Math.min(...alerts.map((alert) => alert.openedAt)) - MARKER_LOOKBACK_MS;
+    const said = new Set<string>();
+    let number = await refireTarget(client, rule, ids);
+    if (number === null) {
+      const found = await findIssueWithMarker((marker) => markedAlerts(marker, "issue", rule).length > 0, since);
+      if (found.status !== "sent") return logFailedIssue(ids, found);
+      if (found.number === null) {
+        const opened = await openIssue(rigAlertIssue(filings));
+        if (opened.status !== "sent") return logFailedIssue(ids, opened);
+        warnIfUnlabelled(opened.number, opened.labelled, ids);
+        return recordIssue(client, ids, opened.number);
+      }
+      warnIfUnlabelled(found.number, found.labelled, ids);
+      number = found.number;
+      const opened = markedAlerts(found.marker!, "issue", rule);
+      for (const id of opened) said.add(id);
+      // The alerts it was opened for are on it, whether or not they are in this batch.
+      await recordIssue(client, opened, number);
+    }
+
+    const comments = await commentMarkers(number, since);
+    if (comments.status !== "sent") return logFailedIssue(ids, comments);
+    for (const marker of comments.markers) for (const id of markedAlerts(marker, "refire", rule)) said.add(id);
+    const joining = filings.filter(({ context }) => !said.has(context.alertId));
+    // Alerts a comment already named are recorded as they stand: reopening
+    // for them would undo an owner's close for a comment already delivered.
+    if (joining.length > 0) {
+      const reopened = await reopenIssue(number);
+      if (reopened.status !== "sent") return logFailedIssue(ids, reopened);
+      const sent = await commentOnIssue(number, refireComment(joining));
+      if (sent.status !== "sent") return logFailedIssue(ids, sent);
+    }
+    await recordIssue(client, ids, number);
+  });
+}
+
+function warnIfUnlabelled(number: number, labelled: boolean, ids: readonly string[]): void {
+  if (labelled) return;
+  console.error(
+    `[monitor] issue #${number} for alert #${ids.join(", #")} was filed without the rig-alert label; ` +
+      "create the label (docs/monitoring.md) or nothing picks the issue up",
+  );
+}
+
+/**
+ * One recovery comment for the alerts of an issue whose every alert has
+ * recovered, naming those not yet said so - unless one whose answer was lost
+ * already landed.
+ */
+async function commentRecovery(issue: number, alerts: AlertForMessage[]): Promise<void> {
+  const ids = alerts.map((alert) => alert.id);
+  const since = Math.min(...alerts.map((alert) => alert.openedAt)) - MARKER_LOOKBACK_MS;
+  const found = await commentMarkers(issue, since);
+  if (found.status !== "sent") return logFailedIssue(ids, found);
+  const said = new Set(found.markers.flatMap((marker) => markedAlerts(marker, "recovery", alerts[0]!.rule)));
+  const recovered = alerts.filter((alert) => !said.has(alert.id));
+  if (recovered.length > 0) {
+    const sent = await commentOnIssue(issue, recoveryComment(recovered));
+    if (sent.status !== "sent") return logFailedIssue(ids, sent);
+  }
+  for (const id of ids) await markDiagnosisPosted(id, "issueRecoveryCommentedAt");
+}
+
+function logFailedIssue(ids: readonly string[], result: GitHubResult): void {
+  if (result.status === "failed") {
+    console.error(`[monitor] GitHub refused or missed the issue update for alert #${ids.join(", #")}: ${result.reason}`);
+  }
+}
+
+/** `items` in groups sharing `key`, each group in the order its items came. */
+function groupBy<T, K>(items: readonly T[], key: (item: T) => K): T[][] {
+  const groups = new Map<K, T[]>();
+  for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
+  return [...groups.values()];
+}
+
+/** The redacted incident a diagnosis, handoff and issue are written from. */
+async function contextOf(alert: AlertForMessage & { subject: string }, until?: string) {
+  return incidentContext(
+    alert,
+    await recentHeartbeats(alert.subject, until),
+    process.env.VERCEL_GIT_COMMIT_SHA?.trim() || null,
+  );
 }
 
 function logFailedPost(id: string, result: Awaited<ReturnType<typeof postDiscord>>): void {
