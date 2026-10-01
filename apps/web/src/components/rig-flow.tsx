@@ -5,6 +5,7 @@ import {
   type FlowModel,
   type FlowPart,
   type HeldLaps,
+  type Mark,
   type Traveller,
 } from "@/lib/monitor/flow";
 import { formatLapTime } from "@/lib/time";
@@ -17,9 +18,12 @@ import { formatLapTime } from "@/lib/time";
  * picture keeps moving between refreshes without another request. Under
  * prefers-reduced-motion the dots sit still where their age puts them.
  *
- * Geometry is in SVG user units: the view box is scaled to the section's
- * width, with a minimum below which the section scrolls sideways, so a phone
- * reads it rather than getting a shrunken picture.
+ * Geometry is in SVG user units, and the picture never draws narrower than
+ * its design width (W, at 1px a unit): below that the card scrolls sideways,
+ * so a phone reads the status text at its designed size instead of a
+ * shrunken picture. Dots step once a second rather than every frame - at
+ * about a unit a second they look the same - and carry no filter, so twenty
+ * five lanes of traffic stay a light load for the browser.
  */
 
 const W = 960;
@@ -58,6 +62,12 @@ const LABEL_Y = -13;
 
 const WINDOW_S = TRAFFIC_WINDOW_MS / 1000;
 
+/**
+ * A lane's data-quality marks (flow.ts Place), drawn under its label: laps
+ * that arrived and were stored but will not rank, or rank pending review.
+ */
+const MARK_LABEL: Record<Mark, string> = { feed: "◆ won't rank", review: "◆ review lap" };
+
 const STYLE = `
 .flow-edge { fill: none; stroke-width: 2; stroke-linecap: round; }
 .flow-edge[data-state="green"] { stroke: var(--valid); stroke-opacity: 0.4; }
@@ -74,9 +84,10 @@ const STYLE = `
 .flow-node[data-state="grey"], .flow-node[data-dimmed] { stroke: var(--edge); fill: var(--surface); }
 .flow-node[data-dimmed] { opacity: 0.5; }
 .flow-reason[data-state="red"] { fill: var(--invalid); }
-.flow-reason[data-state="yellow"] { fill: var(--gold); }
+.flow-reason[data-state="yellow"], .flow-mark[data-state="yellow"] { fill: var(--gold); }
+.flow-mark[data-state="red"] { fill: var(--invalid); }
 .flow-dot, .flow-held { offset-rotate: 0deg; color: var(--accent); }
-.flow-dot circle, .flow-held circle { fill: currentColor; filter: drop-shadow(0 0 3px currentColor); }
+.flow-dot circle, .flow-held circle { fill: currentColor; }
 .flow-dot text, .flow-held text { fill: currentColor; font-size: 10px; text-anchor: middle; font-family: var(--font-geist-mono), monospace; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; paint-order: stroke; }
 .flow-dot[data-goodbye] circle { fill: none; stroke: currentColor; stroke-width: 1.5; }
 [data-status="accepted"] { color: var(--valid); }
@@ -84,7 +95,7 @@ const STYLE = `
 [data-status="unattributed"] { color: var(--purple); }
 [data-status="queued"] { color: var(--gold); }
 [data-status="refused"] { color: var(--invalid); }
-.flow-dot { animation: flow-travel ${WINDOW_S}s linear both; }
+.flow-dot { animation: flow-travel ${WINDOW_S}s steps(${WINDOW_S}) both; }
 @keyframes flow-travel { from { offset-distance: 0%; } to { offset-distance: 100%; } }
 @keyframes flow-pulse { from { stroke-opacity: 1; } to { stroke-opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {
@@ -115,7 +126,7 @@ export function RigFlow({ model }: { model: FlowModel }) {
   return (
     <svg
       viewBox={`0 0 ${W} ${height}`}
-      className="w-full min-w-[40rem] h-auto font-sans"
+      className="w-full min-w-[60rem] h-auto font-sans"
       role="img"
       aria-label="Data flow from each rig's iRacing to the TV board"
     >
@@ -180,6 +191,10 @@ function Lane({ lane, y, sharedY }: { lane: FlowLane; y: number; sharedY: number
     edge3(y, sharedY),
   ];
   const brokenPart = lane.broken === null ? null : lane.edges[lane.broken - 1]!;
+  // The line under the lane: the break, or with none, its first mark.
+  const note = brokenPart?.reason
+    ? { state: brokenPart.state, reason: brokenPart.reason }
+    : (lane.marks[0] ?? null);
 
   return (
     <g data-rig={lane.label}>
@@ -192,10 +207,23 @@ function Lane({ lane, y, sharedY }: { lane: FlowLane; y: number; sharedY: number
       {(["iracing", "agent", "network"] as const).map((node) => (
         <NodeCircle key={node} part={lane.nodes[node]} cx={X[node]} cy={y} r={RIG_R} />
       ))}
-      {brokenPart?.reason && (
-        <text className="flow-reason text-[11px]" data-state={brokenPart.state} x={X.iracing - RIG_R} y={y + 21}>
-          {truncate(brokenPart.reason, LANE_REASON_CHARS)}
-          <title>{brokenPart.reason}</title>
+      {lane.marks.map((m, i) => (
+        <text
+          key={m.mark}
+          className="flow-mark text-[10px] font-bold"
+          data-mark={m.mark}
+          data-state={m.state}
+          x={16}
+          y={y + 17 + i * 11}
+        >
+          {MARK_LABEL[m.mark]}
+          <title>{m.reason}</title>
+        </text>
+      ))}
+      {note && (
+        <text className="flow-reason text-[11px]" data-state={note.state} x={X.iracing - RIG_R} y={y + 21}>
+          {truncate(note.reason, LANE_REASON_CHARS)}
+          <title>{note.reason}</title>
         </text>
       )}
     </g>

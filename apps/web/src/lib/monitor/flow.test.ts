@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { CURRENT_AGENT_VERSION } from "./agent-version";
 import type { BoardSnapshot } from "./event-mode";
-import { flowModel, RULE_PLACE, type FlowModel } from "./flow";
-import { shownFindings } from "./rig-health";
+import { flowModel, placeOf, type FlowModel } from "./flow";
+import { rigTiles, shownFindings } from "./rig-health";
 import type { Heartbeat } from "./rig-state";
 import {
   evaluateRules,
@@ -186,10 +186,14 @@ const ALL_GREEN = [
 ];
 
 describe("RULE_PLACE", () => {
-  it("gives every rule a node or an edge", () => {
+  it("gives every rule a node, an edge, a lane mark or the venue", () => {
+    const detail = { headline: "", where: "", fields: [] };
     for (const rule of Object.keys(RULES) as Array<keyof typeof RULES>) {
-      const place = RULE_PLACE[rule];
-      expect(place.node ?? place.edge, rule).toBeDefined();
+      for (const evidence of [undefined, "session", "laps"] as const) {
+        const place = placeOf({ rule, detail: { ...detail, evidence } });
+        const where = "venue" in place ? "venue" : "mark" in place ? place.mark : (place.node ?? place.edge);
+        expect(where, rule).toBeDefined();
+      }
     }
   });
 });
@@ -344,42 +348,108 @@ describe("flowModel", () => {
     expect(m.shared.edges[0].reason).toMatch(/has not run for 30 min/);
   });
 
-  it("draws the venue-closed note on each rig it names, and on no other", () => {
+  it("keeps the venue-closed note off the lanes, as the tiles keep it off theirs", () => {
     const quiet = (n: number, lastAgo: number) =>
       rig(n, minutely(lastAgo + 5 * MIN, lastAgo), { seated: null });
-    // Rig 05 lost power two days ago without a goodbye: past the note's
-    // lookback, so the note does not speak for it.
-    const m = model(
-      snapshot([quiet(1, 10 * MIN), quiet(2, 8 * MIN), quiet(5, 48 * 60 * MIN)], { boards: [] }),
-    );
-    expect(m.lanes.map((l) => [l.label, l.broken, l.edges[1].state, l.edges[1].reason])).toEqual([
-      ["R01", 2, "yellow", "Rig 01, Rig 02 went quiet together - venue closed?"],
-      ["R02", 2, "yellow", "Rig 01, Rig 02 went quiet together - venue closed?"],
-      ["R05", null, "grey", null],
+    const snap = snapshot([quiet(1, 10 * MIN), quiet(2, 8 * MIN)], { boards: [], eventModeSince: null });
+    const findings = evaluateRules(snap);
+    expect(findings.map((f) => f.rule)).toEqual(["venue_silent"]);
+    const m = flowModel(snap, findings, NOW - 20 * S);
+    expect(m.lanes.map((l) => [l.label, l.broken, l.edges[1].state, l.marks])).toEqual([
+      ["R01", null, "grey", []],
+      ["R02", null, "grey", []],
+    ]);
+    expect(rigTiles(snap, findings, new Map()).map((t) => t.problems)).toEqual([[], []]);
+  });
+
+  it("marks laps that landed with nobody signed in as stopping short of the feed, not as a break", () => {
+    const laps = [lap("u1", "rig-1", 4 * MIN, 139_000, "unattributed"), lap("u2", "rig-1", 2 * MIN, 138_000, "unattributed")];
+    const m = model(snapshot([rig(1, minutely(14 * MIN), { seated: null })], { laps }));
+    const lane = m.lanes[0]!;
+    expect(lane.broken).toBeNull();
+    expect(states(m).slice(0, 6).every((p) => p.endsWith("green"))).toBe(true);
+    expect(lane.marks).toEqual([
+      { mark: "feed", state: "red", reason: expect.stringMatching(/landed with nobody signed in/) },
     ]);
   });
 
-  it("draws a venue note still open only on the rigs its stored copy names", () => {
-    // Both rigs are back, and the note waits on its second clean evaluation.
-    const snap = snapshot([rig(1, minutely(14 * MIN)), rig(2, minutely(14 * MIN))]);
-    const open = [
-      {
-        rule: "venue_silent",
-        subject: "venue",
-        severity: "warning" as const,
-        detail: {
-          headline: "Rig 01 went quiet together - venue closed?",
-          where: "Venue",
-          fields: [],
-          rigs: ["rig:rig-1"],
-        },
-      },
-    ];
-    const m = flowModel(snap, shownFindings(evaluateRules(snap), open), NOW - 20 * S);
-    expect(m.lanes.map((l) => [l.label, l.edges[1].reason])).toEqual([
-      ["R01", "Rig 01 went quiet together - venue closed?"],
-      ["R02", null],
+  it("puts rule 7 from a wrong live session at iRacing", () => {
+    const wrong = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "Mazda MX-5 Cup" };
+    const m = model(snapshot([rig(1, minutely(14 * MIN, 0, { session: wrong }))]));
+    const lane = m.lanes[0]!;
+    expect(lane.broken).toBe(1);
+    expect(lane.edges[0]).toMatchObject({ state: "red", reason: expect.stringMatching(/iRacing session on the wrong car/) });
+    expect(lane.marks).toEqual([]);
+  });
+
+  it("puts rule 7 from laps already stored on the wrong car at the feed, not as a break", () => {
+    const wrongLap = (id: string, ago: number): LapSnapshot => ({
+      ...lap(id, "rig-1", ago, 139_000, "invalid"),
+      invalidReason: "WRONG_CAR",
+    });
+    const laps = [wrongLap("w1", 6 * MIN), wrongLap("w2", 4 * MIN), wrongLap("w3", 2 * MIN)];
+    const m = model(snapshot([rig(1, minutely(14 * MIN, 0, { session: null }))], { laps }));
+    const lane = m.lanes[0]!;
+    expect(lane.broken).toBeNull();
+    expect(lane.edges[0].state).toBe("green");
+    expect(lane.marks).toEqual([
+      { mark: "feed", state: "red", reason: expect.stringMatching(/last 3 laps were on the wrong car/) },
     ]);
+  });
+
+  it("marks an implausibly fast lap for review on its rig, without claiming a break", () => {
+    const snap = snapshot([rig(1, minutely(14 * MIN))]);
+    const fast = {
+      rule: "fast_lap" as const,
+      subject: "rig:rig-1|lap-9",
+      severity: "warning" as const,
+      level: 0,
+      detail: { headline: "Rig 01: a 1:58.000 lap is implausibly fast", where: "Rig 01", fields: [] },
+    };
+    const lane = flowModel(snap, [...evaluateRules(snap), fast], NOW - 20 * S).lanes[0]!;
+    expect(lane.broken).toBeNull();
+    expect(lane.marks).toEqual([{ mark: "review", state: "yellow", reason: fast.detail.headline }]);
+  });
+
+  it("gives every rig's lane the same worst severity as its tile", () => {
+    const worst = (states: string[]) => (states.includes("red") ? "red" : states.includes("yellow") ? "yellow" : "none");
+    const wrongLaps = ["w1", "w2", "w3"].map((id, i) => ({
+      ...lap(id, "rig-6", (6 - 2 * i) * MIN, 139_000, "invalid"),
+      invalidReason: "WRONG_CAR",
+    }));
+    const snap = snapshot(
+      [
+        rig(1, minutely(14 * MIN)),
+        rig(2, minutely(14 * MIN, 5 * MIN)),
+        rig(3, [...minutely(14 * MIN, 6 * MIN), ...minutely(5 * MIN, 0, { simConnected: false, session: null })]),
+        rig(4, minutely(14 * MIN, 0, { agentMemoryMb: 200, missingVariables: ["X"] }), { seated: null }),
+        rig(5, minutely(14 * MIN, 0, { rejectedLaps: 1 })),
+        rig(6, minutely(14 * MIN, 0, { session: null })),
+        rig(7, minutely(14 * MIN), { seated: null }),
+      ],
+      {
+        laps: [
+          lap("u1", "rig-7", 4 * MIN, 139_000, "unattributed"),
+          lap("u2", "rig-7", 2 * MIN, 138_000, "unattributed"),
+          ...wrongLaps,
+        ],
+      },
+    );
+    const findings = evaluateRules(snap);
+    const tiles = rigTiles(snap, findings, new Map());
+    const lanes = flowModel(snap, findings, NOW - 20 * S).lanes;
+    const pairs = lanes.map((lane, i) => [
+      lane.label,
+      worst([
+        ...Object.values(lane.nodes).filter((p) => p.reason).map((p) => p.state),
+        ...lane.edges.filter((p) => p.reason).map((p) => p.state),
+        ...lane.marks.map((m) => m.state),
+      ]),
+      worst(tiles[i]!.problems.map((p) => (p.severity === "urgent" ? "red" : "yellow"))),
+    ]);
+    for (const [label, lane, tile] of pairs) expect(lane, label).toBe(tile);
+    // Every kind of answer is in the fixture: a clean rig, warnings, urgent.
+    expect(new Set(pairs.map(([, lane]) => lane))).toEqual(new Set(["none", "yellow", "red"]));
   });
 
   it("carries the last ten minutes of traffic, placed by age, with each lap's status", () => {
@@ -393,7 +463,7 @@ describe("flowModel", () => {
     const m = model(snapshot([rig(1, minutely(14 * MIN))], { laps }));
     const traffic = m.lanes[0]!.traffic;
     expect(traffic.filter((t) => t.kind === "heartbeat").map((t) => t.ageMs)).toEqual(
-      [9, 8, 7, 6, 5, 4, 3, 2, 1, 0].map((n) => n * MIN),
+      [9, 6, 3, 0].map((n) => n * MIN),
     );
     expect(traffic.filter((t) => t.kind === "lap")).toEqual([
       { kind: "lap", id: "a", ageMs: 1 * MIN, lapTimeMs: 137_217, status: "accepted" },

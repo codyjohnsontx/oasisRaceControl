@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { FlowLane, FlowModel, FlowPart } from "@/lib/monitor/flow";
+import { CURRENT_AGENT_VERSION } from "@/lib/monitor/agent-version";
+import { flowModel, type FlowLane, type FlowModel, type FlowPart } from "@/lib/monitor/flow";
+import type { Heartbeat } from "@/lib/monitor/rig-state";
+import { evaluateRules, type LapSnapshot, type MonitorSnapshot, type RigSnapshot } from "@/lib/monitor/rules";
 import { RigFlow } from "./rig-flow";
 
 /**
@@ -27,6 +30,7 @@ function lane(overrides: Partial<FlowLane> = {}): FlowLane {
     broken: null,
     traffic: [],
     held: [],
+    marks: [],
     ...overrides,
   };
 }
@@ -119,4 +123,106 @@ describe("RigFlow", () => {
     expect(shared).toContain("No featured car and track is set for today");
     expect(shared.match(/data-broken="true"/g)).toHaveLength(1);
   });
+
+  it("draws a lane's data-quality mark under its label, and its headline when nothing is broken", () => {
+    const marked = renderToStaticMarkup(
+      <RigFlow
+        model={model([
+          lane({
+            marks: [{ mark: "feed", state: "red", reason: "Rig 01: 2 laps landed with nobody signed in" }],
+          }),
+        ])}
+      />,
+    );
+    expect(marked).toMatch(/class="flow-mark[^"]*" data-mark="feed" data-state="red"[^>]*>◆ won&#x27;t rank/);
+    expect(marked).toMatch(/class="flow-reason[^"]*" data-state="red"[^>]*>Rig 01: 2 laps landed with nobody signed in/);
+    expect(marked).not.toContain('data-broken="true"');
+  });
 });
+
+/**
+ * The venue runs 20-25 rigs, each heartbeating every minute. Rendered from the
+ * real model, twenty-five busy lanes must stay a bounded number of moving
+ * markers: heartbeats are thinned per lane (HEARTBEAT_MARKER_EVERY_MS), laps
+ * are each drawn.
+ */
+describe("RigFlow at twenty-five rigs", () => {
+  const NOW = Date.parse("2026-10-04T21:00:00Z");
+  const MIN = 60_000;
+  const heartbeat = (rigId: string, ago: number): Heartbeat => ({
+    id: `${rigId}-${ago}`,
+    receivedAt: NOW - ago,
+    sentAt: NOW - ago,
+    clockSkewMs: 0,
+    processStartedAt: NOW - 3 * 60 * MIN,
+    sequence: 1_000 - ago / MIN,
+    agentVersion: CURRENT_AGENT_VERSION,
+    telemetryMode: "iracing",
+    simConnected: true,
+    telemetryFaulted: false,
+    session: null,
+    pendingLaps: 0,
+    oldestPendingAgeS: null,
+    rejectedLaps: 0,
+    checkout: "none",
+    signInFailures: 0,
+    signInFailureKinds: [],
+    signInFailureSeqs: null,
+    missingVariables: [],
+    agentCpuPercent: 0.3,
+    agentMemoryMb: 42,
+    shuttingDown: false,
+  });
+  const rigs: RigSnapshot[] = Array.from({ length: 25 }, (_, i) => {
+    const id = `rig-${i + 1}`;
+    const heartbeats = Array.from({ length: 15 }, (_, k) => heartbeat(id, (14 - k) * MIN));
+    return {
+      id,
+      number: i + 1,
+      name: `Rig ${i + 1}`,
+      lastSeenAt: NOW,
+      seated: null,
+      heartbeats,
+      heard: [{ from: heartbeats[0]!.receivedAt, to: NOW }],
+    };
+  });
+  const laps: LapSnapshot[] = rigs.flatMap((r) =>
+    [1, 3, 5, 7, 9].map((ago) => ({
+      id: `${r.id}-lap-${ago}`,
+      rigId: r.id,
+      receivedAt: NOW - ago * MIN,
+      driver: { id: "d", name: "Matt G", status: "active" },
+      combo: { trackName: "Spa", trackConfig: null, carName: "Porsche" },
+      lapTimeMs: 137_000,
+      valid: true,
+      invalidReason: null,
+      unattributedCause: null,
+    })),
+  );
+  const snap: MonitorSnapshot = {
+    now: NOW,
+    venueDayStart: NOW - 16 * 60 * MIN,
+    rigs,
+    featuredCombo: { trackName: "Spa", trackConfig: null, carName: "Porsche" },
+    longStintMinutes: 120,
+    laps,
+    lapBests: [],
+    moves: [],
+    override: null,
+    eventModeSince: null,
+    boards: [],
+    openAlerts: [],
+  };
+  const flow = flowModel(snap, evaluateRules(snap), NOW);
+  const html = renderToStaticMarkup(<RigFlow model={flow} />);
+
+  it("draws every lane with at most four heartbeat markers and every lap", () => {
+    expect(flow.lanes).toHaveLength(25);
+    for (const l of flow.lanes) {
+      expect(l.traffic.filter((t) => t.kind === "heartbeat").length, l.label).toBeLessThanOrEqual(4);
+    }
+    expect(html.match(/data-kind="heartbeat"/g)!.length).toBeLessThanOrEqual(25 * 4);
+    expect(html.match(/data-kind="lap"/g)).toHaveLength(25 * 5);
+  });
+});
+

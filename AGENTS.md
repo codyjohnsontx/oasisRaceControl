@@ -271,7 +271,7 @@ same `evaluateRules` on the same snapshot and takes its tile colours from the
 findings (`lib/monitor/rig-health.ts`) - do not write a second implementation
 of a rule, the same discipline as `/tv` ranking. Its data-flow view
 (`lib/monitor/flow.ts`) likewise only places findings, and a new rule does not
-compile until `RULE_PLACE` gives it a node or edge. "Fires once, recovers once"
+compile until `RULE_PLACE` gives it a place. "Fires once, recovers once"
 is enforced by `monitor_alerts_one_open` (`db/migrations/0006_monitor.sql`)
 and single-statement transitions in `store.ts`, not by the throttle; only the
 evaluation whose statement won posts. The `monitor_state` row lock the claim

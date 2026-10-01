@@ -2064,7 +2064,10 @@ describeDb("rig monitor against real Postgres", () => {
       ["unattributed", 95],
       ["accepted", 60],
     ]);
-    expect(lane!.traffic.filter((t) => t.kind === "heartbeat")).toHaveLength(10);
+    // Ten minutely heartbeats, drawn at most one per 2.5 minutes.
+    expect(
+      lane!.traffic.filter((t) => t.kind === "heartbeat").map((t) => Math.round(t.ageMs / 1000)),
+    ).toEqual([540, 360, 180, 0]);
   });
 
   it("passes the read-only verify the owner runs after hand-applying 0006", async () => {

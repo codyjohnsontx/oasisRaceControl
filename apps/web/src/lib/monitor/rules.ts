@@ -280,10 +280,11 @@ export type AlertDetail = {
    */
   driver?: string | null;
   /**
-   * The rigs a venue note speaks for, as rig subjects: the ones its headline
-   * names. The data-flow view draws the note on these lanes and no others.
+   * Rule 7 only: what decided it - the rig's live iRacing session, or its
+   * last laps the site stored and refused to rank. The data-flow view draws
+   * the two in different places (flow.ts).
    */
-  rigs?: string[];
+  evidence?: "session" | "laps";
 };
 
 export type Finding = {
@@ -431,8 +432,7 @@ function silence(
   const covered =
     !anyLive && (together || (venueOpen && heardAgainAt === -Infinity)) ? unexplained : [];
   if ((!anyLive && (together || venueOpen)) || venueRecovering) {
-    const quiet = [...dark, ...covered];
-    const names = quiet.map(({ rig }) => rig.name);
+    const names = [...dark, ...covered].map(({ rig }) => rig.name);
     findings.push({
       rule: "venue_silent",
       subject: VENUE_SUBJECT,
@@ -442,7 +442,6 @@ function silence(
         headline: `${names.length > 0 ? names.join(", ") : "Every rig"} went quiet together - venue closed?`,
         where: "Venue",
         fields: [{ name: "Rigs", value: names.join(", ") || "-" }],
-        rigs: quiet.map(({ rig }) => rigSubject(rig.id)),
       },
     });
   }
@@ -908,13 +907,12 @@ function seatAndLapFindings(
             `featured combo while ${driverName(rig.seated!)} is signed in - their laps will not rank`
           : `${rig.name}: its last ${COMBO_REJECTED_LAPS} laps were on the wrong ${wrongPart(decides.wrong)} ` +
             "for today's featured combo, so none of them rank";
-      findings.push(
-        finding("wrong_combo", rig, raised, headline, [
-          ...fields,
-          { name: "Today's combo", value: comboLabel(combo) },
-          { name: "Combo-rejected laps", value: String(rejected) },
-        ]),
-      );
+      const found = finding("wrong_combo", rig, raised, headline, [
+        ...fields,
+        { name: "Today's combo", value: comboLabel(combo) },
+        { name: "Combo-rejected laps", value: String(rejected) },
+      ]);
+      findings.push({ ...found, detail: { ...found.detail, evidence: decides.from } });
     }
   }
 

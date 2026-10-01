@@ -21,16 +21,23 @@ opening it posts nothing.
 
 - **Data flow** (`lib/monitor/flow.ts`, drawn by `components/rig-flow.tsx`):
   each rig as the pipeline its laps travel - iRacing, rig agent, network,
-  then the server, database, feed and TV board every rig shares. Each rule's
-  finding is placed on its node or edge (`RULE_PLACE`), coloured as the tile
-  is; the first red edge walking downstream (else the first yellow; a grey
+  then the server, database, feed and TV board every rig shares. A rig's
+  findings come from the same helper as its tile (`rigFindings`), and each is
+  placed where its evidence points (`RULE_PLACE`): on a node or edge of the
+  path; as a mark under the rig's label for laps that arrived and were stored
+  but will not rank (rules 5a, and 7 when stored laps decided it) or rank
+  pending review (rule 14), which claims no break; or, for the venue-closed
+  note, nowhere on the lanes - it is listed under Venue. The first red edge walking downstream (else the first yellow; a grey
   edge, with nothing running there, is never the break) is drawn thick with
   the finding's headline under it, and only a red one fades what lies past
   it, since nothing there can be judged. Heartbeats and laps from
   the last 10 minutes ride their routes, placed by age (fresh at the start,
   10 minutes old at the end) and moving between refreshes with CSS alone;
   laps carry their time and status, and laps queued on the rig or refused by
-  the site sit where they stopped. Under reduced motion the dots stay still.
+  the site sit where they stopped. At most one heartbeat marker is drawn per
+  2.5 minutes a lane, so 25 rigs stay a light load. Under reduced motion the
+  dots stay still. On a phone the card scrolls sideways rather than shrinking
+  the picture below its design width.
 - **A tile per rig** (`lib/monitor/rig-health.ts`): red when a rule finds
   something urgent on the rig, yellow for a warning, and the finding's
   headline on the tile. An alert that is still open keeps its colour and its

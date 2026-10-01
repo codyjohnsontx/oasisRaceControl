@@ -92,6 +92,18 @@ export function shownFindings(
   ];
 }
 
+/**
+ * What the monitor says about one rig: the findings whose subject is that rig.
+ * The tiles and the data-flow view (flow.ts) both take a rig's findings from
+ * here, from the same shownFindings, so a tile and its lane cannot disagree.
+ * A rule may name something finer than the rig (rule 11 a build, rule 14 a
+ * lap); flapScope is the rig it is about. A venue-wide finding is no rig's:
+ * the page lists it under Venue.
+ */
+export function rigFindings(findings: readonly Finding[], rigId: string): Finding[] {
+  return findings.filter((f) => flapScope(f.subject) === rigSubject(rigId));
+}
+
 export function rigTiles(
   snapshot: MonitorSnapshot,
   findings: readonly Finding[],
@@ -101,9 +113,7 @@ export function rigTiles(
     rigTile(
       snapshot.now,
       rig,
-      // A rule may name something finer than the rig (rule 11 a build, rule
-      // 14 a lap); flapScope is the rig it is about.
-      findings.filter((f) => flapScope(f.subject) === rigSubject(rig.id)),
+      rigFindings(findings, rig.id),
       lastLapAtByRig.get(rig.id) ?? null,
     ),
   );

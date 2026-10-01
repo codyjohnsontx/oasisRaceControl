@@ -1,11 +1,10 @@
 import { boardState, boardsToday } from "./event-mode";
-import { isRunning, rigLabel } from "./rig-health";
-import { rigState } from "./rig-state";
+import { isRunning, rigFindings, rigLabel } from "./rig-health";
+import { rigState, type Heartbeat } from "./rig-state";
 import {
   duration,
-  flapScope,
   monitorGap,
-  rigSubject,
+  type AlertDetail,
   type Finding,
   type MonitorSnapshot,
   type RuleKey,
@@ -49,6 +48,23 @@ export type SharedNode = "server" | "database" | "feed" | "board";
 export type Edge = 1 | 2 | 3 | 4 | 5 | 6;
 
 /**
+ * Where a finding is drawn, by what its evidence points at:
+ * - a node and/or an edge of the pipeline, where something is broken or
+ *   wrong in the path a lap travels;
+ * - a mark on the rig's lane, for laps that travelled the whole path and
+ *   were stored, but will not rank ("feed": they stop at the database) or
+ *   rank pending a person's look ("review"). Neither claims a break;
+ * - the venue: a venue-wide finding is no single rig's, and the page lists
+ *   it under Venue rather than on every lane.
+ */
+export type Place =
+  | { node?: RigNode | SharedNode; edge?: Edge }
+  | { mark: Mark }
+  | { venue: true };
+
+export type Mark = "feed" | "review";
+
+/**
  * Where each rule's finding is drawn. A Record over every RuleKey, so a new
  * rule does not compile until it is given a place in the picture. Rule 9 (the
  * site or database down) has no entry because it is not evaluated by the
@@ -56,34 +72,42 @@ export type Edge = 1 | 2 | 3 | 4 | 5 | 6;
  * answered. Rule 9b (monitor gap) is not a finding either; flowModel reads it
  * from the clock (monitorGap).
  */
-export const RULE_PLACE: Record<RuleKey, { node?: RigNode | SharedNode; edge?: Edge }> = {
+export const RULE_PLACE: Record<RuleKey, Place | ((detail: AlertDetail) => Place)> = {
   sim_disconnected: { node: "iracing", edge: 1 },
   telemetry_faulted: { node: "iracing", edge: 1 },
   missing_variables: { node: "iracing", edge: 1 },
+  // The stint it left ended while that rig's sim is still in a session.
+  driver_moved: { node: "iracing" },
+  // Rule 7 from the live session is iRacing running the wrong car or track;
+  // from stored laps (and an alert opened before rules said which), the laps
+  // arrived and were stored, and will not rank.
+  wrong_combo: (detail) => (detail.evidence === "session" ? { node: "iracing", edge: 1 } : { mark: "feed" }),
   agent_restarting: { node: "agent" },
   footprint_high: { node: "agent" },
   checkout_not_saved: { node: "agent" },
-  rig_silent: { node: "agent", edge: 2 },
-  // Its subject is the venue; it is drawn on each rig it names.
-  venue_silent: { edge: 2 },
   agent_outdated: { node: "agent" },
   sign_in_failures: { node: "agent" },
   long_stint: { node: "agent" },
-  // The stint it left ended while that rig's sim is still in a session.
-  driver_moved: { node: "iracing" },
+  rig_silent: { node: "agent", edge: 2 },
   clock_skew: { node: "network", edge: 2 },
   // The rig reaches the site (its heartbeats arrive) and its laps are not
   // being stored: the break is at the server, not on the network.
   laps_stuck: { edge: 3 },
   laps_refused: { edge: 3 },
-  // Laps the site stored but cannot rank as they are, or must have looked at.
-  unattributed_laps: { edge: 3 },
-  wrong_combo: { edge: 3 },
-  fast_lap: { edge: 3 },
+  // Stored with nobody to credit them to: they stop short of the feed.
+  unattributed_laps: { mark: "feed" },
+  // It ranks; staff decide whether it stands.
+  fast_lap: { mark: "review" },
+  venue_silent: { venue: true },
   no_featured_combo: { node: "feed", edge: 5 },
   board_dark: { node: "board", edge: 6 },
   board_feed_failing: { node: "board", edge: 6 },
 };
+
+export function placeOf(f: Pick<Finding, "rule" | "detail">): Place {
+  const place = RULE_PLACE[f.rule];
+  return typeof place === "function" ? place(f.detail) : place;
+}
 
 /**
  * Traffic is drawn from this far back. A dot's place along its route is its
@@ -106,6 +130,9 @@ export type Traveller =
 /** Laps that have not moved: still in the rig's outbox, or refused by the site and parked. */
 export type HeldLaps = { status: "queued" | "refused"; count: number };
 
+/** A lane's data-quality mark: the worst finding placed there. */
+export type FlowMark = { mark: Mark; state: "red" | "yellow"; reason: string };
+
 export type FlowLane = {
   rigId: string;
   label: string;
@@ -115,6 +142,7 @@ export type FlowLane = {
   broken: 1 | 2 | 3 | null;
   traffic: Traveller[];
   held: HeldLaps[];
+  marks: FlowMark[];
 };
 
 export type FlowModel = {
@@ -129,6 +157,7 @@ export type FlowModel = {
 };
 
 const RIG_NODES: RigNode[] = ["iracing", "agent", "network"];
+const MARKS: Mark[] = ["feed", "review"];
 const SHARED_NODES: SharedNode[] = ["server", "database", "feed", "board"];
 
 export function flowModel(
@@ -154,14 +183,17 @@ export function flowModel(
       base(running),
     ];
 
-    // A rule may name something finer than the rig (rule 11 a build, rule 14
-    // a lap); flapScope is the rig it is about. A venue note names its rigs.
-    const subject = rigSubject(rig.id);
-    const mine = findings.filter(
-      (f) => flapScope(f.subject) === subject || f.detail.rigs?.includes(subject),
-    );
-    for (const f of mine) {
-      const place = RULE_PLACE[f.rule];
+    const marks: FlowMark[] = [];
+    for (const f of rigFindings(findings, rig.id)) {
+      const place = placeOf(f);
+      if ("venue" in place) continue;
+      if ("mark" in place) {
+        const state = COLOUR[f.severity];
+        const at = marks.find((m) => m.mark === place.mark);
+        if (!at) marks.push({ mark: place.mark, state, reason: f.detail.headline });
+        else if (at.state === "yellow" && state === "red") Object.assign(at, { state, reason: f.detail.headline });
+        continue;
+      }
       if (place.node && place.node in nodes) mark(nodes[place.node as RigNode], f);
       if (place.edge && place.edge <= 3) mark(edges[place.edge - 1]!, f);
     }
@@ -180,14 +212,12 @@ export function flowModel(
       edges,
       broken: broken as FlowLane["broken"],
       traffic: [
-        ...rig.heartbeats
-          .filter((h) => now - h.receivedAt < TRAFFIC_WINDOW_MS)
-          .map((h): Traveller => ({
-            kind: "heartbeat",
-            id: h.id,
-            ageMs: Math.max(0, now - h.receivedAt),
-            goodbye: h.shuttingDown,
-          })),
+        ...heartbeatMarkers(rig.heartbeats, now).map((h): Traveller => ({
+          kind: "heartbeat",
+          id: h.id,
+          ageMs: Math.max(0, now - h.receivedAt),
+          goodbye: h.shuttingDown,
+        })),
         ...snapshot.laps
           .filter((l) => l.rigId === rig.id && now - l.receivedAt < TRAFFIC_WINDOW_MS)
           .map((l): Traveller => ({
@@ -198,6 +228,7 @@ export function flowModel(
             status: l.valid ? "accepted" : l.driver === null ? "unattributed" : "invalid",
           })),
       ],
+      marks: marks.sort((a, b) => MARKS.indexOf(a.mark) - MARKS.indexOf(b.mark)),
       held: [
         { status: "queued" as const, count: state?.pendingLaps ?? 0 },
         { status: "refused" as const, count: state?.rejectedLaps ?? 0 },
@@ -239,7 +270,8 @@ function sharedParts(
   // Only venue and board rules have a place here; a rig's are on its lane.
   const shared = new Set<string>(SHARED_NODES);
   for (const f of findings) {
-    const place = RULE_PLACE[f.rule];
+    const place = placeOf(f);
+    if ("venue" in place || "mark" in place) continue;
     if (place.node && shared.has(place.node)) mark(nodes[place.node as SharedNode], f);
     if (place.edge && place.edge >= 4) mark(edges[place.edge - 4]!, f);
   }
@@ -251,6 +283,26 @@ function sharedParts(
     SHARED_NODES.slice(index).forEach((n) => dim(nodes[n]));
   }
   return { nodes, edges, broken: index === null ? null : ((index + 3) as 4 | 5 | 6) };
+}
+
+/**
+ * A rig heartbeats every minute, so ten minutes of them is ten dots a lane and
+ * hundreds of moving markers at twenty-five rigs. At most one is drawn per
+ * HEARTBEAT_MARKER_EVERY_MS, newest first: a goodbye always, since it says
+ * how the stream ended. The spacing still shows a steady stream, a gap, or a
+ * rig backing off.
+ */
+export const HEARTBEAT_MARKER_EVERY_MS = 2.5 * 60_000;
+
+function heartbeatMarkers(heartbeats: readonly Heartbeat[], now: number): Heartbeat[] {
+  const kept: Heartbeat[] = [];
+  for (let i = heartbeats.length - 1; i >= 0; i--) {
+    const h = heartbeats[i]!;
+    if (now - h.receivedAt >= TRAFFIC_WINDOW_MS) break;
+    const last = kept.at(-1);
+    if (!last || h.shuttingDown || last.receivedAt - h.receivedAt >= HEARTBEAT_MARKER_EVERY_MS) kept.push(h);
+  }
+  return kept.reverse();
 }
 
 /**
@@ -272,7 +324,7 @@ function part(state: FlowState): FlowPart {
   return { state, reason: null, dimmed: false };
 }
 
-const COLOUR: Record<Severity, FlowState> = { urgent: "red", warning: "yellow" };
+const COLOUR: Record<Severity, "red" | "yellow"> = { urgent: "red", warning: "yellow" };
 
 /** The worst finding on a part colours it; the first of equals gives the reason. */
 function mark(p: FlowPart, f: Finding) {
