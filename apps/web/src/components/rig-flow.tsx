@@ -22,8 +22,10 @@ import { formatLapTime } from "@/lib/time";
  * its design width (W, at 1px a unit): below that the card scrolls sideways,
  * so a phone reads the status text at its designed size instead of a
  * shrunken picture. Dots step once a second rather than every frame - at
- * about a unit a second they look the same - and carry no filter, so twenty
- * five lanes of traffic stay a light load for the browser.
+ * about a unit a second they look the same - and carry no filter. Every
+ * heartbeat is drawn, so a missed one shows as a gap, but only a lane's
+ * newest one moves; the rest sit where their age put them at the last
+ * refresh. With the laps, that keeps twenty five lanes a light load.
  */
 
 const W = 960;
@@ -96,6 +98,7 @@ const STYLE = `
 [data-status="queued"] { color: var(--gold); }
 [data-status="refused"] { color: var(--invalid); }
 .flow-dot { animation: flow-travel ${WINDOW_S}s steps(${WINDOW_S}) both; }
+.flow-dot[data-still] { animation: none; offset-distance: var(--at); }
 @keyframes flow-travel { from { offset-distance: 0%; } to { offset-distance: 100%; } }
 @keyframes flow-pulse { from { stroke-opacity: 1; } to { stroke-opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {
@@ -155,11 +158,18 @@ export function RigFlow({ model }: { model: FlowModel }) {
       {/* Traffic over every line and node. Keyed by the render's clock: a
           refresh restarts every dot from its new age. */}
       <g key={model.now}>
-        {lanes.map((lane, i) =>
-          lane.traffic.map((t) => (
-            <Dot key={`${lane.rigId}:${t.kind}:${t.id}`} traveller={t} y={laneY(i)} sharedY={sharedY} />
-          )),
-        )}
+        {lanes.map((lane, i) => {
+          const newest = newestHeartbeat(lane.traffic);
+          return lane.traffic.map((t) => (
+            <Dot
+              key={`${lane.rigId}:${t.kind}:${t.id}`}
+              traveller={t}
+              still={t.kind === "heartbeat" && t !== newest}
+              y={laneY(i)}
+              sharedY={sharedY}
+            />
+          ));
+        })}
       </g>
       {lanes.map((lane, i) =>
         lane.held.map((h) => (
@@ -230,7 +240,17 @@ function Lane({ lane, y, sharedY }: { lane: FlowLane; y: number; sharedY: number
   );
 }
 
-function Dot({ traveller: t, y, sharedY }: { traveller: Traveller; y: number; sharedY: number }) {
+function Dot({
+  traveller: t,
+  still,
+  y,
+  sharedY,
+}: {
+  traveller: Traveller;
+  still: boolean;
+  y: number;
+  sharedY: number;
+}) {
   const at = Math.min(1, t.ageMs / TRAFFIC_WINDOW_MS);
   const route =
     t.kind === "heartbeat"
@@ -240,13 +260,19 @@ function Dot({ traveller: t, y, sharedY }: { traveller: Traveller; y: number; sh
         (t.status === "accepted" ? ` L ${X.feed} ${sharedY}` : "");
   const style = {
     offsetPath: `path("${route}")`,
-    animationDelay: `${-t.ageMs / 1000}s`,
+    ...(still ? {} : { animationDelay: `${-t.ageMs / 1000}s` }),
     "--at": `${(at * 100).toFixed(2)}%`,
   } as CSSProperties;
 
   if (t.kind === "heartbeat") {
     return (
-      <g className="flow-dot" data-kind="heartbeat" data-goodbye={t.goodbye || undefined} style={style}>
+      <g
+        className="flow-dot"
+        data-kind="heartbeat"
+        data-goodbye={t.goodbye || undefined}
+        data-still={still || undefined}
+        style={style}
+      >
         <circle r={2.5} />
       </g>
     );
@@ -266,6 +292,13 @@ function Dot({ traveller: t, y, sharedY }: { traveller: Traveller; y: number; sh
       {labelled && <text y={LABEL_Y}>{formatLapTime(t.lapTimeMs)}</text>}
     </g>
   );
+}
+
+/** The heartbeat that moves: the lane's freshest. */
+function newestHeartbeat(traffic: readonly Traveller[]): Traveller | undefined {
+  let newest: Traveller | undefined;
+  for (const t of traffic) if (t.kind === "heartbeat" && (!newest || t.ageMs < newest.ageMs)) newest = t;
+  return newest;
 }
 
 /** Laps that are not moving: queued on the rig, or refused just short of the server. */

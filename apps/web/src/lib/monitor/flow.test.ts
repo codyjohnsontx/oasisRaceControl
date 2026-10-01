@@ -463,7 +463,7 @@ describe("flowModel", () => {
     const m = model(snapshot([rig(1, minutely(14 * MIN))], { laps }));
     const traffic = m.lanes[0]!.traffic;
     expect(traffic.filter((t) => t.kind === "heartbeat").map((t) => t.ageMs)).toEqual(
-      [9, 6, 3, 0].map((n) => n * MIN),
+      [9, 8, 7, 6, 5, 4, 3, 2, 1, 0].map((n) => n * MIN),
     );
     expect(traffic.filter((t) => t.kind === "lap")).toEqual([
       { kind: "lap", id: "a", ageMs: 1 * MIN, lapTimeMs: 137_217, status: "accepted" },

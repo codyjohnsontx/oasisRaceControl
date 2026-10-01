@@ -55,6 +55,7 @@ describe("RigFlow", () => {
         lane({
           traffic: [
             { kind: "heartbeat", id: "h1", ageMs: 30_000, goodbye: false },
+            { kind: "heartbeat", id: "h2", ageMs: 90_000, goodbye: false },
             { kind: "lap", id: "l1", ageMs: 60_000, lapTimeMs: 137_217, status: "accepted" },
             { kind: "lap", id: "l2", ageMs: 540_000, lapTimeMs: 140_001, status: "invalid" },
             { kind: "lap", id: "l3", ageMs: 240_000, lapTimeMs: 138_000, status: "accepted" },
@@ -94,6 +95,14 @@ describe("RigFlow", () => {
     expect(html).toContain("animation-delay:-60s;--at:10.00%");
     expect(html).toContain("@media (prefers-reduced-motion: reduce)");
     expect(html).toMatch(/prefers-reduced-motion: reduce\) \{\s*\.flow-dot \{ animation: none; offset-distance: var\(--at\); \}/);
+  });
+
+  it("moves only a lane's newest heartbeat and leaves the older ones where their age puts them", () => {
+    expect(html.match(/data-kind="heartbeat"/g)).toHaveLength(2);
+    expect(html).toMatch(/data-kind="heartbeat" style="[^"]*animation-delay:-30s;--at:5.00%"/);
+    expect(html).toMatch(/data-kind="heartbeat" data-still="true" style="offset-path:[^"]*;--at:15.00%"/);
+    expect(html).not.toContain("animation-delay:-90s");
+    expect(html).toMatch(/\.flow-dot\[data-still\] \{ animation: none; offset-distance: var\(--at\); \}/);
   });
 
   it("labels a lap with its status and its time while it is on its rig's lane", () => {
@@ -142,9 +151,9 @@ describe("RigFlow", () => {
 
 /**
  * The venue runs 20-25 rigs, each heartbeating every minute. Rendered from the
- * real model, twenty-five busy lanes must stay a bounded number of moving
- * markers: heartbeats are thinned per lane (HEARTBEAT_MARKER_EVERY_MS), laps
- * are each drawn.
+ * real model, twenty-five busy lanes draw every heartbeat and lap of the last
+ * ten minutes, but stay a bounded number of moving markers: one heartbeat a
+ * lane, and the laps.
  */
 describe("RigFlow at twenty-five rigs", () => {
   const NOW = Date.parse("2026-10-04T21:00:00Z");
@@ -216,13 +225,16 @@ describe("RigFlow at twenty-five rigs", () => {
   const flow = flowModel(snap, evaluateRules(snap), NOW);
   const html = renderToStaticMarkup(<RigFlow model={flow} />);
 
-  it("draws every lane with at most four heartbeat markers and every lap", () => {
+  it("draws every heartbeat and lap, moving one heartbeat a lane and every lap", () => {
     expect(flow.lanes).toHaveLength(25);
     for (const l of flow.lanes) {
-      expect(l.traffic.filter((t) => t.kind === "heartbeat").length, l.label).toBeLessThanOrEqual(4);
+      expect(l.traffic.filter((t) => t.kind === "heartbeat").length, l.label).toBe(10);
     }
-    expect(html.match(/data-kind="heartbeat"/g)!.length).toBeLessThanOrEqual(25 * 4);
+    expect(html.match(/data-kind="heartbeat"/g)).toHaveLength(25 * 10);
+    expect(html.match(/data-still="true"/g)).toHaveLength(25 * 9);
+    expect(html.match(/animation-delay:/g)).toHaveLength(25 + 25 * 5);
     expect(html.match(/data-kind="lap"/g)).toHaveLength(25 * 5);
+    expect(html).not.toMatch(/class="flow-dot"[^>]*filter/);
   });
 });
 

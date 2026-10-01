@@ -1,6 +1,6 @@
 import { boardState, boardsToday } from "./event-mode";
 import { isRunning, rigFindings, rigLabel } from "./rig-health";
-import { rigState, type Heartbeat } from "./rig-state";
+import { rigState } from "./rig-state";
 import {
   duration,
   monitorGap,
@@ -212,12 +212,14 @@ export function flowModel(
       edges,
       broken: broken as FlowLane["broken"],
       traffic: [
-        ...heartbeatMarkers(rig.heartbeats, now).map((h): Traveller => ({
-          kind: "heartbeat",
-          id: h.id,
-          ageMs: Math.max(0, now - h.receivedAt),
-          goodbye: h.shuttingDown,
-        })),
+        ...rig.heartbeats
+          .filter((h) => now - h.receivedAt < TRAFFIC_WINDOW_MS)
+          .map((h): Traveller => ({
+            kind: "heartbeat",
+            id: h.id,
+            ageMs: Math.max(0, now - h.receivedAt),
+            goodbye: h.shuttingDown,
+          })),
         ...snapshot.laps
           .filter((l) => l.rigId === rig.id && now - l.receivedAt < TRAFFIC_WINDOW_MS)
           .map((l): Traveller => ({
@@ -283,26 +285,6 @@ function sharedParts(
     SHARED_NODES.slice(index).forEach((n) => dim(nodes[n]));
   }
   return { nodes, edges, broken: index === null ? null : ((index + 3) as 4 | 5 | 6) };
-}
-
-/**
- * A rig heartbeats every minute, so ten minutes of them is ten dots a lane and
- * hundreds of moving markers at twenty-five rigs. At most one is drawn per
- * HEARTBEAT_MARKER_EVERY_MS, newest first: a goodbye always, since it says
- * how the stream ended. The spacing still shows a steady stream, a gap, or a
- * rig backing off.
- */
-export const HEARTBEAT_MARKER_EVERY_MS = 2.5 * 60_000;
-
-function heartbeatMarkers(heartbeats: readonly Heartbeat[], now: number): Heartbeat[] {
-  const kept: Heartbeat[] = [];
-  for (let i = heartbeats.length - 1; i >= 0; i--) {
-    const h = heartbeats[i]!;
-    if (now - h.receivedAt >= TRAFFIC_WINDOW_MS) break;
-    const last = kept.at(-1);
-    if (!last || h.shuttingDown || last.receivedAt - h.receivedAt >= HEARTBEAT_MARKER_EVERY_MS) kept.push(h);
-  }
-  return kept.reverse();
 }
 
 /**

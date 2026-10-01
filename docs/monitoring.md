@@ -34,9 +34,10 @@ opening it posts nothing.
   the last 10 minutes ride their routes, placed by age (fresh at the start,
   10 minutes old at the end) and moving between refreshes with CSS alone;
   laps carry their time and status, and laps queued on the rig or refused by
-  the site sit where they stopped. At most one heartbeat marker is drawn per
-  2.5 minutes a lane, so 25 rigs stay a light load. Under reduced motion the
-  dots stay still. On a phone the card scrolls sideways rather than shrinking
+  the site sit where they stopped. Every heartbeat is drawn, so a missed one
+  shows as a gap, but only a lane's newest one moves - the rest stay where
+  their age put them at the last refresh - so 25 rigs stay a light load.
+  Under reduced motion the dots stay still. On a phone the card scrolls sideways rather than shrinking
   the picture below its design width.
 - **A tile per rig** (`lib/monitor/rig-health.ts`): red when a rule finds
   something urgent on the rig, yellow for a warning, and the finding's
