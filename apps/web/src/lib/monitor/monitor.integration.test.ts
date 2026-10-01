@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/lib/db";
 import { CURRENT_AGENT_VERSION } from "./agent-version";
+import { flowModel } from "./flow";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
 import commentCreated from "./fixtures/github-comment-created.json";
 import issueCreated from "./fixtures/github-issue-created.json";
@@ -2018,6 +2019,54 @@ describeDb("rig monitor against real Postgres", () => {
       ["recovered", false],
     ]);
     expect(listed[1]!.openedAt).toBeGreaterThan(listed[2]!.openedAt);
+  });
+
+  it("gives the data-flow view the snapshot's last ten minutes of laps, aged by when the site stored them", async () => {
+    const rig = await seedRig(3);
+    const driver = await seedDriver("Matt G");
+    const assignment = await openAssignment(rig.id, driver.id);
+    for (const ago of [540, 480, 420, 360, 300, 240, 180, 120, 60, 0]) await heartbeat(rig, ago);
+    // [completed, stored] seconds ago: a lap an outbox held for a while is
+    // aged by when it arrived, not when it was driven.
+    const laps: Array<[number, number, boolean, boolean]> = [
+      [700, 690, true, true], // in the snapshot, but older than the traffic window
+      [500, 60, true, true],
+      [200, 190, false, true],
+      [100, 95, false, false],
+    ];
+    for (const [completed, stored, valid, attributed] of laps) {
+      await testDb().query(
+        `insert into laps (event_id, rig_id, rig_assignment_id, driver_id, track_name, car_name,
+           lap_time_ms, is_valid, invalid_reason, unattributed_cause, completed_at, created_at)
+         values (gen_random_uuid()::text, $1, $2, $3, 'Spa', 'Porsche', 137217, $4, $5, $6,
+           now() - make_interval(secs => $7), now() - make_interval(secs => $8))`,
+        [
+          rig.id,
+          attributed ? assignment : null,
+          attributed ? driver.id : null,
+          valid,
+          valid ? null : attributed ? "OFF_TRACK" : "UNATTRIBUTED",
+          attributed ? null : "nobody_checked_in",
+          completed,
+          stored,
+        ],
+      );
+    }
+
+    const clock = await monitorClock(db());
+    const snapshot = await loadSnapshot(db(), clock.now);
+    const [lane] = flowModel(snapshot, evaluateRules(snapshot), clock.now).lanes;
+    expect(lane!.broken).toBeNull();
+    expect(lane!.nodes.agent.state).toBe("green");
+    const lapTraffic = lane!.traffic.filter((t) => t.kind === "lap");
+    expect(lapTraffic.map((t) => [t.status, Math.round(t.ageMs / 1000)])).toEqual([
+      ["invalid", 190],
+      ["unattributed", 95],
+      ["accepted", 60],
+    ]);
+    expect(
+      lane!.traffic.filter((t) => t.kind === "heartbeat").map((t) => Math.round(t.ageMs / 1000)),
+    ).toEqual([540, 480, 420, 360, 300, 240, 180, 120, 60, 0]);
   });
 
   it("passes the read-only verify the owner runs after hand-applying 0006", async () => {

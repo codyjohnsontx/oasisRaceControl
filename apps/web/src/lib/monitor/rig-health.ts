@@ -96,6 +96,18 @@ export function shownFindings(
   ];
 }
 
+/**
+ * What the monitor says about one rig: the findings whose subject is that rig.
+ * The tiles and the data-flow view (flow.ts) both take a rig's findings from
+ * here, from the same shownFindings, so a tile and its lane cannot disagree.
+ * A rule may name something finer than the rig (rule 11 a build, rule 14 a
+ * lap); flapScope is the rig it is about. A venue-wide finding is no rig's:
+ * the page lists it under Venue.
+ */
+export function rigFindings(findings: readonly Finding[], rigId: string): Finding[] {
+  return findings.filter((f) => flapScope(f.subject) === rigSubject(rigId));
+}
+
 export function rigTiles(
   snapshot: MonitorSnapshot,
   findings: readonly Finding[],
@@ -105,9 +117,7 @@ export function rigTiles(
     rigTile(
       snapshot.now,
       rig,
-      // A rule may name something finer than the rig (rule 11 a build, rule
-      // 14 a lap); flapScope is the rig it is about.
-      findings.filter((f) => flapScope(f.subject) === rigSubject(rig.id)),
+      rigFindings(findings, rig.id),
       lastLapAtByRig.get(rig.id) ?? null,
     ),
   );
@@ -117,7 +127,7 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
   const state = rigState(rig.heartbeats);
   const neverSeen = rig.lastSeenAt === null && state === null;
   const quiet = rig.lastSeenAt === null ? null : now - rig.lastSeenAt;
-  const running = !neverSeen && !state?.shuttingDown && quiet !== null && quiet <= SILENT_AFTER_MS;
+  const running = isRunning(now, rig, state);
   const oldAgent = state !== null && isOldAgent(state);
 
   // A problem outranks the seat: a seated rig that is broken is red, not green.
@@ -133,7 +143,7 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
 
   return {
     id: rig.id,
-    label: `R${String(rig.number).padStart(2, "0")}`,
+    label: rigLabel(rig),
     colour,
     status: neverSeen
       ? "never seen"
@@ -184,6 +194,21 @@ export function problems(findings: readonly Finding[]): Problem[] {
     }
   }
   return [...lines.values()];
+}
+
+/** "R01": how the tiles and the data-flow view name a rig. */
+export function rigLabel(rig: Pick<RigSnapshot, "number">): string {
+  return `R${String(rig.number).padStart(2, "0")}`;
+}
+
+/**
+ * The rig reached the site within SILENT_AFTER_MS and its standing state is
+ * not a goodbye: an agent that is up and reporting.
+ */
+export function isRunning(now: number, rig: RigSnapshot, state: Heartbeat | null): boolean {
+  return (
+    rig.lastSeenAt !== null && !state?.shuttingDown && now - rig.lastSeenAt <= SILENT_AFTER_MS
+  );
 }
 
 /** A v1 heartbeat: the rules that need its fields cannot fire on this rig. */

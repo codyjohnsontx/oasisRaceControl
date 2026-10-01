@@ -70,6 +70,7 @@ function render(tiles: RigTile[], alerts: RigHealthAlert[] = ALERTS): string {
   return renderToStaticMarkup(
     <StaffRigHealth
       staffName="Cody"
+      flow={null}
       tiles={tiles}
       venueProblems={[{ severity: "urgent", headline: "No featured car and track for Oct 4" }]}
       event={{ on: true, line: "started by Cody until midnight", override: "on" }}
