@@ -23,9 +23,10 @@ opening it posts nothing.
   each rig as the pipeline its laps travel - iRacing, rig agent, network,
   then the server, database, feed and TV board every rig shares. Each rule's
   finding is placed on its node or edge (`RULE_PLACE`), coloured as the tile
-  is; the first red edge walking downstream (else the first yellow) is drawn
-  thick with the finding's headline under it, and only a red one fades what
-  lies past it, since nothing there can be judged. Heartbeats and laps from
+  is; the first red edge walking downstream (else the first yellow; a grey
+  edge, with nothing running there, is never the break) is drawn thick with
+  the finding's headline under it, and only a red one fades what lies past
+  it, since nothing there can be judged. Heartbeats and laps from
   the last 10 minutes ride their routes, placed by age (fresh at the start,
   10 minutes old at the end) and moving between refreshes with CSS alone;
   laps carry their time and status, and laps queued on the rig or refused by
