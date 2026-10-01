@@ -290,7 +290,13 @@ notices as codes - that never carries a rig's own strings (plan decision D9:
 the free Gemini tier may train on prompts, and the handoff is pasted into a
 coding harness and this public repository's issues). Do not add a rig string
 to it behind a redaction regex; add a field of a vouchable kind, and keep
-model text going through `modelText`.
+model text going through `modelText`. A rule that compares a rig with
+today's combo uses ingestion's own `comboMismatch` (`validity.ts`), never a
+second comparison. Bumping the agent's `AgentVersion` (`AgentConfig.cs`)
+bumps `CURRENT_AGENT_VERSION` (`monitor/agent-version.ts`) in the same
+commit - `agent-version.test.ts` fails otherwise - and from that deploy
+every rig on the old build shows rule 11's warning until the exe is
+replaced.
 
 ## The twenty-rig soak
 

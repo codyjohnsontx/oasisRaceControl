@@ -38,8 +38,15 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 | 2 | iRacing not connected while a driver is signed in | a seated rig's agent has reported iRacing disconnected for 3 min (counted from when the driver sat down) | iRacing connects, or the stint ends | urgent |
 | 3a | Laps queued but not reaching the site | a lap has waited over 2 min while at least two heartbeats got through | the queue drains | urgent |
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
+| 5a | Laps with nobody signed in | 2 laps inside 10 min that the agent said nobody was signed in for, since the rig's last lap that reached a driver | a lap reaches a driver, or 15 min pass without another | warning; urgent in event mode |
+| 5b | Unusually long stint | a driver has been signed in longer than `monitor_state.long_stint_minutes` (2 h unless staff change it), on a rig that is switched on and reporting | the stint ends | warning |
+| 6 | Repeated sign-in failures | 3 walk-up sign-ins refused on one rig inside 5 min; the message names the kinds (wrong PIN or name, locked out, ...). Needs `rig-agent/0.5-monitor` (below) | 10 min without one | warning |
+| 7 | Wrong car or track | today has a featured combo, and a seated rig's iRacing session is on another car or track, or the rig's last 3 laps inside 15 min were all refused for the combo | the session matches, or a valid lap lands - whichever of the two signals was heard last decides | warning; urgent in event mode |
 | 10 | Rig agent restarting repeatedly | 3 agent starts within 15 min | the starts age out of the 15 min | urgent |
+| 11 | Outdated rig agent | a rig that is switched on and reporting runs an agent build other than `CURRENT_AGENT_VERSION` | it reports the current build | warning, once per rig per version |
 | 12 | Rig clock is off | the rig's clock is over 5 min from the server's | under 2 min | urgent |
+| 13 | Driver moved rigs mid-session | a driver signed in on another rig, and within 10 min the rig they left, with nobody signed in, is still in an iRacing session | 10 min after the move | warning |
+| 14 | Implausibly fast lap | a valid lap over 3% under the best any other driver had on that car and track before it, once 5 other drivers have one | never announced: the alert closes quietly once the lap is 15 min old | warning |
 | 15 | Lap reading stopped | the agent says its iRacing reader faulted | the agent restarts without the fault | urgent |
 | 16 | Sign-out not saved | the agent could not save a sign-out | it is saved | warning |
 | 17 | iRacing build missing variables | iRacing does not publish a variable the agent reads | an attached iRacing publishes them all | warning |
@@ -71,9 +78,117 @@ Details worth knowing:
   the agent forgets what iRacing publishes whenever iRacing goes; with none in
   view an open alert holds. The rest are about a running agent and stop at
   goodbye.
+- **Event mode raises rules 5a and 7 to urgent.** Event mode itself arrives
+  with plan PR 4; until then it is off everywhere (`inEventMode` in
+  `rules.ts` is the one place that reads it), so both stay warnings. An
+  alert already open follows the mode: a warning that becomes urgent is
+  announced once more, with the mention (held to the end of a flapping mute
+  if it is muted), and an urgent one that becomes a warning changes quietly -
+  a post that had not got through yet goes out as a warning, without the
+  mention or a diagnosis. One function, `moveSeverity` in `store.ts`, makes
+  that move for every rule.
+- **Rules 5a, 5b, 7 (its laps half) and 14 need nothing new from the rig**:
+  they read laps, stints and today's combo, so they work for an agent too old
+  to send more than its version. Rule 7's session half and rule 13 (which
+  needs the rig it left to report the sim in a session) need
+  `rig-agent/0.4-monitor` or later; rule 6 needs `rig-agent/0.5-monitor`.
+- **Rule 7 judges the combo exactly as ingestion does** (`comboMismatch` in
+  `validity.ts`), so it never calls a session right whose laps will be
+  refused. Its message names today's combo and which part is wrong, never the
+  rig's own session strings. Its two inputs are signals at the moment each was
+  heard - a wrong session at its heartbeat while a driver is seated, the
+  last right session the rig reported (only when its current session, by
+  send order, is not a wrong one), a run of 3 refused laps at the last
+  of them, a valid lap at its arrival - and the newest decides, so putting
+  the car right clears the alert at the next heartbeat even with the refused
+  laps still in view, it stays clear when the driver then signs out or quits
+  iRacing, and a wrong session heard after a valid lap opens it again. Like
+  rule 5b it opens only on a live rig, so a switched-off rig's refused laps
+  cannot reopen it when staff change today's combo; an open alert holds.
+- **Rule 11's version is `CURRENT_AGENT_VERSION`** in
+  `src/lib/monitor/agent-version.ts`, a copy of `AgentVersion` in
+  `apps/rig-agent/OasisRigAgent.Core/AgentConfig.cs` that
+  `agent-version.test.ts` keeps equal. Bump both in the agent's release
+  commit: from its deploy on, every rig still on the old build shows a quiet
+  warning until the new exe is installed. It fires once per rig per version:
+  the alert's subject names `CURRENT_AGENT_VERSION`, so a new release opens a
+  fresh alert naming it, while the one naming the earlier release stays open
+  until the rig reports the current build.
+- **Rules 5b and 11 open only on a rig that is switched on and reporting** -
+  heard in the last 2 min, and not after a goodbye - so a rig that went dark
+  with the venue stays quiet until it is switched on again: a stint left open
+  at closing, or a release made after closing, posts nothing overnight. An
+  alert already open holds through a goodbye or a silence.
+- **Rule 6 counts each refusal once.** A heartbeat reports every refusal the
+  site has not acknowledged, so after a lost answer the next one reports the
+  same refusals again. `rig-agent/0.5-monitor` and later send each refusal's own
+  sequence number (`signInFailureSeqs`), and the monitor counts each once per
+  agent process. A heartbeat without them - `rig-agent/0.4-monitor` and older
+  - is still stored but does not feed rule 6 at all, since a replayed count
+  cannot be told from new refusals; rule 11 already asks for the upgrade.
+- **Rule 13 is the move, not two stints at once.** A driver cannot hold two
+  stints: `one_open_assignment_per_driver` in `0001_core_schema.sql` forbids
+  it, and signing in on a second rig ends the first with `end_reason =
+  'moved'`. What goes wrong is the rig left behind: whoever is still driving
+  it is now signed in as nobody.
+- **Rule 14 never changes a lap.** It flags the lap for staff to look at;
+  validity is decided once, at ingestion, and a flagged lap ranks until staff
+  invalidate it by hand. Each lap is its own alert (subject
+  `rig:<id>|lap:<id>`), compared only with laps stored before it, so a later
+  lap never changes the verdict on an earlier one. The laps of one rig flap
+  together, so a run of them on a bad rig is muted like any flapping rule,
+  and when that mute ends one quiet summary lists every lap flagged in it
+  (see [Flapping](#flapping)).
 - **A driver is named in an alert only while their account is active.** A
   name under review (or a banned driver) reads "a driver (name under review)",
   in Discord and in `monitor_alerts`, as the public leaderboard hides them.
+
+## Flapping
+
+An alert that opens for the fourth time on the same rule and rig within an
+hour - three re-fires after the first - is flapping. "Rig" is the part of the
+alert's subject before its first `|` (`flapScope` in `rules.ts`), so rule
+14's per-lap alerts and rule 11's per-build ones count together for their
+rig. Instead of itself it
+posts one quiet line, `🔕 Flapping: <rule> - <rig> has fired 4 times in the
+last hour; muted for 1 h`, and for the hour after that line nothing on that
+rule and rig is posted: no openings, recoveries, rises or AI diagnosis. The
+alerts are still stored (`monitor_alerts.refire_count` counts each one's
+earlier openings in the hour, and is at least 3 for one opened inside a
+mute) and still open while the problem lasts, so the
+Rig health page shows them. When the hour is up, an alert of the mute that is
+still open - the one that posted the line, or one opened since - posts its
+opening once, with the problem as it stands then, and from then on rises and
+recovers like any other; one that closed inside the hour is never posted. After
+that the rule posts normally again; if it is still flapping, the next mute line
+says so.
+
+Rule 14 ends its mute differently, because each of its alerts is one lap that
+staff should see. None of the muted laps is posted on its own. When the hour is
+up, one quiet summary lists the laps flagged during the mute, including the
+lap whose opening the mute line replaced and laps whose alerts have already
+closed. Each line gives only the rig, the lap time and the driver, with a name
+under review masked as it is everywhere else, so no line is ever cut. Where the
+laps were driven is said once, in every message's first line. A lap's own car
+and track strings come from the rig, so they are never shown: laps on today's
+featured combo are counted under the combo's label, and any others as "another
+car and track" (for example "2 on today's featured combo (...) and 1 on another
+car and track"). A long list is split on whole lines, 25 laps to a
+message, across at most three messages, each marked "part 1 of 3" and so on (a
+summary that fits in one message carries no mark). If laps remain after three
+messages, the last one ends with "and N more implausible laps on Rig X this
+hour": a rig flagging that many laps has a broken detector, and the count is
+what staff act on. The full list belongs on the planned Rig health page.
+
+The summary posts once per mute. A part Discord refuses is retried like any
+other post, starting from that part, so a part Discord already took is not
+posted again. Which laps a part holds depends only on how many laps the mute
+flagged, so a retry resumes at the same lap even if the featured combo or a
+driver's name status changed in between. No column exists for the summary, so the mute-starting alert's
+own columns record it: `recovery_attempted_at` claims it, `level` counts the
+parts posted, and `recovery_notified_at` marks it done. Rule 14 never posts a
+recovery and its level never moves, so nothing else uses those columns on its
+alerts (`claimFastLapSummaries` in `store.ts`).
 
 ## Discord
 
@@ -87,7 +202,8 @@ it lives there and nowhere in the repository.
 
 A post that fails (Discord down, rate-limited) is retried by a later
 evaluation, no sooner than a minute after the last attempt, until an hour
-after the alert opened (or its count last rose) - however long the problem
+after the alert opened (or its count last rose, or the [flapping](#flapping)
+mute it was held by ended) - however long the problem
 itself lasts - and never by two evaluations at once. An alert that came and
 went while Discord was down posts its opening late and then its recovery,
 never a lone "recovered".
@@ -116,7 +232,8 @@ tick answers its clock before the model is called: the diagnosis runs in
 that fails or takes over 20 s leaves a retry marker, and an evaluation at
 least a minute later tries once more; if that fails too, the handoff is
 posted anyway with "no diagnosis" in place of the model's lines. Nothing is
-diagnosed twice, and a post Discord refused is retried like an alert's.
+diagnosed twice, and a post Discord refused is retried like an alert's, for
+an hour after the diagnosis was made.
 
 **Nothing a rig typed leaves.** A heartbeat's strings - session names,
 agent notices, variable names - are whatever the rig, or anyone holding its

@@ -104,6 +104,13 @@ export const heartbeatEvent = z.object({
   /** Walk-up sign-in failures since the previous heartbeat, and their kinds. */
   signInFailures: count.optional(),
   signInFailureKinds: z.array(z.enum(SIGN_IN_FAILURE_KINDS)).max(10).optional(),
+  /**
+   * The agent's own sequence number for each of those failures, the newest
+   * ten. A heartbeat whose answer was lost is followed by one reporting the
+   * same failures under a new `sequence`; these let the monitor count each
+   * failure once (rule 6 in src/lib/monitor/rules.ts). Stored in `payload`.
+   */
+  signInFailureSeqs: z.array(z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)).max(10).optional(),
   /** Agent notices raised since the previous heartbeat. */
   notices: z.array(z.string().max(200)).max(10).optional(),
   /** The agent's own footprint: the live version of R0's measurement. */

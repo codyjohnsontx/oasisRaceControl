@@ -569,6 +569,7 @@ public sealed class AgentService : IAsyncDisposable
                 LastLapPostedAt = _lastLapPostedAt,
                 SignInFailures = _unreportedSignInFailures.Count,
                 SignInFailureKinds = _unreportedSignInFailures.Select(f => f.Kind).ToArray(),
+                SignInFailureSeqs = _unreportedSignInFailures.Select(f => f.Seq).ToArray(),
                 Notices = _unreportedNotices.Select(n => n.Text).ToArray(),
                 AgentCpuPercent = footprint.CpuPercent,
                 AgentMemoryMb = footprint.MemoryMb,
