@@ -181,6 +181,23 @@ describeDb("the live race feed against real Postgres", () => {
     expect((await live()).rows[0]).toMatchObject({ rigNumber: 4, driverId: null, driverName: null });
   });
 
+  it("names no driver whose status is not active, as the leaderboards do", async () => {
+    const [a, b] = [await seedRig(4), await seedRig(7)];
+    const flagged = await seedDriver("Flagged");
+    const banned = await seedDriver("Banned");
+    await openAssignment(a.id, flagged.id);
+    await openAssignment(b.id, banned.id);
+    await testDb().query("update drivers set status = 'name_flagged' where id = $1", [flagged.id]);
+    await testDb().query("update drivers set status = 'banned' where id = $1", [banned.id]);
+    await report(a, { position: 1 });
+    await report(b, { position: 2 });
+
+    expect((await live()).rows.map((r) => [r.rigNumber, r.driverId, r.driverName])).toEqual([
+      [4, null, null],
+      [7, null, null],
+    ]);
+  });
+
   it("passes the read-only verify the owner runs after hand-applying 0008", async () => {
     const verify = readFileSync(join(REPO_ROOT, "db", "verify", "0008_race_status.sql"), "utf8");
     const client = await testDb().connect();
