@@ -153,6 +153,40 @@ describe("RigFlow", () => {
     expect(queued.match(/data-kind="lap"/g)).toHaveLength(1);
   });
 
+  it("judges label spacing up to the next refresh, since the dots keep moving until then", () => {
+    // 85 s old, this lap's label clears the queued badge as the page renders
+    // and runs into it about ten seconds before the next 15 s refresh.
+    const approaching = renderToStaticMarkup(
+      <RigFlow
+        model={model([
+          lane({
+            traffic: [{ kind: "lap", id: "l1", ageMs: 85_000, lapTimeMs: 138_058, status: "accepted" }],
+            held: [{ status: "queued", count: 1 }],
+          }),
+        ])}
+      />,
+    );
+    expect(approaching).toContain("1 queued");
+    expect(approaching).not.toContain("2:18.058");
+
+    // An accepted lap rides a longer route, so it gains on an older invalid
+    // one ahead of it: a label's width apart now, closer by the refresh.
+    const closing = renderToStaticMarkup(
+      <RigFlow
+        model={model([
+          lane({
+            traffic: [
+              { kind: "lap", id: "l1", ageMs: 30_000, lapTimeMs: 138_058, status: "accepted" },
+              { kind: "lap", id: "l2", ageMs: 91_000, lapTimeMs: 143_315, status: "invalid" },
+            ],
+          }),
+        ])}
+      />,
+    );
+    expect(closing).toContain("2:18.058");
+    expect(closing).not.toContain("2:23.315");
+  });
+
   it("writes a shared break's reason under the shared nodes", () => {
     const shared = renderToStaticMarkup(
       <RigFlow

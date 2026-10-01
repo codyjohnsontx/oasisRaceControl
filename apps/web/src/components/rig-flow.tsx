@@ -8,6 +8,7 @@ import {
   type Mark,
   type Traveller,
 } from "@/lib/monitor/flow";
+import { RIG_HEALTH_REFRESH_MS } from "@/lib/monitor/refresh";
 import { formatLapTime } from "@/lib/time";
 
 /**
@@ -299,13 +300,18 @@ function Dot({
  * The laps whose time is printed. Only a lap on its rig's own straight lane
  * is labelled: on the curves into the server, and on the shared line past
  * it, every rig's lap times would print over each other and over the
- * converging edges. On the straight, newest first, a label that would land
- * within one label of a label already kept, or of the queued badge, is
- * dropped - laps ride routes of different lengths, so two a minute apart
- * can sit almost on top of each other.
+ * converging edges. On the straight, newest first, a label that would come
+ * within one label of a label already kept, or of the queued badge, at any
+ * moment before the next refresh is dropped - laps ride routes of different
+ * lengths, so two a minute apart can sit almost on top of each other, and a
+ * dot keeps moving for a whole refresh after the spacing is judged.
  */
 function labelledLaps(lane: FlowLane, y: number, sharedY: number): Set<Traveller> {
-  const taken = lane.held.some((h) => h.status === "queued") ? [X.agent + 26] : [];
+  // Where each kept label is now and one refresh later. Dots move at a
+  // steady rate, so the gap between two labels is smallest at one end of
+  // the refresh unless they pass each other in between.
+  const badge = X.agent + 26;
+  const taken: Array<[number, number]> = lane.held.some((h) => h.status === "queued") ? [[badge, badge]] : [];
   const labelled = new Set<Traveller>();
   const laps = lane.traffic.filter((t) => t.kind === "lap").sort((a, b) => a.ageMs - b.ageMs);
   for (const t of laps) {
@@ -314,10 +320,14 @@ function labelledLaps(lane: FlowLane, y: number, sharedY: number): Set<Traveller
       curveLength(y, sharedY) +
       (X.database - X.server) +
       (t.status === "accepted" ? X.feed - X.database : 0);
-    const along = Math.min(1, t.ageMs / TRAFFIC_WINDOW_MS) * length;
-    if (along > X.network - X.iracing) continue;
-    const x = X.iracing + along;
-    if (taken.some((other) => Math.abs(other - x) < LABEL_W)) continue;
+    const along = (ageMs: number) => Math.min(1, ageMs / TRAFFIC_WINDOW_MS) * length;
+    if (along(t.ageMs) > X.network - X.iracing) continue;
+    const x: [number, number] = [X.iracing + along(t.ageMs), X.iracing + along(t.ageMs + RIG_HEALTH_REFRESH_MS)];
+    const collides = ([a0, a1]: [number, number]) => {
+      const [g0, g1] = [x[0] - a0, x[1] - a1];
+      return g0 * g1 <= 0 || Math.min(Math.abs(g0), Math.abs(g1)) < LABEL_W;
+    };
+    if (taken.some(collides)) continue;
     taken.push(x);
     labelled.add(t);
   }

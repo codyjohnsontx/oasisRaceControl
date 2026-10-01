@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { RIG_HEALTH_REFRESH_MS } from "@/lib/monitor/refresh";
 import type { Problem, RigTile, TileColour } from "@/lib/monitor/rig-health";
 import type { Severity } from "@/lib/monitor/rules";
 
@@ -82,7 +83,7 @@ export function StaffRigHealth({
 
   // The same 15 s cadence as the staff dashboard.
   useEffect(() => {
-    const timer = setInterval(() => router.refresh(), 15_000);
+    const timer = setInterval(() => router.refresh(), RIG_HEALTH_REFRESH_MS);
     return () => clearInterval(timer);
   }, [router]);
 
