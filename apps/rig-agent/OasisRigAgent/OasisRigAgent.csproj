@@ -21,8 +21,10 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
 
-  <!-- A windowed process (no console of its own); -console and -diagnose
-       attach to or open one. -->
+  <!-- A windowed process (no console of its own); every console mode
+       (dash-dash console, dash-dash diagnose, the staff console) reads the
+       keyboard, so it opens a console window of its own rather than sharing
+       the terminal it was started from (Windows/ConsoleWindow.cs). -->
   <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>

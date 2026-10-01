@@ -335,8 +335,9 @@ that takes four digits and nothing else, Enter or Sign in. A new driver picks
 a PIN and types it again before anything is registered. Back goes one step,
 as Enter alone does on the console. A refused sign-in - wrong PIN, name taken,
 two tries used, backend unreachable, the previous log-out still owed - comes
-back to the name with the reason on the red line; the words and the rules are
-the console's exactly (below). The window shows "Signing in Mike..." while
+back to the name with the reason on the red line; the rules are the console's
+exactly (below), and so are the words, except that a taken name says to press
+Back and choose "Yes, I have raced here" rather than to answer y. The window shows "Signing in Mike..." while
 the backend is asked and takes no input until it answers.
 
 **Driving.** The driver's name large and green, the welcome line, their laps
