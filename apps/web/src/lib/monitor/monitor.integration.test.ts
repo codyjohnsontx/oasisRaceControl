@@ -852,20 +852,19 @@ describeDb("rig monitor against real Postgres", () => {
     await nextEvaluation();
     await timePasses(2);
     await nextEvaluation();
-    const combo = "today's featured combo (Circuit of the Americas Grand Prix · FIA F4)";
     expect(posts).toEqual([
       {
         content:
-          "🟡 Rig 01: 3 laps flagged as implausibly fast while the rule was muted - worth a look; " +
-          "they rank unless staff invalidate them",
+          "🟡 Rig 01: 3 laps flagged as implausibly fast while the rule was muted, on today's featured combo " +
+          "(Circuit of the Americas Grand Prix · FIA F4) - worth a look; they rank unless staff invalidate them",
         embeds: [
           {
             title: "Implausibly fast lap",
             color: 0xf1c40f,
             description: [
-              `• Rig 01 · 1:50.003 by Ada on ${combo}`,
-              `• Rig 01 · 1:50.004 by Ada on ${combo}`,
-              `• Rig 01 · 1:50.005 by Ada on ${combo}`,
+              "• Rig 01 · 1:50.003 by Ada",
+              "• Rig 01 · 1:50.004 by Ada",
+              "• Rig 01 · 1:50.005 by Ada",
             ].join("\n"),
             footer: { text: expect.stringMatching(/^alert #\d+ · rule 14$/) },
           },
@@ -901,8 +900,8 @@ describeDb("rig monitor against real Postgres", () => {
     await nextEvaluation();
     expect(posts.map((p) => p.content)).toEqual([expect.stringMatching(/ \(part 1 of 3\)$/)]);
 
-    // Staff change today's combo before the retry: every line still to post
-    // now reads shorter, and the parts must still pick up at lap 29.
+    // Staff change today's combo before the retry: the parts still to post
+    // read differently, and must still pick up at lap 29.
     await setFeaturedCombo({ trackName: TRACK.track, trackConfig: TRACK.config, carName: "Mazda MX-5" });
     await nextEvaluation();
     await timePasses(2);
@@ -910,17 +909,21 @@ describeDb("rig monitor against real Postgres", () => {
     await timePasses(2);
     await nextEvaluation();
     expect(posts.map((p) => p.content)).toEqual([
-      expect.stringMatching(/^🟡 Rig 01: 117 laps flagged .* \(part 1 of 3\)$/),
-      expect.stringMatching(/ \(part 2 of 3\)$/),
-      expect.stringMatching(/ \(part 3 of 3\)$/),
+      expect.stringMatching(/^🟡 Rig 01: 117 laps flagged .*, on today's featured combo .* \(part 1 of 3\)$/),
+      expect.stringMatching(/, on another car and track - .* \(part 2 of 3\)$/),
+      expect.stringMatching(/, on another car and track - .* \(part 3 of 3\)$/),
     ]);
     const listed = posts.flatMap((p) => (p.embeds as Array<{ description: string }>)[0]!.description.split("\n"));
     expect(listed.pop()).toBe("and 42 more implausible laps on Rig 01 this hour");
-    expect(listed.map((line) => line.match(/ · (1:50\.\d{3}) by Ada /)![1])).toEqual(
-      Array.from({ length: 75 }, (_, i) => `1:50.${String(i + 3).padStart(3, "0")}`),
+    expect(listed).toEqual(Array.from({ length: 75 }, (_, i) => `• Rig 01 · 1:50.${String(i + 3).padStart(3, "0")} by Ada`));
+
+    await timePasses(2);
+    await nextEvaluation();
+    expect(posts).toHaveLength(3);
+    const { rows } = await testDb().query<{ done: boolean }>(
+      "select recovery_notified_at is not null as done from monitor_alerts where refire_count >= 3 order by id limit 1",
     );
-    expect(listed[24]).toMatch(/on today's featured combo/);
-    expect(listed[25]).toMatch(/on another car and track$/);
+    expect(rows).toEqual([{ done: true }]);
   });
 
   describe("flapping", () => {

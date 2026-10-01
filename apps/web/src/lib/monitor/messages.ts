@@ -107,8 +107,6 @@ export type FastLapSummary = {
 export const FAST_LAP_SUMMARY_PARTS = 3;
 /** Laps listed in each of them. */
 export const FAST_LAP_SUMMARY_LAPS_PER_PART = 25;
-/** The longest a summary line may be, so a full part and the remainder line fit one embed. */
-const FAST_LAP_SUMMARY_LINE = 150;
 
 /**
  * The quiet messages that end a rule 14 mute: the laps flagged while it held,
@@ -119,25 +117,36 @@ const FAST_LAP_SUMMARY_LINE = 150;
  * instead - a rig flagging that many has a broken detector, and the count is
  * what staff act on. Which laps a part holds depends only on how many laps the
  * mute flagged, never on how the lines read, so a part retried after the
- * featured combo or a driver's status changed resumes at the same lap. A lap's car
- * and track are the rig's own strings, so they are never shown: a lap on
- * today's featured combo says so with the combo's label, and any other says
- * "another car and track".
+ * featured combo or a driver's status changed resumes at the same lap. Each
+ * line is only the rig, the lap time and the driver; where the laps were
+ * driven is said once, in every message's first line. A lap's car and track
+ * are the rig's own strings, so they are never shown: laps on today's featured
+ * combo are counted under the combo's label, and any others as "another car
+ * and track".
  */
 export function fastLapSummaryMessages(summary: FastLapSummary): DiscordMessage[] {
   const rule = ruleOf("fast_lap");
   const featured = summary.featuredCombo;
   const lines = summary.laps.map((lap) => {
-    const onFeatured =
-      featured !== null &&
-      comboMismatch(
-        { track_name: featured.trackName, track_config: featured.trackConfig, car_name: featured.carName },
-        lap.combo,
-      ) === null;
     const driver = lap.driver ? nameOf(lap.driver.name, lap.driver.status) : "nobody signed in";
-    const combo = onFeatured ? `today's featured combo (${comboLabel(featured)})` : "another car and track";
-    return clip(`• ${summary.rigName} · ${formatLapTime(lap.lapTimeMs)} by ${driver} on ${combo}`, FAST_LAP_SUMMARY_LINE);
+    return `• ${summary.rigName} · ${formatLapTime(lap.lapTimeMs)} by ${driver}`;
   });
+  const onFeatured = featured
+    ? summary.laps.filter(
+        (lap) =>
+          comboMismatch(
+            { track_name: featured.trackName, track_config: featured.trackConfig, car_name: featured.carName },
+            lap.combo,
+          ) === null,
+      ).length
+    : 0;
+  const featuredPlace = featured ? `today's featured combo (${comboLabel(featured)})` : "";
+  const where =
+    onFeatured === 0
+      ? "on another car and track"
+      : onFeatured === summary.laps.length
+        ? `on ${featuredPlace}`
+        : `${onFeatured} on ${featuredPlace} and ${summary.laps.length - onFeatured} on another car and track`;
 
   const parts = Array.from(
     { length: Math.min(FAST_LAP_SUMMARY_PARTS, Math.ceil(lines.length / FAST_LAP_SUMMARY_LAPS_PER_PART)) },
@@ -145,19 +154,14 @@ export function fastLapSummaryMessages(summary: FastLapSummary): DiscordMessage[
   );
   const unlisted = lines.length - FAST_LAP_SUMMARY_PARTS * FAST_LAP_SUMMARY_LAPS_PER_PART;
   if (unlisted > 0) {
-    parts.at(-1)!.push(
-      clip(
-        `and ${unlisted} more implausible ${unlisted === 1 ? "lap" : "laps"} on ${summary.rigName} this hour`,
-        FAST_LAP_SUMMARY_LINE,
-      ),
-    );
+    parts.at(-1)!.push(`and ${unlisted} more implausible ${unlisted === 1 ? "lap" : "laps"} on ${summary.rigName} this hour`);
   }
 
   const count = summary.laps.length === 1 ? "1 lap" : `${summary.laps.length} laps`;
   return parts.map((part, i) => ({
     content: clip(
-      `🟡 ${summary.rigName}: ${count} flagged as implausibly fast while the rule was muted - worth a look; ` +
-        "they rank unless staff invalidate them" +
+      `🟡 ${summary.rigName}: ${count} flagged as implausibly fast while the rule was muted, ${where} - ` +
+        "worth a look; they rank unless staff invalidate them" +
         (parts.length > 1 ? ` (part ${i + 1} of ${parts.length})` : ""),
       DISCORD_LIMITS.content,
     ),

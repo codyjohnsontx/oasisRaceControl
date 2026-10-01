@@ -164,11 +164,13 @@ Rule 14 ends its mute differently, because each of its alerts is one lap that
 staff should see. None of the muted laps is posted on its own. When the hour is
 up, one quiet summary lists the laps flagged during the mute, including the
 lap whose opening the mute line replaced and laps whose alerts have already
-closed. Each line gives the rig, the lap time and the driver, with a name under
-review masked as it is everywhere else. The lap's own car and track strings
-come from the rig, so they are never shown: a lap on today's featured combo
-says "today's featured combo" with the combo's label, and any other lap says
-"another car and track". A long list is split on whole lines, 25 laps to a
+closed. Each line gives only the rig, the lap time and the driver, with a name
+under review masked as it is everywhere else, so no line is ever cut. Where the
+laps were driven is said once, in every message's first line. A lap's own car
+and track strings come from the rig, so they are never shown: laps on today's
+featured combo are counted under the combo's label, and any others as "another
+car and track" (for example "2 on today's featured combo (...) and 1 on another
+car and track"). A long list is split on whole lines, 25 laps to a
 message, across at most three messages, each marked "part 1 of 3" and so on (a
 summary that fits in one message carries no mark). If laps remain after three
 messages, the last one ends with "and N more implausible laps on Rig X this
