@@ -217,7 +217,7 @@ message, across at most three messages, each marked "part 1 of 3" and so on (a
 summary that fits in one message carries no mark). If laps remain after three
 messages, the last one ends with "and N more implausible laps on Rig X this
 hour": a rig flagging that many laps has a broken detector, and the count is
-what staff act on. The full list belongs on the planned Rig health page.
+what staff act on. Each lap is still its own alert on the Rig health page.
 
 The summary posts once per mute. A part Discord refuses is retried like any
 other post, starting from that part, so a part Discord already took is not
@@ -440,7 +440,7 @@ by `eventMode()` in `event-mode.ts`, pure, from the same snapshot as the rules:
   same rule rig silence follows). On an ordinary day the wall is not judged.
 - **Staff can force it** on or off with `POST /api/staff/event-mode`
   (`{"mode":"on"|"off"|"auto","reason":"..."}`, staff session, same-origin JSON;
-  no page has buttons for it yet - the Rig health page will). `on` and `off`
+  the Rig health page's Start event / Stop event / Auto buttons). `on` and `off`
   last until venue midnight, never longer; `auto` hands it back to the
   boards. Every change writes an audit row. Use `off` when a board was left
   open by mistake: it also silences rule 8a for the rest of the day.
