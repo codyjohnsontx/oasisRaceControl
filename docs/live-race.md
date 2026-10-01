@@ -74,31 +74,37 @@ unit-tested there:
   The **largest group is the race**. A tie goes to the group heard from most
   recently. `otherRigs` counts the rigs reporting from anywhere else, such as a
   rig still in practice or one that joined the wrong server.
-- It orders by iRacing's **position**. A car iRacing has not classified yet
-  goes after every classified car, by how far round it is.
+- In a **race** it orders by how far round each car is: `lapsCompleted`, then
+  `lapDistPct`, with iRacing's position only breaking a tie. iRacing's
+  position moves only when a car crosses the line, so ordering by it would
+  hold a pass made mid-lap off the board for up to a lap. In any other
+  session it orders by iRacing's **position**, and a car iRacing has not
+  classified yet goes after every classified car, by how far round it is.
 - `session` is the leader's report: type, state, flags, time and laps
   remaining. It uses the first car that is still reporting, so a silent
-  leader's frozen clock is never shown. `isRace` is true when the session type
-  is exactly `Race`.
+  leader's frozen clock is never shown. `isRace` is true when any rig in the
+  group reads the session type as exactly `Race`.
 - `gapToLeaderS` and `intervalS` are only filled in a race. Outside one,
   iRacing puts a lap time in the same variable. `intervalS` is the gap to the
   row above, rounded to the millisecond and never negative. It is null for the
   leader, and null to or from a stale car.
 - `ageS` is how long ago each rig's report arrived. `stale` is true past 15 s:
-  show that row dimmed. A stale car keeps its last place, because usually only
-  its agent stopped while the car is still out there. If another car reports
-  that same place, the car still reporting goes first.
+  show that row dimmed. In a race a stale car stays where its last report put
+  it on track, and any car still reporting that gets further round goes ahead
+  of it. Outside a race it keeps its last position, because usually only its
+  agent stopped while the car is still out there; if another car reports that
+  same position, the car still reporting goes first.
 - `driverId` and `driverName` come from whoever is checked in on the rig right
   now. With nobody checked in they are null, and the board shows the rig by
   `rigNumber`.
 
-**Number the board by `place`, not `position`.** Each rig samples its own car at
-its own instant. Two neighbours that have just traded places can both report
-the same position until the slower rig's next report, up to one cadence. Real
-rigs in a hosted session do this as well as the fake ones. `place` is the
-row's number in this ordering, from 1, and never repeats. While every car in
-the race has an agent, it equals iRacing's position once both rigs have
-reported.
+**Number the board by `place`, not `position`.** `place` is the row's number
+in this ordering, from 1, and never repeats. In a race it is the running order
+on track, so a pass shows at the next report from each car, while iRacing's
+position for both cars still reads as it did at the line until each crosses
+it. Outside a race two neighbours can report the same position for up to one
+cadence, because each rig samples its own car at its own instant, and `place`
+puts them in order.
 
 Latency is the rig's cadence (2-3 s), plus the request, plus however often the
 board polls. That is fast enough for a wall, but it is not a timing screen.
@@ -119,7 +125,9 @@ npm run fake-rig -- --token dev-rig-3-secret --race --car 2 --field 3
 curl -s localhost:3000/api/race/live
 ```
 
-Neighbours trade places every 20-40 s. Each race lasts `--race-minutes`
+Neighbours trade places on track every 20-40 s. As in iRacing, each fake
+car's `position` only changes when it crosses the line, so the feed's order
+leads it mid-lap. Each race lasts `--race-minutes`
 (default 20), ends with a minute under the chequered flag, and the next race is
 a new session. Stop one rig to watch its row go stale and then drop out.
 
@@ -136,6 +144,12 @@ once at the end of the hold ([soak-20-rigs.md](soak-20-rigs.md#running-it)).
   leader. If `SessionUniqueID` turns out to be shared by every offline session,
   rigs in solo practice would form a group of their own. The largest group
   still wins, but that is worth seeing on the night.
+- The race order assumes `PlayerCarPosition` only changes at the line while
+  `LapCompleted` and `LapDistPct` move continuously. With two rigs, the
+  `--diagnose` session should pass one car mid-lap and watch whether the
+  position changes then or at the line, and watch `LapCompleted` and
+  `LapDistPct` on the grid and across the line at the start: a car that has
+  crossed the line must not read as further back than one that has not.
 - Twenty rigs reporting every 2.5 s is about eight requests a second during a
   race, which is several thousand serverless invocations an hour. Check that
   against the Vercel plan before the night.

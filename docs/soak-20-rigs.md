@@ -161,9 +161,9 @@ every 2.5 s. Before the workers stop, `GET /api/race/live` is read once. It
 must show every rig in one race, each with a place inside the field, in race
 order, and each under the driver checked in on its rig. Two more checks hold
 race-report latency under the 2.5 s cadence (p95) and under the feed's 15 s
-stale threshold (max). Places that two cars report at once are listed but do
-not fail the run, because rigs sampled either side of a pass do that on the
-night as well. The committed result above predates `--race` and has none of
+stale threshold (max). Race order is how far round each car is. Positions that
+two cars report at once are listed but do not fail the run, because iRacing's
+position only catches up with a pass at the line, on the night as well. The committed result above predates `--race` and has none of
 these checks.
 
 ### What the script does

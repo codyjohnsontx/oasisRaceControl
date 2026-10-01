@@ -571,11 +571,11 @@ async function readLiveRace(): Promise<RaceFeedRead> {
  * and in race order, each car under the driver provisioned into its seat.
  * Named rather than counted, so a failure says which rig to look at.
  *
- * It does NOT require every place to be held once. Each rig samples its own
- * car at its own instant, so two neighbours that have just traded places can
- * both report the same one until the slower rig's next report - which real
- * rigs in a hosted session do too (docs/live-race.md). The places shared at
- * the moment of the read are reported, not failed.
+ * Race order is how far round each car is, the order the feed promises in a
+ * race. It does NOT require iRacing's positions to follow that order or to be
+ * held once each: a reported position only moves when the car crosses the
+ * line, as iRacing's does (docs/live-race.md). The positions shared at the
+ * moment of the read are reported, not failed.
  */
 function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
   if ("error" in read) {
@@ -589,7 +589,8 @@ function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
     .map((row) => row.rigNumber);
   const positions = feed.rows.map((row) => row.position);
   const outside = positions.filter((p) => p === null || p < 1 || p > rigs.length);
-  const inOrder = positions.every((p, i) => i === 0 || (positions[i - 1] ?? 0) <= (p ?? 0));
+  const progress = feed.rows.map((row) => (row.lapsCompleted ?? -1) + (row.lapDistPct ?? 0));
+  const inOrder = progress.every((p, i) => i === 0 || progress[i - 1]! >= p);
   const shared = positions.filter((p, i) => positions.indexOf(p) !== i).length;
   const misnamed = rigs
     .filter((rig) => shown.has(rig.rigNumber) && shown.get(rig.rigNumber)!.driverName !== rig.driverName)
@@ -610,8 +611,8 @@ function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
       detail:
         `positions ${positions.join(", ")}` +
         (shared > 0
-          ? ` (${shared} place(s) reported by two cars at once: neighbours sampled ` +
-            `either side of a pass)`
+          ? ` (${shared} position(s) reported by two cars at once: a pass not yet ` +
+            `counted at the line)`
           : ""),
     },
     {
