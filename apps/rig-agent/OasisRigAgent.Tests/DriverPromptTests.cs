@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
 using OasisRigAgent.Core;
 using Xunit;
 using Backend = OasisRigAgent.Tests.WalkUpBackend;
@@ -626,6 +627,9 @@ public sealed class DriverPromptTests : IDisposable
 
     public void Dispose()
     {
+        // A disposed SqliteConnection goes back to the pool with the file
+        // still open, and Windows will not delete an open file.
+        SqliteConnection.ClearAllPools();
         foreach (var file in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(_dbPath) + "*"))
             File.Delete(file);
     }

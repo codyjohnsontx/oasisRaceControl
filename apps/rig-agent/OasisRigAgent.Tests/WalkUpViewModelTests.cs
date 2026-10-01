@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using OasisRigAgent.Core;
 using OasisRigAgent.Core.WalkUp;
 using Xunit;
@@ -272,6 +273,9 @@ public sealed class WalkUpViewModelTests : IDisposable
 
     public void Dispose()
     {
+        // A disposed SqliteConnection goes back to the pool with the file
+        // still open, and Windows will not delete an open file.
+        SqliteConnection.ClearAllPools();
         foreach (var file in Directory.GetFiles(Path.GetDirectoryName(_dbPath)!, Path.GetFileName(_dbPath) + "*"))
             File.Delete(file);
     }
