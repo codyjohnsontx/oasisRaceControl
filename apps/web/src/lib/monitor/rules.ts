@@ -795,7 +795,9 @@ function seatAndLapFindings(
   // with the refused laps still in view - and it stays clear once the seat
   // empties or the sim closes - a valid lap clears it even before the next
   // heartbeat, and a wrong session heard after either opens it again. On a tie
-  // the wrong signal wins.
+  // the wrong signal wins. Like 5b it opens only on a live rig: a right
+  // session is judged against today's combo, so a combo change would let a
+  // switched-off rig's refused laps decide again; an alert already open holds.
   const combo = snapshot.featuredCombo;
   if (combo) {
     type Signal = { at: number; wrong: string | null; from: "session" | "laps" };
@@ -828,7 +830,7 @@ function seatAndLapFindings(
       null,
     );
     const rejected = recent.filter((lap) => COMBO_REASONS.has(lap.invalidReason ?? "")).length;
-    if (decides?.wrong) {
+    if (decides?.wrong && (live || isOpen("wrong_combo", subject))) {
       const headline =
         decides.from === "session"
           ? `${rig.name} is in an iRacing session on the wrong ${wrongPart(decides.wrong)} for today's ` +

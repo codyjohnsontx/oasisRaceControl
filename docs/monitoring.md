@@ -101,7 +101,9 @@ Details worth knowing:
   of them, a valid lap at its arrival - and the newest decides, so putting
   the car right clears the alert at the next heartbeat even with the refused
   laps still in view, it stays clear when the driver then signs out or quits
-  iRacing, and a wrong session heard after a valid lap opens it again.
+  iRacing, and a wrong session heard after a valid lap opens it again. Like
+  rule 5b it opens only on a live rig, so a switched-off rig's refused laps
+  cannot reopen it when staff change today's combo; an open alert holds.
 - **Rule 11's version is `CURRENT_AGENT_VERSION`** in
   `src/lib/monitor/agent-version.ts`, a copy of `AgentVersion` in
   `apps/rig-agent/OasisRigAgent.Core/AgentConfig.cs` that

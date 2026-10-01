@@ -1084,6 +1084,15 @@ describe("rule 7: wrong car or track", () => {
       }
     });
 
+    it("stays quiet on a switched-off rig when today's combo changes after the session was put right", () => {
+      // The right-car session is re-judged against the new combo and stops
+      // counting, so the older refused run would decide again - but the rig
+      // said goodbye, and a dark rig stays quiet until it is switched on.
+      const off = rig(1, { heartbeats: [...fixedAt(2 * MIN).slice(0, -1), hb(0, { shuttingDown: true, session: null })] });
+      const changed = { featuredCombo: { ...COMBO, carName: "BMW M4 GT3" }, laps: streak };
+      expect(only(evaluate([off], [], changed), "wrong_combo")).toBeUndefined();
+    });
+
     it("clears when a valid lap lands after a wrong session, before the next heartbeat says so", () => {
       const heartbeats = minutely(14 * MIN, MIN, () => ({ session: wrongCar }));
       const laps = [...streak, lap(1, 30 * S)];
