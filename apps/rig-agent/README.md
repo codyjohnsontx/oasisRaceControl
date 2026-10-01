@@ -242,11 +242,13 @@ session clock; an unchanged one - a car parked in the pits - goes again after
 
 **Failure.** No outbox and no retry: a position is worth something for
 seconds. A report the site does not take is dropped, cut off after one
-interval if the site is slow, and the next sample goes in its place. It never
-changes the rig's online/offline status line - a site without the route yet
-would otherwise flap it every few seconds - and prints one notice when
-reports stop getting through (`live race position is not reaching the site
-(HTTP 404)`), not one per sample. Laps are unaffected either way.
+interval if the site is slow, and nothing more is posted for 30 s
+(`RaceStatusReporter.FailureBackoff`); then a fresh sample goes in its place.
+So a site without the route, or one that is down, hears from each rig twice a
+minute, not every 2.5 s. It never changes the rig's online/offline status
+line - a site without the route yet would otherwise flap it - and prints one
+notice when reports stop getting through (`live race position is not reaching
+the site (HTTP 404)`), not one per attempt. Laps are unaffected either way.
 
 **What it costs.** One more `RunLoop` in `AgentService` - the poll and flush's
 timer pattern, on the thread pool, no new thread - in the same below-normal
@@ -289,6 +291,14 @@ layout. Do this with the `0.6-race-status` exe, before trusting the board:
      racing (4), then checkered (5) and cool down (6) at the end.
    - In the race, **when one car passes the other, both rigs' `P` change
      within a second**, and the two never show the same position.
+   - **Overtake mid-lap**, well away from the start/finish line, and watch
+     when `P` changes on both rigs: at the pass, or only when the cars next
+     cross the line. iRacing's `PlayerCarPosition` is reported to be the
+     scoring position, updated only at the line; if that is what the rigs
+     show, the board would show a pass up to a lap late. Write down which it
+     is and tell the developer before Wednesday - the order can then be
+     derived from `lapsCompleted` and `lapDistPct`, which the report already
+     carries, without changing the agent.
    - `CarIdxF2Time` reads `0.000s` on the leader and the other car's seconds
      behind it, growing and shrinking with the gap; compare it with iRacing's
      own relative or timing screen. In practice it holds a lap time instead,
@@ -309,10 +319,13 @@ layout. Do this with the `0.6-race-status` exe, before trusting the board:
 
 Write what was seen into [Verified](#verified), as was done for lap detection.
 If it cannot be done by Tuesday, the night still runs on the fastest-lap
-format: leave the `0.5-monitor` exe on the rigs, and the race board never has
-anything to show. The new exe changes nothing about laps, sign-in or the
-heartbeat; on a site without the race route it prints the one "not reaching
-the site" notice per outage and carries on.
+format: install the `0.6-race-status` exe anyway and set `"raceStatus": false`
+in each rig's `agent.config.json` (or `OASIS_RACE_STATUS=0`). The agent then
+reads none of the race channels and posts nothing to the race route, so laps,
+sign-in and the heartbeat run as they did on `0.5-monitor`, and the rig
+monitor sees the current version instead of warning about every rig. Do not
+leave `0.5-monitor` on the rigs: from the deploy that expects `0.6` the
+monitor's outdated-agent warning (rule 11) opens on each of them.
 
 ## Un-parking a quarantined lap
 
@@ -398,6 +411,7 @@ executable, or use env vars (which override the file):
 | `telemetry` | `OASIS_TELEMETRY` | `iracing` (read the sim), `simulated` (fake laps, testing only), `none` (heartbeat and driver display only) |
 | `rigQrToken` | `OASIS_RIG_QR_TOKEN` | this rig's check-in slug (the `/r/<token>` on its QR code). Set it to run [walk-up mode](#walk-up-mode-the-rig-is-the-check-in); leave it out for the staff console |
 | `simulateTelemetry` | `OASIS_SIMULATE=1` | older spelling of `telemetry: "simulated"`; ignored when `telemetry` is set |
+| `raceStatus` | `OASIS_RACE_STATUS` | `false` (or `0`) turns the [live race position](#live-race-position) off: none of its channels are read and nothing is posted to the race route. On when absent |
 
 Two rigs against the hosted app, tokens rotated on the backend first
 (`openssl rand -hex 32` each; store `encode(digest('<token>','sha256'),'hex')`
@@ -761,8 +775,14 @@ posting to the hosted app from a rig is not yet verified.
 
 The live race position (`0.6-race-status`) is covered the same way and no
 further: the array-element read, the session-type scan, every sampler rule,
-the send cadence and the drop-on-failure loop by the xUnit suite, and the
-report's JSON at every bound and sentinel checked against the web side's
-`raceStatusEvent` schema. It has not been run against real iRacing; the
+the send cadence, the drop-on-failure loop and its 30 s backoff by the xUnit
+suite. On 2026-10-01 the report's JSON - an ordinary row, every sentinel,
+every upper and lower bound, values past them, non-finite and unknown
+channels - was parsed by hand with `raceStatusEvent` as it stands on the web
+lane `fm/oasis-race-status-web` (`80c7008`, zod 4.6.5): every row passed
+with exactly the schema's keys, and that check is what found the sampler
+letting `sessionNum` 64 through where the schema stops at 63. The schema is
+not in this branch, so nothing re-runs that check; re-do it when either side
+changes. It has not been run against real iRacing; the
 checklist in [Live race position](#verify-on-a-real-rig-before-wednesday-2026-10-07)
 is what is owed.

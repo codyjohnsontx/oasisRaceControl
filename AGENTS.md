@@ -472,11 +472,14 @@ mirrors `raceStatusEvent` in `apps/web/src/lib/events.ts`, and both change
 together. The row is built only by the pure `RaceStatusSampler`
 (`Iracing/RaceStatusSampler.cs`), which also nulls iRacing's sentinels and
 clamps to the schema, since one field past it 400s the report and the car
-leaves the board. Three rules are easy to undo: there is no outbox and no
-retry (the next sample replaces a dropped one); the loop never touches the
-agent's online/offline state; and an unchanged row still goes within
-`RaceStatusThrottle.KeepAlive`, under the feed's 10 s ceiling, or a parked car
-dims. The `AgentService` change is one `RunLoop` and should stay that way.
+leaves the board. Four rules are easy to undo: there is no outbox and no
+retry (a dropped report is replaced by a fresh sample, and only after
+`RaceStatusReporter.FailureBackoff`, so a site without the route is not
+polled every 2.5 s by every rig); the loop never touches the agent's
+online/offline state; `raceStatus: false` in the config turns off both the
+reads and the posts, and is the fallback rather than the old exe; and an
+unchanged row still goes within `RaceStatusThrottle.KeepAlive`, under the
+feed's 10 s ceiling, or a parked car dims. The `AgentService` change is one `RunLoop` and should stay that way.
 What still needs a real rig in a hosted session is the checklist in
 `apps/rig-agent/README.md` (Live race position).
 

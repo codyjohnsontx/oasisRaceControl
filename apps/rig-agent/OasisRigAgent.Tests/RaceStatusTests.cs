@@ -164,6 +164,13 @@ public sealed class RaceStatusTests : IDisposable
     }
 
     [Fact]
+    public void A_session_number_past_the_contracts_bound_reports_nothing()
+    {
+        Assert.Equal(63, Sampler(Racing() with { SessionNum = RaceStatusReport.MaxSessionNum }).RaceStatus(At)!.SessionNum);
+        Assert.Null(Sampler(Racing() with { SessionNum = RaceStatusReport.MaxSessionNum + 1 }).RaceStatus(At));
+    }
+
+    [Fact]
     public void Unknown_channels_never_crash_and_the_two_required_ones_fall_back()
     {
         var row = Sampler(new RaceTick { SessionUniqueId = 1, SessionNum = 0, SessionState = 1, PlayerCarIdx = 0 }).RaceStatus(At)!;
@@ -326,39 +333,61 @@ public sealed class RaceStatusTests : IDisposable
     }
 
     [Fact]
-    public async Task A_report_the_site_did_not_take_is_dropped_and_the_next_sample_goes_anyway()
+    public async Task A_report_the_site_did_not_take_is_dropped_and_nothing_goes_again_for_the_backoff()
     {
         var backend = new RaceBackend { Status = 500 };
         var notices = new List<string>();
         var row = Sampler(Racing()).RaceStatus(At);
         var reporter = new RaceStatusReporter(new SourceOf(_ => row), Client(backend), notices.Add, () => _now);
+        var backoff = (long)RaceStatusReporter.FailureBackoff.TotalMilliseconds;
 
         await reporter.TickAsync(CancellationToken.None);
-        _now += 2_500;
-        await reporter.TickAsync(CancellationToken.None);
+        Assert.Single(backend.Posts);
+
+        // A changed row is still held back: a site without the route hears
+        // from the rig once per backoff, not once per interval.
+        row = row! with { Position = 2 };
+        for (var waited = 2_500L; waited < backoff; waited += 2_500)
+        {
+            _now += 2_500;
+            await reporter.TickAsync(CancellationToken.None);
+        }
+        Assert.Single(backend.Posts);
+        Assert.InRange(RaceStatusReporter.FailureBackoff.TotalSeconds, 30, double.MaxValue);
+
+        // Not recorded as sent, so after the backoff the row goes whatever it
+        // holds - and the person at the rig heard about it once.
         backend.Down = true;
         _now += 2_500;
         await reporter.TickAsync(CancellationToken.None);
-
-        // Not recorded as sent, so the same row went again each time - and the
-        // person at the rig heard about it once, not every few seconds.
-        Assert.Equal(3, backend.Posts.Count);
+        Assert.Equal(2, backend.Posts.Count);
+        Assert.Equal(2, backend.Posts[^1]["position"]!.GetValue<int>());
         var notice = Assert.Single(notices);
         Assert.Contains("HTTP 500", notice);
         Assert.Contains("laps are unaffected", notice);
 
         backend.Down = false;
         backend.Status = 200;
+        _now += backoff - 1;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(2, backend.Posts.Count);
+        _now += 1;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(3, backend.Posts.Count);
+
+        // Taken: back to the ordinary cadence, which skips an unchanged row.
         _now += 2_500;
         await reporter.TickAsync(CancellationToken.None);
-        Assert.Equal(4, backend.Posts.Count);
+        Assert.Equal(3, backend.Posts.Count);
+        row = row! with { Position = 1 };
         _now += 2_500;
         await reporter.TickAsync(CancellationToken.None);
         Assert.Equal(4, backend.Posts.Count);
 
         // A fresh failure after recovering is worth saying again.
         backend.Status = 404;
-        row = row! with { Position = 1 };
+        row = row! with { Position = 3 };
+        _now += 2_500;
         await reporter.TickAsync(CancellationToken.None);
         Assert.Equal(2, notices.Count);
         Assert.Contains("HTTP 404", notices[^1]);
@@ -389,11 +418,54 @@ public sealed class RaceStatusTests : IDisposable
         agent.Start();
 
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (backend.Posts.Count < 2 && DateTime.UtcNow < deadline) await Task.Delay(100);
+        while (backend.Posts.Count < 1 && DateTime.UtcNow < deadline) await Task.Delay(100);
+        Assert.Single(backend.Posts);
 
-        Assert.True(backend.Posts.Count >= 2, $"expected two race posts, saw {backend.Posts.Count}");
+        // Two more intervals: the loop keeps ticking, and the backoff holds it.
+        await Task.Delay(RaceStatusThrottle.Interval * 2);
+        Assert.Single(backend.Posts);
         Assert.False(offline);
         Assert.Equal(ConnectionState.Online, agent.CurrentStatus().Connection);
         lock (notices) Assert.Single(notices, n => n.Contains("live race position"));
+    }
+
+    [Fact]
+    public async Task With_the_race_status_switched_off_the_agent_posts_none()
+    {
+        var backend = new RaceBackend();
+        var row = Sampler(Racing()).RaceStatus(At);
+        using var queue = new EventQueue(_dbPath);
+        await using var agent = new AgentService(
+            new AgentConfig { BackendBaseUrl = "https://x.test", RigToken = "t", RigNumber = 1, RaceStatus = false },
+            Client(backend), queue, new RacingTelemetry(() => row));
+        agent.Start();
+
+        await Task.Delay(RaceStatusThrottle.Interval * 2);
+        Assert.Empty(backend.Posts);
+    }
+
+    [Fact]
+    public void The_switch_is_on_unless_the_config_file_turns_it_off()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"oasis-race-config-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllText(path, """{ "backendBaseUrl": "https://x.test", "rigToken": "t", "rigNumber": 1 }""");
+            Assert.True(AgentConfig.Load(path).RaceStatus);
+            File.WriteAllText(path, """{ "backendBaseUrl": "https://x.test", "rigToken": "t", "rigNumber": 1, "raceStatus": false }""");
+            Assert.False(AgentConfig.Load(path).RaceStatus);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void A_switched_off_iracing_source_never_has_a_row()
+    {
+        using var source = new IracingTelemetrySource(raceStatus: false);
+        Assert.Null(source.RaceSampler);
+        Assert.Null(source.RaceStatus(At));
     }
 }

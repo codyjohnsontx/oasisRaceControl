@@ -20,6 +20,7 @@ namespace OasisRigAgent.Core;
 public sealed record RaceStatusReport
 {
     public const int MaxCars = 64;
+    public const int MaxSessionNum = 63;
     public const int MaxLaps = 32_767;
     public const double MaxSessionSeconds = 7 * 24 * 60 * 60;
     public const double MaxGapSeconds = 86_400;
@@ -98,8 +99,9 @@ public interface IRaceStatusSource
 /// changed goes at once, and an unchanged one - a car parked in the pits or the
 /// garage - goes again once <see cref="KeepAlive"/> has passed, because the
 /// live feed dims a rig it has not heard from in 15 s and drops it at 60 s. A
-/// report the backend did not take is not recorded as sent, so the next
-/// sample goes whatever it holds. Pure, and only ever used from the one loop.
+/// report the backend did not take is not recorded as sent, so the first
+/// sample after <see cref="RaceStatusReporter.FailureBackoff"/> goes whatever
+/// it holds. Pure, and only ever used from the one loop.
 /// </summary>
 public sealed class RaceStatusThrottle
 {
@@ -127,21 +129,27 @@ public sealed class RaceStatusThrottle
 /// <summary>
 /// The agent's race-status loop body: sample, decide, post, and forget. There
 /// is no outbox and no retry - a position is worth something for seconds, so a
-/// report that fails is dropped and the next sample goes in its place. Each
-/// post is cut off at one <see cref="RaceStatusThrottle.Interval"/>, so a slow
-/// backend costs one sample, never a queue of them. It never touches the
+/// report that fails is dropped, and nothing is posted again until
+/// <see cref="FailureBackoff"/> has passed, when a fresh sample goes in its
+/// place: a site without the route, or one that is down, hears from each rig
+/// twice a minute, not every interval. Each post is cut off at one
+/// <see cref="RaceStatusThrottle.Interval"/>, so a slow backend costs one
+/// sample, never a queue of them. It never touches the
 /// agent's online/offline state, for the heartbeat's reason: a site that does
 /// not have the route yet would otherwise flap the rig's status line every few
 /// seconds.
 /// </summary>
 public sealed class RaceStatusReporter
 {
+    public static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(30);
+
     private readonly IRaceStatusSource _source;
     private readonly BackendClient _client;
     private readonly Action<string> _notice;
     private readonly Func<long> _nowMs;
     private readonly RaceStatusThrottle _throttle = new();
     private bool _failing;
+    private long _resumeAtMs = long.MinValue;
 
     /// <param name="notice">One line when reports stop getting through, and
     /// not again until one has.</param>
@@ -156,8 +164,9 @@ public sealed class RaceStatusReporter
 
     public async Task TickAsync(CancellationToken ct)
     {
-        var report = _source.RaceStatus(DateTimeOffset.UtcNow);
         var now = _nowMs();
+        if (now < _resumeAtMs) return;
+        var report = _source.RaceStatus(DateTimeOffset.UtcNow);
         if (report is null || !_throttle.ShouldSend(report, now)) return;
 
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -172,11 +181,12 @@ public sealed class RaceStatusReporter
         }
         catch (Exception ex)
         {
+            _resumeAtMs = now + (long)FailureBackoff.TotalMilliseconds;
             if (!_failing)
             {
                 _failing = true;
                 _notice($"[agent] live race position is not reaching the site ({Describe(ex)}); "
-                    + "laps are unaffected, and it keeps trying every few seconds.");
+                    + $"laps are unaffected, and it tries again every {FailureBackoff.TotalSeconds:0} s.");
             }
             return;
         }

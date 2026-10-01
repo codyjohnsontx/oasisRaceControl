@@ -50,6 +50,13 @@ public sealed record AgentConfig
     /// the staff-style s/q console.</summary>
     public string? RigQrToken { get; init; }
 
+    /// <summary>Whether to report this rig's live race position for the race
+    /// board. On unless set to false, which is the fallback for a night the
+    /// board is not ready: the agent then reads none of the race channels and
+    /// posts nothing to the race route, and laps, sign-in and the heartbeat are
+    /// as they were.</summary>
+    public bool RaceStatus { get; init; } = true;
+
     public static AgentConfig Load(string path)
     {
         AgentConfig config;
@@ -71,24 +78,25 @@ public sealed record AgentConfig
             BackendBaseUrl = Env("OASIS_BACKEND_URL") ?? config.BackendBaseUrl,
             RigToken = Env("OASIS_RIG_TOKEN") ?? config.RigToken,
             RigNumber = int.TryParse(Env("OASIS_RIG_NUMBER"), out var n) ? n : config.RigNumber,
-            SimulateTelemetry = ParseSimulateOverride() ?? config.SimulateTelemetry,
+            SimulateTelemetry = ParseBoolOverride("OASIS_SIMULATE") ?? config.SimulateTelemetry,
             Telemetry = Env("OASIS_TELEMETRY") ?? config.Telemetry,
             RigQrToken = Env("OASIS_RIG_QR_TOKEN") ?? config.RigQrToken,
+            RaceStatus = ParseBoolOverride("OASIS_RACE_STATUS") ?? config.RaceStatus,
         };
     }
 
-    /// <summary>OASIS_SIMULATE is a true override: absent → keep the file value,
+    /// <summary>A boolean env var is a true override: absent → keep the file value,
     /// truthy/falsy → use it, anything else → fail loudly instead of silently
-    /// running without (or with) fake laps.</summary>
-    private static bool? ParseSimulateOverride()
+    /// running without (or with) fake laps or the race position.</summary>
+    private static bool? ParseBoolOverride(string name)
     {
-        var v = Env("OASIS_SIMULATE");
+        var v = Env(name);
         return v?.ToLowerInvariant() switch
         {
             null => null,
             "1" or "true" => true,
             "0" or "false" => false,
-            _ => throw new InvalidOperationException($"OASIS_SIMULATE must be 1, 0, true, or false (got \"{v}\")"),
+            _ => throw new InvalidOperationException($"{name} must be 1, 0, true, or false (got \"{v}\")"),
         };
     }
 

@@ -39,8 +39,11 @@ public sealed class IracingTelemetrySource : ITelemetrySource, ISimHealthSource,
     private readonly CancellationTokenSource _stop = new();
     private Thread? _thread;
 
-    public IracingTelemetrySource(LapDetector? detector = null)
+    /// <param name="raceStatus">False reads none of the race channels, and
+    /// <see cref="RaceStatus"/> is always null.</param>
+    public IracingTelemetrySource(LapDetector? detector = null, bool raceStatus = true)
     {
+        RaceSampler = raceStatus ? new RaceStatusSampler() : null;
         var lapDetector = detector ?? new LapDetector();
         lapDetector.Decided += decision =>
         {
@@ -59,10 +62,11 @@ public sealed class IracingTelemetrySource : ITelemetrySource, ISimHealthSource,
 
     public bool SimRunning => _frames.Connected;
 
-    /// <summary>This rig's car in the session, built from the newest tick.</summary>
-    public RaceStatusSampler RaceSampler { get; } = new();
+    /// <summary>This rig's car in the session, built from the newest tick; null
+    /// when the race status is switched off.</summary>
+    public RaceStatusSampler? RaceSampler { get; }
 
-    public RaceStatusReport? RaceStatus(DateTimeOffset sampledAt) => RaceSampler.RaceStatus(sampledAt);
+    public RaceStatusReport? RaceStatus(DateTimeOffset sampledAt) => RaceSampler?.RaceStatus(sampledAt);
     public event Action<LapCompleted>? LapCompleted;
 
     /// <summary>iRacing connected (true) or went away (false).</summary>

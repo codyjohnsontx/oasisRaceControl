@@ -228,7 +228,7 @@ public sealed class AgentService : IAsyncDisposable
         // Live race position for the league-night board: this rig's own car,
         // every few seconds while iRacing is in a session, dropped on failure.
         // The rules are RaceStatusReporter's; this is only its timer.
-        if (_telemetry is IRaceStatusSource race)
+        if (_config.RaceStatus && _telemetry is IRaceStatusSource race)
             _loops.Add(RunLoop(RaceStatusThrottle.Interval, new RaceStatusReporter(race, _client, RaiseNotice).TickAsync, runImmediately: false));
         PublishStatus();
     }

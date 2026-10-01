@@ -137,7 +137,7 @@ public sealed class RaceStatusSampler
         if (t.IsReplayPlaying == true) return null;
         if (t.SessionState is not (>= 1 and <= 6 and int state)) return null;
         if (t.SessionUniqueId is not (>= 0 and int uniqueId)) return null;
-        if (t.SessionNum is not (>= 0 and <= RaceStatusReport.MaxCars and int sessionNum)) return null;
+        if (t.SessionNum is not (>= 0 and <= RaceStatusReport.MaxSessionNum and int sessionNum)) return null;
         if (t.PlayerCarIdx is not (>= 0 and < RaceStatusReport.MaxCars and int carIdx)) return null;
 
         return new RaceStatusReport

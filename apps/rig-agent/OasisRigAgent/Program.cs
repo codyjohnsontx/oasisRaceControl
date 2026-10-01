@@ -41,8 +41,8 @@ try
     telemetry = config.TelemetryMode switch
     {
         TelemetryMode.Iracing => config.RigQrToken is null
-            ? AttachTelemetryLog(new IracingTelemetrySource())
-            : new IracingTelemetrySource(),
+            ? AttachTelemetryLog(new IracingTelemetrySource(raceStatus: config.RaceStatus))
+            : new IracingTelemetrySource(raceStatus: config.RaceStatus),
         TelemetryMode.Simulated => new SimulatedTelemetrySource(TimeSpan.FromSeconds(8)),
         _ => new NullTelemetrySource(),
     };
@@ -363,7 +363,7 @@ static int Diagnose()
         var row = source.RaceStatus(DateTimeOffset.UtcNow);
         var line = row is not null
             ? DescribeRace(row)
-            : source.RaceSampler.Latest is { } t
+            : source.RaceSampler?.Latest is { } t
                 ? $"RACE not reported (not in a live session): SessionState={t.SessionState?.ToString() ?? "n/a"} replay={t.IsReplayPlaying?.ToString() ?? "n/a"} "
                   + $"SessionUniqueID={t.SessionUniqueId?.ToString() ?? "n/a"} PlayerCarIdx={t.PlayerCarIdx?.ToString() ?? "n/a"}"
                 : null;
