@@ -1945,7 +1945,7 @@ describeDb("rig monitor against real Postgres", () => {
     });
   });
 
-  it("shows the Rig health page the channel's answer: a red tile and the open alert", async () => {
+  it("shows the Rig health page the channel's answer: a flashing red tile and the open alert", async () => {
     const rig = await seedRig(2);
     const driver = await seedDriver("Matt G");
     await openAssignment(rig.id, driver.id);
@@ -1965,7 +1965,7 @@ describeDb("rig monitor against real Postgres", () => {
     const silent = "Rig 02 has been silent for 3 min with Matt G signed in";
     expect(await tileNow()).toMatchObject({
       label: "R02",
-      colour: "red",
+      colour: "red-flashing",
       status: "silent 3 min",
       problems: [{ severity: "urgent", headline: silent }],
     });
@@ -1990,7 +1990,7 @@ describeDb("rig monitor against real Postgres", () => {
     await nextEvaluation();
     expect(await alerts()).toMatchObject([{ rule: "rig_silent", resolved: false }]);
     expect(await tileNow()).toMatchObject({
-      colour: "red",
+      colour: "red-flashing",
       status: "online",
       problems: [{ severity: "urgent", headline: silent }],
     });

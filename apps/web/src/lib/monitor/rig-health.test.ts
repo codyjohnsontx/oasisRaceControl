@@ -13,10 +13,12 @@ import {
 
 /**
  * The Rig health page's tiles. What must hold: a tile's colour is the rules'
- * answer for the same snapshot - red for an urgent finding on that rig,
- * yellow for a warning - and with no finding, green while the rig runs and
- * grey when it does not. An agent too old to send the v2 fields says so
- * rather than showing blanks as if they were healthy.
+ * answer for the same snapshot - red for a problem on that rig, flashing only
+ * for an urgent one, so a flash always means broken now - and with no
+ * finding it is the seat's: green while the rig runs with a driver signed in,
+ * yellow while it runs available, grey when it does not run. A problem
+ * outranks the seat. An agent too old to send the v2 fields says so rather
+ * than showing blanks as if they were healthy.
  */
 
 const NOW = Date.parse("2026-10-04T21:00:00Z");
@@ -110,14 +112,18 @@ function rig(number: number, heartbeats: Heartbeat[], overrides: Partial<RigSnap
 const SEATED = { driverName: "Matt G", driverStatus: "active", startedAt: NOW - 18 * MIN };
 
 const FIXTURES: Record<string, RigSnapshot> = {
-  green: rig(1, minutely(10 * MIN), { seated: SEATED }),
+  seated: rig(1, minutely(10 * MIN), { seated: SEATED }),
   // Rule 18, a warning: the agent holding 200 MB.
-  yellow: rig(2, minutely(10 * MIN, (ago) => hb(ago, { agentMemoryMb: 200 }))),
+  warning: rig(2, minutely(10 * MIN, (ago) => hb(ago, { agentMemoryMb: 200 }))),
   // Rule 15, urgent: lap reading stopped.
-  red: rig(3, minutely(10 * MIN, (ago) => hb(ago, { telemetryFaulted: true }))),
+  broken: rig(3, minutely(10 * MIN, (ago) => hb(ago, { telemetryFaulted: true }))),
   neverSeen: rig(4, []),
   closed: rig(5, [...minutely(10 * MIN).slice(0, -1), hb(30 * S, { shuttingDown: true })]),
   oldAgent: rig(6, minutely(10 * MIN, v1)),
+  available: rig(7, minutely(10 * MIN)),
+  // Broken with a driver in the seat: the problem outranks the seat.
+  seatedBroken: rig(8, minutely(10 * MIN, (ago) => hb(ago, { telemetryFaulted: true })), { seated: SEATED }),
+  seatedWarning: rig(9, minutely(10 * MIN, (ago) => hb(ago, { agentMemoryMb: 200 })), { seated: SEATED }),
 };
 
 function snapshot(rigs: RigSnapshot[]): MonitorSnapshot {
@@ -148,13 +154,16 @@ describe("rig tile colour", () => {
   const byName = Object.fromEntries(Object.keys(FIXTURES).map((name, i) => [name, computed[i]!]));
 
   it.each([
-    ["green", "green", "online"],
-    ["yellow", "yellow", "online"],
-    ["red", "red", "online"],
+    ["seated", "green", "online"],
+    ["available", "yellow", "online"],
+    ["warning", "red", "online"],
+    ["broken", "red-flashing", "online"],
     ["neverSeen", "grey", "never seen"],
     ["closed", "grey", "agent closed"],
     // Rule 11, a warning: not the build the venue should be running.
-    ["oldAgent", "yellow", "online"],
+    ["oldAgent", "red", "online"],
+    ["seatedBroken", "red-flashing", "online"],
+    ["seatedWarning", "red", "online"],
   ] as const)("%s reads %s, %s", (name, colour, status) => {
     expect(byName[name]!.colour).toBe(colour satisfies TileColour);
     expect(byName[name]!.status).toBe(status);
@@ -166,12 +175,12 @@ describe("rig tile colour", () => {
     for (const tile of rigTiles(snap, findings, new Map())) {
       const mine = findings.filter((f) => flapScope(f.subject) === rigSubject(tile.id));
       const expected = mine.some((f) => f.severity === "urgent")
-        ? "red"
+        ? "red-flashing"
         : mine.length > 0
-          ? "yellow"
+          ? "red"
           : null;
       if (expected) expect(tile.colour).toBe(expected);
-      else expect(["green", "grey"]).toContain(tile.colour);
+      else expect(["green", "yellow", "grey"]).toContain(tile.colour);
       expect(tile.problems.map((p) => p.headline).sort()).toEqual(
         [...new Set(mine.map((f) => f.detail.headline))].sort(),
       );
@@ -200,12 +209,12 @@ describe("rig tile colour", () => {
     expect(tile!.status).toBe("silent 13 h");
   });
 
-  it("turns red for a silent rig with a driver seated, as rule 1 does", () => {
+  it("flashes red for a silent rig with a driver seated, as rule 1 is urgent", () => {
     const silent = rig(8, minutely(10 * MIN).filter((h) => h.receivedAt <= NOW - 4 * MIN), {
       seated: SEATED,
     });
     const [tile] = tiles([silent]);
-    expect(tile!.colour).toBe("red");
+    expect(tile!.colour).toBe("red-flashing");
     expect(tile!.status).toBe("silent 4 min");
     expect(tile!.iracing).toBe("iRacing: not heard for 4 min");
   });
@@ -226,22 +235,23 @@ describe("an alert still open after its problem cleared", () => {
     detail: { headline, where: "Rig 01", fields: [] },
   });
 
-  it("keeps the tile red, with the stored problem, while an urgent alert is open", () => {
-    const [tile] = shown([FIXTURES.green!], [stored("urgent", "Rig 01: lap reading stopped")]);
+  it("keeps the tile flashing red, with the stored problem, while an urgent alert is open", () => {
+    const [tile] = shown([FIXTURES.seated!], [stored("urgent", "Rig 01: lap reading stopped")]);
     expect(tile).toMatchObject({
-      colour: "red",
+      colour: "red-flashing",
       status: "online",
       problems: [{ severity: "urgent", headline: "Rig 01: lap reading stopped" }],
     });
   });
 
-  it("keeps the tile yellow while a warning is open", () => {
-    const [tile] = shown([FIXTURES.green!], [stored("warning", "Rig 01: 200 MB")]);
-    expect(tile).toMatchObject({ colour: "yellow", problems: [{ severity: "warning", headline: "Rig 01: 200 MB" }] });
+  it("keeps the tile steady red while a warning is open", () => {
+    const [tile] = shown([FIXTURES.seated!], [stored("warning", "Rig 01: 200 MB")]);
+    expect(tile).toMatchObject({ colour: "red", problems: [{ severity: "warning", headline: "Rig 01: 200 MB" }] });
   });
 
-  it("goes green once nothing is found and nothing is open", () => {
-    expect(shown([FIXTURES.green!], [])[0]!.colour).toBe("green");
+  it("goes back to the seat's colour once nothing is found and nothing is open", () => {
+    expect(shown([FIXTURES.seated!], [])[0]!.colour).toBe("green");
+    expect(shown([{ ...FIXTURES.available!, id: "rig-1" }], [])[0]!.colour).toBe("yellow");
   });
 
   it("says how things stand now where the rules still find the open alert's problem", () => {
@@ -249,7 +259,7 @@ describe("an alert still open after its problem cleared", () => {
     const [tile] = shown([faulted], [stored("urgent", "an older wording")]);
     expect(tile!.problems.map((p) => p.headline)).not.toContain("an older wording");
     expect(tile!.problems).toHaveLength(1);
-    expect(tile!.colour).toBe("red");
+    expect(tile!.colour).toBe("red-flashing");
   });
 
   it("keeps an open urgent alert urgent while a fresh finding of it reads only a warning", () => {
@@ -262,22 +272,22 @@ describe("an alert still open after its problem cleared", () => {
       [silent],
       [{ ...stored("urgent", "Rig 01 has been silent for 6 min with Matt G signed in"), rule: "rig_silent" }],
     );
-    expect(tile!.colour).toBe("red");
+    expect(tile!.colour).toBe("red-flashing");
     expect(tile!.problems).toEqual([{ severity: "urgent", headline: fresh!.detail.headline }]);
   });
 
   it("puts an open alert about the rig's build or lap on that rig's tile", () => {
     const [tile] = shown(
-      [FIXTURES.green!],
+      [FIXTURES.seated!],
       [{ ...stored("warning", "Rig 01 runs an outdated rig agent"), rule: "agent_outdated", subject: `${rigSubject("rig-1")}|rig-agent/0.4-monitor` }],
     );
-    expect(tile).toMatchObject({ colour: "yellow", outdated: true });
+    expect(tile).toMatchObject({ colour: "red", outdated: true });
   });
 });
 
 describe("rig tile fields", () => {
   it("shows the driver, the session, the last lap, the queue and the agent", () => {
-    const [tile] = tiles([FIXTURES.green!], new Map([["rig-1", NOW - 3 * MIN]]));
+    const [tile] = tiles([FIXTURES.seated!], new Map([["rig-1", NOW - 3 * MIN]]));
     expect(tile).toMatchObject({
       label: "R01",
       driver: "Matt G · 18 min",
@@ -311,7 +321,7 @@ describe("rig tile fields", () => {
     const [tile] = tiles([
       rig(1, minutely(5 * MIN, (ago) => hb(ago, { agentVersion: "rig-agent/0.4-monitor" }))),
     ]);
-    expect(tile).toMatchObject({ colour: "yellow", outdated: true, oldAgent: false });
+    expect(tile).toMatchObject({ colour: "red", outdated: true, oldAgent: false });
     expect(tile!.problems).toHaveLength(1);
   });
 
