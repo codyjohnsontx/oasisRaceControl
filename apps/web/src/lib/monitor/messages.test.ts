@@ -155,9 +155,32 @@ describe("fastLapSummaryMessages", () => {
     });
     const listed = messages.flatMap((m) => m.embeds![0]!.description!.split("\n"));
     const remainder = listed.pop()!;
-    expect(listed).toEqual(every.slice(0, listed.length));
-    expect(listed.length).toBeGreaterThan(60);
-    expect(remainder).toBe(`and ${120 - listed.length} more implausible laps on Rig 01 this hour`);
+    expect(listed).toEqual(every.slice(0, 75));
+    expect(remainder).toBe("and 45 more implausible laps on Rig 01 this hour");
+  });
+
+  it("keeps every part on the same laps however the lines read, so a retry resumes where Discord stopped", () => {
+    const laps = Array.from({ length: 120 }, (_, i) => ({
+      lapTimeMs: 110_000 + i,
+      driver: { name: "Ada", status: i % 2 ? "name_flagged" : "active" },
+      combo,
+    }));
+    const lapTimes = (featuredCombo: typeof combo | null) =>
+      fastLapSummaryMessages({ id: "7", rigName: "Rig 01", featuredCombo, laps }).map((m) =>
+        m.embeds![0]!.description!.match(/\d:\d{2}\.\d{3}/g),
+      );
+    expect(lapTimes(null)).toEqual(lapTimes(combo));
+    expect(lapTimes(null).map((part) => part!.length)).toEqual([25, 25, 25]);
+  });
+
+  it("never lets a line, however long the combo's label, push a part past Discord's limit", () => {
+    const long = { ...combo, trackName: "T".repeat(500) };
+    const laps = Array.from({ length: 120 }, (_, i) => ({ lapTimeMs: 110_000 + i, driver: null, combo: long }));
+    const messages = fastLapSummaryMessages({ id: "7", rigName: "R".repeat(300), featuredCombo: long, laps });
+    expect(messages).toHaveLength(3);
+    for (const message of messages) {
+      expect(message.embeds![0]!.description!.length).toBeLessThanOrEqual(DISCORD_LIMITS.embedDescription);
+    }
   });
 
   it("uses fewer messages, and no more line, when every lap fits", () => {

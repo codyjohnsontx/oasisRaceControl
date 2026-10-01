@@ -168,16 +168,18 @@ closed. Each line gives the rig, the lap time and the driver, with a name under
 review masked as it is everywhere else. The lap's own car and track strings
 come from the rig, so they are never shown: a lap on today's featured combo
 says "today's featured combo" with the combo's label, and any other lap says
-"another car and track". A long list is split on whole lines across at most
-three messages, each marked "part 1 of 3" and so on (a summary that fits in one
-message carries no mark). If laps remain after three messages, the last one
-ends with "and N more implausible laps on Rig X this hour": a rig flagging that
-many laps has a broken detector, and the count is what staff act on. The full
-list belongs on the planned Rig health page.
+"another car and track". A long list is split on whole lines, 25 laps to a
+message, across at most three messages, each marked "part 1 of 3" and so on (a
+summary that fits in one message carries no mark). If laps remain after three
+messages, the last one ends with "and N more implausible laps on Rig X this
+hour": a rig flagging that many laps has a broken detector, and the count is
+what staff act on. The full list belongs on the planned Rig health page.
 
 The summary posts once per mute. A part Discord refuses is retried like any
 other post, starting from that part, so a part Discord already took is not
-posted again. No column exists for the summary, so the mute-starting alert's
+posted again. Which laps a part holds depends only on how many laps the mute
+flagged, so a retry resumes at the same lap even if the featured combo or a
+driver's name status changed in between. No column exists for the summary, so the mute-starting alert's
 own columns record it: `recovery_attempted_at` claims it, `level` counts the
 parts posted, and `recovery_notified_at` marks it done. Rule 14 never posts a
 recovery and its level never moves, so nothing else uses those columns on its

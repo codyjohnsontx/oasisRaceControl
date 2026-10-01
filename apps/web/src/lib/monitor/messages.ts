@@ -105,14 +105,21 @@ export type FastLapSummary = {
 
 /** The most messages one rule 14 summary posts. */
 export const FAST_LAP_SUMMARY_PARTS = 3;
+/** Laps listed in each of them. */
+export const FAST_LAP_SUMMARY_LAPS_PER_PART = 25;
+/** The longest a summary line may be, so a full part and the remainder line fit one embed. */
+const FAST_LAP_SUMMARY_LINE = 150;
 
 /**
  * The quiet messages that end a rule 14 mute: the laps flagged while it held,
  * so a run of fast laps reaches staff once instead of flooding the channel.
  * The list is split on whole lines across at most FAST_LAP_SUMMARY_PARTS
- * messages, each marked "part i of N" when there is more than one; laps that
- * still do not fit are counted on the last line instead - a rig flagging that
- * many has a broken detector, and the count is what staff act on. A lap's car
+ * messages of FAST_LAP_SUMMARY_LAPS_PER_PART laps, each marked "part i of N"
+ * when there is more than one; laps past them are counted on the last line
+ * instead - a rig flagging that many has a broken detector, and the count is
+ * what staff act on. Which laps a part holds depends only on how many laps the
+ * mute flagged, never on how the lines read, so a part retried after the
+ * featured combo or a driver's status changed resumes at the same lap. A lap's car
  * and track are the rig's own strings, so they are never shown: a lap on
  * today's featured combo says so with the combo's label, and any other says
  * "another car and track".
@@ -129,23 +136,22 @@ export function fastLapSummaryMessages(summary: FastLapSummary): DiscordMessage[
       ) === null;
     const driver = lap.driver ? nameOf(lap.driver.name, lap.driver.status) : "nobody signed in";
     const combo = onFeatured ? `today's featured combo (${comboLabel(featured)})` : "another car and track";
-    return `• ${summary.rigName} · ${formatLapTime(lap.lapTimeMs)} by ${driver} on ${combo}`;
+    return clip(`• ${summary.rigName} · ${formatLapTime(lap.lapTimeMs)} by ${driver} on ${combo}`, FAST_LAP_SUMMARY_LINE);
   });
-  const more = (n: number) => `and ${n} more implausible ${n === 1 ? "lap" : "laps"} on ${summary.rigName} this hour`;
-  const fits = (part: string[], room: number) => part.join("\n").length <= room;
 
-  const parts: string[][] = [];
-  let next = 0;
-  while (next < lines.length && parts.length < FAST_LAP_SUMMARY_PARTS) {
-    const rest = lines.slice(next);
-    const last = parts.length === FAST_LAP_SUMMARY_PARTS - 1;
-    const room = DISCORD_LIMITS.embedDescription - (last && !fits(rest, DISCORD_LIMITS.embedDescription) ? more(lines.length).length + 1 : 0);
-    const part = [rest[0]!];
-    while (part.length < rest.length && fits([...part, rest[part.length]!], room)) part.push(rest[part.length]!);
-    next += part.length;
-    parts.push(part);
+  const parts = Array.from(
+    { length: Math.min(FAST_LAP_SUMMARY_PARTS, Math.ceil(lines.length / FAST_LAP_SUMMARY_LAPS_PER_PART)) },
+    (_, i) => lines.slice(i * FAST_LAP_SUMMARY_LAPS_PER_PART, (i + 1) * FAST_LAP_SUMMARY_LAPS_PER_PART),
+  );
+  const unlisted = lines.length - FAST_LAP_SUMMARY_PARTS * FAST_LAP_SUMMARY_LAPS_PER_PART;
+  if (unlisted > 0) {
+    parts.at(-1)!.push(
+      clip(
+        `and ${unlisted} more implausible ${unlisted === 1 ? "lap" : "laps"} on ${summary.rigName} this hour`,
+        FAST_LAP_SUMMARY_LINE,
+      ),
+    );
   }
-  if (next < lines.length) parts.at(-1)!.push(more(lines.length - next));
 
   const count = summary.laps.length === 1 ? "1 lap" : `${summary.laps.length} laps`;
   return parts.map((part, i) => ({

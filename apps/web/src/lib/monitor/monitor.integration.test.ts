@@ -875,7 +875,7 @@ describeDb("rig monitor against real Postgres", () => {
     ]);
   });
 
-  it("posts a long fast-lap summary in parts, and resumes a refused one from the part Discord did not take", async () => {
+  it("posts a long fast-lap summary in parts, and resumes a refused one at the lap Discord did not take, though the combo changed", async () => {
     const rig = await seedRig(1);
     for (let i = 0; i < 5; i++) {
       const other = await seedDriver(`Other ${i}`);
@@ -901,6 +901,9 @@ describeDb("rig monitor against real Postgres", () => {
     await nextEvaluation();
     expect(posts.map((p) => p.content)).toEqual([expect.stringMatching(/ \(part 1 of 3\)$/)]);
 
+    // Staff change today's combo before the retry: every line still to post
+    // now reads shorter, and the parts must still pick up at lap 29.
+    await setFeaturedCombo({ trackName: TRACK.track, trackConfig: TRACK.config, carName: "Mazda MX-5" });
     await nextEvaluation();
     await timePasses(2);
     await nextEvaluation();
@@ -912,9 +915,12 @@ describeDb("rig monitor against real Postgres", () => {
       expect.stringMatching(/ \(part 3 of 3\)$/),
     ]);
     const listed = posts.flatMap((p) => (p.embeds as Array<{ description: string }>)[0]!.description.split("\n"));
+    expect(listed.pop()).toBe("and 42 more implausible laps on Rig 01 this hour");
     expect(listed.map((line) => line.match(/ · (1:50\.\d{3}) by Ada /)![1])).toEqual(
-      Array.from({ length: 117 }, (_, i) => `1:50.${String(i + 3).padStart(3, "0")}`),
+      Array.from({ length: 75 }, (_, i) => `1:50.${String(i + 3).padStart(3, "0")}`),
     );
+    expect(listed[24]).toMatch(/on today's featured combo/);
+    expect(listed[25]).toMatch(/on another car and track$/);
   });
 
   describe("flapping", () => {
