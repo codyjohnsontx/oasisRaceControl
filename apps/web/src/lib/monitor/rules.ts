@@ -254,6 +254,23 @@ export function outdatedAgentSubject(rigId: string): string {
   return `${rigSubject(rigId)}|${CURRENT_AGENT_VERSION}`;
 }
 
+/** Rule 14's subject: the rig, and the lap - one alert per lap. */
+export function fastLapSubject(rigId: string, lapId: string): string {
+  return `${rigSubject(rigId)}|lap:${lapId}`;
+}
+
+/**
+ * What flapping is counted over (store.ts, FLAPPING_REFIRES): the part of a
+ * subject before its first "|". A subject that names something finer than a
+ * rig - a lap (rule 14), a build (rule 11) - keeps one alert per lap or build,
+ * but its openings flap together with the rest of that rig's on the same
+ * rule; otherwise six implausible laps on one rig would be six histories, and
+ * six posts the mute never caught.
+ */
+export function flapScope(subject: string): string {
+  return subject.split("|", 1)[0]!;
+}
+
 type Rig = { rig: RigSnapshot; state: Heartbeat | null };
 
 export function evaluateRules(snapshot: MonitorSnapshot): Finding[] {
@@ -646,10 +663,12 @@ const SIGN_IN_FAILURE_WORDS: Record<string, string> = {
  * of them inside SIGN_IN_FAILURE_WINDOW_MS; an open alert holds while any
  * arrived inside SIGN_IN_FAILURE_CLEAR_MS. A heartbeat reports every refusal
  * the site has not acknowledged, so after an answer is lost the next one
- * reports the same refusals again under a new heartbeat sequence. A report
- * that carries `signInFailureSeqs` is counted by those: each refusal once per
- * agent process, when it first arrived. One without them (an older agent, or
- * no process start to key on) counts its `signInFailures` as it stands.
+ * reports the same refusals again under a new heartbeat sequence. So only a
+ * report that carries `signInFailureSeqs` (rig-agent/0.5-monitor and later)
+ * is counted, by those: each refusal once per agent process, when it first
+ * arrived. One without them - an older agent, or no process start to key on -
+ * is stored but not counted here, since its replayed counts cannot be told
+ * from new refusals; rule 11 asks for the upgrade that brings it into rule 6.
  */
 function signInFailures(
   now: number,
@@ -658,9 +677,7 @@ function signInFailures(
 ): { count: number; window: number; kinds: string[] } | null {
   const seen = new Set<string>();
   const reports = heartbeats.flatMap((h) => {
-    if (h.signInFailureSeqs === null || h.processStartedAt === null) {
-      return h.signInFailures ? [{ h, count: h.signInFailures }] : [];
-    }
+    if (h.signInFailureSeqs === null || h.processStartedAt === null) return [];
     const fresh = h.signInFailureSeqs.filter((seq) => {
       const key = `${h.processStartedAt}|${seq}`;
       if (seen.has(key)) return false;
@@ -769,28 +786,49 @@ function seatAndLapFindings(
   // its live session while a driver is seated, or its last few laps - judged
   // by the same comparison ingestion uses, so it never disagrees with which
   // laps are refused. Without a combo nothing is wrong (rule 4's business).
+  //
+  // Each input is a signal at the moment it was heard, and the newest
+  // definitive one decides: the live session (wrong or right) at its
+  // heartbeat, a run of COMBO_REJECTED_LAPS combo-refused laps at the last of
+  // them, a valid lap at its arrival. So fixing the car clears the alert at
+  // the next heartbeat even with the refused laps still in view, a valid lap
+  // clears it even before the next heartbeat, and a wrong session heard after
+  // either opens it again. On a tie the wrong signal wins.
   const combo = snapshot.featuredCombo;
   if (combo) {
-    const sessionWrong =
-      rig.seated && live?.simConnected === true && live.session
-        ? comboMismatch(
-            { track_name: combo.trackName, track_config: combo.trackConfig, car_name: combo.carName },
-            live.session,
-          )
-        : null;
+    type Signal = { at: number; wrong: string | null; from: "session" | "laps" };
+    const signals: Signal[] = [];
+    if (rig.seated && live?.simConnected === true && live.session) {
+      signals.push({
+        at: live.receivedAt,
+        from: "session",
+        wrong: comboMismatch(
+          { track_name: combo.trackName, track_config: combo.trackConfig, car_name: combo.carName },
+          live.session,
+        ),
+      });
+    }
     const recent = rigLaps.filter((lap) => now - lap.receivedAt <= COMBO_REJECTED_WINDOW_MS);
     const last = recent.slice(-COMBO_REJECTED_LAPS);
-    const lapsWrong =
-      last.length === COMBO_REJECTED_LAPS && last.every((lap) => COMBO_REASONS.has(lap.invalidReason ?? ""))
-        ? last.at(-1)!.invalidReason!
-        : null;
+    if (last.length === COMBO_REJECTED_LAPS && last.every((lap) => COMBO_REASONS.has(lap.invalidReason ?? ""))) {
+      signals.push({ at: last.at(-1)!.receivedAt, from: "laps", wrong: last.at(-1)!.invalidReason! });
+    }
+    const valid = recent.findLast((lap) => lap.valid);
+    if (valid) signals.push({ at: valid.receivedAt, from: "laps", wrong: null });
+
+    const decides = signals.reduce<Signal | null>(
+      (newest, signal) =>
+        !newest || signal.at > newest.at || (signal.at === newest.at && signal.wrong !== null) ? signal : newest,
+      null,
+    );
     const rejected = recent.filter((lap) => COMBO_REASONS.has(lap.invalidReason ?? "")).length;
-    if (sessionWrong || lapsWrong) {
-      const headline = sessionWrong
-        ? `${rig.name} is in an iRacing session on the wrong ${wrongPart(sessionWrong)} for today's ` +
-          `featured combo while ${driverName(rig.seated!)} is signed in - their laps will not rank`
-        : `${rig.name}: its last ${COMBO_REJECTED_LAPS} laps were on the wrong ${wrongPart(lapsWrong!)} ` +
-          "for today's featured combo, so none of them rank";
+    if (decides?.wrong) {
+      const headline =
+        decides.from === "session"
+          ? `${rig.name} is in an iRacing session on the wrong ${wrongPart(decides.wrong)} for today's ` +
+            `featured combo while ${driverName(rig.seated!)} is signed in - their laps will not rank`
+          : `${rig.name}: its last ${COMBO_REJECTED_LAPS} laps were on the wrong ${wrongPart(decides.wrong)} ` +
+            "for today's featured combo, so none of them rank";
       findings.push(
         finding("wrong_combo", rig, raised, headline, [
           ...fields,
@@ -875,9 +913,10 @@ function comboKey(combo: FeaturedCombo): string {
  * same car and track before it, once enough other drivers have driven it for
  * that best to mean something. It only flags the lap for staff to look at -
  * it never touches laps.is_valid, since validity is decided once, at
- * ingestion (AGENTS.md). Each lap is its own subject, so a lap fires once,
- * and its alert closes quietly (RECOVERS_SILENTLY) once the lap has passed
- * out of the snapshot. "Before it" keeps the verdict on a lap from changing
+ * ingestion (AGENTS.md). Each lap is its own subject (fastLapSubject), so a
+ * lap fires once, and its alert closes quietly (RECOVERS_SILENTLY) once the
+ * lap has passed out of the snapshot; the laps of one rig flap together
+ * (flapScope), so a run of them is muted like any other flapping rule. "Before it" keeps the verdict on a lap from changing
  * when a later lap is driven, and makes the second of two implausible laps
  * look plausible only against the first - both are drivers' laps someone
  * should look at, and the first is already flagged.
@@ -909,7 +948,7 @@ function fastLaps(snapshot: MonitorSnapshot): Finding[] {
     const under = Math.floor((1 - lap.lapTimeMs / best) * 100);
     findings.push({
       rule: "fast_lap",
-      subject: `lap:${lap.id}`,
+      subject: fastLapSubject(lap.rigId, lap.id),
       severity: "warning",
       level: 0,
       detail: {

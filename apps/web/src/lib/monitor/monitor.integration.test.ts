@@ -6,8 +6,19 @@ import { db } from "@/lib/db";
 import { CURRENT_AGENT_VERSION } from "./agent-version";
 import geminiAnswer from "./diagnosis/fixtures/gemini-generate-content.json";
 import { runDiagnoses, runMonitor } from "./run";
-import { applyFindings, claimEvaluation, LAP_BESTS_SQL, RECENT_LAPS_SQL, type OpenAlert } from "./store";
-import type { Finding } from "./rules";
+import { openingMessage } from "./messages";
+import {
+  alertsById,
+  applyFindings,
+  claimAnnounceRetries,
+  claimDiagnoses,
+  claimEvaluation,
+  LAP_BESTS_SQL,
+  markAnnounced,
+  RECENT_LAPS_SQL,
+  type OpenAlert,
+} from "./store";
+import type { Finding, Severity } from "./rules";
 import {
   closeTestDb,
   describeDb,
@@ -214,6 +225,37 @@ async function alerts() {
      from monitor_alerts order by id`,
   );
   return rows;
+}
+
+/** Rule 7 on one rig, at the severity event mode would give it. */
+function wrongCombo(severity: Severity): Finding {
+  return {
+    rule: "wrong_combo",
+    subject: "rig:severity",
+    severity,
+    level: 0,
+    detail: { headline: "Rig 01 is on the wrong car", where: "Rig 01", fields: [], driver: null },
+  };
+}
+
+async function openAlertRows(): Promise<OpenAlert[]> {
+  const { rows } = await testDb().query<OpenAlert>(
+    "select id::text, rule, subject from monitor_alerts where resolved_at is null",
+  );
+  return rows;
+}
+
+async function severityRow() {
+  const { rows } = await testDb().query<{ severity: string; notified: boolean }>(
+    "select severity, notified_at is not null as notified from monitor_alerts where resolved_at is null",
+  );
+  return rows[0];
+}
+
+/** What the channel would show for alert `id` now, as the opening (or its retry) renders it. */
+async function opening(id: string) {
+  const [alert] = await alertsById([id]);
+  return openingMessage(alert!, OWNER);
 }
 
 describeDb("rig monitor against real Postgres", () => {
@@ -710,6 +752,75 @@ describeDb("rig monitor against real Postgres", () => {
   });
 
 
+  describe("severity that event mode changes while an alert is open", () => {
+    it("raises a posted warning to urgent once, with the owner's mention", async () => {
+      const [opened] = (await applyFindings(db(), [wrongCombo("warning")], [])).announce;
+      await markAnnounced((await alertsById([opened!]))[0]!);
+
+      const raised = await applyFindings(db(), [wrongCombo("urgent")], await openAlertRows());
+      expect(raised.announce).toEqual([opened]);
+      expect(await severityRow()).toEqual({ severity: "urgent", notified: false });
+      const message = await opening(opened!);
+      expect(message.content).toMatch(new RegExp(`^<@${OWNER}> 🔴 `));
+      expect(message.allowed_mentions).toEqual({ parse: [], users: [OWNER] });
+
+      await markAnnounced((await alertsById([opened!]))[0]!);
+      expect((await applyFindings(db(), [wrongCombo("urgent")], await openAlertRows())).announce).toEqual([]);
+    });
+
+    it("lowers urgent to warning quietly", async () => {
+      const [opened] = (await applyFindings(db(), [wrongCombo("urgent")], [])).announce;
+      await markAnnounced((await alertsById([opened!]))[0]!);
+
+      expect((await applyFindings(db(), [wrongCombo("warning")], await openAlertRows())).announce).toEqual([]);
+      expect(await severityRow()).toEqual({ severity: "warning", notified: true });
+    });
+
+    it("retries an urgent post that failed as the warning it has since become: no mention, no diagnosis", async () => {
+      // Opened urgent during the event; its post failed, so it was never marked.
+      const [opened] = (await applyFindings(db(), [wrongCombo("urgent")], [])).announce;
+      await applyFindings(db(), [wrongCombo("warning")], await openAlertRows());
+      await testDb().query("update monitor_alerts set notify_attempted_at = now() - interval '2 minutes'");
+
+      const retried = await claimAnnounceRetries();
+      expect(retried.map((a) => a.id)).toEqual([opened]);
+      const message = openingMessage(retried[0]!, OWNER);
+      expect(message.content).toMatch(/^🟡 /);
+      expect(message.allowed_mentions).toEqual({ parse: [] });
+      await markAnnounced(retried[0]!);
+      expect(await claimDiagnoses()).toEqual([]);
+    });
+  });
+
+  it("mutes a run of implausibly fast laps on one rig like any flapping rule: three posts, one mute line, then silence", async () => {
+    const rig = await seedRig(1);
+    for (let i = 0; i < 5; i++) {
+      const other = await seedDriver(`Other ${i}`);
+      const owner = { driverId: other.id, assignmentId: await pastStint(rig.id, other.id) };
+      await storeLap(rig, 3600, { owner, lapTimeMs: 120_000 + i * 1000 });
+    }
+    const driver = await seedDriver("Ada");
+    const assignmentId = await openAssignment(rig.id, driver.id);
+    await heartbeat(rig, 0);
+    for (let i = 0; i < 6; i++) {
+      await storeLap(rig, 300 - i * 30, { owner: { driverId: driver.id, assignmentId }, lapTimeMs: 110_000 + i });
+    }
+
+    await nextEvaluation();
+    await nextEvaluation();
+    await nextEvaluation();
+    expect(posts.map((p) => p.content)).toEqual([
+      expect.stringMatching(/^🟡 Rig 01: a 1:50\.000 lap by Ada/),
+      expect.stringMatching(/^🟡 Rig 01: a 1:50\.001 lap by Ada/),
+      expect.stringMatching(/^🟡 Rig 01: a 1:50\.002 lap by Ada/),
+      expect.stringMatching(/^🔕 Flapping: Implausibly fast lap - Rig 01 has fired 4 times in the last hour; muted for 1 h/),
+    ]);
+    const { rows } = await testDb().query<{ subject: string }>("select subject from monitor_alerts order by id");
+    expect(rows).toHaveLength(6);
+    expect(new Set(rows.map((r) => r.subject)).size).toBe(6);
+    expect(rows.every((r) => r.subject.startsWith(`rig:${rig.id}|lap:`))).toBe(true);
+  });
+
   describe("flapping", () => {
     /** Rule 16 opens on one heartbeat and clears two evaluations after the next. */
     async function flap(rig: SeededRig) {
@@ -757,6 +868,28 @@ describeDb("rig monitor against real Postgres", () => {
         [`${minutes} minutes`],
       );
     }
+
+    it("holds a rise to urgent while muted, and posts it, with the mention, when the mute ends", async () => {
+      for (let i = 0; i < 3; i++) {
+        const [opened] = (await applyFindings(db(), [wrongCombo("warning")], [])).announce;
+        await markAnnounced((await alertsById([opened!]))[0]!);
+        await applyFindings(db(), [], await openAlertRows());
+        await applyFindings(db(), [], await openAlertRows());
+      }
+      const [starter] = (await applyFindings(db(), [wrongCombo("warning")], [])).announce;
+      const [muteLine] = await alertsById([starter!]);
+      expect(openingMessage(muteLine!, OWNER).content).toMatch(/^🔕 Flapping: /);
+      await markAnnounced(muteLine!);
+
+      expect((await applyFindings(db(), [wrongCombo("urgent")], await openAlertRows())).announce).toEqual([]);
+      expect(await severityRow()).toEqual({ severity: "urgent", notified: false });
+      expect(await claimAnnounceRetries()).toEqual([]);
+
+      await timePasses(62);
+      const due = await claimAnnounceRetries();
+      expect(due.map((a) => a.id)).toEqual([starter]);
+      expect(openingMessage(due[0]!, OWNER).content).toMatch(new RegExp(`^<@${OWNER}> 🔴 `));
+    });
 
     /** Rule 3b opens and clears three times, then opens a fourth time and stays open. */
     async function flapIntoMute(rig: SeededRig) {

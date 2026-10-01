@@ -8,6 +8,7 @@ import {
   LAP_HISTORY_MS,
   MOVE_WINDOW_MS,
   RECOVERS_SILENTLY,
+  flapScope,
   SILENT_AFTER_MS,
   type AlertDetail,
   type FeaturedCombo,
@@ -83,9 +84,10 @@ const RETRY_AFTER = "60 seconds";
 
 /**
  * Flapping. An alert that opens for the FLAPPING_REFIRES-th time on the same
- * rule and subject within FLAPPING_WINDOW - three re-fires after the first -
- * posts one "flapping, muted" line instead of itself, and starts a mute that
- * ends FLAPPING_WINDOW after it. Everything on that rule and subject until then
+ * rule and flapping scope (flapScope in rules.ts: the rig, for a subject that
+ * names one lap or build of it) within FLAPPING_WINDOW - three re-fires after
+ * the first - posts one "flapping, muted" line instead of itself, and starts a
+ * mute that ends FLAPPING_WINDOW after it. Everything on that rule and scope until then
  * (openings, recoveries, rises) is kept but not posted. monitor_alerts.
  * refire_count records how many earlier openings each alert had in the window
  * before it, and never less than FLAPPING_REFIRES for one that opened inside a
@@ -468,7 +470,9 @@ function toHeartbeat(row: HeartbeatRow): Heartbeat {
  *   the mute instead (FLAPPING_REFIRES); one inside a mute announces nothing
  *   now, and its opening is due when the mute ends.
  * - Worse: a finding whose level rose re-announces once per rise, claimed by
- *   the update that moved the level - unless the alert is muted.
+ *   the update that moved the level - unless the alert is muted. So does one
+ *   whose severity rose from warning to urgent (moveSeverity); a fall from
+ *   urgent to warning is recorded quietly.
  * - Recover: an open alert no finding named counts one absence; the evaluation
  *   whose update reaches RESOLVE_AFTER_ABSENT resolves it and posts, if its
  *   opening was posted (a muted one's never was) and its rule does not recover
@@ -496,7 +500,9 @@ export async function applyFindings(
       [finding.rule, finding.subject, finding.detail],
     );
     if (open) {
-      if (finding.level > 0 && (await levelRose(db, open.id, finding.level))) announce.push(open.id);
+      const rose = await moveSeverity(db, open.id, finding.severity);
+      const worse = finding.level > 0 && (await levelRose(db, open.id, finding.level));
+      if (rose || worse) announce.push(open.id);
       continue;
     }
     const [row] = await rows<{ id: string; silent: boolean }>(
@@ -504,7 +510,7 @@ export async function applyFindings(
       `with earlier as (
          select count(*)::int as openings, max(notify_until) filter (where ${MUTED}) as mute_deadline
          from monitor_alerts
-         where rule = $1 and subject = $2 and opened_at > now() - $8::interval
+         where rule = $1 and split_part(subject, '|', 1) = $9 and opened_at > now() - $8::interval
        )
        insert into monitor_alerts
          (rule, subject, severity, level, detail, refire_count, notify_attempted_at, notify_until)
@@ -526,6 +532,7 @@ export async function applyFindings(
         RETRY_FOR,
         FLAPPING_REFIRES,
         FLAPPING_WINDOW,
+        flapScope(finding.subject),
       ],
     );
     if (row && !row.silent) announce.push(row.id);
@@ -549,6 +556,41 @@ export async function applyFindings(
     [absent, RESOLVE_AFTER_ABSENT, RECOVERS_SILENTLY],
   );
   return { announce, recover: resolved.filter((r) => r.announced).map((r) => r.id) };
+}
+
+/**
+ * Moves an open alert to `severity` - the severity its rule gives it now, which
+ * event mode can change while the alert is open (rules 5a and 7, and rule 1
+ * with plan PR 4) - and says whether that was a rise to post. The one
+ * implementation of a severity transition for every rule; PR 4's severityRose
+ * converges on it.
+ *
+ * - Warning to urgent is a rise: claimed by this update, which re-opens the
+ *   alert's notify window so it is announced once, with the urgent mention,
+ *   and then diagnosed - unless the alert is flap-muted, when only the
+ *   severity moves and the deferred opening posts as urgent at the mute's end.
+ * - Urgent to warning is recorded quietly: nothing posts, and an urgent post
+ *   that had not got through yet is retried as the warning it now is, without
+ *   the mention, and is never diagnosed (claimDiagnoses takes urgent alerts).
+ *
+ * A mode that flips back and forth re-announces each rise to urgent, as a
+ * level that falls and rises again does; event mode changes a few times a day.
+ */
+async function moveSeverity(db: Db, id: string, severity: Severity): Promise<boolean> {
+  const [row] = await rows<{ rose: boolean }>(
+    db,
+    `update monitor_alerts a
+     set severity = $2,
+         notified_at = case when old.posts then null else a.notified_at end,
+         notify_attempted_at = case when old.posts then now() else a.notify_attempted_at end,
+         notify_until = case when old.posts then now() + $3::interval else a.notify_until end
+     from (select id, $2 = 'urgent' and not ${MUTED} as posts
+           from monitor_alerts where id = $1::bigint for update) old
+     where a.id = old.id and a.severity <> $2
+     returning old.posts as rose`,
+    [id, severity, RETRY_FOR],
+  );
+  return row?.rose ?? false;
 }
 
 /**

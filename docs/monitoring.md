@@ -40,8 +40,8 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
 | 5a | Laps with nobody signed in | 2 laps inside 10 min that the agent said nobody was signed in for, since the rig's last lap that reached a driver | a lap reaches a driver, or 15 min pass without another | warning; urgent in event mode |
 | 5b | Unusually long stint | a driver has been signed in longer than `monitor_state.long_stint_minutes` (2 h unless staff change it), on a rig that is switched on and reporting | the stint ends | warning |
-| 6 | Repeated sign-in failures | 3 walk-up sign-ins refused on one rig inside 5 min; the message names the kinds (wrong PIN or name, locked out, ...) | 10 min without one | warning |
-| 7 | Wrong car or track | today has a featured combo, and a seated rig's iRacing session is on another car or track, or the rig's last 3 laps inside 15 min were all refused for the combo | the session matches, or a valid lap lands | warning; urgent in event mode |
+| 6 | Repeated sign-in failures | 3 walk-up sign-ins refused on one rig inside 5 min; the message names the kinds (wrong PIN or name, locked out, ...). Needs `rig-agent/0.5-monitor` (below) | 10 min without one | warning |
+| 7 | Wrong car or track | today has a featured combo, and a seated rig's iRacing session is on another car or track, or the rig's last 3 laps inside 15 min were all refused for the combo | the session matches, or a valid lap lands - whichever of the two signals was heard last decides | warning; urgent in event mode |
 | 10 | Rig agent restarting repeatedly | 3 agent starts within 15 min | the starts age out of the 15 min | urgent |
 | 11 | Outdated rig agent | a rig that is switched on and reporting runs an agent build other than `CURRENT_AGENT_VERSION` | it reports the current build | warning, once per rig per version |
 | 12 | Rig clock is off | the rig's clock is over 5 min from the server's | under 2 min | urgent |
@@ -80,16 +80,27 @@ Details worth knowing:
   goodbye.
 - **Event mode raises rules 5a and 7 to urgent.** Event mode itself arrives
   with plan PR 4; until then it is off everywhere (`inEventMode` in
-  `rules.ts` is the one place that reads it), so both stay warnings.
+  `rules.ts` is the one place that reads it), so both stay warnings. An
+  alert already open follows the mode: a warning that becomes urgent is
+  announced once more, with the mention (held to the end of a flapping mute
+  if it is muted), and an urgent one that becomes a warning changes quietly -
+  a post that had not got through yet goes out as a warning, without the
+  mention or a diagnosis. One function, `moveSeverity` in `store.ts`, makes
+  that move for every rule.
 - **Rules 5a, 5b, 7 (its laps half) and 14 need nothing new from the rig**:
   they read laps, stints and today's combo, so they work for an agent too old
-  to send more than its version. Rule 7's session half, rule 6 and rule 13
-  (which needs the rig it left to report the sim in a session) need
-  `rig-agent/0.4-monitor` or later.
+  to send more than its version. Rule 7's session half and rule 13 (which
+  needs the rig it left to report the sim in a session) need
+  `rig-agent/0.4-monitor` or later; rule 6 needs `rig-agent/0.5-monitor`.
 - **Rule 7 judges the combo exactly as ingestion does** (`comboMismatch` in
   `validity.ts`), so it never calls a session right whose laps will be
   refused. Its message names today's combo and which part is wrong, never the
-  rig's own session strings.
+  rig's own session strings. Its two inputs are signals at the moment each was
+  heard - the live session at its heartbeat, a run of 3 refused laps at the
+  last of them, a valid lap at its arrival - and the newest decides, so
+  putting the car right clears the alert at the next heartbeat even with the
+  refused laps still in view, and a wrong session heard after a valid lap
+  opens it again.
 - **Rule 11's version is `CURRENT_AGENT_VERSION`** in
   `src/lib/monitor/agent-version.ts`, a copy of `AgentVersion` in
   `apps/rig-agent/OasisRigAgent.Core/AgentConfig.cs` that
@@ -108,7 +119,9 @@ Details worth knowing:
   site has not acknowledged, so after a lost answer the next one reports the
   same refusals again. `rig-agent/0.5-monitor` and later send each refusal's own
   sequence number (`signInFailureSeqs`), and the monitor counts each once per
-  agent process; a heartbeat without them is counted as it stands.
+  agent process. A heartbeat without them - `rig-agent/0.4-monitor` and older
+  - is still stored but does not feed rule 6 at all, since a replayed count
+  cannot be told from new refusals; rule 11 already asks for the upgrade.
 - **Rule 13 is the move, not two stints at once.** A driver cannot hold two
   stints: `one_open_assignment_per_driver` in `0001_core_schema.sql` forbids
   it, and signing in on a second rig ends the first with `end_reason =
@@ -116,9 +129,10 @@ Details worth knowing:
   it is now signed in as nobody.
 - **Rule 14 never changes a lap.** It flags the lap for staff to look at;
   validity is decided once, at ingestion, and a flagged lap ranks until staff
-  invalidate it by hand. Each lap is its own alert, compared only with laps
-  stored before it, so a later lap never changes the verdict on an earlier
-  one.
+  invalidate it by hand. Each lap is its own alert (subject
+  `rig:<id>|lap:<id>`), compared only with laps stored before it, so a later
+  lap never changes the verdict on an earlier one. The laps of one rig flap
+  together, so a run of them on a bad rig is muted like any flapping rule.
 - **A driver is named in an alert only while their account is active.** A
   name under review (or a banned driver) reads "a driver (name under review)",
   in Discord and in `monitor_alerts`, as the public leaderboard hides them.
@@ -126,7 +140,10 @@ Details worth knowing:
 ## Flapping
 
 An alert that opens for the fourth time on the same rule and rig within an
-hour - three re-fires after the first - is flapping. Instead of itself it
+hour - three re-fires after the first - is flapping. "Rig" is the part of the
+alert's subject before its first `|` (`flapScope` in `rules.ts`), so rule
+14's per-lap alerts and rule 11's per-build ones count together for their
+rig. Instead of itself it
 posts one quiet line, `🔕 Flapping: <rule> - <rig> has fired 4 times in the
 last hour; muted for 1 h`, and for the hour after that line nothing on that
 rule and rig is posted: no openings, recoveries, rises or AI diagnosis. The

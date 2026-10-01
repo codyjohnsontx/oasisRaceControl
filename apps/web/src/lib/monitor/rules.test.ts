@@ -898,17 +898,22 @@ describe("rule 5b: unusually long stint", () => {
 });
 
 describe("rule 6: repeated sign-in failures", () => {
+  /** One refusal reported at each of `at`, numbered as rig-agent/0.5-monitor numbers them. */
   const failing = (at: number[], kinds: string[] = ["wrong_pin_or_name"]) =>
     minutely(14 * MIN, 0, (ago) =>
-      at.includes(ago) ? { signInFailures: 1, signInFailureKinds: kinds } : {},
+      at.includes(ago) ? { signInFailures: 1, signInFailureKinds: kinds, signInFailureSeqs: [ago] } : {},
     );
 
   it("warns on three inside five minutes, naming the kinds", () => {
     const heartbeats = minutely(14 * MIN, 0, (ago) =>
       ago === 4 * MIN
-        ? { signInFailures: 2, signInFailureKinds: ["wrong_pin_or_name", "wrong_pin_or_name"] }
+        ? {
+            signInFailures: 2,
+            signInFailureKinds: ["wrong_pin_or_name", "wrong_pin_or_name"],
+            signInFailureSeqs: [1, 2],
+          }
         : ago === MIN
-          ? { signInFailures: 1, signInFailureKinds: ["locked"] }
+          ? { signInFailures: 1, signInFailureKinds: ["locked"], signInFailureSeqs: [3] }
           : {},
     );
     const findings = evaluate([rig(1, { heartbeats })]);
@@ -960,9 +965,25 @@ describe("rule 6: repeated sign-in failures", () => {
   it("counts the refusals a goodbye reports", () => {
     const heartbeats = [
       ...minutely(14 * MIN, MIN),
-      hb(0, { signInFailures: 3, signInFailureKinds: ["unreachable"], shuttingDown: true }),
+      hb(0, { signInFailures: 3, signInFailureKinds: ["unreachable"], signInFailureSeqs: [1, 2, 3], shuttingDown: true }),
     ];
     expect(rulesOf(evaluate([rig(1, { heartbeats })]))).toEqual(["sign_in_failures rig:rig-1 warning"]);
+  });
+
+  it("does not count an agent's reports that carry no failure sequences, which it replays after a lost answer", () => {
+    // rig-agent/0.4-monitor: two refusals reported, the answer lost, and the
+    // same two reported again - four by count, two in fact.
+    const legacy = { signInFailures: 2, signInFailureKinds: ["wrong_pin_or_name"], signInFailureSeqs: null };
+    const heartbeats = [
+      ...minutely(14 * MIN, 3 * MIN),
+      hb(2 * MIN + 50 * S, { ...legacy, agentVersion: "rig-agent/0.4-monitor", sequence: 1_001 }),
+      hb(2 * MIN + 40 * S, { ...legacy, agentVersion: "rig-agent/0.4-monitor", sequence: 1_002 }),
+      ...minutely(MIN, 0, () => ({ agentVersion: "rig-agent/0.4-monitor" })),
+    ];
+    const findings = evaluate([rig(1, { heartbeats })]);
+    expect(only(findings, "sign_in_failures")).toBeUndefined();
+    // Rule 11 is what asks for the build that brings the rig into rule 6.
+    expect(only(findings, "agent_outdated")).toBeDefined();
   });
 });
 
@@ -1022,6 +1043,41 @@ describe("rule 7: wrong car or track", () => {
     const incidents = [rejected(9 * MIN), rejected(6 * MIN, "INCIDENT_LIMIT_EXCEEDED"), rejected(3 * MIN)];
     expect(evaluate([rig(1)], [], { ...combo, laps: incidents })).toEqual([]);
     expect(evaluate([rig(1)], [], { ...combo, laps: [rejected(16 * MIN), rejected(6 * MIN), rejected(3 * MIN)] })).toEqual([]);
+  });
+
+  describe("with both its signals in view, the newest decides", () => {
+    const rejected = (ago: number) => lap(1, ago, { valid: false, invalidReason: "WRONG_CAR" });
+    const streak = [rejected(9 * MIN), rejected(6 * MIN), rejected(3 * MIN)];
+    /** Heartbeats every minute up to now, the session wrong until `fixedAgo` and right after it. */
+    const fixedAt = (fixedAgo: number) =>
+      minutely(14 * MIN, 0, (ago) => ({ session: ago > fixedAgo ? wrongCar : COMBO }));
+
+    it("clears when the session is put right, with the refused laps still in view", () => {
+      expect(evaluate([rig(1, { seated: SEATED, heartbeats: fixedAt(2 * MIN) })], [], { ...combo, laps: streak })).toEqual([]);
+    });
+
+    it("clears when a valid lap lands after a wrong session, before the next heartbeat says so", () => {
+      const heartbeats = minutely(14 * MIN, MIN, () => ({ session: wrongCar }));
+      const laps = [...streak, lap(1, 30 * S)];
+      expect(evaluate([rig(1, { seated: SEATED, heartbeats })], [], { ...combo, laps })).toEqual([]);
+    });
+
+    it("opens again on a wrong session heard after the lap that cleared it", () => {
+      const heartbeats = minutely(14 * MIN, 0, () => ({ session: wrongCar }));
+      const laps = [...streak, lap(1, 30 * S)];
+      const findings = evaluate([rig(1, { seated: SEATED, heartbeats })], [], { ...combo, laps });
+      expect(rulesOf(findings)).toEqual(["wrong_combo rig:rig-1 warning"]);
+      expect(findings[0]!.detail.headline).toContain("is in an iRacing session on the wrong car");
+    });
+
+    it("opens again on a refused run after the session was put right", () => {
+      const later = [rejected(2 * MIN), rejected(MIN), rejected(30 * S)];
+      const heartbeats = minutely(14 * MIN, MIN, (ago) => ({ session: ago > 10 * MIN ? wrongCar : COMBO }));
+      const findings = evaluate([rig(1, { seated: SEATED, heartbeats })], [], { ...combo, laps: later });
+      expect(findings[0]!.detail.headline).toBe(
+        "Rig 01: its last 3 laps were on the wrong car for today's featured combo, so none of them rank",
+      );
+    });
   });
 
   it("clears when a valid lap lands, or when the session matches", () => {
@@ -1139,7 +1195,7 @@ describe("rule 14: implausibly fast lap", () => {
   it("flags a valid lap more than 3% under the best any other driver had, as its own subject", () => {
     const fast = lap(1, 2 * MIN, { lapTimeMs: 115_000 });
     const findings = evaluate([rig(1)], [], { laps: [fast], lapBests: field(5) });
-    expect(rulesOf(findings)).toEqual([`fast_lap lap:${fast.id} warning`]);
+    expect(rulesOf(findings)).toEqual([`fast_lap rig:rig-1|lap:${fast.id} warning`]);
     expect(findings[0]!.detail.headline).toBe(
       "Rig 01: a 1:55.000 lap by Matt G is 4% under the best any other driver had on this car and track (2:00.000) - worth a look; it ranks unless staff invalidate it",
     );
@@ -1171,7 +1227,7 @@ describe("rule 14: implausibly fast lap", () => {
     const fast = lap(1, 5 * MIN, { lapTimeMs: 110_000 });
     const later = lap(2, MIN, { driver: { id: "late", name: "Late", status: "active" }, lapTimeMs: 109_000 });
     const findings = evaluate([rig(1), rig(2)], [], { laps: [...others, fast, later] });
-    expect(rulesOf(findings)).toEqual([`fast_lap lap:${fast.id} warning`]);
+    expect(rulesOf(findings)).toEqual([`fast_lap rig:rig-1|lap:${fast.id} warning`]);
   });
 
   it("never flags an invalid or unattributed lap", () => {
