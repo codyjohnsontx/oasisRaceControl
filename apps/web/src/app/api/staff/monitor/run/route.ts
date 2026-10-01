@@ -1,5 +1,5 @@
 import { refuseCrossOriginRequest } from "@/lib/http";
-import { runMonitor } from "@/lib/monitor/run";
+import { runMonitor, scheduleDiagnoses } from "@/lib/monitor/run";
 import { getStaffUser } from "@/lib/staff";
 
 /**
@@ -18,7 +18,9 @@ export async function POST(request: Request) {
   if (!staff) return Response.json({ error: "forbidden" }, { status: 403 });
 
   try {
-    return Response.json(await runMonitor());
+    const run = await runMonitor();
+    if (run.evaluated) scheduleDiagnoses();
+    return Response.json(run);
   } catch (error) {
     console.error("[staff/monitor/run] evaluation failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });

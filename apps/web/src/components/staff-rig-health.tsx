@@ -16,7 +16,7 @@ export type RigHealthAlert = {
   recovered: string | null;
   /** Flapping: kept here, not posted, for the hour. */
   muted: boolean;
-  githubIssueNumber: number | null;
+  issue: { number: number; href: string } | null;
 };
 
 export type RigHealthBoard = {
@@ -27,8 +27,6 @@ export type RigHealthBoard = {
 };
 
 type Notice = { ok: boolean; text: string; area: "event" | "monitor" };
-
-const REPO_ISSUES = "https://github.com/codyjohnsontx/oasisRaceControl/issues";
 
 const TILE_BORDER: Record<TileColour, string> = {
   red: "border-invalid",
@@ -305,14 +303,11 @@ export function StaffRigHealth({
                   <span className="font-bold uppercase text-ink">open</span>
                 )}
                 {a.muted && " · muted (flapping)"}
-                {a.githubIssueNumber !== null && (
+                {a.issue !== null && (
                   <>
                     {" · "}
-                    <a
-                      href={`${REPO_ISSUES}/${a.githubIssueNumber}`}
-                      className="underline underline-offset-4"
-                    >
-                      issue #{a.githubIssueNumber}
+                    <a href={a.issue.href} className="underline underline-offset-4">
+                      issue #{a.issue.number}
                     </a>
                   </>
                 )}

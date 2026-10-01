@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { StaffRigHealth, type RigHealthAlert } from "@/components/staff-rig-health";
 import { boardName, boardState, boardsToday, eventMode } from "@/lib/monitor/event-mode";
+import { REPOSITORY } from "@/lib/monitor/handoff";
 import { eventModeLine, venueDate, venueTime } from "@/lib/monitor/messages";
 import { rigTiles } from "@/lib/monitor/rig-health";
 import { duration, evaluateRules, flapScope, rigSubject, RULES } from "@/lib/monitor/rules";
@@ -87,7 +88,13 @@ function alertRow(alert: RecentAlert, now: number): RigHealthAlert {
     opened: stamp(alert.openedAt, now),
     recovered: alert.resolvedAt === null ? null : stamp(alert.resolvedAt, now),
     muted: alert.muted,
-    githubIssueNumber: alert.githubIssueNumber,
+    issue:
+      alert.githubIssueNumber === null
+        ? null
+        : {
+            number: alert.githubIssueNumber,
+            href: `https://github.com/${REPOSITORY}/issues/${alert.githubIssueNumber}`,
+          },
   };
 }
 

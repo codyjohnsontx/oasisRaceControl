@@ -50,7 +50,7 @@ const ALERTS: RigHealthAlert[] = [
     opened: "3:40 PM",
     recovered: null,
     muted: false,
-    githubIssueNumber: 57,
+    issue: { number: 57, href: "https://github.com/codyjohnsontx/oasisRaceControl/issues/57" },
   },
   {
     id: "1",
@@ -61,7 +61,7 @@ const ALERTS: RigHealthAlert[] = [
     opened: "Oct 3 9:12 PM",
     recovered: "Oct 3 9:30 PM",
     muted: true,
-    githubIssueNumber: null,
+    issue: null,
   },
 ];
 
