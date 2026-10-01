@@ -26,7 +26,8 @@ opening it posts nothing.
   resolves it, so a tile never goes green while the channel and the Alerts
   list still have the alert open (`shownFindings`). With neither it is green while the rig is running,
   grey when it is not (never seen, closed, or off for the day). Then who is
-  seated and for how long, iRacing's session, the last lap today, the upload
+  seated and for how long, iRacing's session (or how long since the rig was
+  last heard, once it is not running), the last lap today, the upload
   queue and parked laps, the agent build, its CPU and memory, clock skew and
   the last heartbeat. An agent older than `rig-agent/0.4` sends none of that
   and is badged **old agent**, its iRacing, queue, CPU and memory and clock

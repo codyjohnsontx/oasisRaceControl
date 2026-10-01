@@ -133,7 +133,7 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
     driver: rig.seated
       ? `${driverName(rig.seated)} · ${duration(now - rig.seated.startedAt)}`
       : null,
-    iracing: iracing(state, oldAgent),
+    iracing: iracing(state, oldAgent, running ? null : quiet),
     lastLap: lastLapAt === null ? "no laps today" : `last lap ${venueTime(lastLapAt)}`,
     queue:
       state?.pendingLaps == null
@@ -178,11 +178,12 @@ function isOldAgent(state: Heartbeat): boolean {
   return state.simConnected === null && state.pendingLaps === null && state.processStartedAt === null;
 }
 
-function iracing(state: Heartbeat | null, oldAgent: boolean): string {
+function iracing(state: Heartbeat | null, oldAgent: boolean, silentFor: number | null): string {
   if (state === null) return "iRacing unknown";
   if (oldAgent) return `iRacing: ${TOO_OLD}`;
-  // A goodbye says nothing current about the sim.
+  // A goodbye, or the silence after the last heartbeat, says nothing current about the sim.
   if (state.shuttingDown) return "iRacing: agent closed";
+  if (silentFor !== null) return `iRacing: not heard for ${duration(silentFor)}`;
   if (state.telemetryFaulted) return "lap reading stopped";
   if (!state.simConnected) return "iRacing not running";
   if (!state.session) return "iRacing idle";

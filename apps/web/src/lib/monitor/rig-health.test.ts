@@ -207,6 +207,7 @@ describe("rig tile colour", () => {
     const [tile] = tiles([silent]);
     expect(tile!.colour).toBe("red");
     expect(tile!.status).toBe("silent 4 min");
+    expect(tile!.iracing).toBe("iRacing: not heard for 4 min");
   });
 });
 
