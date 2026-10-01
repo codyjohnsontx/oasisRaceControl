@@ -111,15 +111,15 @@ describeDb("the live race feed against real Postgres", () => {
     await report(c, { position: 3, gapToLeaderS: 2.1 });
     expect((await live()).rows.map((r) => r.rigNumber)).toEqual([1, 2, 3]);
 
-    // Rig 2 passes rig 1.
-    await report(b, { position: 1, gapToLeaderS: 0 });
-    await report(a, { position: 2, gapToLeaderS: 0.3 });
+    // Rig 2 passes rig 1 mid-lap; iRacing's positions wait for the line.
+    await report(b, { position: 2, lapDistPct: 0.45, gapToLeaderS: 0 });
+    await report(a, { position: 1, lapDistPct: 0.44, gapToLeaderS: 0.3 });
 
     const race = await live();
-    expect(race.rows.map((r) => [r.rigNumber, r.position, r.intervalS])).toEqual([
-      [2, 1, null],
-      [1, 2, 0.3],
-      [3, 3, expect.closeTo(1.8, 5)],
+    expect(race.rows.map((r) => [r.rigNumber, r.place, r.position, r.intervalS])).toEqual([
+      [2, 1, 2, null],
+      [1, 2, 1, 0.3],
+      [3, 3, 3, expect.closeTo(1.8, 5)],
     ]);
   });
 

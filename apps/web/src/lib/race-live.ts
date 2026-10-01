@@ -67,15 +67,15 @@ export type LiveRaceRow = {
   carIdx: number;
   /**
    * This row's number on the board: its place in `rows`, from 1, never
-   * repeated. Number the board by this, not by `position`. Each rig samples
-   * its own car at its own instant, so two neighbours that have just traded
-   * places can both report the same `position` until the slower rig's next
-   * report; `place` puts them in order by how far round each is. It equals
-   * `position` whenever every car in the race has an agent reporting, which is
-   * the venue's own rule for a league race.
+   * repeated. Number the board by this, not by `position`. In a race it is the
+   * running order on track, by how far round each car is, so a pass shows at
+   * the next report from each car rather than when iRacing's `position`
+   * catches up at the line. Outside a race it follows `position`, and two
+   * neighbours that both report the same one are put in order by how far
+   * round each is.
    */
   place: number;
-  /** iRacing's own position, as the rig last reported it. */
+  /** iRacing's own position, as the rig last reported it; it can trail `place`. */
   position: number | null;
   classPosition: number | null;
   lap: number | null;
@@ -114,7 +114,8 @@ export type LiveRace = {
  * race agree on both, and keying on the pair keeps a rig still in practice from
  * being counted into the race whatever SessionUniqueID turns out to mean on a
  * real server. Ties go to the group heard from most recently, then to the
- * higher session id, so the answer never depends on row order.
+ * higher session id, so the answer never depends on row order. The group is a
+ * race when any of its rigs has read the session type as `Race`.
  *
  * Expects only rows inside RACE_DROP_AFTER_S; the route filters by the
  * database clock.
@@ -137,11 +138,11 @@ export function liveRace(reports: readonly RaceStatusRow[]): LiveRace {
   )[0];
   if (!race) return { session: null, rows: [], otherRigs: 0 };
 
-  const ordered = [...race].sort(raceOrder);
+  const isRace = race.some((report) => isRaceSession(report.session_type));
+  const ordered = [...race].sort(isRace ? trackOrder : positionOrder);
   // The session's clock and state come from the first car still reporting: a
   // silent leader's report is a frozen clock.
   const leader = ordered.find((report) => !isStale(report)) ?? ordered[0]!;
-  const isRace = isRaceSession(leader.session_type);
 
   const rows = ordered.map((report, i): LiveRaceRow => {
     const gap = isRace ? report.gap_to_leader_s : null;
@@ -163,7 +164,7 @@ export function liveRace(reports: readonly RaceStatusRow[]): LiveRace {
       lapDistPct: report.lap_dist_pct,
       gapToLeaderS: gap,
       // Two rigs sample at different instants, so their gaps can disagree by
-      // a fraction of a second; a car ahead on position is never shown behind.
+      // a fraction of a second; a car ahead on the board is never shown behind.
       // Rounded to the millisecond iRacing's own times carry, so a difference
       // of two floats does not reach the board as 3.7279999999999998.
       intervalS:
@@ -202,21 +203,39 @@ function freshest(group: readonly RaceStatusRow[]): number {
 }
 
 /**
- * iRacing's own position first. A silent car keeps the place it last
- * reported - usually only its agent stopped, and the car is still out there -
- * but once another car reports that same place, the one reporting is the one
- * in it, and the silent car is shown after it. A car iRacing has not
- * classified yet (before its first timed lap) goes after every classified one,
- * by how far round it is, and the rig number settles anything left so the
- * order is stable.
+ * In a race, how far round each car is: laps completed, then distance into the
+ * lap. iRacing's position only moves when a car crosses the line, so ordering
+ * by it would hold a pass made mid-lap off the board for up to a lap. A silent
+ * car stays where its last report put it on track, and any car still reporting
+ * that gets further round goes ahead of it. iRacing's position only breaks a
+ * tie, and the rig number settles anything left so the order is stable.
  */
-function raceOrder(a: RaceStatusRow, b: RaceStatusRow): number {
+function trackOrder(a: RaceStatusRow, b: RaceStatusRow): number {
+  return progress(a, b) || reported(a, b) || a.rig_number - b.rig_number;
+}
+
+/**
+ * Outside a race, where position ranks lap times rather than places on track,
+ * iRacing's own position first. A silent car keeps the place it last
+ * reported, but once another car reports that same place, the one reporting
+ * is the one in it, and the silent car is shown after it. A car iRacing has
+ * not classified yet goes after every classified one, by how far round it is.
+ */
+function positionOrder(a: RaceStatusRow, b: RaceStatusRow): number {
+  return reported(a, b) || progress(a, b) || a.rig_number - b.rig_number;
+}
+
+function progress(a: RaceStatusRow, b: RaceStatusRow): number {
+  return (
+    nullsLast(a.laps_completed, b.laps_completed, (x, y) => y - x) ||
+    nullsLast(a.lap_dist_pct, b.lap_dist_pct, (x, y) => y - x)
+  );
+}
+
+function reported(a: RaceStatusRow, b: RaceStatusRow): number {
   return (
     nullsLast(a.position, b.position, (x, y) => x - y) ||
-    Number(isStale(a)) - Number(isStale(b)) ||
-    nullsLast(a.laps_completed, b.laps_completed, (x, y) => y - x) ||
-    nullsLast(a.lap_dist_pct, b.lap_dist_pct, (x, y) => y - x) ||
-    a.rig_number - b.rig_number
+    Number(isStale(a)) - Number(isStale(b))
   );
 }
 

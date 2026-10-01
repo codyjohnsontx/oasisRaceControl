@@ -34,28 +34,63 @@ describe("liveRace", () => {
     expect(liveRace([])).toEqual({ session: null, rows: [], otherRigs: 0 });
   });
 
-  it("orders by iRacing's position, so a pass reorders the board", () => {
+  it("in a race, shows a pass made mid-lap before iRacing's position catches up at the line", () => {
     const before = liveRace([
-      report({ rig_number: 1, position: 2 }),
-      report({ rig_number: 2, position: 1 }),
-      report({ rig_number: 3, position: 3 }),
+      report({ rig_number: 1, position: 1, laps_completed: 4, lap_dist_pct: 0.4 }),
+      report({ rig_number: 2, position: 2, laps_completed: 4, lap_dist_pct: 0.39 }),
+      report({ rig_number: 3, position: 3, laps_completed: 3, lap_dist_pct: 0.95 }),
     ]);
-    expect(before.rows.map((r) => r.rigNumber)).toEqual([2, 1, 3]);
+    expect(before.rows.map((r) => [r.rigNumber, r.position, r.place])).toEqual([
+      [1, 1, 1],
+      [2, 2, 2],
+      [3, 3, 3],
+    ]);
 
+    // Rig 2 passes rig 1 halfway round; both still report the positions they
+    // had at the line.
     const after = liveRace([
-      report({ rig_number: 1, position: 1 }),
-      report({ rig_number: 2, position: 2 }),
-      report({ rig_number: 3, position: 3 }),
+      report({ rig_number: 1, position: 1, laps_completed: 4, lap_dist_pct: 0.44 }),
+      report({ rig_number: 2, position: 2, laps_completed: 4, lap_dist_pct: 0.45 }),
+      report({ rig_number: 3, position: 3, laps_completed: 3, lap_dist_pct: 0.99 }),
     ]);
-    expect(after.rows.map((r) => r.rigNumber)).toEqual([1, 2, 3]);
+    expect(after.rows.map((r) => [r.rigNumber, r.position, r.place])).toEqual([
+      [2, 2, 1],
+      [1, 1, 2],
+      [3, 3, 3],
+    ]);
   });
 
-  it("numbers the board by place when two rigs report the same position either side of a pass", () => {
-    // Rig 2 has just passed rig 1; rig 1's report predates the pass.
+  it("in a race, puts any car still reporting that gets further round ahead of a silent one", () => {
     const race = liveRace([
-      report({ rig_number: 1, position: 2, laps_completed: 4, lap_dist_pct: 0.5 }),
-      report({ rig_number: 2, position: 2, laps_completed: 4, lap_dist_pct: 0.52 }),
-      report({ rig_number: 3, position: 1, laps_completed: 4, lap_dist_pct: 0.6 }),
+      report({ rig_number: 1, position: 1, laps_completed: 4, lap_dist_pct: 0.5, age_s: 30 }),
+      report({ rig_number: 2, position: 2, laps_completed: 4, lap_dist_pct: 0.6 }),
+      report({ rig_number: 3, position: 3, laps_completed: 4, lap_dist_pct: 0.3 }),
+    ]);
+    expect(race.rows.map((r) => [r.rigNumber, r.stale])).toEqual([
+      [2, false],
+      [1, true],
+      [3, false],
+    ]);
+  });
+
+  it("outside a race, orders by iRacing's position whoever is further round", () => {
+    const race = liveRace([
+      report({ rig_number: 1, session_type: "Open Qualify", position: 2, laps_completed: 6 }),
+      report({ rig_number: 2, session_type: "Open Qualify", position: 1, laps_completed: 1 }),
+      report({ rig_number: 3, session_type: "Open Qualify", position: 3, laps_completed: 9 }),
+    ]);
+    expect(race.rows.map((r) => [r.rigNumber, r.place])).toEqual([
+      [2, 1],
+      [1, 2],
+      [3, 3],
+    ]);
+  });
+
+  it("outside a race, numbers the board by place when two rigs report the same position", () => {
+    const race = liveRace([
+      report({ rig_number: 1, session_type: "Practice", position: 2, laps_completed: 4, lap_dist_pct: 0.5 }),
+      report({ rig_number: 2, session_type: "Practice", position: 2, laps_completed: 4, lap_dist_pct: 0.52 }),
+      report({ rig_number: 3, session_type: "Practice", position: 1, laps_completed: 4, lap_dist_pct: 0.6 }),
     ]);
     expect(race.rows.map((r) => [r.rigNumber, r.position, r.place])).toEqual([
       [3, 1, 1],
@@ -64,12 +99,12 @@ describe("liveRace", () => {
     ]);
   });
 
-  it("puts an unclassified car after every classified one, furthest round first", () => {
+  it("outside a race, puts an unclassified car after every classified one, furthest round first", () => {
     const race = liveRace([
-      report({ rig_number: 1, position: null, laps_completed: 1, lap_dist_pct: 0.2 }),
-      report({ rig_number: 2, position: null, laps_completed: 1, lap_dist_pct: 0.9 }),
-      report({ rig_number: 3, position: 1 }),
-      report({ rig_number: 4, position: null, laps_completed: null, lap_dist_pct: null }),
+      report({ rig_number: 1, session_type: "Practice", position: null, laps_completed: 1, lap_dist_pct: 0.2 }),
+      report({ rig_number: 2, session_type: "Practice", position: null, laps_completed: 1, lap_dist_pct: 0.9 }),
+      report({ rig_number: 3, session_type: "Practice", position: 1, laps_completed: 0 }),
+      report({ rig_number: 4, session_type: "Practice", position: null, laps_completed: null, lap_dist_pct: null }),
     ]);
     expect(race.rows.map((r) => r.rigNumber)).toEqual([3, 2, 1, 4]);
   });
@@ -177,7 +212,7 @@ describe("liveRace", () => {
     expect(race.rows.map((r) => r.stale)).toEqual([false, true]);
   });
 
-  it("keeps a silent car in its place, but behind the car now reporting that place", () => {
+  it("keeps a silent car level on track with another behind the one still reporting", () => {
     const race = liveRace([
       report({ rig_number: 1, position: 1, gap_to_leader_s: 0, age_s: 30, session_time_remain_s: 700 }),
       report({ rig_number: 2, position: 1, gap_to_leader_s: 0, session_time_remain_s: 670 }),

@@ -7,8 +7,8 @@
  * pass each other.
  *
  * Pure and import-free of anything that runs, so scripts/fake-race.test.ts can
- * pin what the demo promises: one position per car, and cars that actually
- * trade places.
+ * pin what the demo promises: cars that actually trade places, and a reported
+ * position that, like iRacing's, only moves when the car crosses the line.
  *
  * Each car's distance is the pace's steady progress, minus its grid slot, plus
  * an oscillation phase-shifted from its neighbour's by a quarter turn. The
@@ -94,9 +94,15 @@ export function fakeRaceStatus(race: FakeRace, car: number, nowMs: number): Race
   const distances = Array.from({ length: race.field }, (_, i) => distance(race, i, t));
   const mine = distances[car]!;
   const leader = Math.max(...distances);
-  const position = 1 + distances.filter((d, i) => d > mine || (d === mine && i < car)).length;
 
   const completed = Math.floor(mine);
+  // iRacing's position is the field's order as this car last crossed the line,
+  // so a pass made mid-lap reaches it only at the next crossing.
+  const lineS = timeAt(race, car, completed);
+  const atLine = Array.from({ length: race.field }, (_, i) => distance(race, i, lineS));
+  const mineAtLine = atLine[car]!;
+  const position =
+    1 + atLine.filter((d, i) => d > mineAtLine || (d === mineAtLine && i < car)).length;
   const lapTimes: number[] = [];
   for (let k = 1; k <= completed; k++) {
     lapTimes.push(Math.round((timeAt(race, car, k) - timeAt(race, car, k - 1)) * 1000));
