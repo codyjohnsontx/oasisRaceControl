@@ -133,7 +133,9 @@ Details worth knowing:
   invalidate it by hand. Each lap is its own alert (subject
   `rig:<id>|lap:<id>`), compared only with laps stored before it, so a later
   lap never changes the verdict on an earlier one. The laps of one rig flap
-  together, so a run of them on a bad rig is muted like any flapping rule.
+  together, so a run of them on a bad rig is muted like any flapping rule,
+  and when that mute ends one quiet summary lists every lap flagged in it
+  (see [Flapping](#flapping)).
 - **A driver is named in an alert only while their account is active.** A
   name under review (or a banned driver) reads "a driver (name under review)",
   in Discord and in `monitor_alerts`, as the public leaderboard hides them.
@@ -157,6 +159,20 @@ opening once, with the problem as it stands then, and from then on rises and
 recovers like any other; one that closed inside the hour is never posted. After
 that the rule posts normally again; if it is still flapping, the next mute line
 says so.
+
+Rule 14 ends its mute differently, because each of its alerts is one lap that
+staff should see. None of the muted laps is posted on its own. When the hour is
+up, one quiet message lists every lap flagged during the mute, including the
+lap whose opening the mute line replaced and laps whose alerts have already
+closed. Each line gives the rig, the lap time and the driver, with a name under
+review masked as it is everywhere else. The lap's own car and track strings
+come from the rig, so they are never shown: a lap on today's featured combo
+says "today's featured combo" with the combo's label, and any other lap says
+"another car and track". The summary posts once per mute and is retried like
+any other post. No column exists for it, so the mute-starting alert's
+`recovery_attempted_at` and `recovery_notified_at` claim and record it. Rule 14
+never posts a recovery, so nothing else uses those columns on its alerts
+(`claimFastLapSummaries` in `store.ts`).
 
 ## Discord
 

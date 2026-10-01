@@ -710,7 +710,7 @@ function wrongPart(reason: string): string {
   return reason === "WRONG_CAR" ? "car" : "track or layout";
 }
 
-function comboLabel(combo: FeaturedCombo): string {
+export function comboLabel(combo: FeaturedCombo): string {
   return [[combo.trackName, combo.trackConfig].filter(Boolean).join(" "), combo.carName].join(" · ");
 }
 
@@ -914,7 +914,9 @@ function comboKey(combo: FeaturedCombo): string {
  * ingestion (AGENTS.md). Each lap is its own subject (fastLapSubject), so a
  * lap fires once, and its alert closes quietly (RECOVERS_SILENTLY) once the
  * lap has passed out of the snapshot; the laps of one rig flap together
- * (flapScope), so a run of them is muted like any other flapping rule. "Before it" keeps the verdict on a lap from changing
+ * (flapScope), so a run of them is muted like any other flapping rule, and
+ * every lap of the mute is listed in one summary when it ends (store.ts,
+ * claimFastLapSummaries). "Before it" keeps the verdict on a lap from changing
  * when a later lap is driven, and makes the second of two implausible laps
  * look plausible only against the first - both are drivers' laps someone
  * should look at, and the first is already flagged.
@@ -1059,7 +1061,7 @@ function driverName(seated: NonNullable<RigSnapshot["seated"]>): string {
   return nameOf(seated.driverName, seated.driverStatus);
 }
 
-function nameOf(name: string, status: string): string {
+export function nameOf(name: string, status: string): string {
   return status === "active" ? name : "a driver (name under review)";
 }
 

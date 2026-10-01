@@ -1,5 +1,7 @@
+import { formatLapTime } from "@/lib/time";
+import { comboMismatch } from "@/lib/validity";
 import { clip, DISCORD_LIMITS, type DiscordMessage } from "./discord";
-import { duration, RULES, type AlertDetail, type Severity } from "./rules";
+import { comboLabel, duration, nameOf, RULES, type AlertDetail, type FeaturedCombo, type Severity } from "./rules";
 
 /**
  * What the channel shows for an alert, rendered from the stored row alone, so
@@ -89,4 +91,54 @@ export function flappingMessage(alert: AlertForMessage): DiscordMessage {
 /** How an alert opening is announced: itself, or the flapping line that mutes it. */
 export function openingMessage(alert: AlertForMessage, mentionUserId: string | null): DiscordMessage {
   return alert.flapping ? flappingMessage(alert) : alertMessage(alert, mentionUserId);
+}
+
+/** Every lap of one rule 14 flapping mute, read when the mute ends (claimFastLapSummaries). */
+export type FastLapSummary = {
+  /** The alert that started the mute. */
+  id: string;
+  rigName: string;
+  /** Today's featured combo, or null when none is set. */
+  featuredCombo: FeaturedCombo | null;
+  laps: Array<{ lapTimeMs: number; driver: { name: string; status: string } | null; combo: FeaturedCombo }>;
+};
+
+/**
+ * The one quiet message that ends a rule 14 mute: every lap flagged while it
+ * held, so a run of fast laps reaches staff once instead of flooding the
+ * channel. A lap's car and track are the rig's own strings, so they are never
+ * shown: a lap on today's featured combo says so with the combo's label, and
+ * any other says "another car and track".
+ */
+export function fastLapSummaryMessage(summary: FastLapSummary): DiscordMessage {
+  const rule = ruleOf("fast_lap");
+  const featured = summary.featuredCombo;
+  const lines = summary.laps.map((lap) => {
+    const onFeatured =
+      featured !== null &&
+      comboMismatch(
+        { track_name: featured.trackName, track_config: featured.trackConfig, car_name: featured.carName },
+        lap.combo,
+      ) === null;
+    const driver = lap.driver ? nameOf(lap.driver.name, lap.driver.status) : "nobody signed in";
+    const combo = onFeatured ? `today's featured combo (${comboLabel(featured)})` : "another car and track";
+    return `• ${summary.rigName} · ${formatLapTime(lap.lapTimeMs)} by ${driver} on ${combo}`;
+  });
+  const count = summary.laps.length === 1 ? "1 lap" : `${summary.laps.length} laps`;
+  return {
+    content: clip(
+      `🟡 ${summary.rigName}: ${count} flagged as implausibly fast while the rule was muted - worth a look; ` +
+        "they rank unless staff invalidate them",
+      DISCORD_LIMITS.content,
+    ),
+    embeds: [
+      {
+        title: clip(rule.title, DISCORD_LIMITS.embedTitle),
+        color: YELLOW,
+        description: clip(lines.join("\n"), DISCORD_LIMITS.embedDescription),
+        footer: { text: `alert #${summary.id} · rule ${rule.number}` },
+      },
+    ],
+    allowed_mentions: { parse: [] },
+  };
 }

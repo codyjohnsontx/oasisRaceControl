@@ -238,6 +238,19 @@ function wrongCombo(severity: Severity): Finding {
   };
 }
 
+/** Every alert timestamp moved `minutes` into the past, as if that long had gone by. */
+async function timePasses(minutes: number) {
+  await testDb().query(
+    `update monitor_alerts
+     set opened_at = opened_at - $1::interval, last_seen_at = last_seen_at - $1::interval,
+         resolved_at = resolved_at - $1::interval, notified_at = notified_at - $1::interval,
+         notify_attempted_at = notify_attempted_at - $1::interval, notify_until = notify_until - $1::interval,
+         recovery_notified_at = recovery_notified_at - $1::interval,
+         recovery_attempted_at = recovery_attempted_at - $1::interval`,
+    [`${minutes} minutes`],
+  );
+}
+
 async function openAlertRows(): Promise<OpenAlert[]> {
   const { rows } = await testDb().query<OpenAlert>(
     "select id::text, rule, subject from monitor_alerts where resolved_at is null",
@@ -792,7 +805,7 @@ describeDb("rig monitor against real Postgres", () => {
     });
   });
 
-  it("mutes a run of implausibly fast laps on one rig like any flapping rule: three posts, one mute line, then silence", async () => {
+  it("mutes a run of implausibly fast laps on one rig: three posts, one mute line, then one summary of the muted laps", async () => {
     const rig = await seedRig(1);
     for (let i = 0; i < 5; i++) {
       const other = await seedDriver(`Other ${i}`);
@@ -819,6 +832,47 @@ describeDb("rig monitor against real Postgres", () => {
     expect(rows).toHaveLength(6);
     expect(new Set(rows.map((r) => r.subject)).size).toBe(6);
     expect(rows.every((r) => r.subject.startsWith(`rig:${rig.id}|lap:`))).toBe(true);
+
+    // The hour passes and the laps leave the monitor's view, closing every
+    // alert quietly. The summary's first post is refused and a later
+    // evaluation posts it, once.
+    posts = [];
+    await setFeaturedCombo({ trackName: TRACK.track, trackConfig: TRACK.config, carName: "FIA F4" });
+    await testDb().query(
+      "update laps set created_at = created_at - interval '61 minutes', completed_at = completed_at - interval '61 minutes'",
+    );
+    await timePasses(61);
+    discordAnswers = [500];
+    await nextEvaluation();
+    await nextEvaluation();
+    expect(posts).toEqual([]);
+    expect((await alerts()).every((a) => a.resolved)).toBe(true);
+
+    await timePasses(2);
+    await nextEvaluation();
+    await timePasses(2);
+    await nextEvaluation();
+    const combo = "today's featured combo (Circuit of the Americas Grand Prix · FIA F4)";
+    expect(posts).toEqual([
+      {
+        content:
+          "🟡 Rig 01: 3 laps flagged as implausibly fast while the rule was muted - worth a look; " +
+          "they rank unless staff invalidate them",
+        embeds: [
+          {
+            title: "Implausibly fast lap",
+            color: 0xf1c40f,
+            description: [
+              `• Rig 01 · 1:50.003 by Ada on ${combo}`,
+              `• Rig 01 · 1:50.004 by Ada on ${combo}`,
+              `• Rig 01 · 1:50.005 by Ada on ${combo}`,
+            ].join("\n"),
+            footer: { text: expect.stringMatching(/^alert #\d+ · rule 14$/) },
+          },
+        ],
+        allowed_mentions: { parse: [] },
+      },
+    ]);
   });
 
   describe("flapping", () => {
@@ -855,19 +909,6 @@ describeDb("rig monitor against real Postgres", () => {
       expect(rows.map((r) => r.refire_count)).toEqual([0, 1, 2, 3, 4, 5]);
       expect(rows.every((r) => r.resolved)).toBe(true);
     });
-
-    /** Every alert timestamp moved `minutes` into the past, as if that long had gone by. */
-    async function timePasses(minutes: number) {
-      await testDb().query(
-        `update monitor_alerts
-         set opened_at = opened_at - $1::interval, last_seen_at = last_seen_at - $1::interval,
-             resolved_at = resolved_at - $1::interval, notified_at = notified_at - $1::interval,
-             notify_attempted_at = notify_attempted_at - $1::interval, notify_until = notify_until - $1::interval,
-             recovery_notified_at = recovery_notified_at - $1::interval,
-             recovery_attempted_at = recovery_attempted_at - $1::interval`,
-        [`${minutes} minutes`],
-      );
-    }
 
     it("holds a rise to urgent while muted, and posts it, with the mention, when the mute ends", async () => {
       for (let i = 0; i < 3; i++) {

@@ -5,7 +5,7 @@ import { incidentContext } from "./diagnosis/context";
 import type { ProviderName } from "./diagnosis/provider";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
 import { diagnosisMessage, handoffMessage, handoffText } from "./handoff";
-import { openingMessage, recoveryMessage, type AlertForMessage } from "./messages";
+import { fastLapSummaryMessage, openingMessage, recoveryMessage, type AlertForMessage } from "./messages";
 import { evaluateRules } from "./rules";
 import {
   alertsById,
@@ -14,10 +14,12 @@ import {
   claimDiagnoses,
   claimDiagnosisPostRetries,
   claimEvaluation,
+  claimFastLapSummaries,
   claimRecoveryRetries,
   loadSnapshot,
   markAnnounced,
   markDiagnosisPosted,
+  markFastLapSummaryPosted,
   markRecoveryAnnounced,
   pruneHeartbeats,
   recentHeartbeats,
@@ -71,6 +73,7 @@ export async function runMonitor(): Promise<MonitorRun> {
   if (discordConfigured()) {
     announced += await deliver(await claimAnnounceRetries(), (a) => openingMessage(a, mention), markAnnounced);
     recovered += await deliver(await claimRecoveryRetries(), recoveryMessage, markRecoveryAnnounced);
+    announced += await deliver(await claimFastLapSummaries(), fastLapSummaryMessage, markFastLapSummaryPosted);
   }
 
   const pruned = await pruneHeartbeats();
@@ -106,10 +109,10 @@ export async function runDiagnoses(): Promise<number> {
  * Discord's per-webhook rate limit - and records each one Discord took. A post
  * that fails stays unrecorded for a later evaluation to retry.
  */
-async function deliver(
-  alerts: AlertForMessage[],
-  render: (alert: AlertForMessage) => Parameters<typeof postDiscord>[0],
-  record: (alert: AlertForMessage) => Promise<void>,
+async function deliver<Alert extends { id: string }>(
+  alerts: Alert[],
+  render: (alert: Alert) => Parameters<typeof postDiscord>[0],
+  record: (alert: Alert) => Promise<void>,
 ): Promise<number> {
   let sent = 0;
   for (const alert of alerts) {

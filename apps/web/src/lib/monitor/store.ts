@@ -1,7 +1,7 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { query, queryOne } from "@/lib/db";
 import type { HeartbeatRow as DiagnosisHeartbeat } from "./diagnosis/context";
-import type { AlertForMessage } from "./messages";
+import type { AlertForMessage, FastLapSummary } from "./messages";
 import type { Heartbeat } from "./rig-state";
 import {
   HEARD_HISTORY_MS,
@@ -99,8 +99,11 @@ const RETRY_AFTER = "60 seconds";
  * every alert of one mute. Once the mute ends, the retry sweep posts each one
  * still open with its current state, and from then on it rises and recovers
  * like any other; one that closed inside the mute is never posted, since its
- * notify window began after it closed. The alerts stay open and visible; the
- * mute only keeps the channel quiet.
+ * notify window began after it closed. Rule 14 is the exception: each of its
+ * alerts is one lap for staff to review, so its mute ends in one summary of
+ * every lap of the mute, open or closed (claimFastLapSummaries), and none of
+ * them is posted on its own. The alerts stay open and visible; the mute only
+ * keeps the channel quiet.
  */
 export const FLAPPING_REFIRES = 3;
 const FLAPPING_WINDOW = "1 hour";
@@ -684,10 +687,98 @@ export async function claimAnnounceRetries(): Promise<AlertForMessage[]> {
        and coalesce(notify_attempted_at, '-infinity') < now() - $1::interval
        and notify_until > now()
        and (resolved_at is null or resolved_at >= notify_until - $2::interval)
+       and not (rule = $3 and refire_count >= $4 and notify_until <= now() + $2::interval)
      returning ${ALERT_COLUMNS}`,
-    [RETRY_AFTER, RETRY_FOR],
+    [RETRY_AFTER, RETRY_FOR, SUMMARIZED_RULE, FLAPPING_REFIRES],
   );
   return rows.map(toAlert);
+}
+
+/**
+ * The rule whose flapping mute ends in one summary (FLAPPING_REFIRES): rule
+ * 14, whose alerts are each one lap that staff must get to see.
+ */
+const SUMMARIZED_RULE = "fast_lap";
+
+/**
+ * Rule 14's mute summaries that are due: one per mute that has ended, listing
+ * every lap flagged in it - the lap whose opening the mute line replaced, and
+ * every one opened inside the mute, whether or not its alert has since closed.
+ * A mute's alerts are the rule's alerts on one rig that share its notify_until
+ * (FLAPPING_REFIRES), and the one that started it is the first of them.
+ *
+ * No column records a summary, so the starting alert's recovery columns do:
+ * recovery_attempted_at claims it and recovery_notified_at (markFastLapSummaryPosted)
+ * says it went. Rule 14 never posts a recovery (RECOVERS_SILENTLY), so nothing
+ * else reads them on its alerts; applyFindings stamping recovery_attempted_at
+ * when the alert resolves only holds the claim back by RETRY_AFTER at most. A
+ * refused post is retried like any other until RETRY_FOR after the mute ended
+ * (its notify_until), and the claim is one statement, so two evaluations
+ * cannot both post one summary.
+ */
+export async function claimFastLapSummaries(): Promise<FastLapSummary[]> {
+  const rows = await query<{
+    id: string;
+    rig_name: string;
+    lap_time_ms: number;
+    track_name: string;
+    track_config: string | null;
+    car_name: string;
+    driver_name: string | null;
+    driver_status: string | null;
+    featured_track: string | null;
+    featured_config: string | null;
+    featured_car: string | null;
+  }>(
+    `with claimed as (
+       update monitor_alerts s set recovery_attempted_at = now()
+       where s.rule = $1 and s.refire_count >= $2 and s.recovery_notified_at is null
+         and s.notify_until <= now() + $3::interval and s.notify_until > now()
+         and coalesce(s.recovery_attempted_at, '-infinity') < now() - $4::interval
+         and not exists (
+           select 1 from monitor_alerts e
+           where e.rule = s.rule and e.notify_until = s.notify_until and e.refire_count >= $2
+             and split_part(e.subject, '|', 1) = split_part(s.subject, '|', 1) and e.id < s.id)
+       returning s.id, s.subject, s.notify_until
+     )
+     select c.id::text, r.display_name as rig_name, l.lap_time_ms,
+            l.track_name, l.track_config, l.car_name,
+            d.display_name::text as driver_name, d.status::text as driver_status,
+            fc.track_name as featured_track, fc.track_config as featured_config, fc.car_name as featured_car
+     from claimed c
+     join monitor_alerts m
+       on m.rule = $1 and m.refire_count >= $2 and m.notify_until = c.notify_until
+      and split_part(m.subject, '|', 1) = split_part(c.subject, '|', 1)
+     join laps l on l.id = split_part(m.subject, '|lap:', 2)::uuid
+     join rigs r on r.id = l.rig_id
+     left join drivers d on d.id = l.driver_id
+     left join featured_combos fc on fc.combo_date = venue_today()
+     order by c.id, m.id`,
+    [SUMMARIZED_RULE, FLAPPING_REFIRES, RETRY_FOR, RETRY_AFTER],
+  );
+  const summaries = new Map<string, FastLapSummary>();
+  for (const row of rows) {
+    const summary = summaries.get(row.id) ?? {
+      id: row.id,
+      rigName: row.rig_name,
+      featuredCombo:
+        row.featured_track && row.featured_car
+          ? { trackName: row.featured_track, trackConfig: row.featured_config, carName: row.featured_car }
+          : null,
+      laps: [],
+    };
+    summary.laps.push({
+      lapTimeMs: row.lap_time_ms,
+      driver: row.driver_name && row.driver_status ? { name: row.driver_name, status: row.driver_status } : null,
+      combo: { trackName: row.track_name, trackConfig: row.track_config, carName: row.car_name },
+    });
+    summaries.set(row.id, summary);
+  }
+  return [...summaries.values()];
+}
+
+export async function markFastLapSummaryPosted(summary: FastLapSummary): Promise<void> {
+  await query("update monitor_alerts set recovery_notified_at = now() where id = $1", [summary.id]);
 }
 
 export async function claimRecoveryRetries(): Promise<AlertForMessage[]> {

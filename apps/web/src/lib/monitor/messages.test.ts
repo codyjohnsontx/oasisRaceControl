@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alertMessage, recoveryMessage, type AlertForMessage } from "./messages";
+import { alertMessage, fastLapSummaryMessage, recoveryMessage, type AlertForMessage } from "./messages";
 
 const OPENED = Date.parse("2026-10-04T21:00:00Z");
 
@@ -84,5 +84,47 @@ describe("recoveryMessage", () => {
       content: "🟢 Recovered: Rig silent - Rig 02 (alert #123, after 6 min)",
       allowed_mentions: { parse: [] },
     });
+  });
+});
+
+describe("fastLapSummaryMessage", () => {
+  const combo = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" };
+
+  it("lists every lap quietly, masks a name under review, and never echoes a lap's own car or track", () => {
+    const message = fastLapSummaryMessage({
+      id: "7",
+      rigName: "Rig 03",
+      featuredCombo: combo,
+      laps: [
+        { lapTimeMs: 110_000, driver: { name: "Ada", status: "active" }, combo },
+        { lapTimeMs: 111_000, driver: { name: "Rude Name", status: "name_flagged" }, combo },
+        { lapTimeMs: 99_000, driver: { name: "Ada", status: "active" }, combo: { ...combo, carName: "Mazda MX-5" } },
+      ],
+    });
+    expect(message.allowed_mentions).toEqual({ parse: [] });
+    expect(message.content).toMatch(/^🟡 Rig 03: 3 laps flagged as implausibly fast/);
+    expect(message.embeds![0]!.description).toBe(
+      [
+        "• Rig 03 · 1:50.000 by Ada on today's featured combo (Circuit of the Americas Grand Prix · FIA F4)",
+        "• Rig 03 · 1:51.000 by a driver (name under review) on today's featured combo (Circuit of the Americas Grand Prix · FIA F4)",
+        "• Rig 03 · 1:39.000 by Ada on another car and track",
+      ].join("\n"),
+    );
+    expect(JSON.stringify(message)).not.toMatch(/Rude Name|Mazda/);
+  });
+
+  it("calls every lap another car and track on a day with no featured combo, judging the layout as ingestion does", () => {
+    const lap = { lapTimeMs: 110_000, driver: { name: "Ada", status: "active" }, combo: { ...combo, trackConfig: "" } };
+    const none = fastLapSummaryMessage({ id: "7", rigName: "Rig 03", featuredCombo: null, laps: [lap] });
+    expect(none.embeds![0]!.description).toBe("• Rig 03 · 1:50.000 by Ada on another car and track");
+    const noLayout = fastLapSummaryMessage({
+      id: "7",
+      rigName: "Rig 03",
+      featuredCombo: { ...combo, trackConfig: null },
+      laps: [lap],
+    });
+    expect(noLayout.embeds![0]!.description).toBe(
+      "• Rig 03 · 1:50.000 by Ada on today's featured combo (Circuit of the Americas · FIA F4)",
+    );
   });
 });
