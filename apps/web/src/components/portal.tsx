@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatLapTime } from "@/lib/time";
 import type { PortalLap } from "@/lib/laps";
+import { submitGuestClaim } from "@/lib/driver-auth-submit";
 
 export type { PortalLap };
 
@@ -21,6 +22,8 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
   const [trackFilter, setTrackFilter] = useState("");
   const [carFilter, setCarFilter] = useState("");
   const [pin, setPin] = useState("");
+  const [pinAgain, setPinAgain] = useState("");
+  const [claimMessage, setClaimMessage] = useState<string | null>(null);
   const [claimState, setClaimState] = useState<"idle" | "busy" | "done">("idle");
 
   // Live laps: poll while the page is open so laps appear seconds after
@@ -82,17 +85,11 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
 
   async function claim() {
     setClaimState("busy");
-    try {
-      const res = await fetch("/api/auth/claim", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ pin }),
-      });
-      setClaimState(res.ok ? "done" : "idle");
-      if (res.ok) router.refresh();
-    } catch {
-      setClaimState("idle");
-    }
+    setClaimMessage(null);
+    const result = await submitGuestClaim({ pin, pinAgain });
+    setClaimState(result.ok ? "done" : "idle");
+    if (result.ok) router.refresh();
+    else setClaimMessage(result.message);
   }
 
   return (
@@ -126,23 +123,33 @@ export function Portal({ displayName, isGuest, activeRigNumber, initialLaps }: P
             Set a 4-digit PIN and “{displayName}” becomes your permanent driver
             profile — laps included.
           </p>
-          <div className="flex gap-2 mt-3">
+          <div className="flex flex-wrap gap-2 mt-3">
             <input
               value={pin}
               onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
               placeholder="4-digit PIN"
+              aria-label="4-digit PIN"
               inputMode="numeric"
-              className="laptime flex-1 bg-bg border border-edge rounded-lg px-3 py-2 outline-none focus:border-accent"
+              className="laptime min-w-0 flex-1 bg-bg border border-edge rounded-lg px-3 py-2 outline-none focus:border-accent"
+            />
+            <input
+              value={pinAgain}
+              onChange={(e) => setPinAgain(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="PIN again"
+              aria-label="Type the PIN again"
+              inputMode="numeric"
+              className="laptime min-w-0 flex-1 bg-bg border border-edge rounded-lg px-3 py-2 outline-none focus:border-accent"
             />
             <button
               type="button"
-              disabled={pin.length !== 4 || claimState === "busy"}
+              disabled={pin.length !== 4 || pinAgain.length !== 4 || claimState === "busy"}
               onClick={() => void claim()}
-              className="bg-accent text-bg rounded-lg px-4 py-2 font-bold uppercase tracking-wider text-sm disabled:opacity-40"
+              className="basis-full sm:basis-auto bg-accent text-bg rounded-lg px-4 py-2 font-bold uppercase tracking-wider text-sm disabled:opacity-40"
             >
               Save profile
             </button>
           </div>
+          {claimMessage && <p className="text-invalid text-sm mt-2">{claimMessage}</p>}
         </section>
       )}
 

@@ -46,6 +46,22 @@ describe("ArcadeHighScores layouts", () => {
     expect(html).toContain("data-tv-auto-scroll");
   });
 
+  it("widens the rank track for three-digit ranks and keeps two-digit boards at 5em", () => {
+    // The event view's list can run past a hundred drivers, where the old fixed
+    // two-digit track printed "100" into the driver's name.
+    const rankWidth = (html: string) => html.match(/--tv-rank-w:([^;"]+)/)?.[1];
+    const hundred = renderToStaticMarkup(
+      <ArcadeHighScores eyebrow="e" title="t" entries={entries(100)} layout="scroll" />,
+    );
+    expect(rankWidth(hundred)).toBe("7.5em");
+    const slots = renderToStaticMarkup(<ArcadeHighScores eyebrow="e" title="t" entries={entries(26)} />);
+    expect(rankWidth(slots)).toBe("5em");
+    const shortList = renderToStaticMarkup(
+      <ArcadeHighScores eyebrow="e" title="t" entries={entries(99)} layout="scroll" />,
+    );
+    expect(rankWidth(shortList)).toBe("5em");
+  });
+
   it("an entry asking for an asterisk gets one after its score, and only that entry", () => {
     const [clean, marked, unset] = entries(3);
     const html = renderToStaticMarkup(

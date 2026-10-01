@@ -3,7 +3,7 @@ import { StaffRigHealth, type RigHealthAlert } from "@/components/staff-rig-heal
 import { boardName, boardState, boardsToday, eventMode } from "@/lib/monitor/event-mode";
 import { eventModeLine, venueDate, venueTime } from "@/lib/monitor/messages";
 import { rigTiles } from "@/lib/monitor/rig-health";
-import { duration, evaluateRules, rigSubject, RULES } from "@/lib/monitor/rules";
+import { duration, evaluateRules, flapScope, rigSubject, RULES } from "@/lib/monitor/rules";
 import {
   lastLapAtByRig,
   loadSnapshot,
@@ -11,6 +11,7 @@ import {
   recentAlerts,
   type RecentAlert,
 } from "@/lib/monitor/store";
+import { db } from "@/lib/db";
 import { getStaffUser } from "@/lib/staff";
 
 /**
@@ -28,7 +29,7 @@ export default async function RigHealthPage() {
   // failed query would read as a venue with nothing wrong.
   const clock = await monitorClock();
   const [snapshot, lastLaps, alerts] = await Promise.all([
-    loadSnapshot(clock.now),
+    loadSnapshot(db(), clock.now),
     lastLapAtByRig(),
     recentAlerts(),
   ]);
@@ -43,7 +44,7 @@ export default async function RigHealthPage() {
       staffName={staff.displayName}
       tiles={rigTiles(snapshot, findings, lastLaps)}
       venueProblems={findings
-        .filter((f) => !rigSubjects.has(f.subject))
+        .filter((f) => !rigSubjects.has(flapScope(f.subject)))
         .map((f) => ({ severity: f.severity, headline: f.detail.headline }))}
       event={{
         on: mode.on,
@@ -85,6 +86,7 @@ function alertRow(alert: RecentAlert, now: number): RigHealthAlert {
     headline: alert.headline,
     opened: stamp(alert.openedAt, now),
     recovered: alert.resolvedAt === null ? null : stamp(alert.resolvedAt, now),
+    muted: alert.muted,
     githubIssueNumber: alert.githubIssueNumber,
   };
 }

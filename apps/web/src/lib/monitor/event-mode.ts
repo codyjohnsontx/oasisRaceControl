@@ -1,4 +1,4 @@
-import { tvHostLogo } from "@/lib/tv-host-logo";
+import { tvHostLogo, tvHostNames } from "@/lib/tv-host-logo";
 
 /**
  * The TV boards as the monitor sees them, and event mode, which they switch.
@@ -6,9 +6,12 @@ import { tvHostLogo } from "@/lib/tv-host-logo";
  * health page all call these on the same snapshot, so none of them can
  * disagree about whether the venue is mid-event.
  *
- * Event mode is on while an event board (/tv?event=1) is open - opening the
+ * Event mode is on while an event board is open and heard from - opening the
  * board is already part of setting up an event, so nobody has to remember a
- * second step (owner's decision R8). Staff can force it on or off; the
+ * second step (owner's decision R8). An event board is one opened from the
+ * staff link (lib/board-ticket.ts): the public /tv?event=1 view is only
+ * watched, never reported, so a stranger cannot switch the venue's channel.
+ * Staff can force it on or off; the
  * override lasts until venue midnight and no longer, because a takeover the
  * venue day does not bound owns the channel until somebody notices
  * (AGENTS.md, the /tv board rotation).
@@ -59,6 +62,11 @@ export type EventModeInput = {
   venueDayStart: number;
   override: EventModeOverride | null;
   boards: readonly BoardSnapshot[];
+  /**
+   * When the channel was told event mode came on, or null while it was last
+   * told off - so the evaluation that turns it on finds it began just now.
+   */
+  eventModeSince: number | null;
 };
 
 export type EventMode =
@@ -76,21 +84,30 @@ export function eventMode(input: EventModeInput): EventMode {
       expiresAt: override.expiresAt,
     };
   }
-  // Newest first, so the board named is the one most recently heard.
-  const board = boardsToday(input)
+  // Newest first, so the board named is the one most recently heard. Not
+  // limited to today's boards: one heard 20 s before venue midnight is still
+  // live at 00:00:10, and the 3-minute window is the rule that bounds it.
+  const board = input.boards
     .filter((b) => b.mode === "event" && holdsEventMode(b, input.now))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
   return board ? { on: true, cause: "board", board } : { on: false, cause: "none" };
 }
 
+/** When the event mode now on began, or null while it is off. */
+export function eventModeBegan(input: EventModeInput): number | null {
+  return eventMode(input).on ? (input.eventModeSince ?? input.now) : null;
+}
+
 /**
- * An event board holds event mode until it says goodbye, whether or not it is
- * still heard: a board that went dark mid-event is exactly what rule 8a
- * exists to report, and it could not if the dark board had already ended the
- * event. What ends it is the goodbye, venue midnight, or staff.
+ * An event board holds event mode while it is live, and for a reload's grace
+ * after its goodbye. A board that went dark stops holding it: a phone left
+ * locked on the board must not keep the venue mid-event until midnight. The
+ * dark board is still reported, by rule 8a, which does not wait on event mode.
  */
 function holdsEventMode(board: BoardSnapshot, now: number): boolean {
-  return board.closedAt === null || now - board.closedAt < BOARD_RELOAD_GRACE_MS;
+  return board.closedAt === null
+    ? boardState(board, now) === "live"
+    : now - board.closedAt < BOARD_RELOAD_GRACE_MS;
 }
 
 export type BoardState = "live" | "dark" | "closed";
@@ -106,13 +123,31 @@ export function boardsToday(input: Pick<EventModeInput, "venueDayStart" | "board
 }
 
 /**
- * The display the room is watching: today's event boards, or, on a day with
- * none (an event staff started at the shop), the shop wall's.
+ * The display the room is watching: today's event boards, or, while staff
+ * have forced event mode on with none of them still open (an event run on
+ * the shop wall), the shop wall's - one heard since event mode began, or
+ * still live when it began, so a wall already dark by then is not the event's
+ * display. On an ordinary day the wall is nobody's event display.
  */
-export function eventDisplays(input: Pick<EventModeInput, "venueDayStart" | "boards">): BoardSnapshot[] {
+export function eventDisplays(input: EventModeInput): BoardSnapshot[] {
   const today = boardsToday(input);
   const event = today.filter((b) => b.mode === "event");
-  return event.length > 0 ? event : today.filter((b) => b.mode === "rotation");
+  const mode = eventMode(input);
+  if (mode.cause !== "override" || !mode.on || event.some((b) => b.closedAt === null)) return event;
+  const began = eventModeBegan(input)!;
+  return today.filter((b) => b.mode === "rotation" && b.lastSeenAt >= began - BOARD_DARK_AFTER_MS);
+}
+
+/**
+ * Whether `name` is one boardName() can produce - the monitor's own words and
+ * an allowlisted host's name, so it is safe to say anywhere public.
+ */
+export function isBoardName(name: string): boolean {
+  return [
+    boardName({ mode: "rotation", host: null }),
+    boardName({ mode: "event", host: null }),
+    ...tvHostNames().map((host) => `Event board (${host})`),
+  ].includes(name);
 }
 
 /** "Event board (Cadillac)", "Shop wall board". */

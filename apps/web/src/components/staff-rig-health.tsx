@@ -14,6 +14,8 @@ export type RigHealthAlert = {
   headline: string;
   opened: string;
   recovered: string | null;
+  /** Flapping: kept here, not posted, for the hour. */
+  muted: boolean;
   githubIssueNumber: number | null;
 };
 
@@ -210,6 +212,9 @@ export function StaffRigHealth({
                 {tile.oldAgent && (
                   <span className="ml-1 font-bold uppercase text-gold">old agent</span>
                 )}
+                {tile.outdated && !tile.oldAgent && (
+                  <span className="ml-1 font-bold uppercase text-gold">outdated</span>
+                )}
               </p>
               {tile.footprint && <p className="text-muted text-[10px]">{tile.footprint}</p>}
               {tile.clockSkew && <p className="text-muted text-[10px]">{tile.clockSkew}</p>}
@@ -299,6 +304,7 @@ export function StaffRigHealth({
                 ) : (
                   <span className="font-bold uppercase text-ink">open</span>
                 )}
+                {a.muted && " · muted (flapping)"}
                 {a.githubIssueNumber !== null && (
                   <>
                     {" · "}

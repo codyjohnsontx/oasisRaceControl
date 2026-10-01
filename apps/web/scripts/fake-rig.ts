@@ -211,6 +211,7 @@ function heartbeat(): HeartbeatEvent {
     lastLapPostedAt,
     signInFailures: 0,
     signInFailureKinds: [],
+    signInFailureSeqs: [],
     notices: [],
     agentCpuPercent: Math.round(Math.max(0, cpuPercent) * 100) / 100,
     agentMemoryMb: Math.round(process.memoryUsage().rss / 1_048_576),

@@ -78,7 +78,7 @@ flowchart TB
 | Actor | Auth | Endpoints | Cadence |
 |---|---|---|---|
 | **Rig Agent** | Bearer (rig token) | `POST /api/agent/events` (heartbeat + laps), `GET /api/agent/assignment`, `POST /api/agent/checkout` | heartbeat 60s (backs off while undelivered) · poll 10s · flush 5s |
-| **TV browser** | none (public); its heartbeat carries a ticket the server signed into the page | `GET /api/leaderboards/boards`, `GET /api/leaderboards/board`, `GET /api/leaderboard/tonight`, `GET /api/league/season`, `POST /api/tv/heartbeat` (the rig monitor's view of the board; an open event board turns event mode on) | board rotates 15s · on-screen board refreshes 5s · board list 120s · heartbeat 30s plus a goodbye on close · the league board holds the screen while a round is open |
+| **TV browser** | none (public); a board opened from its staff link heartbeats with a ticket the server signed into the page | `GET /api/leaderboards/boards`, `GET /api/leaderboards/board`, `GET /api/leaderboard/tonight`, `GET /api/league/season`, `POST /api/tv/heartbeat` (the rig monitor's view of a staff-opened board; an event board turns event mode on, and the public `/tv` and `/tv?event=1` send none) | board rotates 15s · on-screen board refreshes 5s · board list 120s · heartbeat 30s plus a goodbye on close · the league board holds the screen while a round is open |
 | **Driver** | session cookie (JWT) | `/api/auth/{guest,login,register,logout,claim}`, `POST /api/checkin`, `GET /api/me/laps`, `POST /api/session/end` | on action · portal polls laps 5s |
 | **League board / round page** | none (public) | `GET /api/league/season`, `GET /api/league/rounds/[roundId]` | standings poll 10s · open round poll 6s (a closed round never polls) |
 | **Staff** | staff session cookie | `POST /api/staff/{login,logout,clear-rig,lap-validity,reset-pin,event-mode}`, `GET /api/staff/drivers` (name lookup for a PIN reset), `POST /api/staff/league/{open-round,close-round,roll-season}` | on action · dashboard refreshes 15s |
@@ -152,7 +152,7 @@ flowchart TB
 | `apps/web` (Next.js) | **Vercel** | root dir `apps/web`; env `DATABASE_URL` (pooled) + `SESSION_SECRET` |
 | Postgres | **Neon** | serverless; pooled connection string |
 | `apps/rig-agent` | **each sim PC** | published single-file exe; auto-start via Task Scheduler |
-| TV board | **venue display** | any always-on browser pointed at `/tv` in kiosk mode; unattended - it cycles every track board and recovers from feed failures without a reload |
+| TV board | **venue display** | any always-on browser in kiosk mode on the **Shop wall board** link from `/staff` (the bare `/tv` shows the same board but does not report to the rig monitor); unattended - it cycles every track board and recovers from feed failures without a reload |
 
 `apps/web` also runs on a local Kubernetes cluster for development and for
 demonstrating its runtime behaviour - two replicas, probes, rolling updates,

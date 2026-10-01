@@ -5,7 +5,9 @@ database on Neon, and a rig agent on each simulator. See
 [architecture.md](./architecture.md) for how the pieces talk to each other.
 
 Only the web app is "deployed" in the cloud sense. The agent is installed on
-each sim PC, and the TV is just a browser pointed at `/tv`.
+each sim PC, and the TV is just a browser pointed at `/tv` - opened from the
+**Shop wall board** link under **TV boards** on `/staff`, so the rig monitor
+can see it ([monitoring.md](./monitoring.md#event-mode-and-the-20-minute-update)).
 
 There is also a local Kubernetes environment - `kind`, container images, and
 Kustomize manifests - for development and for demonstrating the web tier's
@@ -74,7 +76,11 @@ The repo is a monorepo; the app lives in `apps/web`.
    |---|---|---|
    | `DATABASE_URL` | Neon **pooled** connection string | `-pooler` host, `sslmode=require`. Server-only — never `NEXT_PUBLIC_`. |
    | `SESSION_SECRET` | long random string | signs driver + staff cookies. Generate: `openssl rand -base64 48` |
-   | `DISCORD_WEBHOOK_URL`, `DISCORD_ALERT_USER_ID`, `CRON_SECRET` | see [monitoring.md](./monitoring.md) | the rig monitor. Optional: without them it logs instead of posting and the tick refuses every call. Production only, so a preview never posts to the venue |
+   | `DISCORD_WEBHOOK_URL` | the channel's webhook URL ([monitoring.md](./monitoring.md)) | the rig monitor's alerts. Optional: without it the monitor still evaluates, but logs each message instead of posting it. Production only, so a preview never posts to the venue |
+   | `DISCORD_ALERT_USER_ID` | the owner's Discord user id | optional: without it urgent alerts still post, with no @mention |
+   | `CRON_SECRET` | long random string | the bearer token `GET /api/monitor/tick` requires. Optional: without it the tick refuses every call, while rig heartbeats still run evaluations |
+   | `GEMINI_API_KEY` (and optionally `DIAGNOSIS_PROVIDER`, `DIAGNOSIS_MODEL`, `ANTHROPIC_API_KEY`) | see [monitoring.md](./monitoring.md#ai-diagnosis-and-the-copy-paste-handoff) | the urgent alerts' AI diagnosis and handoff. Optional: without a key, alerts post without them. Production only |
+   | `GITHUB_RIG_ALERT_TOKEN` | see [monitoring.md](./monitoring.md#the-rig-alert-github-issue) | files urgent software alerts as `rig-alert` issues. Optional: without it, Discord only. Production only |
 
    Both are read lazily on the request paths that use them — a missing
    `DATABASE_URL` throws the first time a route touches the database, and a
@@ -128,10 +134,11 @@ vars, which override the file):
 }
 ```
 
-- `rigQrToken` turns on walk-up mode: the rig asks for a name and a 4-digit
-  PIN, logs that driver in (or registers them) through the app's own sign-in
-  and check-in, posts their laps, and signs them out when they press Enter or
-  close the program. The same name and PIN bring a returning driver back to
+- `rigQrToken` turns on walk-up mode: the rig asks whether the driver has
+  raced here before, then for a name and a 4-digit PIN (twice for a new
+  driver), logs a returning driver in or registers a new one through the app's
+  own sign-in and check-in, posts their laps, and signs them out when they
+  press Enter or close the program. The same name and PIN bring a returning driver back to
   their own row on either rig, both days; five wrong PINs lock the name for 15
   minutes (`apps/rig-agent/README.md`, Walk-up mode).
   Leave it out to keep the staff console.
@@ -167,7 +174,10 @@ holds it, so set the combo first; the script refuses without one.
   of them before the site is public; see the seed for the exact values to rotate.
 - **Clear demo data** if prod shares the seeded database — otherwise the demo
   drivers show up on the live leaderboard.
-- **Point the TV** at `https://<your-vercel-domain>/tv` in a kiosk browser.
+- **Point the TV** at the **Shop wall board** link under **TV boards** on
+  `https://<your-vercel-domain>/staff`, in a kiosk browser, and bookmark that
+  link for the kiosk to reopen (it opens the wall for a year). The bare `/tv`
+  shows the same board but never reports to the rig monitor.
 
 ---
 
@@ -403,8 +413,9 @@ merge deploys, nothing reads the new tables.
 
 ### Applying 0007_board_heartbeats.sql
 
-`0007_board_heartbeats.sql` stores each open `/tv` page's heartbeat and the
-event mode the monitor last announced ([monitoring.md](./monitoring.md#event-mode-and-the-20-minute-update)).
+`0007_board_heartbeats.sql` stores the heartbeat of each `/tv` page opened
+from a staff link, and the event mode the monitor last announced
+([monitoring.md](./monitoring.md#event-mode-and-the-20-minute-update)).
 It is additive - one new table, one index, two new `monitor_state` columns
 with defaults - so apply it to Neon **before merging** the change that adds
 it, exactly as 0006 went. It needs 0006 applied first.
@@ -446,8 +457,10 @@ it, exactly as 0006 went. It needs 0006 applied first.
    hold what the file says: stop and compare `actual` with `expected`.
    `db/verify/0006_monitor.sql` still passes after 0007: it fingerprints only
    the `monitor_state` columns 0006 created.
-5. After the merge deploys, open `/tv` on the hosted address. This shows its
-   heartbeat arrived (read-only, one statement):
+5. After the merge deploys, sign in to `/staff` on the hosted address and open
+   the **Shop wall board** link under **TV boards** (the bare `/tv` sends no
+   heartbeat, so it would show nothing here). This shows its heartbeat arrived
+   (read-only, one statement):
 
    ```sql
    select mode, host, now() - last_seen_at as ago, feed_ok, closed_at
@@ -617,5 +630,5 @@ nothing left to retire.
 | Database | Neon | pooled connection string; migrate before first deploy |
 | Migration gate | `npm run build` | fails a **production** build when the database is behind `db/migrations` (a preview only warns); `npm run db:check` runs it alone and names the database it read |
 | Rig agent | each sim PC | `backendBaseUrl` = Vercel domain; per-rig `rigToken` |
-| TV board | venue display | browser at `/tv`, kiosk mode |
+| TV board | venue display | browser in kiosk mode at the **Shop wall board** link from `/staff` (TV boards) |
 | Local Kubernetes | your laptop | `./deploy/local/oasis-kind.sh up` - development and demonstration only, deploys nothing ([platform/local-kubernetes.md](./platform/local-kubernetes.md)) |

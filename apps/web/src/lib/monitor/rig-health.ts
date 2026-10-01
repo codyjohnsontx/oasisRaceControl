@@ -3,6 +3,7 @@ import { rigState, type Heartbeat } from "./rig-state";
 import {
   driverName,
   duration,
+  flapScope,
   rigSubject,
   SILENT_AFTER_MS,
   type Finding,
@@ -42,6 +43,8 @@ export type RigTile = {
   heartbeat: string;
   /** Its heartbeats carry nothing but a version: an agent from before rig-agent/0.4. */
   oldAgent: boolean;
+  /** Rule 11: not the build the venue should be running. */
+  outdated: boolean;
 };
 
 const TOO_OLD = "agent too old to report";
@@ -55,7 +58,9 @@ export function rigTiles(
     rigTile(
       snapshot.now,
       rig,
-      findings.filter((f) => f.subject === rigSubject(rig.id)),
+      // A rule may name something finer than the rig (rule 11 a build, rule
+      // 14 a lap); flapScope is the rig it is about.
+      findings.filter((f) => flapScope(f.subject) === rigSubject(rig.id)),
       lastLapAtByRig.get(rig.id) ?? null,
     ),
   );
@@ -108,6 +113,7 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
     clockSkew: state?.clockSkewMs == null ? null : `clock ${skew(state.clockSkewMs)}`,
     heartbeat: state === null ? "no heartbeat" : `heartbeat ${duration(now - state.receivedAt)} ago`,
     oldAgent,
+    outdated: mine.some((f) => f.rule === "agent_outdated"),
   };
 }
 

@@ -1,0 +1,18 @@
+{
+  "url": "https://api.github.com/repos/codyjohnsontx/oasisRaceControl/issues/42",
+  "html_url": "https://github.com/codyjohnsontx/oasisRaceControl/issues/42",
+  "id": 5626591881,
+  "number": 42,
+  "title": "[rig-alert] Laps queued but not reaching the site - Rig 02",
+  "state": "open",
+  "labels": [
+    {
+      "id": 9876543210,
+      "name": "rig-alert",
+      "color": "B60205",
+      "default": false,
+      "description": "Opened by the rig monitor; a fix worker picks it up"
+    }
+  ],
+  "created_at": "2026-09-29T07:05:49Z"
+}

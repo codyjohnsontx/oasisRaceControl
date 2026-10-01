@@ -47,6 +47,13 @@ public sealed record HeartbeatReport
     public DateTimeOffset? LastLapPostedAt { get; init; }
     public required int SignInFailures { get; init; }
     public IReadOnlyList<SignInFailureKind> SignInFailureKinds { get; init; } = Array.Empty<SignInFailureKind>();
+
+    /// <summary>The agent's own sequence number for each failure in
+    /// <see cref="SignInFailures"/>, oldest first. A report whose answer was
+    /// lost is followed by one carrying the same failures under a new
+    /// <see cref="Sequence"/>; these let the server count each failure once.
+    /// Only the newest <see cref="MaxListItems"/> go on the wire.</summary>
+    public IReadOnlyList<long> SignInFailureSeqs { get; init; } = Array.Empty<long>();
     public IReadOnlyList<string> Notices { get; init; } = Array.Empty<string>();
     public double? AgentCpuPercent { get; init; }
     public double? AgentMemoryMb { get; init; }
@@ -107,6 +114,9 @@ public sealed record HeartbeatReport
         var kinds = new JsonArray();
         foreach (var kind in SignInFailureKinds.Distinct().Take(MaxListItems)) kinds.Add(kind.WireName());
         json["signInFailureKinds"] = kinds;
+        var seqs = new JsonArray();
+        foreach (var seq in SignInFailureSeqs.Skip(Math.Max(0, SignInFailureSeqs.Count - MaxListItems))) seqs.Add(seq);
+        json["signInFailureSeqs"] = seqs;
         json["notices"] = Strings(Notices, MaxNoticeLength);
         if (AgentCpuPercent is { } cpu) json["agentCpuPercent"] = cpu;
         if (AgentMemoryMb is { } memory) json["agentMemoryMb"] = memory;
@@ -174,8 +184,8 @@ public static class HeartbeatSchedule
 /// saying who was trying.</summary>
 public enum SignInFailureKind
 {
-    /// <summary>A name the backend will not take, or a name registered to a
-    /// different PIN.</summary>
+    /// <summary>A returning driver's PIN that does not match the name, or a
+    /// new driver's name that is already taken or not allowed.</summary>
     WrongPinOrName,
     /// <summary>The name is locked after too many wrong PINs.</summary>
     Locked,
