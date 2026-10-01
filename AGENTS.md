@@ -299,7 +299,13 @@ not twenty - while Discord stays per rig. Issue writes are serialized per rule
 (`lockFault`) and carry a hidden marker (`rigAlertMarker`, naming the rule and
 every alert the write covers) that a retry looks for before writing again,
 trusted only as the last line of a write by the token's own account;
-keep both on any new GitHub write.
+keep both on any new GitHub write. A rule that compares a rig with
+today's combo uses ingestion's own `comboMismatch` (`validity.ts`), never a
+second comparison. Bumping the agent's `AgentVersion` (`AgentConfig.cs`)
+bumps `CURRENT_AGENT_VERSION` (`monitor/agent-version.ts`) in the same
+commit - `agent-version.test.ts` fails otherwise - and from that deploy
+every rig on the old build shows rule 11's warning until the exe is
+replaced.
 
 ## The twenty-rig soak
 

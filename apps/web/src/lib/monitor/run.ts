@@ -22,7 +22,7 @@ import {
   refireComment,
   rigAlertIssue,
 } from "./handoff";
-import { alertMessage, recoveryMessage, type AlertForMessage } from "./messages";
+import { fastLapSummaryMessages, openingMessage, recoveryMessage, type AlertForMessage } from "./messages";
 import { evaluateRules, RULES } from "./rules";
 import {
   alertsById,
@@ -33,11 +33,13 @@ import {
   claimEvaluation,
   claimIssueRecoveries,
   claimIssues,
+  claimFastLapSummaries,
   claimRecoveryRetries,
   loadSnapshot,
   lockFault,
   markAnnounced,
   markDiagnosisPosted,
+  markFastLapSummaryPart,
   markRecoveryAnnounced,
   pruneHeartbeats,
   recentHeartbeats,
@@ -102,14 +104,15 @@ export async function runMonitor(): Promise<MonitorRun> {
   const { findings, won } = evaluation;
 
   const mention = alertUserId();
-  let announced = await deliver(await alertsById(won.announce), (a) => alertMessage(a, mention), markAnnounced);
+  let announced = await deliver(await alertsById(won.announce), (a) => openingMessage(a, mention), markAnnounced);
   let recovered = await deliver(await alertsById(won.recover), recoveryMessage, markRecoveryAnnounced);
   // Without a webhook nothing was sent and nothing will be, so there is
   // nothing to retry - and a preview must not keep claiming the posts that
   // production's evaluations should make.
   if (discordConfigured()) {
-    announced += await deliver(await claimAnnounceRetries(), (a) => alertMessage(a, mention), markAnnounced);
+    announced += await deliver(await claimAnnounceRetries(), (a) => openingMessage(a, mention), markAnnounced);
     recovered += await deliver(await claimRecoveryRetries(), recoveryMessage, markRecoveryAnnounced);
+    announced += await deliverFastLapSummaries();
   }
 
   const pruned = await pruneHeartbeats();
@@ -158,16 +161,40 @@ export async function runDiagnoses(): Promise<number> {
 async function deliver(
   alerts: AlertForMessage[],
   render: (alert: AlertForMessage) => Parameters<typeof postDiscord>[0],
-  record: (id: string) => Promise<void>,
+  record: (alert: AlertForMessage) => Promise<void>,
 ): Promise<number> {
   let sent = 0;
   for (const alert of alerts) {
     const result = await postDiscord(render(alert));
     if (result.status === "sent") {
-      await record(alert.id);
+      await record(alert);
       sent++;
     } else if (result.status === "failed") {
       console.error(`[monitor] could not post alert #${alert.id} to Discord: ${result.reason}`);
+    }
+  }
+  return sent;
+}
+
+/**
+ * Posts each due rule 14 summary's parts in order, from the first one Discord
+ * has not taken, recording each as it goes; a refused part stops its summary
+ * for a later evaluation to resume there.
+ */
+async function deliverFastLapSummaries(): Promise<number> {
+  let sent = 0;
+  for (const summary of await claimFastLapSummaries()) {
+    const parts = fastLapSummaryMessages(summary);
+    for (let part = summary.partsPosted; part < parts.length; part++) {
+      const result = await postDiscord(parts[part]!);
+      if (result.status !== "sent") {
+        if (result.status === "failed") {
+          console.error(`[monitor] could not post the fast-lap summary of alert #${summary.id}: ${result.reason}`);
+        }
+        break;
+      }
+      await markFastLapSummaryPart(summary.id, part + 1, parts.length);
+      sent++;
     }
   }
   return sent;

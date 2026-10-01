@@ -126,7 +126,15 @@ export const NOTICE_CODES = {
 export type NoticeCode = keyof typeof NOTICE_CODES;
 
 /** The alert fields that are numbers the rules computed, never a rig's words. */
-const NUMERIC_FIELDS = new Set(["Last heard", "Queued laps", "Parked laps", "Starts", "Clock skew"]);
+const NUMERIC_FIELDS = new Set([
+  "Last heard",
+  "Queued laps",
+  "Parked laps",
+  "Starts",
+  "Clock skew",
+  "Laps with nobody signed in",
+  "Combo-rejected laps",
+]);
 
 const TELEMETRY_MODES = ["iracing", "simulated", "none"];
 const CHECKOUTS = ["none", "queued", "not_queued"];
