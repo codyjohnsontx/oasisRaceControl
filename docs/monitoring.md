@@ -4,7 +4,9 @@ The rig monitor watches every sim rig from the heartbeat its agent sends once a
 minute and posts to the venue's Discord channel when something is wrong: once
 when a problem starts, once when it clears, and nothing in between. All the
 judgement is on the server - the rig only reports what it already knows, so
-iRacing keeps its frames.
+iRacing keeps its frames. Every `/tv` page opened from a staff link heartbeats
+too, so the monitor also sees the screen the room is watching, and an open
+event board puts it in **event mode** (below).
 
 The code is `apps/web/src/lib/monitor/`. The rules are one pure module,
 `rules.ts`, which the staff Rig health page will call on the same snapshot the
@@ -16,7 +18,9 @@ Nothing runs on a timer inside Vercel: Hobby's cron runs at most once a day.
 An evaluation runs
 
 - **after every rig heartbeat**, once the rig has had its answer (Next's
-  `after()`), so a healthy rig is what notices a silent one; and
+  `after()`), so a healthy rig is what notices a silent one;
+- **after every TV board heartbeat**, the same way, so during an event the
+  board notices a silent rig; and
 - **on every `GET /api/monitor/tick`**, which an outside clock calls once a
   minute (below), so a venue whose every rig went dark is still noticed.
 
@@ -33,15 +37,19 @@ Numbers are the approved monitoring plan's. **Urgent** posts red and
 
 | # | Rule | Fires when | Clears when | Severity |
 |---|---|---|---|---|
-| 1 | Rig silent | no word from a rig for 2 min, and its agent did not say goodbye | the rig is heard again | urgent with a driver seated; otherwise a warning after 7 min (below) |
-| 1 | Every rig went quiet | two or more empty rigs went quiet within 5 min of each other and none is left running | 7 min after the first rig is heard again (by heartbeat or by laps), time enough for the rest's backed-off heartbeats. A rig not heard since before the first one came back stays dark without a warning of its own - still switched off after a close, or not yet back - until it is heard again (after which it alerts as usual) or 12 h pass; a seated one still alerts at once | warning, one note instead of one per rig. The plan's "outside event mode" qualifier arrives with event mode in PR 4; until then the note applies in every mode |
+| 1 | Rig silent | no word from a rig for 2 min, and its agent did not say goodbye | the rig is heard again | urgent with a driver seated, or in event mode for a rig switched on for it: heard since event mode began, or since the venue came back from its last silence (while the venue is not silent again). Otherwise a warning after 7 min (below) |
+| 1 | Every rig went quiet | two or more empty rigs went quiet within 5 min of each other and none is left running - in event mode, counting only rigs not switched on for it | 7 min after the first rig is heard again (by heartbeat or by laps), time enough for the rest's backed-off heartbeats. A rig not heard since before the first one came back stays dark without a warning of its own - still switched off after a close, or not yet back - until it is heard again (after which it alerts as usual) or 12 h pass; a seated one still alerts at once | warning, one note instead of one per rig. A rig switched on for the event is never in the note: it is urgent at once, because mid-event rigs going quiet together is an outage, not closing time. One that went dark with the venue - switched off last night, not switched on yet - stays dark and is judged as on any other day, so turning event mode on never pages about rigs nobody has turned on (owner's choice A) |
 | 2 | iRacing not connected while a driver is signed in | a seated rig's agent has reported iRacing disconnected for 3 min (counted from when the driver sat down) | iRacing connects, or the stint ends | urgent |
 | 3a | Laps queued but not reaching the site | a lap has waited over 2 min while at least two heartbeats got through | the queue drains | urgent |
 | 3b | Laps refused by the site | the rig holds parked (refused) laps | a person un-parks them (count back to 0); every rise in the count posts again | urgent |
+| 4 | No featured car and track today | no `featured_combos` row for the venue day, and event mode is on or a rig is in an iRacing session | today's row exists | urgent. The alert carries the `insert` to paste, built from that rig's own session strings - or, with no rig in a session, says to run `--diagnose` on one |
 | 5a | Laps with nobody signed in | 2 laps inside 10 min that the agent said nobody was signed in for, since the rig's last lap that reached a driver | a lap reaches a driver, or 15 min pass without another | warning; urgent in event mode |
 | 5b | Unusually long stint | a driver has been signed in longer than `monitor_state.long_stint_minutes` (2 h unless staff change it), on a rig that is switched on and reporting | the stint ends | warning |
 | 6 | Repeated sign-in failures | 3 walk-up sign-ins refused on one rig inside 5 min; the message names the kinds (wrong PIN or name, locked out, ...). Needs `rig-agent/0.5-monitor` (below) | 10 min without one | warning |
 | 7 | Wrong car or track | today has a featured combo, and a seated rig's iRacing session is on another car or track, or the rig's last 3 laps inside 15 min were all refused for the combo | the session matches, or a valid lap lands - whichever of the two signals was heard last decides | warning; urgent in event mode |
+| 8a | TV board went dark | of the event's displays - today's event boards (each opened from its staff link), or, while staff have forced event mode on with none of them still open, the shop wall opened from its staff link - the one heard from most recently has not been heard from for 3 min and did not say goodbye. An event board is judged whether or not event mode is on - the dark board has stopped holding it; the shop wall only while event mode is forced on, and only if it was heard since event mode began or was still live when it began, never on an ordinary day | a display is heard again, staff force event mode off, or the venue day ends | urgent: the board it reports was holding the event, or is the room's display during one |
+| 8b | TV board cannot load its numbers | a live board says its last 3 loads of the leaderboard failed (it shows "Reconnecting") | a load succeeds | urgent, in any mode: the board reached the site to say so, so the feed is what is broken |
+| 9b | Monitor gap | more than 10 min of the time since the previous evaluation fell in venue hours (08:00-midnight) | - | a one-line note, not an alert: nothing to recover from, and only the evaluation that ends the gap sees it |
 | 10 | Rig agent restarting repeatedly | 3 agent starts within 15 min | the starts age out of the 15 min | urgent |
 | 11 | Outdated rig agent | a rig that is switched on and reporting runs an agent build other than `CURRENT_AGENT_VERSION` | it reports the current build | warning, once per rig per version |
 | 12 | Rig clock is off | the rig's clock is over 5 min from the server's | under 2 min | urgent |
@@ -78,10 +86,11 @@ Details worth knowing:
   the agent forgets what iRacing publishes whenever iRacing goes; with none in
   view an open alert holds. The rest are about a running agent and stop at
   goodbye.
-- **Event mode raises rules 5a and 7 to urgent.** Event mode itself arrives
-  with plan PR 4; until then it is off everywhere (`inEventMode` in
-  `rules.ts` is the one place that reads it), so both stay warnings. An
-  alert already open follows the mode: a warning that becomes urgent is
+- **Event mode raises rules 1, 5a and 7 to urgent** (rule 1 only for a rig
+  heard since event mode began; see below). `inEventMode` in `rules.ts` reads
+  `eventMode()`, the same judgement the 20-minute update uses. An alert
+  already open follows the mode - a rig already silent when the event makes
+  it urgent included: a warning that becomes urgent is
   announced once more, with the mention (held to the end of a flapping mute
   if it is muted), and an urgent one that becomes a warning changes quietly -
   a post that had not got through yet goes out as a warning, without the
@@ -335,7 +344,8 @@ files an issue without it.
 ## The outside clock
 
 `GET /api/monitor/tick` evaluates and answers
-`{"status":"ok","evaluated":true,"activeAlerts":0}`, or 503 in about two
+`{"status":"ok","evaluated":true,"activeAlerts":0,"eventMode":false}`
+(`eventMode` as the channel was last told), or 503 in about two
 seconds when the database is down. It needs the header
 `Authorization: Bearer <CRON_SECRET>`; without `CRON_SECRET` set it refuses
 everything.
@@ -357,6 +367,92 @@ An uptime check that cannot send a header (UptimeRobot's free plan) should
 watch `/api/ready` instead: it is public and answers 503 when the database is
 down, which is what that check is for.
 
+## Event mode and the 20-minute update
+
+The owner wants a status update every 20 minutes during an event, and none on
+an ordinary day, when it would only train people to ignore the channel (R1,
+R7). Event mode is what tells the two apart. It is judged on every evaluation
+by `eventMode()` in `event-mode.ts`, pure, from the same snapshot as the rules:
+
+- **On while an event board is open and heard from.** Opening the event
+  board is already part of setting up an event, so it needs no second step
+  (R8). **Staff open the shop wall and the event board from their staff
+  link**, under **TV boards** on `/staff` (the shop wall, and an event board
+  per bundled host): each link carries a signature of its own for its mode,
+  and only a page opened from one gets a ticket at all (`lib/board-ticket.ts`;
+  an event link opens boards for 48 hours, so the laptop's board can be
+  reloaded on day two, and the wall's for a year, so the kiosk's bookmark
+  keeps working). The public `/tv` and `/tv?event=1` still show the board to
+  anyone, but report nothing, so a stranger, `curl` or a stray phone opening
+  either can never turn event mode on or page the owner. A board holds
+  event mode only while it has been heard from within the last 3 minutes; it
+  stops on its goodbye - closing the tab, or navigating away - or on going
+  dark. A live board holds it across venue midnight: an event laptop left
+  open overnight keeps event mode on (20-minute updates all night, and rule 4
+  from 00:00 if the new day has no combo), so close its tab at the end of the
+  day. Midnight itself changes nothing for a board heard within the last 3
+  minutes; a board last heard longer ago than that counts for nothing after
+  midnight, and only the staff override ends at venue midnight by itself. A goodbye
+  followed by a new page within 2 minutes (a reload) does not flip it.
+- **Rule 8a does not wait on event mode.** A board that goes dark ends event
+  mode at the same moment it becomes dark, so 8a is judged on its own: of
+  today's event boards, the one heard from most recently went dark without a
+  goodbye. The most recent, so a phone left locked on the board is not
+  reported once the laptop's tab is closed properly, while a killed laptop
+  browser is. Closing the tab alerts nothing; killing the browser alerts once,
+  urgently, three minutes later, and posts "event mode off" beside it. While
+  staff have forced event mode on and no event board is still open today -
+  an event run on the shop wall, including after the day's event board was
+  closed - the wall, opened from its staff link, is the display 8a judges,
+  the same one the 20-minute update reports on. Only a wall heard since event
+  mode began, or still live when it began, counts: a wall switched off that
+  morning never pages when staff force event mode on that afternoon (the
+  same rule rig silence follows). On an ordinary day the wall is not judged.
+- **Staff can force it** on or off with `POST /api/staff/event-mode`
+  (`{"mode":"on"|"off"|"auto","reason":"..."}`, staff session, same-origin JSON;
+  no page has buttons for it yet - the Rig health page will). `on` and `off`
+  last until venue midnight, never longer; `auto` hands it back to the
+  boards. Every change writes an audit row. Use `off` when a board was left
+  open by mistake: it also silences rule 8a for the rest of the day.
+
+Each change posts one grey line ("⚪ Event mode on: Event board (Cadillac)
+opened at 2:31 PM"). While it is on, an evaluation posts the update when the
+last one is 20 minutes old - so within a minute of its mark, and stamped with
+the mark, so the cadence does not drift. The update is a fixed template (R4):
+the board and today's combo, drivers and laps; one line per rig that has been
+on today (online, iRacing, who is seated and for how long, last lap, queue,
+agent build); the top three by initials, from the same view the event board
+ranks; and the open alerts. Its colour is the worst open alert's. A post
+Discord refuses is handed back and retried by the next evaluation, for the
+line and the update alike; a line handed back also restores when event mode
+last changed, so a failed post never moves the event's start.
+
+### The board heartbeat
+
+`components/tv/board-heartbeat.tsx` sits beside the rotation engine on `/tv`
+and renders nothing; the engine (`tv-screen.tsx`) is unchanged. Every 30 s it
+posts `POST /api/tv/heartbeat` with whether the page is the visible tab and
+how many of its boards' loads have failed in a row (`lib/tv-feed-health.ts`,
+which counts every registered board type's loads - the same failures the
+footer shows as "Reconnecting"). As the page closes it sends a goodbye with
+`navigator.sendBeacon`; a killed browser or a sleeping laptop sends nothing,
+and that silence is rule 8a. A goodbye is final for its board: nothing
+reopens it. A page shown again from the browser's back-forward cache reloads
+instead, as a new board with a ticket of its own, because the goodbye it sent
+as it left and the heartbeats after it keep no order on the way to the
+server.
+
+The route is public, like `/tv`, so it believes a heartbeat only as far as
+its **ticket**: when the server renders `/tv` it mints a board id and signs
+it, with the mode and host, into a ticket (`lib/board-ticket.ts`, HS256 with
+`SESSION_SECRET`, 36 hours, renewed by every accepted heartbeat). A forged or
+foreign ticket is refused. A ticket is minted only for a page opened from a
+staff link for its mode, so the public `/tv` and `/tv?event=1` have none and
+send nothing: every board rules 8a and 8b judge, the shop wall included, was
+opened by staff. Each open page is one
+`board_heartbeats` row, kept 7 days. `npm run tv:heartbeat-check` proves the
+cadence, the goodbye and the alert in a real browser (README).
+
 ## Alert state
 
 `monitor_alerts` holds one row per alert, forever (they are small, and they
@@ -366,5 +462,7 @@ when two evaluations run at once. The migration and its hand-apply steps are
 `db/migrations/0006_monitor.sql` and
 [deploy.md](./deploy.md#applying-0006_monitorsql).
 
-Heartbeats are kept seven days; an evaluation prunes older ones at most once
-a day.
+Heartbeats - the rigs' and the boards' - are kept seven days; an evaluation
+prunes older ones at most once a day. `board_heartbeats` and the event-mode
+columns are `db/migrations/0007_board_heartbeats.sql`
+([deploy.md](./deploy.md#applying-0007_board_heartbeatssql)).

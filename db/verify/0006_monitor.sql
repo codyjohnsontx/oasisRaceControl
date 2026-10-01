@@ -70,7 +70,12 @@ with fingerprints (check_name, expected, actual) as (
                           is_identity, coalesce(identity_generation, '')),
                 ',' order by ordinal_position))
        from information_schema.columns
-       where table_schema = 'public' and table_name = 'monitor_state')
+       where table_schema = 'public' and table_name = 'monitor_state'
+         -- The columns this migration creates: 0007 adds two more, which
+         -- db/verify/0007_board_heartbeats.sql checks.
+         and column_name in ('id', 'last_evaluated_at', 'last_routine_update_at',
+                             'last_pruned_at', 'event_mode_override', 'override_set_by',
+                             'override_expires_at', 'long_stint_minutes'))
     ),
     (
       'state primary key',

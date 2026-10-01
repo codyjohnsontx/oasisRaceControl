@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { SIGN_IN_FAILURE_KINDS } from "@/lib/events";
+import { isBoardName } from "../event-mode";
 import { RULES, type AlertDetail, type Severity } from "../rules";
 
 /**
@@ -183,13 +184,17 @@ export function incidentContext(
 }
 
 /**
- * The rig as anything public names it: "Rig 7" from the server-owned number.
- * The venue note's "Venue" is the monitor's own word; a rig alert stored
- * before the number was recorded is "a rig", never its display name.
+ * Where the alert is, as anything public names it: "Rig 7" from the
+ * server-owned number. The venue note's "Venue" and a TV board's name
+ * ("Event board (Cadillac)", "Shop wall board", rules 8a and 8b) are the
+ * monitor's own words, built from the host allowlist, so they pass as they
+ * are; anything else - a rig alert stored before the number was recorded -
+ * is "a rig", never a display name staff typed.
  */
 export function publicRig(detail: AlertDetail): string {
   if (typeof detail.rigNumber === "number" && Number.isInteger(detail.rigNumber)) return `Rig ${detail.rigNumber}`;
-  return detail.where === "Venue" ? "Venue" : "a rig";
+  if (detail.where === "Venue" || isBoardName(detail.where)) return detail.where;
+  return "a rig";
 }
 
 /**

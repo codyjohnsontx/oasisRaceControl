@@ -169,7 +169,7 @@ export function recoveryComment(
     return `alert ${alert.id} (${githubInert(publicRig(alert.detail))})${after}`;
   });
   return (
-    `Every rig on this issue has recovered: ${recovered.join(", ")}. ` +
+    `Everything on this issue has recovered: ${recovered.join(", ")}. ` +
     "The issue stays open for the fix; close it when that has merged.\n\n" +
     rigAlertMarker("recovery", alerts[0]!.rule, alerts.map((alert) => alert.id))
   );

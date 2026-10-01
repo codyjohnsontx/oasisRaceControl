@@ -283,7 +283,8 @@ day): evaluation runs in `after()` on each heartbeat and on
 reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
-migration. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
+migration, and a verify fingerprints only the columns its own migration
+created, so a later `alter table` does not fail an earlier verify. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
 GitHub issue (`diagnosis/`, `handoff.ts`, `github.ts`) are written from
 `incidentContext`, an allowlist of what the server can vouch for - numbers,
 flags, enum values, known agent notices as codes - that never carries a rig's
@@ -306,6 +307,19 @@ bumps `CURRENT_AGENT_VERSION` (`monitor/agent-version.ts`) in the same
 commit - `agent-version.test.ts` fails otherwise - and from that deploy
 every rig on the old build shows rule 11's warning until the exe is
 replaced.
+
+A `/tv` page opened from its signed staff link on `/staff` (the shop wall,
+or the event board) heartbeats too (`components/tv/board-heartbeat.tsx`,
+beside the engine, never inside it - `tv-screen.tsx` stays untouched), with a
+ticket the page's server render signed (`lib/board-ticket.ts`): the route is
+public and believes board, mode and host only from that ticket. The public
+`/tv` and `/tv?event=1` get no ticket and report nothing - the owner's rule,
+so no stranger can switch the channel into event mode or page him. Feed
+health comes from wrapping each registered board type's `load` (`lib/tv-feed-health.ts`), not from the engine.
+An event board heard within 3 minutes is event mode (`eventMode()` in
+`monitor/event-mode.ts`, pure, shared like the rules); a dark one is rule 8a,
+which is judged without event mode because the dark board no longer holds it.
+Verify board-heartbeat changes with `npm run tv:heartbeat-check`.
 
 ## The twenty-rig soak
 

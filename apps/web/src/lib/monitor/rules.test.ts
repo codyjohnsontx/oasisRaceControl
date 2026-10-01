@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { BoardSnapshot } from "./event-mode";
 import type { Heartbeat } from "./rig-state";
 import { CURRENT_AGENT_VERSION } from "./agent-version";
 import {
   evaluateRules,
+  featuredComboSql,
+  monitorGap,
   inEventMode,
   outdatedAgentSubject,
   RECOVERS_SILENTLY,
@@ -99,7 +102,13 @@ function rig(number: number, overrides: Partial<RigSnapshot> = {}): RigSnapshot 
 
 const SEATED = { driverName: "Matt G", driverStatus: "active", startedAt: NOW - 30 * MIN };
 
-/** A snapshot with nothing but rigs: no combo, no laps, no moves. */
+/** 2026-10-04 began at 05:00Z in the venue's zone (CDT). */
+const VENUE_DAY_START = Date.parse("2026-10-04T05:00:00Z");
+
+/**
+ * A snapshot with nothing but rigs: today's featured combo set (so rule 4
+ * stays out of the way unless a test clears it), no laps, no moves, no boards.
+ */
 function snapshotOf(
   rigs: RigSnapshot[],
   openAlerts: Array<{ rule: RuleKey; subject: string }> = [],
@@ -108,11 +117,15 @@ function snapshotOf(
   return {
     now: NOW,
     rigs,
-    featuredCombo: null,
+    featuredCombo: COMBO,
     longStintMinutes: 120,
     laps: [],
     lapBests: [],
     moves: [],
+    venueDayStart: VENUE_DAY_START,
+    override: null,
+    eventModeSince: null,
+    boards: [],
     openAlerts,
     ...rest,
   };
@@ -807,8 +820,29 @@ const nobodyLap = (rigNumber: number, ago: number) =>
   });
 
 describe("event mode", () => {
-  it("is off until plan PR 4 supplies it, so rules 5a and 7 stay warnings", () => {
+  const eventBoard = {
+    id: "board-1",
+    mode: "event" as const,
+    host: null,
+    firstSeenAt: NOW - 60 * MIN,
+    lastSeenAt: NOW - 20 * S,
+    visible: true,
+    feedOk: true,
+    feedFailures: 0,
+    closedAt: null,
+  };
+
+  it("is eventMode(): off with no staff-linked event board, on while one is live", () => {
     expect(inEventMode(snapshotOf([rig(1)]))).toBe(false);
+    expect(inEventMode(snapshotOf([rig(1)], [], { boards: [eventBoard] }))).toBe(true);
+  });
+
+  it("raises rule 5a to urgent while it is on", () => {
+    const laps = [nobodyLap(1, 6 * MIN), nobodyLap(1, 2 * MIN)];
+    const combo = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" };
+    expect(rulesOf(evaluate([rig(1)], [], { laps, boards: [eventBoard], featuredCombo: combo }))).toEqual([
+      "unattributed_laps rig:rig-1 urgent",
+    ]);
   });
 });
 
@@ -1022,7 +1056,11 @@ describe("rule 7: wrong car or track", () => {
     expect(evaluate([rig(1, { heartbeats: inSession(wrongCar) })], [], combo)).toEqual([]);
     const quiet = minutely(14 * MIN, 4 * MIN, () => ({ session: wrongCar }));
     expect(only(evaluate([rig(1, { seated: SEATED, heartbeats: quiet })], [], combo), "wrong_combo")).toBeUndefined();
-    expect(evaluate([rig(1, { seated: SEATED, heartbeats: inSession(wrongCar) })])).toEqual([]);
+    // With no combo there is nothing to be wrong against; rule 4 is what
+    // speaks for that day.
+    const noCombo = evaluate([rig(1, { seated: SEATED, heartbeats: inSession(wrongCar) })], [], { featuredCombo: null });
+    expect(only(noCombo, "wrong_combo")).toBeUndefined();
+    expect(rulesOf(noCombo)).toEqual(["no_featured_combo venue urgent"]);
   });
 
   it("warns when the rig's last three laps were all refused for the combo", () => {
@@ -1270,5 +1308,297 @@ describe("rule 14: implausibly fast lap", () => {
   it("never flags an invalid or unattributed lap", () => {
     const invalid = lap(1, MIN, { lapTimeMs: 100_000, valid: false, invalidReason: "OFF_TRACK" });
     expect(evaluate([rig(1)], [], { laps: [invalid], lapBests: field(5) })).toEqual([]);
+  });
+});
+
+// ---- event mode: rules 1 (in event mode), 4, 8a, 8b and 9b ----------------
+
+/** An /tv page as the snapshot holds it: an event board heard 20 s ago by default. */
+function board(overrides: Partial<BoardSnapshot> = {}): BoardSnapshot {
+  return {
+    id: "board-1",
+    mode: "event",
+    host: "cadillac",
+    firstSeenAt: NOW - 90 * MIN,
+    lastSeenAt: NOW - 20 * S,
+    visible: true,
+    feedOk: true,
+    feedFailures: 0,
+    closedAt: null,
+    ...overrides,
+  };
+}
+/** An event under way for the last hour. */
+const EVENT = { boards: [board()], eventModeSince: NOW - 60 * MIN };
+
+describe("rule 1 in event mode", () => {
+  const quiet = (number: number, quietFor: number) =>
+    rig(number, { heartbeats: minutely(quietFor + 14 * MIN, quietFor) });
+  const venueOpen = [{ rule: "venue_silent" as const, subject: VENUE_SUBJECT }];
+
+  it("is urgent for an empty rig as soon as it passes two minutes, with no correlation wait", () => {
+    expect(evaluate([quiet(1, 2 * MIN + 5 * S), rig(2)])).toEqual([]);
+    expect(rulesOf(evaluate([quiet(1, 2 * MIN + 5 * S), rig(2)], [], EVENT))).toEqual([
+      "rig_silent rig:rig-1 urgent",
+    ]);
+  });
+
+  it("reads rigs going quiet together mid-event as an outage, not as the venue closing", () => {
+    const rigs = [quiet(1, 3 * MIN), quiet(2, 4 * MIN)];
+    expect(rulesOf(evaluate(rigs))).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+    expect(rulesOf(evaluate(rigs, [], EVENT))).toEqual([
+      "rig_silent rig:rig-1 urgent",
+      "rig_silent rig:rig-2 urgent",
+    ]);
+  });
+
+  it("follows a staff override just as it follows the board", () => {
+    const on = {
+      override: { mode: "on" as const, expiresAt: NOW + 60 * MIN, setBy: "Cody" },
+      eventModeSince: NOW - 60 * MIN,
+    };
+    expect(rulesOf(evaluate([quiet(1, 3 * MIN), rig(2)], [], on))).toEqual(["rig_silent rig:rig-1 urgent"]);
+  });
+
+  describe("the event board opening at 09:30, before the rigs boot, after the shop closed at 22:00", () => {
+    // Now is 09:30. The power strips cut every rig at 22:00, eleven and a
+    // half hours ago, with no goodbyes, and the venue note has been open since.
+    const CLOSE = 11.5 * 60 * MIN;
+    /** A staff-linked event board just opened: event mode comes on now, or came on ten minutes ago. */
+    const openings = [
+      { boards: [board({ firstSeenAt: NOW - 20 * S })], eventModeSince: null },
+      { boards: [board({ firstSeenAt: NOW - 10 * MIN })], eventModeSince: NOW - 10 * MIN },
+    ];
+    const urgent = (findings: Finding[]) => findings.filter((f) => f.severity === "urgent");
+
+    it("pages about none of the rigs switched off at closing", () => {
+      const lastNight = [quiet(1, CLOSE), quiet(2, CLOSE - 2 * MIN), quiet(3, CLOSE)];
+      for (const opening of openings) {
+        const findings = evaluate(lastNight, venueOpen, opening);
+        expect(urgent(findings)).toEqual([]);
+        expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+      }
+    });
+
+    it("pages about none of them either when the venue had come back from a blip earlier that evening", () => {
+      // A power blip at 21:40, back at 21:43, then the close at 22:00: the
+      // venue last came back before the rigs went dark with it.
+      const blipThenClose = (number: number) =>
+        rig(number, {
+          heartbeats: [...minutely(12 * 60 * MIN, CLOSE + 20 * MIN), ...minutely(CLOSE + 17 * MIN, CLOSE)],
+        });
+      const lastNight = [blipThenClose(1), blipThenClose(2), blipThenClose(3)];
+      for (const opening of openings) {
+        const findings = evaluate(lastNight, venueOpen, opening);
+        expect(urgent(findings)).toEqual([]);
+        expect(rulesOf(findings)).toEqual([`venue_silent ${VENUE_SUBJECT} warning`]);
+      }
+    });
+  });
+
+  it("keeps a rig that went dark with the venue quiet, and pages about one switched on since", () => {
+    /** Heard up to `lostAt` ago, then nothing until `backAt` ago, and every minute since. */
+    const back = (number: number, lostAt: number, backAt: number) =>
+      rig(number, { heartbeats: [...minutely(lostAt + 10 * MIN, lostAt), ...minutely(backAt)] });
+    const neverSwitchedOn = quiet(3, 10 * 60 * MIN);
+    const switchedOnThenDied = rig(2, {
+      heartbeats: [...minutely(10 * 60 * MIN + 10 * MIN, 10 * 60 * MIN), ...minutely(40 * MIN, 5 * MIN)],
+    });
+    const rigs = [back(1, 10 * 60 * MIN, 45 * MIN), switchedOnThenDied, neverSwitchedOn];
+    expect(rulesOf(evaluate(rigs, [], { ...EVENT, eventModeSince: NOW - 30 * MIN }))).toEqual([
+      "rig_silent rig:rig-2 urgent",
+    ]);
+    // Heard since the venue came back, though it died before event mode began.
+    expect(rulesOf(evaluate(rigs, [], { ...EVENT, eventModeSince: NOW - 2 * MIN }))).toEqual([
+      "rig_silent rig:rig-2 urgent",
+    ]);
+  });
+
+  it("judges a rig that went quiet before the event began, with no venue silence behind it, as on any other day", () => {
+    const early = { ...EVENT, eventModeSince: NOW - 4 * MIN };
+    expect(evaluate([quiet(1, 5 * MIN), rig(2)], [], early)).toEqual([]);
+    expect(rulesOf(evaluate([quiet(1, 8 * MIN), rig(2)], [], early))).toEqual([
+      "rig_silent rig:rig-1 warning",
+    ]);
+  });
+});
+
+describe("rule 4: no featured combo today", () => {
+  const SESSION = { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" };
+  const inSession = (number: number, session: Heartbeat["session"] = SESSION) =>
+    rig(number, { heartbeats: minutely(14 * MIN, 0, () => ({ session })) });
+
+  it("fires urgent once a rig is in an iRacing session, with the SQL built from that rig's own strings", () => {
+    const findings = evaluate([rig(1), inSession(2)], [], { featuredCombo: null });
+    expect(rulesOf(findings)).toEqual([`no_featured_combo ${VENUE_SUBJECT} urgent`]);
+    const { detail } = findings[0]!;
+    expect(detail.headline).toBe(
+      "No featured car and track is set for today, and Rig 02 is in an iRacing session - every combo " +
+        "ranks together and any incident voids a lap",
+    );
+    expect(detail.fields).toContainEqual({ name: "Venue date", value: "2026-10-04" });
+    expect(detail.fields).toContainEqual({
+      name: "Set it (Neon SQL Editor)",
+      value:
+        "```sql\ninsert into featured_combos (combo_date, track_name, track_config, car_name)\n" +
+        "values (venue_today(), 'Circuit of the Americas', 'Grand Prix', 'FIA F4')\n" +
+        "on conflict (combo_date) do nothing;\n```",
+    });
+  });
+
+  it("fires in event mode with no rig in a session yet, pointing at the rig's diagnostic", () => {
+    const findings = evaluate([rig(1)], [], { featuredCombo: null, ...EVENT });
+    expect(rulesOf(findings)).toEqual([`no_featured_combo ${VENUE_SUBJECT} urgent`]);
+    expect(findings[0]!.detail.headline).toContain("and event mode is on");
+    expect(findings[0]!.detail.fields.map((f) => f.name)).toEqual(["Venue date", "Set it"]);
+  });
+
+  it("does not fire outside event mode while nobody is in a session", () => {
+    const idle = rig(1, { heartbeats: minutely(14 * MIN, 0, () => ({ simConnected: true })) });
+    const closed = rig(2, {
+      heartbeats: [...minutely(14 * MIN, 6 * MIN, () => ({ session: SESSION })), hb(5 * MIN, { shuttingDown: true, session: SESSION })],
+    });
+    const silent = rig(3, { heartbeats: minutely(20 * MIN, 5 * MIN, () => ({ session: SESSION })) });
+    expect(evaluate([idle, closed, silent], [], { featuredCombo: null }).filter((f) => f.rule === "no_featured_combo")).toEqual([]);
+  });
+
+  it("escapes a quote in the names iRacing posts", () => {
+    expect(featuredComboSql({ trackName: "Rudskogen Motorsenter", trackConfig: null, carName: "Ray's FF1600" })).toBe(
+      "insert into featured_combos (combo_date, track_name, track_config, car_name)\n" +
+        "values (venue_today(), 'Rudskogen Motorsenter', null, 'Ray''s FF1600')\n" +
+        "on conflict (combo_date) do nothing;",
+    );
+  });
+
+  it("clears once today's combo is set", () => {
+    expect(evaluate([inSession(1)], [{ rule: "no_featured_combo", subject: VENUE_SUBJECT }], EVENT)).toEqual([]);
+  });
+});
+
+describe("rule 8a: TV board went dark", () => {
+  const dark = board({ lastSeenAt: NOW - 4 * MIN });
+
+  it("fires urgent when the event board stops without a goodbye, though it no longer holds event mode", () => {
+    const findings = evaluate([rig(1)], [], { boards: [dark] });
+    expect(rulesOf(findings)).toEqual(["board_dark board:event urgent"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Event board (Cadillac) has not been heard from for 4 min - laptop asleep, browser closed, or offline?",
+    );
+  });
+
+  it("does not fire at three minutes, or for a board that said goodbye - closing the tab is not an alert", () => {
+    expect(evaluate([rig(1)], [], { boards: [board({ lastSeenAt: NOW - 3 * MIN })] })).toEqual([]);
+    const closed = board({ lastSeenAt: NOW - 10 * MIN, closedAt: NOW - 10 * MIN });
+    expect(evaluate([rig(1)], [], { boards: [closed] })).toEqual([]);
+  });
+
+  it("does not fire when the browser came back as a new page", () => {
+    expect(evaluate([rig(1)], [], { boards: [dark, board({ id: "board-2" })] })).toEqual([]);
+  });
+
+  it("forgets yesterday's boards", () => {
+    const override = { mode: "on" as const, expiresAt: NOW + MIN, setBy: null };
+    const yesterday = board({ lastSeenAt: VENUE_DAY_START - MIN });
+    expect(evaluate([rig(1)], [], { boards: [yesterday], override })).toEqual([]);
+  });
+
+  it("judges the board the room is watching: a phone left locked on it is not news once the laptop's tab closes", () => {
+    const lockedPhone = board({ id: "phone", lastSeenAt: NOW - 90 * MIN });
+    const laptop = board({ id: "laptop", lastSeenAt: NOW - 10 * MIN, closedAt: NOW - 10 * MIN });
+    expect(evaluate([rig(1)], [], { boards: [lockedPhone, laptop] })).toEqual([]);
+    const killedLaptop = board({ id: "laptop", lastSeenAt: NOW - 10 * MIN });
+    expect(rulesOf(evaluate([rig(1)], [], { boards: [lockedPhone, killedLaptop] }))).toEqual([
+      "board_dark board:event urgent",
+    ]);
+  });
+
+  it("watches the staff-linked shop wall only while event mode is forced on with no event board today", () => {
+    const wall = board({ id: "wall", mode: "rotation", host: null, lastSeenAt: NOW - 30 * MIN });
+    const override = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
+    // An ordinary day: the wall switched off at closing is not news.
+    expect(evaluate([rig(1)], [], { boards: [wall] })).toEqual([]);
+    // An event at the shop, run on the wall since an hour ago: its mini-PC sleeping is.
+    const findings = evaluate([rig(1)], [], { boards: [wall], override, eventModeSince: NOW - 60 * MIN });
+    expect(rulesOf(findings)).toEqual(["board_dark board:rotation urgent"]);
+    expect(findings[0]!.detail.headline).toBe(
+      "Shop wall board has not been heard from for 30 min - laptop asleep, browser closed, or offline?",
+    );
+    expect(evaluate([rig(1)], [], { boards: [board({ id: "wall", mode: "rotation", host: null })], override })).toEqual([]);
+    // With an event board open today, that board is the room's display.
+    expect(evaluate([rig(1)], [], { boards: [wall, board()], override, eventModeSince: NOW - 60 * MIN })).toEqual([]);
+  });
+
+  it("watches the shop wall once the event board of the day has closed and staff force event mode back on", () => {
+    const wall = board({ id: "wall", mode: "rotation", host: null, lastSeenAt: NOW - 10 * MIN });
+    const closedLaptop = board({ id: "laptop", lastSeenAt: NOW - 45 * MIN, closedAt: NOW - 45 * MIN });
+    const override = { mode: "on" as const, expiresAt: NOW + MIN, setBy: "Cody" };
+    expect(rulesOf(evaluate([rig(1)], [], { boards: [closedLaptop, wall], override, eventModeSince: NOW - 40 * MIN }))).toEqual([
+      "board_dark board:rotation urgent",
+    ]);
+  });
+
+  it("pages about none of a shop wall switched off in the morning when staff force event mode on in the afternoon", () => {
+    // The wall's mini-PC was powered off at 10:00 with no goodbye; staff
+    // force event mode on at 15:59, before any event board opens.
+    const wall = board({ id: "wall", mode: "rotation", host: null, lastSeenAt: NOW - 6 * 60 * MIN });
+    const override = { mode: "on" as const, expiresAt: NOW + 8 * 60 * MIN, setBy: "Cody" };
+    for (const eventModeSince of [null, NOW - MIN]) {
+      const findings = evaluate([rig(1)], [], { boards: [wall], override, eventModeSince });
+      expect(findings.filter((f) => f.severity === "urgent")).toEqual([]);
+      expect(findings.filter((f) => f.rule === "board_dark")).toEqual([]);
+    }
+  });
+
+  it("clears when staff stop the event, or a board is heard again", () => {
+    const off = { mode: "off" as const, expiresAt: NOW + MIN, setBy: "Cody" };
+    expect(evaluate([rig(1)], [], { boards: [dark], override: off })).toEqual([]);
+    expect(evaluate([rig(1)], [], { boards: [board()] })).toEqual([]);
+  });
+});
+
+describe("rule 8b: TV board cannot load its numbers", () => {
+  it("fires urgent on three failed loads in a row, in any mode", () => {
+    const wall = board({ mode: "rotation", host: null, feedOk: false, feedFailures: 3 });
+    const findings = evaluate([rig(1)], [], { boards: [wall] });
+    expect(rulesOf(findings)).toEqual(["board_feed_failing board:rotation urgent"]);
+    expect(findings[0]!.detail.headline).toBe(
+      'Shop wall board: its last 3 loads of the leaderboard failed, so it shows "Reconnecting" - ' +
+        "the site answers, the feed does not",
+    );
+  });
+
+  it("does not fire on two, or for a board that is no longer heard", () => {
+    expect(evaluate([rig(1)], [], { boards: [board({ feedFailures: 2 })] })).toEqual([]);
+    const gone = board({ feedFailures: 9, lastSeenAt: NOW - 4 * MIN, closedAt: NOW - 4 * MIN });
+    expect(evaluate([rig(1)], [], { boards: [gone] })).toEqual([]);
+  });
+
+  it("clears on the first load that succeeds", () => {
+    const open = [{ rule: "board_feed_failing" as const, subject: "board:event" }];
+    expect(evaluate([rig(1)], open, EVENT)).toEqual([]);
+  });
+});
+
+describe("rule 9b: monitor gap", () => {
+  /** An instant on 2026-10-04, venue time (CDT, UTC-5). */
+  const venue = (hhmm: string) => Date.parse(`2026-10-04T${hhmm}:00-05:00`);
+
+  it("says nothing without a previous evaluation, or for a gap of ten minutes or less", () => {
+    expect(monitorGap(null, venue("15:00"))).toBeNull();
+    expect(monitorGap(venue("14:50"), venue("15:00"))).toBeNull();
+  });
+
+  it("reports more than ten minutes without an evaluation in venue hours", () => {
+    expect(monitorGap(venue("14:49"), venue("15:00"))).toEqual({ from: venue("14:49"), to: venue("15:00") });
+  });
+
+  it("does not count the overnight hours, when the clock ticks every thirty minutes on purpose", () => {
+    expect(monitorGap(venue("07:30"), venue("08:00"))).toBeNull();
+    expect(monitorGap(venue("02:00"), venue("08:10"))).toBeNull();
+    expect(monitorGap(venue("02:00"), venue("08:11"))).not.toBeNull();
+  });
+
+  it("reports a gap of days at once", () => {
+    expect(monitorGap(venue("15:00") - 5 * 86_400_000, venue("15:00"))).not.toBeNull();
   });
 });

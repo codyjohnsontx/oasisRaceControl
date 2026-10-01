@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const probeDatabase = vi.fn();
 const runMonitor = vi.fn();
-const countOpenAlerts = vi.fn();
+const monitorStatus = vi.fn();
 const claimDiagnoses = vi.fn();
 const claimDiagnosisPostRetries = vi.fn();
 /** What the route handed to Next's after(), to run once the answer has gone. */
@@ -23,7 +23,7 @@ vi.mock("@/lib/monitor/run", async (importOriginal) => ({
   runMonitor: () => runMonitor(),
 }));
 vi.mock("@/lib/monitor/store", () => ({
-  countOpenAlerts: () => countOpenAlerts(),
+  monitorStatus: () => monitorStatus(),
   claimDiagnoses: () => claimDiagnoses(),
   claimDiagnosisPostRetries: () => claimDiagnosisPostRetries(),
 }));
@@ -46,7 +46,7 @@ beforeEach(() => {
   process.env.CRON_SECRET = SECRET;
   probeDatabase.mockReset().mockResolvedValue({ ok: true, appliedMigrations: 6 });
   runMonitor.mockReset().mockResolvedValue({ evaluated: true, findings: 1, announced: 1, recovered: 0 });
-  countOpenAlerts.mockReset().mockResolvedValue(2);
+  monitorStatus.mockReset().mockResolvedValue({ activeAlerts: 2, eventMode: true });
   claimDiagnoses.mockReset().mockResolvedValue([]);
   claimDiagnosisPostRetries.mockReset().mockResolvedValue([]);
   afterResponse = [];
@@ -66,7 +66,7 @@ describe("GET /api/monitor/tick", () => {
   it("evaluates and reports the open alert count for the right secret", async () => {
     const response = await GET(tick(`Bearer ${SECRET}`));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: true, activeAlerts: 2 });
+    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: true, activeAlerts: 2, eventMode: true });
     expect(probeDatabase).toHaveBeenCalledWith("monitor/tick");
     expect(runMonitor).toHaveBeenCalledTimes(1);
   });
@@ -74,7 +74,7 @@ describe("GET /api/monitor/tick", () => {
   it("says so when another evaluation ran moments ago, and diagnoses nothing", async () => {
     runMonitor.mockResolvedValue({ evaluated: false });
     const response = await GET(tick(`Bearer ${SECRET}`));
-    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: false, activeAlerts: 2 });
+    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: false, activeAlerts: 2, eventMode: true });
     expect(afterResponse).toHaveLength(0);
   });
 
@@ -83,7 +83,7 @@ describe("GET /api/monitor/tick", () => {
     claimDiagnoses.mockReturnValue(new Promise((resolve) => (finishDiagnosis = () => resolve([]))));
 
     const response = await GET(tick(`Bearer ${SECRET}`));
-    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: true, activeAlerts: 2 });
+    await expect(response.json()).resolves.toEqual({ status: "ok", evaluated: true, activeAlerts: 2, eventMode: true });
     expect(claimDiagnoses).not.toHaveBeenCalled();
     expect(afterResponse).toHaveLength(1);
 

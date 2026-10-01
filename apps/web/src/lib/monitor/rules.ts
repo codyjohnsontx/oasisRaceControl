@@ -1,6 +1,18 @@
 import { formatLapTime } from "@/lib/time";
 import { comboMismatch } from "@/lib/validity";
 import { CURRENT_AGENT_VERSION } from "./agent-version";
+import { venueToday } from "@/lib/venue";
+import {
+  boardName,
+  boardState,
+  boardsToday,
+  eventDisplays,
+  eventMode,
+  eventModeBegan,
+  type BoardSnapshot,
+  type EventMode,
+  type EventModeOverride,
+} from "./event-mode";
 import { holdingSince, lastSent, rigState, type Heartbeat } from "./rig-state";
 
 /**
@@ -38,10 +50,13 @@ export const RULES = {
   sim_disconnected: { number: "2", title: "iRacing not connected while a driver is signed in", software: false },
   laps_stuck: { number: "3a", title: "Laps queued but not reaching the site", software: true },
   laps_refused: { number: "3b", title: "Laps refused by the site", software: true },
+  no_featured_combo: { number: "4", title: "No featured car and track today", software: false },
   unattributed_laps: { number: "5a", title: "Laps with nobody signed in", software: false },
   long_stint: { number: "5b", title: "Unusually long stint", software: false },
   sign_in_failures: { number: "6", title: "Repeated sign-in failures", software: false },
   wrong_combo: { number: "7", title: "Wrong car or track", software: false },
+  board_dark: { number: "8a", title: "TV board went dark", software: false },
+  board_feed_failing: { number: "8b", title: "TV board cannot load its numbers", software: true },
   agent_restarting: { number: "10", title: "Rig agent restarting repeatedly", software: true },
   agent_outdated: { number: "11", title: "Outdated rig agent", software: false },
   clock_skew: { number: "12", title: "Rig clock is off", software: false },
@@ -54,6 +69,17 @@ export const RULES = {
 } as const;
 
 export type RuleKey = keyof typeof RULES;
+
+/** Rule 8b: a board whose loads failed this many times in a row. */
+export const FEED_FAILURES_TO_ALERT = 3;
+/**
+ * Rule 9b. The outside clock evaluates every minute from 08:00 to midnight,
+ * venue time, and every 30 minutes overnight (docs/monitoring.md), so only
+ * the part of a gap inside those hours counts, and more than this of it means
+ * the clock stopped.
+ */
+export const MONITOR_GAP_MS = 10 * 60_000;
+export const VENUE_HOURS_START = 8;
 
 /**
  * Rules whose alert closes without a "recovered" message. Rule 14 flags one
@@ -185,6 +211,8 @@ export type LapSnapshot = {
 export type MonitorSnapshot = {
   /** The database's now(), which every stored time is on. */
   now: number;
+  /** When the current venue day began (venue-local midnight). */
+  venueDayStart: number;
   rigs: RigSnapshot[];
   /** Today's featured combo (featured_combos for venue_today()), or null when none is set. */
   featuredCombo: FeaturedCombo | null;
@@ -209,19 +237,25 @@ export type MonitorSnapshot = {
     driverName: string;
     driverStatus: string;
   }>;
+  /** The staff event-mode override, expired or not; eventMode() judges it. */
+  override: EventModeOverride | null;
+  /**
+   * When the channel was told event mode came on, or null while it was last
+   * told off - so the evaluation that turns it on finds it began just now.
+   */
+  eventModeSince: number | null;
+  /** The /tv pages heard from since the venue day began, or within the live window before now. */
+  boards: BoardSnapshot[];
   openAlerts: ReadonlyArray<{ rule: string; subject: string }>;
 };
 
 /**
- * Whether the venue is in event mode, which raises rules 5a and 7 to urgent.
- * Event mode - an event board heartbeating, or a staff override - arrives
- * with plan PR 4 (https://github.com/codyjohnsontx/oasisRaceControl/pull/47),
- * which judges it from the snapshot; until then it is off, and this seam is
- * the one place that changes when it lands.
+ * Whether the venue is in event mode, which raises rules 5a and 7 to urgent:
+ * eventMode() in event-mode.ts, the one judgement the alerts, the 20-minute
+ * update and the staff page share.
  */
 export function inEventMode(snapshot: MonitorSnapshot): boolean {
-  void snapshot;
-  return false;
+  return eventMode(snapshot).on;
 }
 
 /** What an alert's messages say, fixed when the rule fired. */
@@ -290,23 +324,36 @@ export function evaluateRules(snapshot: MonitorSnapshot): Finding[] {
   const open = new Set(snapshot.openAlerts.map((a) => `${a.rule}|${a.subject}`));
   const isOpen = (rule: RuleKey, subject: string) => open.has(`${rule}|${subject}`);
   const rigs = snapshot.rigs.map((rig) => ({ rig, state: rigState(rig.heartbeats) }));
-  const eventMode = inEventMode(snapshot);
+  const mode = eventMode(snapshot);
+  const eventSince = eventModeBegan(snapshot);
 
   return [
-    ...silence(snapshot.now, rigs, isOpen),
+    ...silence(snapshot.now, rigs, eventSince, isOpen),
     ...rigs.flatMap(({ rig, state }) =>
       state ? rigFindings(snapshot.now, rig, state, isOpen, snapshot.openAlerts) : [],
     ),
-    ...rigs.flatMap((r) => seatAndLapFindings(snapshot, r, eventMode, isOpen)),
+    ...rigs.flatMap((r) => seatAndLapFindings(snapshot, r, mode.on, isOpen)),
     ...driverMoves(snapshot, rigs, isOpen),
     ...fastLaps(snapshot),
+    ...noFeaturedCombo(snapshot, rigs, mode),
+    ...boardFindings(snapshot, mode),
   ];
 }
 
-/** Rule 1: rigs that stopped reaching the site without saying goodbye. */
+/**
+ * Rule 1: rigs that stopped reaching the site without saying goodbye. In
+ * event mode (`eventSince`, when it began) a rig switched on for it - heard
+ * since event mode began, or since the venue came back from its last silence
+ * while it has not gone silent again - is urgent at once and never part of
+ * the "venue closed?" note: mid-event, rigs going quiet together is an
+ * outage, not closing time. A rig that went dark with the venue - switched
+ * off last night, not switched on yet - is judged as on any other day, so
+ * turning event mode on never pages about a rig nobody has turned on.
+ */
 function silence(
   now: number,
   rigs: Rig[],
+  eventSince: number | null,
   isOpen: (rule: RuleKey, subject: string) => boolean,
 ): Finding[] {
   const findings: Finding[] = [];
@@ -348,12 +395,16 @@ function silence(
 
   // A rig whose last word came before that, and that has not been heard since,
   // went dark with the venue - closed for the night, or cut off - and is not
-  // warned about on its own.
+  // warned about on its own. So did every rig, while the venue is silent now.
+  const venueBackSince = afterVenueSilence(now) ? Infinity : heardAgainAt;
+  const switchedOnForEvent = ({ rig }: Rig) =>
+    eventSince !== null &&
+    (rig.lastSeenAt! >= eventSince || (venueBackSince > -Infinity && rig.lastSeenAt! >= venueBackSince));
   const dark: Rig[] = [];
   const unexplained: Rig[] = [];
   for (const r of silent) {
     const subject = rigSubject(r.rig.id);
-    if (r.rig.seated) {
+    if (r.rig.seated || switchedOnForEvent(r)) {
       findings.push(rigSilent(now, r, "urgent"));
     } else if (isOpen("rig_silent", subject)) {
       findings.push(rigSilent(now, r, "warning"));
@@ -994,6 +1045,194 @@ function fastLaps(snapshot: MonitorSnapshot): Finding[] {
 }
 
 /**
+ * Rule 4: no featured combo for today once racing has started - in event
+ * mode, or as soon as any rig is in an iRacing session. Without the row,
+ * every car and track ranks on one board and any incident invalidates a lap,
+ * which is what day 2 of the 2026-09-27 event ran on until 1 PM. Subject is
+ * the venue, and the rule reads venue_today() each time, so a new day with no
+ * row keeps the alert open and a row for today clears it.
+ */
+function noFeaturedCombo(snapshot: MonitorSnapshot, rigs: Rig[], mode: EventMode): Finding[] {
+  if (snapshot.featuredCombo) return [];
+  const { now } = snapshot;
+  const inSession = rigs.filter(
+    ({ rig, state }) =>
+      state !== null &&
+      !state.shuttingDown &&
+      state.simConnected === true &&
+      state.session !== null &&
+      rig.lastSeenAt !== null &&
+      now - rig.lastSeenAt <= SILENT_AFTER_MS,
+  );
+  if (!mode.on && inSession.length === 0) return [];
+
+  const first = inSession[0];
+  const why = mode.on ? "event mode is on" : `${first!.rig.name} is in an iRacing session`;
+  const fields: AlertDetail["fields"] = [{ name: "Venue date", value: venueToday(new Date(now)) }];
+  if (first) {
+    const { session } = first.state!;
+    fields.push(
+      {
+        name: `Session on ${first.rig.name}`,
+        value: [session!.trackName, session!.trackConfig, session!.carName].filter(Boolean).join(" · "),
+      },
+      { name: "Set it (Neon SQL Editor)", value: "```sql\n" + featuredComboSql(session!) + "\n```" },
+    );
+  } else {
+    fields.push({
+      name: "Set it",
+      value:
+        "Run `OasisRigAgent.exe --diagnose` on a rig in the event's session: it prints the " +
+        "featured_combos SQL to paste, with the names exactly as iRacing posts them.",
+    });
+  }
+  return [
+    {
+      rule: "no_featured_combo",
+      subject: VENUE_SUBJECT,
+      severity: "urgent",
+      level: 0,
+      detail: {
+        headline:
+          `No featured car and track is set for today, and ${why} - every combo ranks ` +
+          `together and any incident voids a lap`,
+        where: "Venue",
+        fields,
+      },
+    },
+  ];
+}
+
+/**
+ * The row rule 4 asks for, from a rig's own session strings - never typed from
+ * memory, because the combo matches lap strings exactly (AGENTS.md).
+ * `do nothing` on conflict: if someone set the day's combo meanwhile, theirs
+ * stands.
+ */
+export function featuredComboSql(session: FeaturedCombo): string {
+  const literal = (value: string | null) => (value === null ? "null" : `'${value.replaceAll("'", "''")}'`);
+  return (
+    "insert into featured_combos (combo_date, track_name, track_config, car_name)\n" +
+    `values (venue_today(), ${literal(session.trackName)}, ${literal(session.trackConfig)}, ` +
+    `${literal(session.carName)})\n` +
+    "on conflict (combo_date) do nothing;"
+  );
+}
+
+export function boardSubject(mode: BoardSnapshot["mode"]): string {
+  return `board:${mode}`;
+}
+
+/**
+ * Rules 8a and 8b, about the screen the room watches rather than a rig.
+ *
+ * 8a: of the event's displays (eventDisplays: today's event boards, each
+ * opened from a staff link, or the shop wall while staff have forced event
+ * mode on without one still open), the one heard from most recently went
+ * dark: not heard from for BOARD_DARK_AFTER_MS, without a goodbye. The most
+ * recent, so a browser killed and restored as a new page, or a tab closed
+ * after a phone was left locked on the board, is judged by the board the room
+ * is watching. An event
+ * board is judged whether or not event mode is on, since a dark board no
+ * longer holds it, and it is urgent: the board it reports was holding the
+ * event. Staff forcing event mode off silences it. The shop wall switched off
+ * at closing on an ordinary day is not news, and is not judged.
+ *
+ * 8b, in any mode: a live board says its last FEED_FAILURES_TO_ALERT loads
+ * failed. It reached the site to say so, so the site is up and the feed is
+ * what is broken.
+ */
+function boardFindings(snapshot: MonitorSnapshot, mode: EventMode): Finding[] {
+  const { now } = snapshot;
+  const findings: Finding[] = [];
+
+  const forcedOff = mode.cause === "override" && !mode.on;
+  if (!forcedOff) {
+    const board = eventDisplays(snapshot).sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+    if (board && boardState(board, now) === "dark") {
+      findings.push({
+        rule: "board_dark",
+        subject: boardSubject(board.mode),
+        severity: "urgent",
+        level: 0,
+        detail: {
+          headline:
+            `${boardName(board)} has not been heard from for ${duration(now - board.lastSeenAt)} - ` +
+            "laptop asleep, browser closed, or offline?",
+          where: boardName(board),
+          fields: [
+            { name: "Last heard", value: `${duration(now - board.lastSeenAt)} ago` },
+            { name: "Open since", value: `${duration(now - board.firstSeenAt)} ago` },
+          ],
+        },
+      });
+    }
+  }
+
+  for (const kind of ["event", "rotation"] as const) {
+    const failing = boardsToday(snapshot)
+      .filter(
+        (b) =>
+          b.mode === kind &&
+          boardState(b, now) === "live" &&
+          b.feedFailures >= FEED_FAILURES_TO_ALERT,
+      )
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+    if (!failing) continue;
+    findings.push({
+      rule: "board_feed_failing",
+      subject: boardSubject(kind),
+      severity: "urgent",
+      level: 0,
+      detail: {
+        headline:
+          `${boardName(failing)}: its last ${failing.feedFailures} loads of the leaderboard failed, ` +
+          `so it shows "Reconnecting" - the site answers, the feed does not`,
+        where: boardName(failing),
+        fields: [
+          { name: "Failed loads in a row", value: String(failing.feedFailures) },
+          { name: "Last heard", value: `${duration(now - failing.lastSeenAt)} ago` },
+        ],
+      },
+    });
+  }
+
+  return findings;
+}
+
+const venueHour = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  hour: "numeric",
+  hourCycle: "h23",
+});
+
+function inVenueHours(at: number): boolean {
+  const hour = Number(venueHour.formatToParts(at).find((p) => p.type === "hour")!.value);
+  return hour >= VENUE_HOURS_START;
+}
+
+/**
+ * Rule 9b: the gap since the previous evaluation, when more than
+ * MONITOR_GAP_MS of it fell inside venue hours - the outside clock is not
+ * ticking (or the site was down; UptimeRobot says which). A one-shot note,
+ * not an alert: there is nothing to recover from once evaluations run again,
+ * and only the evaluation that claimed the next turn sees the gap.
+ *
+ * Walks the gap a minute at a time and stops as soon as the answer is known,
+ * so even a gap of days costs one night's worth of steps.
+ */
+export function monitorGap(previous: number | null, now: number): { from: number; to: number } | null {
+  if (previous === null || now - previous <= MONITOR_GAP_MS) return null;
+  const STEP = 60_000;
+  let inside = 0;
+  for (let at = previous; at < now; at += STEP) {
+    if (inVenueHours(at)) inside += Math.min(STEP, now - at);
+    if (inside > MONITOR_GAP_MS) return { from: previous, to: now };
+  }
+  return null;
+}
+
+/**
  * Rule 3a. A lap has waited past LAP_STUCK_AFTER_S, and the link demonstrably
  * worked while it waited: at least one heartbeat before this one arrived after
  * the lap was queued. Without that second heartbeat, the first heartbeat after
@@ -1081,7 +1320,7 @@ function rigFields(now: number, rig: RigSnapshot, state: Heartbeat | null): Aler
  * review (or who is banned) is never named, as the public leaderboard never
  * shows them: the alert is posted to Discord and kept in monitor_alerts.
  */
-function driverName(seated: NonNullable<RigSnapshot["seated"]>): string {
+export function driverName(seated: NonNullable<RigSnapshot["seated"]>): string {
   return nameOf(seated.driverName, seated.driverStatus);
 }
 

@@ -18,6 +18,7 @@ import {
   claimEvaluation,
   LAP_BESTS_SQL,
   markAnnounced,
+  nextVenueMidnightSql,
   RECENT_LAPS_SQL,
   type OpenAlert,
 } from "./store";
@@ -49,7 +50,11 @@ const OWNER = "123456789012345678";
 /** One agent process, as the agent names it: the same instant on every heartbeat. */
 const PROCESS_STARTED = new Date(Date.now() - 3 * 3_600_000);
 
-type Post = { content?: string; embeds?: unknown[]; allowed_mentions: unknown };
+type Post = {
+  content?: string;
+  embeds?: Array<{ title?: string; description?: string; color?: number }>;
+  allowed_mentions: unknown;
+};
 let posts: Post[] = [];
 let discordAnswers: number[] = [];
 
@@ -922,7 +927,7 @@ describeDb("rig monitor against real Postgres", () => {
         expect(calls).toHaveLength(2);
         expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
         expect(calls[1]!.body.body).toMatch(
-          /^Every rig on this issue has recovered: alert \d+ \(Rig 2\) after \d+ s\. The issue stays open/,
+          /^Everything on this issue has recovered: alert \d+ \(Rig 2\) after \d+ s\. The issue stays open/,
         );
 
         // The same rule within a day: a comment, not a second issue.
@@ -1245,7 +1250,7 @@ describeDb("rig monitor against real Postgres", () => {
         await recover(first);
         expect(await issueNumbers()).toEqual([42, null]);
         const recoveries = () =>
-          issues.get(42)!.comments.filter((c) => c.body.startsWith("Every rig on this issue has recovered"));
+          issues.get(42)!.comments.filter((c) => c.body.startsWith("Everything on this issue has recovered"));
         expect(recoveries()).toHaveLength(0);
 
         geminiAnswers = ["answer"];
@@ -1276,7 +1281,7 @@ describeDb("rig monitor against real Postgres", () => {
         await nextEvaluation();
         expect((await alerts()).every((a) => a.resolved)).toBe(true);
         const comments = () => issues.get(42)!.comments.map((c) => c.body);
-        const recoveries = () => comments().filter((b) => b.startsWith("Every rig on this issue has recovered"));
+        const recoveries = () => comments().filter((b) => b.startsWith("Everything on this issue has recovered"));
         expect(recoveries()).toHaveLength(0);
 
         await retryDue();
@@ -1308,7 +1313,7 @@ describeDb("rig monitor against real Postgres", () => {
         await nextEvaluation();
         expect((await alerts()).every((a) => a.resolved)).toBe(true);
         const comments = () => issues.get(42)!.comments.map((c) => c.body);
-        const recoveries = () => comments().filter((b) => b.startsWith("Every rig on this issue has recovered"));
+        const recoveries = () => comments().filter((b) => b.startsWith("Everything on this issue has recovered"));
         expect(recoveries()).toHaveLength(0);
 
         releaseModel();
@@ -1344,7 +1349,7 @@ describeDb("rig monitor against real Postgres", () => {
         expect(new Set(named).size).toBe(20);
 
         // Nineteen recover: the issue says nothing while one rig is still down.
-        const recoveries = () => issue.comments.filter((c) => c.body.startsWith("Every rig on this issue has recovered"));
+        const recoveries = () => issue.comments.filter((c) => c.body.startsWith("Everything on this issue has recovered"));
         for (const rig of rigs.slice(0, 19)) await heartbeat(rig, 0);
         await nextEvaluation();
         await nextEvaluation();
@@ -1856,6 +1861,12 @@ describeDb("rig monitor against real Postgres", () => {
       await openAssignment(joined.id, driver.id);
       await heartbeat(left, 0, { session: { ...TRACK, car: "FIA F4" } });
       await heartbeat(joined, 0);
+      // Today's combo is the one Rig 01 is in, so rule 4 has nothing to say.
+      await testDb().query(
+        `insert into featured_combos (combo_date, track_name, track_config, car_name)
+         values (venue_today(), $1, $2, 'FIA F4')`,
+        [TRACK.track, TRACK.config],
+      );
 
       await nextEvaluation();
       expect(posts.map((p) => p.content)).toEqual([
@@ -1973,6 +1984,312 @@ describeDb("rig monitor against real Postgres", () => {
       ]);
     } finally {
       await client.query("rollback");
+      client.release();
+    }
+  });
+
+  describe("event mode", () => {
+    /** A /tv page's row, as the heartbeat route writes it. */
+    async function board(fields: { mode?: string; lastSeenAgoS?: number; closedAgoS?: number } = {}) {
+      const { rows } = await testDb().query<{ board_id: string }>(
+        `insert into board_heartbeats (board_id, mode, host, first_seen_at, last_seen_at, visible,
+           feed_ok, feed_failures, closed_at)
+         values (gen_random_uuid(), $1, 'cadillac', now() - interval '1 hour',
+                 now() - make_interval(secs => $2), true, true, 0,
+                 case when $3::float8 is null then null else now() - make_interval(secs => $3) end)
+         returning board_id::text`,
+        [fields.mode ?? "event", fields.lastSeenAgoS ?? 10, fields.closedAgoS ?? null],
+      );
+      return rows[0]!.board_id;
+    }
+
+    async function setCombo() {
+      await testDb().query(
+        `insert into featured_combos (combo_date, track_name, track_config, car_name)
+         values (venue_today(), 'Circuit of the Americas', 'Grand Prix', 'FIA F4')`,
+      );
+    }
+
+    const contents = () => posts.map((p) => p.content);
+
+    it("posts one line when an event board opens, the first update with it, and nothing more until the mark", async () => {
+      await setCombo();
+      await board();
+
+      await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: true, routineUpdate: true });
+      expect(contents()).toEqual([
+        expect.stringMatching(/^⚪ Event mode on: Event board \(Cadillac\) opened at \d{1,2}:\d{2} [AP]M$/),
+        expect.stringMatching(/^🟢 Oasis event update · \d{1,2}:\d{2} [AP]M {2}\(next about \d{1,2}:\d{2} [AP]M\)$/),
+      ]);
+      expect(posts[1]!.embeds![0]!.description).toMatch(
+        /^Board: live · Circuit of the Americas Grand Prix · FIA F4 · 0 drivers today · 0 laps in the last 20 min\n/,
+      );
+
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(posts).toHaveLength(2);
+
+      // Half a minute short of the mark: nothing.
+      await testDb().query(
+        "update monitor_state set last_routine_update_at = now() - interval '19 minutes 30 seconds'",
+      );
+      await nextEvaluation();
+      expect(posts).toHaveLength(2);
+
+      // Five seconds past it: the update, stamped with its mark rather than
+      // with now, so the cadence does not drift later every time.
+      const { rows } = await testDb().query<{ previous: string }>(
+        `update monitor_state set last_routine_update_at = now() - interval '20 minutes 5 seconds'
+         returning last_routine_update_at::text as previous`,
+      );
+      await expect(nextEvaluation()).resolves.toMatchObject({ routineUpdate: true });
+      expect(posts).toHaveLength(3);
+      const { rows: stamp } = await testDb().query<{ on_mark: boolean }>(
+        "select last_routine_update_at = $1::timestamptz + interval '20 minutes' as on_mark from monitor_state",
+        [rows[0]!.previous],
+      );
+      expect(stamp[0]!.on_mark).toBe(true);
+    });
+
+    it("posts no routine update and no event line outside event mode", async () => {
+      const rig = await seedRig(1);
+      await heartbeat(rig, 30);
+      await board({ mode: "rotation" });
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(posts).toEqual([]);
+      const { rows } = await testDb().query("select last_routine_update_at, event_mode from monitor_state");
+      expect(rows).toEqual([{ last_routine_update_at: null, event_mode: false }]);
+    });
+
+    it("posts one line when the board says goodbye, and alerts on none", async () => {
+      await setCombo();
+      const id = await board();
+      await nextEvaluation();
+      posts = [];
+
+      // The tab was closed three minutes ago, past a reload's grace.
+      await testDb().query(
+        "update board_heartbeats set last_seen_at = now() - interval '3 minutes', closed_at = now() - interval '3 minutes' where board_id = $1",
+        [id],
+      );
+      await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: false, announced: 0 });
+      await nextEvaluation();
+      expect(contents()).toEqual(["⚪ Event mode off: no event board is open"]);
+      expect(await alerts()).toEqual([]);
+    });
+
+    it("alerts once, urgently, when the event board goes dark without a goodbye, though event mode ends", async () => {
+      await setCombo();
+      await board({ lastSeenAgoS: 4 * 60 });
+      await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: false });
+      await nextEvaluation();
+      await nextEvaluation();
+      const dark = posts.filter((p) => p.content?.includes("has not been heard from"));
+      expect(dark.map((p) => p.content)).toEqual([
+        `<@${OWNER}> 🔴 Event board (Cadillac) has not been heard from for 4 min - laptop asleep, browser closed, or offline?`,
+      ]);
+      expect(await alerts()).toMatchObject([{ rule: "board_dark", subject: "board:event", resolved: false }]);
+    });
+
+    it("pages about a rig heard since event mode began, never about one quiet since before it", async () => {
+      await setCombo();
+      const rig = await seedRig(4);
+      for (const ago of [900, 840, 780, 720, 660, 600, 540, 480, 420, 360, 300]) await heartbeat(rig, ago);
+      await board();
+
+      // Event mode comes on now, five minutes after the rig went quiet.
+      await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: true });
+      await nextEvaluation();
+      expect(await alerts()).toEqual([]);
+
+      // Had it come on ten minutes ago, the same silence is mid-event.
+      await testDb().query("update monitor_state set event_mode_changed_at = now() - interval '10 minutes'");
+      await nextEvaluation();
+      expect(await alerts()).toMatchObject([{ rule: "rig_silent", resolved: false }]);
+      expect(contents().filter((c) => c?.includes("silent"))).toEqual([`<@${OWNER}> 🔴 Rig 04 has been silent for 5 min`]);
+    });
+
+    it("turns an open warning urgent once when event mode makes it urgent: stored, announced, diagnosed", async () => {
+      await setCombo();
+      const rig = await seedRig(4);
+      for (const ago of [1200, 1140, 1080, 1020, 960, 900, 840, 780, 720, 660, 600, 540, 480]) {
+        await heartbeat(rig, ago);
+      }
+
+      // An ordinary day: an empty rig quiet for 8 min is a quiet warning.
+      await nextEvaluation();
+      expect(contents()).toEqual(["🟡 Rig 04 has been silent for 8 min"]);
+      expect(await alerts()).toMatchObject([{ rule: "rig_silent", notified: true }]);
+
+      // Event mode began before the rig last spoke, so the rig was on for the
+      // event: the same open alert is now urgent.
+      await board();
+      await nextEvaluation();
+      await testDb().query("update monitor_state set event_mode_changed_at = now() - interval '30 minutes'");
+      posts = [];
+      await nextEvaluation();
+      await nextEvaluation();
+
+      expect(contents().filter((c) => c?.includes("silent"))).toEqual([
+        `<@${OWNER}> 🔴 Rig 04 has been silent for 8 min`,
+      ]);
+      const { rows } = await testDb().query<{ severity: string; notified: boolean }>(
+        "select severity, notified_at is not null as notified from monitor_alerts where rule = 'rig_silent'",
+      );
+      expect(rows).toEqual([{ severity: "urgent", notified: true }]);
+      // Urgent, announced and still inside its retry window: due a diagnosis.
+      await testDb().query("update monitor_alerts set diagnosis = null");
+      await expect(claimDiagnoses()).resolves.toMatchObject([{ rule: "rig_silent", severity: "urgent" }]);
+    });
+
+    it("keeps event mode's start when the line saying it ended fails to post", async () => {
+      await setCombo();
+      const id = await board();
+      await nextEvaluation();
+      const { rows: began } = await testDb().query<{ at: string }>(
+        `update monitor_state set event_mode_changed_at = now() - interval '2 hours'
+         returning event_mode_changed_at::text as at`,
+      );
+
+      await testDb().query(
+        "update board_heartbeats set last_seen_at = now() - interval '3 minutes', closed_at = now() - interval '3 minutes' where board_id = $1",
+        [id],
+      );
+      discordAnswers = [500];
+      await nextEvaluation();
+
+      // Handed back whole: still on as far as the channel knows, and since
+      // the moment it really began.
+      const { rows } = await testDb().query<{ event_mode: boolean; same_start: boolean }>(
+        "select event_mode, event_mode_changed_at = $1::timestamptz as same_start from monitor_state",
+        [began[0]!.at],
+      );
+      expect(rows).toEqual([{ event_mode: true, same_start: true }]);
+
+      await nextEvaluation();
+      expect(contents().filter((c) => c?.startsWith("⚪ Event mode off"))).toHaveLength(1);
+    });
+
+    it("keeps event mode on across venue midnight for a board heard seconds before it", async () => {
+      // The database cannot be moved to 00:00:10, so the venue's day is moved
+      // instead: venue_today() says tomorrow, so the day began after the
+      // board's last heartbeat, 20 s ago - a board heard at 23:59:50.
+      const client = await testDb().connect();
+      try {
+        await client.query(
+          `create or replace function venue_today() returns date language sql stable as $$
+             select (now() at time zone 'America/Chicago')::date + 1
+           $$`,
+        );
+        await setCombo();
+        await board({ lastSeenAgoS: 20 });
+        const { rows: began } = await testDb().query<{ at: string }>(
+          `insert into monitor_state (id, event_mode, event_mode_changed_at)
+           values (1, true, now() - interval '1 hour')
+           on conflict (id) do update set event_mode = true, event_mode_changed_at = excluded.event_mode_changed_at
+           returning event_mode_changed_at::text as at`,
+        );
+
+        await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: true });
+        expect(contents().filter((c) => c?.startsWith("⚪"))).toEqual([]);
+        const { rows } = await testDb().query<{ same_start: boolean }>(
+          "select event_mode_changed_at = $1::timestamptz as same_start from monitor_state",
+          [began[0]!.at],
+        );
+        expect(rows).toEqual([{ same_start: true }]);
+      } finally {
+        await client.query(
+          `create or replace function venue_today() returns date language sql stable as $$
+             select (now() at time zone 'America/Chicago')::date
+           $$`,
+        );
+        client.release();
+      }
+    });
+
+    it("retries an event-mode line Discord refused on a later evaluation, once", async () => {
+      await setCombo();
+      await board();
+      discordAnswers = [500];
+      await nextEvaluation();
+      expect(contents().filter((c) => c?.startsWith("⚪"))).toEqual([]);
+      await nextEvaluation();
+      await nextEvaluation();
+      expect(contents().filter((c) => c?.startsWith("⚪ Event mode on"))).toHaveLength(1);
+    });
+
+    it("retries a 20-minute update Discord refused on the next evaluation", async () => {
+      await setCombo();
+      await board();
+      discordAnswers = [204, 500];
+      await expect(nextEvaluation()).resolves.toMatchObject({ routineUpdate: false });
+      await expect(nextEvaluation()).resolves.toMatchObject({ routineUpdate: true });
+      await nextEvaluation();
+      expect(contents().filter((c) => c?.includes("Oasis event update"))).toHaveLength(1);
+    });
+
+    it("says no featured combo is set as soon as event mode is on", async () => {
+      await board();
+      await nextEvaluation();
+      expect(await alerts()).toMatchObject([{ rule: "no_featured_combo", subject: "venue" }]);
+      expect(posts[0]!.content).toMatch(new RegExp(`^<@${OWNER}> 🔴 No featured car and track is set for today, and event mode is on`));
+    });
+
+    it("lets a staff override lapse at the venue's midnight, not a UTC one, across daylight saving", async () => {
+      const cases: Array<[string, string]> = [
+        // 11:59:59 PM CDT on Oct 3 lapses one second later...
+        ["2026-10-04T04:59:59Z", "2026-10-04T05:00:00.000Z"],
+        // ...and one set at midnight exactly lasts the whole new day.
+        ["2026-10-04T05:00:00Z", "2026-10-05T05:00:00.000Z"],
+        // Nov 1, 2026 is 25 hours long: midnight after it is 06:00Z, not 05:00Z.
+        ["2026-11-01T12:00:00Z", "2026-11-02T06:00:00.000Z"],
+        // Mar 14, 2027 is 23 hours long.
+        ["2027-03-14T12:00:00Z", "2027-03-15T05:00:00.000Z"],
+      ];
+      for (const [at, expected] of cases) {
+        const { rows } = await testDb().query<{ lapses: Date }>(
+          `select ${nextVenueMidnightSql("$1::timestamptz")} as lapses`,
+          [at],
+        );
+        expect([at, rows[0]!.lapses.toISOString()]).toEqual([at, expected]);
+      }
+    });
+
+    it("notes a gap in the checks once, on the evaluation that ends it", async () => {
+      await testDb().query(
+        "insert into monitor_state (id, last_evaluated_at) values (1, now() - interval '20 hours')",
+      );
+      await runMonitor();
+      await nextEvaluation();
+      expect(contents()).toEqual([
+        expect.stringMatching(/^🟡 Monitor gap: no checks ran from .+ - is the outside clock \(cron-job\.org\) still running\?$/),
+      ]);
+    });
+
+    it("prunes board heartbeats past seven days with the rig heartbeats", async () => {
+      await board({ lastSeenAgoS: 8 * 86_400 });
+      await board();
+      await nextEvaluation();
+      const { rows } = await testDb().query("select count(*)::int as n from board_heartbeats");
+      expect(rows[0]!.n).toBe(1);
+    });
+  });
+
+  it("passes the read-only verify the owner runs after hand-applying 0007", async () => {
+    const verify = readFileSync(join(REPO_ROOT, "db", "verify", "0007_board_heartbeats.sql"), "utf8");
+    const client = await testDb().connect();
+    try {
+      await client.query(
+        `create temporary table schema_migrations (version text primary key);
+         insert into schema_migrations values ('0007_board_heartbeats.sql')`,
+      );
+      const { rows } = await client.query<{ check_name: string; ok: boolean }>(verify);
+
+      expect(rows).toHaveLength(7);
+      expect(rows.filter((check) => !check.ok)).toEqual([]);
+    } finally {
+      await client.query("drop table if exists pg_temp.schema_migrations");
       client.release();
     }
   });

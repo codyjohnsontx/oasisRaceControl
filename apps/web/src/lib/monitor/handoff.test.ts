@@ -16,6 +16,7 @@ import {
   rigAlertMarker,
 } from "./handoff";
 import { DISCORD_LIMITS } from "./discord";
+import { evaluateRules } from "./rules";
 
 const OPENED = Date.parse("2026-10-04T21:14:00Z");
 
@@ -258,7 +259,7 @@ describe("the rig-alert issue", () => {
     expect(
       recoveryComment([{ ...ALERT, resolvedAt: OPENED + 4 * 60_000 }]),
     ).toBe(
-      "Every rig on this issue has recovered: alert 123 (Rig 2) after 4 min. " +
+      "Everything on this issue has recovered: alert 123 (Rig 2) after 4 min. " +
         "The issue stays open for the fix; close it when that has merged.\n\n" +
         "<!-- oasis-rig-alert:recovery:laps_stuck:alert-123 -->",
     );
@@ -285,7 +286,7 @@ describe("the rig-alert issue", () => {
       { ...ALERT, id: "124", resolvedAt: OPENED + 120_000, detail: { ...ALERT.detail, rigNumber: 7 } },
     ];
     expect(recoveryComment(recovered)).toMatch(
-      /^Every rig on this issue has recovered: alert 123 \(Rig 2\) after 1 min, alert 124 \(Rig 7\) after 2 min\./,
+      /^Everything on this issue has recovered: alert 123 \(Rig 2\) after 1 min, alert 124 \(Rig 7\) after 2 min\./,
     );
   });
 
@@ -308,5 +309,63 @@ describe("the rig-alert issue", () => {
     ]) {
       expect(outsideCode(text)).not.toMatch(/#\d/);
     }
+  });
+});
+
+describe("a TV board's alert on the rig-alert issue", () => {
+  // Rule 8b is urgent and a software fault, so it files an issue - about the
+  // board, which is no rig. Its detail is the one rules.ts writes.
+  const NOW = OPENED;
+  const board = {
+    id: "board-1",
+    mode: "event" as const,
+    host: "cadillac",
+    firstSeenAt: NOW - 60 * 60_000,
+    lastSeenAt: NOW - 10_000,
+    visible: true,
+    feedOk: false,
+    feedFailures: 4,
+    closedAt: null,
+  };
+  const [finding] = evaluateRules({
+    now: NOW,
+    venueDayStart: Date.parse("2026-10-04T05:00:00Z"),
+    rigs: [],
+    featuredCombo: { trackName: "Circuit of the Americas", trackConfig: "Grand Prix", carName: "FIA F4" },
+    override: null,
+    eventModeSince: null,
+    boards: [board],
+    longStintMinutes: 120,
+    laps: [],
+    lapBests: [],
+    moves: [],
+    openAlerts: [],
+  });
+  const alert = { id: "321", rule: finding!.rule, severity: finding!.severity, openedAt: NOW, detail: finding!.detail };
+  const context = incidentContext(alert, [], null);
+  const handoff = handoffText(context, { ok: false, error: "timed out" });
+  const issue = rigAlertIssue([{ context, handoff }]);
+  const recovery = recoveryComment([{ ...alert, resolvedAt: NOW + 5 * 60_000 }]);
+
+  it("is rule 8b, urgent", () => {
+    expect([finding!.rule, finding!.severity]).toEqual(["board_feed_failing", "urgent"]);
+  });
+
+  it("names the TV board everywhere public and never calls it a rig", () => {
+    expect(context.where).toBe("Event board (Cadillac)");
+    // Outside a code block the names go through githubInert, which drops
+    // markdown punctuation such as parentheses.
+    expect(issue.title).toBe("[rig-alert] TV board cannot load its numbers - Event board Cadillac");
+    expect(handoff).toContain("Event board (Cadillac)");
+    expect(issue.body).toContain("Event board (Cadillac)");
+    expect(recovery).toMatch(/^Everything on this issue has recovered: alert 321 \(Event board Cadillac\) after 5 min\./);
+    for (const text of [issue.title, issue.body, handoff, recovery]) {
+      expect(text).not.toMatch(/\ba rig\b|\bRig \d|every rig/i);
+    }
+  });
+
+  it("still says 'a rig' for a location that is neither a rig number, the venue nor a board", () => {
+    const unknown = incidentContext({ ...alert, detail: { ...alert.detail, where: "Front desk PC" } }, [], null);
+    expect(unknown.where).toBe("a rig");
   });
 });
