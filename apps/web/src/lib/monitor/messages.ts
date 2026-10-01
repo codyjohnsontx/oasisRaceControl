@@ -103,14 +103,21 @@ export type FastLapSummary = {
   laps: Array<{ lapTimeMs: number; driver: { name: string; status: string } | null; combo: FeaturedCombo }>;
 };
 
+/** The most messages one rule 14 summary posts. */
+export const FAST_LAP_SUMMARY_PARTS = 3;
+
 /**
- * The one quiet message that ends a rule 14 mute: every lap flagged while it
- * held, so a run of fast laps reaches staff once instead of flooding the
- * channel. A lap's car and track are the rig's own strings, so they are never
- * shown: a lap on today's featured combo says so with the combo's label, and
- * any other says "another car and track".
+ * The quiet messages that end a rule 14 mute: the laps flagged while it held,
+ * so a run of fast laps reaches staff once instead of flooding the channel.
+ * The list is split on whole lines across at most FAST_LAP_SUMMARY_PARTS
+ * messages, each marked "part i of N" when there is more than one; laps that
+ * still do not fit are counted on the last line instead - a rig flagging that
+ * many has a broken detector, and the count is what staff act on. A lap's car
+ * and track are the rig's own strings, so they are never shown: a lap on
+ * today's featured combo says so with the combo's label, and any other says
+ * "another car and track".
  */
-export function fastLapSummaryMessage(summary: FastLapSummary): DiscordMessage {
+export function fastLapSummaryMessages(summary: FastLapSummary): DiscordMessage[] {
   const rule = ruleOf("fast_lap");
   const featured = summary.featuredCombo;
   const lines = summary.laps.map((lap) => {
@@ -124,21 +131,38 @@ export function fastLapSummaryMessage(summary: FastLapSummary): DiscordMessage {
     const combo = onFeatured ? `today's featured combo (${comboLabel(featured)})` : "another car and track";
     return `• ${summary.rigName} · ${formatLapTime(lap.lapTimeMs)} by ${driver} on ${combo}`;
   });
+  const more = (n: number) => `and ${n} more implausible ${n === 1 ? "lap" : "laps"} on ${summary.rigName} this hour`;
+  const fits = (part: string[], room: number) => part.join("\n").length <= room;
+
+  const parts: string[][] = [];
+  let next = 0;
+  while (next < lines.length && parts.length < FAST_LAP_SUMMARY_PARTS) {
+    const rest = lines.slice(next);
+    const last = parts.length === FAST_LAP_SUMMARY_PARTS - 1;
+    const room = DISCORD_LIMITS.embedDescription - (last && !fits(rest, DISCORD_LIMITS.embedDescription) ? more(lines.length).length + 1 : 0);
+    const part = [rest[0]!];
+    while (part.length < rest.length && fits([...part, rest[part.length]!], room)) part.push(rest[part.length]!);
+    next += part.length;
+    parts.push(part);
+  }
+  if (next < lines.length) parts.at(-1)!.push(more(lines.length - next));
+
   const count = summary.laps.length === 1 ? "1 lap" : `${summary.laps.length} laps`;
-  return {
+  return parts.map((part, i) => ({
     content: clip(
       `🟡 ${summary.rigName}: ${count} flagged as implausibly fast while the rule was muted - worth a look; ` +
-        "they rank unless staff invalidate them",
+        "they rank unless staff invalidate them" +
+        (parts.length > 1 ? ` (part ${i + 1} of ${parts.length})` : ""),
       DISCORD_LIMITS.content,
     ),
     embeds: [
       {
         title: clip(rule.title, DISCORD_LIMITS.embedTitle),
         color: YELLOW,
-        description: clip(lines.join("\n"), DISCORD_LIMITS.embedDescription),
+        description: part.join("\n"),
         footer: { text: `alert #${summary.id} · rule ${rule.number}` },
       },
     ],
     allowed_mentions: { parse: [] },
-  };
+  }));
 }

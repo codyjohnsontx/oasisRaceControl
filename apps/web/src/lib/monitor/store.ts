@@ -707,18 +707,21 @@ const SUMMARIZED_RULE = "fast_lap";
  * A mute's alerts are the rule's alerts on one rig that share its notify_until
  * (FLAPPING_REFIRES), and the one that started it is the first of them.
  *
- * No column records a summary, so the starting alert's recovery columns do:
- * recovery_attempted_at claims it and recovery_notified_at (markFastLapSummaryPosted)
- * says it went. Rule 14 never posts a recovery (RECOVERS_SILENTLY), so nothing
- * else reads them on its alerts; applyFindings stamping recovery_attempted_at
- * when the alert resolves only holds the claim back by RETRY_AFTER at most. A
- * refused post is retried like any other until RETRY_FOR after the mute ended
- * (its notify_until), and the claim is one statement, so two evaluations
- * cannot both post one summary.
+ * No column records a summary, so the starting alert's own columns do:
+ * recovery_attempted_at claims it, level counts the parts Discord has taken
+ * (fastLapSummaryMessages posts up to three), and recovery_notified_at says
+ * the last one went (markFastLapSummaryPart). Rule 14 never posts a recovery
+ * (RECOVERS_SILENTLY) and its findings are all level 0, which nothing moves,
+ * so nothing else reads those columns on its alerts; applyFindings stamping
+ * recovery_attempted_at when the alert resolves only holds the claim back by
+ * RETRY_AFTER at most. A refused part is retried like any other post, from
+ * that part on, until RETRY_FOR after the mute ended (its notify_until), and
+ * the claim is one statement, so two evaluations cannot both post a summary.
  */
-export async function claimFastLapSummaries(): Promise<FastLapSummary[]> {
+export async function claimFastLapSummaries(): Promise<Array<FastLapSummary & { partsPosted: number }>> {
   const rows = await query<{
     id: string;
+    parts_posted: number;
     rig_name: string;
     lap_time_ms: number;
     track_name: string;
@@ -739,9 +742,9 @@ export async function claimFastLapSummaries(): Promise<FastLapSummary[]> {
            select 1 from monitor_alerts e
            where e.rule = s.rule and e.notify_until = s.notify_until and e.refire_count >= $2
              and split_part(e.subject, '|', 1) = split_part(s.subject, '|', 1) and e.id < s.id)
-       returning s.id, s.subject, s.notify_until
+       returning s.id, s.subject, s.notify_until, s.level
      )
-     select c.id::text, r.display_name as rig_name, l.lap_time_ms,
+     select c.id::text, c.level as parts_posted, r.display_name as rig_name, l.lap_time_ms,
             l.track_name, l.track_config, l.car_name,
             d.display_name::text as driver_name, d.status::text as driver_status,
             fc.track_name as featured_track, fc.track_config as featured_config, fc.car_name as featured_car
@@ -756,10 +759,11 @@ export async function claimFastLapSummaries(): Promise<FastLapSummary[]> {
      order by c.id, m.id`,
     [SUMMARIZED_RULE, FLAPPING_REFIRES, RETRY_FOR, RETRY_AFTER],
   );
-  const summaries = new Map<string, FastLapSummary>();
+  const summaries = new Map<string, FastLapSummary & { partsPosted: number }>();
   for (const row of rows) {
     const summary = summaries.get(row.id) ?? {
       id: row.id,
+      partsPosted: row.parts_posted,
       rigName: row.rig_name,
       featuredCombo:
         row.featured_track && row.featured_car
@@ -777,8 +781,14 @@ export async function claimFastLapSummaries(): Promise<FastLapSummary[]> {
   return [...summaries.values()];
 }
 
-export async function markFastLapSummaryPosted(summary: FastLapSummary): Promise<void> {
-  await query("update monitor_alerts set recovery_notified_at = now() where id = $1", [summary.id]);
+/** Records that Discord took `posted` of a summary's `parts`, and once all of them, that it went. */
+export async function markFastLapSummaryPart(id: string, posted: number, parts: number): Promise<void> {
+  await query(
+    `update monitor_alerts
+     set level = $2::int, recovery_notified_at = case when $2::int >= $3::int then now() end
+     where id = $1`,
+    [id, posted, parts],
+  );
 }
 
 export async function claimRecoveryRetries(): Promise<AlertForMessage[]> {

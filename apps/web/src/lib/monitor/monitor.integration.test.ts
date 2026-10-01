@@ -875,6 +875,48 @@ describeDb("rig monitor against real Postgres", () => {
     ]);
   });
 
+  it("posts a long fast-lap summary in parts, and resumes a refused one from the part Discord did not take", async () => {
+    const rig = await seedRig(1);
+    for (let i = 0; i < 5; i++) {
+      const other = await seedDriver(`Other ${i}`);
+      const owner = { driverId: other.id, assignmentId: await pastStint(rig.id, other.id) };
+      await storeLap(rig, 3600, { owner, lapTimeMs: 120_000 + i * 1000 });
+    }
+    const driver = await seedDriver("Ada");
+    const assignmentId = await openAssignment(rig.id, driver.id);
+    await heartbeat(rig, 0);
+    for (let i = 0; i < 120; i++) {
+      await storeLap(rig, 600 - i * 4, { owner: { driverId: driver.id, assignmentId }, lapTimeMs: 110_000 + i });
+    }
+    await nextEvaluation();
+    expect(posts).toHaveLength(4);
+
+    posts = [];
+    await setFeaturedCombo({ trackName: TRACK.track, trackConfig: TRACK.config, carName: "FIA F4" });
+    await testDb().query(
+      "update laps set created_at = created_at - interval '61 minutes', completed_at = completed_at - interval '61 minutes'",
+    );
+    await timePasses(61);
+    discordAnswers = [204, 500];
+    await nextEvaluation();
+    expect(posts.map((p) => p.content)).toEqual([expect.stringMatching(/ \(part 1 of 3\)$/)]);
+
+    await nextEvaluation();
+    await timePasses(2);
+    await nextEvaluation();
+    await timePasses(2);
+    await nextEvaluation();
+    expect(posts.map((p) => p.content)).toEqual([
+      expect.stringMatching(/^🟡 Rig 01: 117 laps flagged .* \(part 1 of 3\)$/),
+      expect.stringMatching(/ \(part 2 of 3\)$/),
+      expect.stringMatching(/ \(part 3 of 3\)$/),
+    ]);
+    const listed = posts.flatMap((p) => (p.embeds as Array<{ description: string }>)[0]!.description.split("\n"));
+    expect(listed.map((line) => line.match(/ · (1:50\.\d{3}) by Ada /)![1])).toEqual(
+      Array.from({ length: 117 }, (_, i) => `1:50.${String(i + 3).padStart(3, "0")}`),
+    );
+  });
+
   describe("flapping", () => {
     /** Rule 16 opens on one heartbeat and clears two evaluations after the next. */
     async function flap(rig: SeededRig) {

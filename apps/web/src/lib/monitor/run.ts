@@ -5,7 +5,7 @@ import { incidentContext } from "./diagnosis/context";
 import type { ProviderName } from "./diagnosis/provider";
 import { alertUserId, discordConfigured, postDiscord } from "./discord";
 import { diagnosisMessage, handoffMessage, handoffText } from "./handoff";
-import { fastLapSummaryMessage, openingMessage, recoveryMessage, type AlertForMessage } from "./messages";
+import { fastLapSummaryMessages, openingMessage, recoveryMessage, type AlertForMessage } from "./messages";
 import { evaluateRules } from "./rules";
 import {
   alertsById,
@@ -19,7 +19,7 @@ import {
   loadSnapshot,
   markAnnounced,
   markDiagnosisPosted,
-  markFastLapSummaryPosted,
+  markFastLapSummaryPart,
   markRecoveryAnnounced,
   pruneHeartbeats,
   recentHeartbeats,
@@ -73,7 +73,7 @@ export async function runMonitor(): Promise<MonitorRun> {
   if (discordConfigured()) {
     announced += await deliver(await claimAnnounceRetries(), (a) => openingMessage(a, mention), markAnnounced);
     recovered += await deliver(await claimRecoveryRetries(), recoveryMessage, markRecoveryAnnounced);
-    announced += await deliver(await claimFastLapSummaries(), fastLapSummaryMessage, markFastLapSummaryPosted);
+    announced += await deliverFastLapSummaries();
   }
 
   const pruned = await pruneHeartbeats();
@@ -109,10 +109,10 @@ export async function runDiagnoses(): Promise<number> {
  * Discord's per-webhook rate limit - and records each one Discord took. A post
  * that fails stays unrecorded for a later evaluation to retry.
  */
-async function deliver<Alert extends { id: string }>(
-  alerts: Alert[],
-  render: (alert: Alert) => Parameters<typeof postDiscord>[0],
-  record: (alert: Alert) => Promise<void>,
+async function deliver(
+  alerts: AlertForMessage[],
+  render: (alert: AlertForMessage) => Parameters<typeof postDiscord>[0],
+  record: (alert: AlertForMessage) => Promise<void>,
 ): Promise<number> {
   let sent = 0;
   for (const alert of alerts) {
@@ -122,6 +122,30 @@ async function deliver<Alert extends { id: string }>(
       sent++;
     } else if (result.status === "failed") {
       console.error(`[monitor] could not post alert #${alert.id} to Discord: ${result.reason}`);
+    }
+  }
+  return sent;
+}
+
+/**
+ * Posts each due rule 14 summary's parts in order, from the first one Discord
+ * has not taken, recording each as it goes; a refused part stops its summary
+ * for a later evaluation to resume there.
+ */
+async function deliverFastLapSummaries(): Promise<number> {
+  let sent = 0;
+  for (const summary of await claimFastLapSummaries()) {
+    const parts = fastLapSummaryMessages(summary);
+    for (let part = summary.partsPosted; part < parts.length; part++) {
+      const result = await postDiscord(parts[part]!);
+      if (result.status !== "sent") {
+        if (result.status === "failed") {
+          console.error(`[monitor] could not post the fast-lap summary of alert #${summary.id}: ${result.reason}`);
+        }
+        break;
+      }
+      await markFastLapSummaryPart(summary.id, part + 1, parts.length);
+      sent++;
     }
   }
   return sent;
