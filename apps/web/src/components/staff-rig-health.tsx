@@ -28,7 +28,11 @@ export type RigHealthBoard = {
 
 type Notice = { ok: boolean; text: string; area: "event" | "monitor" };
 
+// Red is a problem, flashing (`rig-tile-broken`, globals.css) only when the
+// rig is broken right now; yellow and green are about the seat. The key under
+// the grid draws its swatches from this same table, so it cannot drift.
 const TILE_BORDER: Record<TileColour, string> = {
+  "red-flashing": "border-invalid rig-tile-broken",
   red: "border-invalid",
   yellow: "border-gold",
   green: "border-valid",
@@ -36,14 +40,24 @@ const TILE_BORDER: Record<TileColour, string> = {
 };
 
 const TILE_TEXT: Record<TileColour, string> = {
+  "red-flashing": "text-invalid",
   red: "text-invalid",
   yellow: "text-gold",
   green: "text-valid",
   grey: "text-muted",
 };
 
+const TILE_KEY: readonly [TileColour, string][] = [
+  ["red-flashing", "broken now"],
+  ["red", "warning"],
+  ["yellow", "available"],
+  ["green", "driver signed in"],
+  ["grey", "off"],
+];
+
+// Gold means "available" on this page, so a warning is orange, not gold.
 function severityText(severity: Severity): string {
-  return severity === "urgent" ? "text-invalid" : "text-gold";
+  return severity === "urgent" ? "text-invalid" : "text-sunset";
 }
 
 export function StaffRigHealth({
@@ -208,10 +222,10 @@ export function StaffRigHealth({
               <p className="text-muted text-[10px]">
                 {tile.agent}
                 {tile.oldAgent && (
-                  <span className="ml-1 font-bold uppercase text-gold">old agent</span>
+                  <span className={`ml-1 font-bold uppercase ${severityText("warning")}`}>old agent</span>
                 )}
                 {tile.outdated && !tile.oldAgent && (
-                  <span className="ml-1 font-bold uppercase text-gold">outdated</span>
+                  <span className={`ml-1 font-bold uppercase ${severityText("warning")}`}>outdated</span>
                 )}
               </p>
               {tile.footprint && <p className="text-muted text-[10px]">{tile.footprint}</p>}
@@ -221,6 +235,19 @@ export function StaffRigHealth({
           ))}
         </div>
         {tiles.length === 0 && <p className="text-muted text-sm">No rigs registered.</p>}
+        {tiles.length > 0 && (
+          <ul aria-label="Tile colours" className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-muted text-xs">
+            {TILE_KEY.map(([colour, meaning]) => (
+              <li key={colour} className="flex items-center gap-1.5">
+                <span
+                  aria-hidden
+                  className={`inline-block w-3 h-3 shrink-0 rounded border bg-surface ${TILE_BORDER[colour]}`}
+                />
+                {meaning}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section>

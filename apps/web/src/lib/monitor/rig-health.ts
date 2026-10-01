@@ -18,15 +18,19 @@ import {
  * The staff Rig health page's tiles, from the same snapshot and the same
  * findings the Discord alerts come from (evaluateRules), together with the
  * alerts still open (shownFindings). A tile's colour is the monitor's answer
- * and nothing else: red when something urgent is found or still open on the
- * rig, yellow for a warning. With neither it is green while the rig is
- * running, and grey when it is not - never seen, closed, or quiet in a way no
- * rule calls a problem (off for the day, or a lone rig inside the venue
- * silence window). Pure, like the rules, so every state is tested from a
- * hand-built snapshot.
+ * first and the seat's second. Red means a problem: flashing when something
+ * urgent is found or still open on the rig - the rig is broken right now -
+ * and steady for a warning, so a flash always means broken (the owner's
+ * rule, 2026-10-01). With no problem the tile is about the seat: green while
+ * the rig is running with a driver signed in, yellow while it is running and
+ * available, and grey when it is not running - never seen, closed, or quiet
+ * in a way no rule calls a problem (off for the day, or a lone rig inside the
+ * venue silence window). Pure, like the rules, so every state is tested from
+ * a hand-built snapshot.
  */
 
-export type TileColour = "red" | "yellow" | "green" | "grey";
+/** "red-flashing" is the one state that moves: urgent, broken now. */
+export type TileColour = "red-flashing" | "red" | "yellow" | "green" | "grey";
 
 export type Problem = { severity: Severity; headline: string };
 
@@ -116,14 +120,16 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
   const running = !neverSeen && !state?.shuttingDown && quiet !== null && quiet <= SILENT_AFTER_MS;
   const oldAgent = state !== null && isOldAgent(state);
 
-  const urgent = mine.some((f) => f.severity === "urgent");
-  const colour: TileColour = urgent
-    ? "red"
+  // A problem outranks the seat: a seated rig that is broken is red, not green.
+  const colour: TileColour = mine.some((f) => f.severity === "urgent")
+    ? "red-flashing"
     : mine.length > 0
-      ? "yellow"
-      : running
-        ? "green"
-        : "grey";
+      ? "red"
+      : !running
+        ? "grey"
+        : rig.seated
+          ? "green"
+          : "yellow";
 
   return {
     id: rig.id,

@@ -165,6 +165,35 @@ body:has([data-tv-mode="event"]) [data-screen-menu] {
   }
 }
 
+/* /staff/rigs: the tile of a rig that is broken right now (an urgent
+   finding) pulses its red outline; a warning's outline is the same red, held
+   still, so a flash always means broken. Under prefers-reduced-motion the
+   outline holds still and is thicker instead, so the two still read apart.
+   The colour is the border's own (border-invalid, set by the component); only
+   the pulse lives here. */
+.rig-tile-broken {
+  animation: rig-tile-flash 1.4s ease-in-out infinite;
+}
+
+@keyframes rig-tile-flash {
+  0%,
+  100% {
+    border-color: var(--invalid);
+    box-shadow: 0 0 0.75rem color-mix(in srgb, var(--invalid) 45%, transparent);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--invalid) 35%, var(--surface));
+    box-shadow: 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rig-tile-broken {
+    animation: none;
+    border-width: 3px;
+  }
+}
+
 /* /tv event view: a list taller than its box scrolls itself. The content is
    drawn twice, so sliding up by half is exactly one copy and the loop is
    seamless; the hold at the top is the 8% keyframe stop, which a keyframe
