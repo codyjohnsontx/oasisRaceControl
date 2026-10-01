@@ -222,10 +222,10 @@ export function StaffRigHealth({
               <p className="text-muted text-[10px]">
                 {tile.agent}
                 {tile.oldAgent && (
-                  <span className="ml-1 font-bold uppercase text-gold">old agent</span>
+                  <span className={`ml-1 font-bold uppercase ${severityText("warning")}`}>old agent</span>
                 )}
                 {tile.outdated && !tile.oldAgent && (
-                  <span className="ml-1 font-bold uppercase text-gold">outdated</span>
+                  <span className={`ml-1 font-bold uppercase ${severityText("warning")}`}>outdated</span>
                 )}
               </p>
               {tile.footprint && <p className="text-muted text-[10px]">{tile.footprint}</p>}

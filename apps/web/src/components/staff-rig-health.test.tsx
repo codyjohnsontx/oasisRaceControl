@@ -150,6 +150,8 @@ describe("StaffRigHealth", () => {
     expect(html).toContain("old agent");
     // R05 is both: the stronger badge alone. R06 is outdated only.
     expect(html.match(/>outdated</g)).toHaveLength(1);
+    expect(html).toMatch(/text-sunset">old agent</);
+    expect(html).toMatch(/text-sunset">outdated</);
     expect(html).toContain("iRacing: agent too old to report");
     expect(html).toContain("CPU and MB: agent too old to report");
     expect(html).toContain("clock: agent too old to report");
