@@ -18,15 +18,19 @@ import {
  * The staff Rig health page's tiles, from the same snapshot and the same
  * findings the Discord alerts come from (evaluateRules), together with the
  * alerts still open (shownFindings). A tile's colour is the monitor's answer
- * and nothing else: red when something urgent is found or still open on the
- * rig, yellow for a warning. With neither it is green while the rig is
- * running, and grey when it is not - never seen, closed, or quiet in a way no
- * rule calls a problem (off for the day, or a lone rig inside the venue
- * silence window). Pure, like the rules, so every state is tested from a
- * hand-built snapshot.
+ * first and the seat's second. Red means a problem: flashing when something
+ * urgent is found or still open on the rig - the rig is broken right now -
+ * and steady for a warning, so a flash always means broken (the owner's
+ * rule, 2026-10-01). With no problem the tile is about the seat: green while
+ * the rig is running with a driver signed in, yellow while it is running and
+ * available, and grey when it is not running - never seen, closed, or quiet
+ * in a way no rule calls a problem (off for the day, or a lone rig inside the
+ * venue silence window). Pure, like the rules, so every state is tested from
+ * a hand-built snapshot.
  */
 
-export type TileColour = "red" | "yellow" | "green" | "grey";
+/** "red-flashing" is the one state that moves: urgent, broken now. */
+export type TileColour = "red-flashing" | "red" | "yellow" | "green" | "grey";
 
 export type Problem = { severity: Severity; headline: string };
 
@@ -92,6 +96,18 @@ export function shownFindings(
   ];
 }
 
+/**
+ * What the monitor says about one rig: the findings whose subject is that rig.
+ * The tiles and the data-flow view (flow.ts) both take a rig's findings from
+ * here, from the same shownFindings, so a tile and its lane cannot disagree.
+ * A rule may name something finer than the rig (rule 11 a build, rule 14 a
+ * lap); flapScope is the rig it is about. A venue-wide finding is no rig's:
+ * the page lists it under Venue.
+ */
+export function rigFindings(findings: readonly Finding[], rigId: string): Finding[] {
+  return findings.filter((f) => flapScope(f.subject) === rigSubject(rigId));
+}
+
 export function rigTiles(
   snapshot: MonitorSnapshot,
   findings: readonly Finding[],
@@ -101,9 +117,7 @@ export function rigTiles(
     rigTile(
       snapshot.now,
       rig,
-      // A rule may name something finer than the rig (rule 11 a build, rule
-      // 14 a lap); flapScope is the rig it is about.
-      findings.filter((f) => flapScope(f.subject) === rigSubject(rig.id)),
+      rigFindings(findings, rig.id),
       lastLapAtByRig.get(rig.id) ?? null,
     ),
   );
@@ -113,21 +127,23 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
   const state = rigState(rig.heartbeats);
   const neverSeen = rig.lastSeenAt === null && state === null;
   const quiet = rig.lastSeenAt === null ? null : now - rig.lastSeenAt;
-  const running = !neverSeen && !state?.shuttingDown && quiet !== null && quiet <= SILENT_AFTER_MS;
+  const running = isRunning(now, rig, state);
   const oldAgent = state !== null && isOldAgent(state);
 
-  const urgent = mine.some((f) => f.severity === "urgent");
-  const colour: TileColour = urgent
-    ? "red"
+  // A problem outranks the seat: a seated rig that is broken is red, not green.
+  const colour: TileColour = mine.some((f) => f.severity === "urgent")
+    ? "red-flashing"
     : mine.length > 0
-      ? "yellow"
-      : running
-        ? "green"
-        : "grey";
+      ? "red"
+      : !running
+        ? "grey"
+        : rig.seated
+          ? "green"
+          : "yellow";
 
   return {
     id: rig.id,
-    label: `R${String(rig.number).padStart(2, "0")}`,
+    label: rigLabel(rig),
     colour,
     status: neverSeen
       ? "never seen"
@@ -178,6 +194,21 @@ export function problems(findings: readonly Finding[]): Problem[] {
     }
   }
   return [...lines.values()];
+}
+
+/** "R01": how the tiles and the data-flow view name a rig. */
+export function rigLabel(rig: Pick<RigSnapshot, "number">): string {
+  return `R${String(rig.number).padStart(2, "0")}`;
+}
+
+/**
+ * The rig reached the site within SILENT_AFTER_MS and its standing state is
+ * not a goodbye: an agent that is up and reporting.
+ */
+export function isRunning(now: number, rig: RigSnapshot, state: Heartbeat | null): boolean {
+  return (
+    rig.lastSeenAt !== null && !state?.shuttingDown && now - rig.lastSeenAt <= SILENT_AFTER_MS
+  );
 }
 
 /** A v1 heartbeat: the rules that need its fields cannot fire on this rig. */

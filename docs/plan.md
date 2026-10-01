@@ -26,6 +26,8 @@ This plan follows a completed product-discovery round with the owner. It covers 
 | Driver identity | Display name + 4-digit PIN, no contact info required |
 | Events today | Both drop-in hot-lapping and scheduled events → Fastest Tonight at launch, official challenges in MVP |
 | Spike environment | Venue rig access (no home iRacing) — spike work happens in focused on-site sessions |
+| Rig health data flow | The broken edge is the first **red** edge walking left to right, else the first yellow one; grey edges (nothing running there) are skipped. Only a red break dims what lies past it, and a part a rule found something on stays coloured. Owner-approved over the earlier "first non-green edge, everything past it dimmed" wording; behaviour in [monitoring.md](./monitoring.md#the-rig-health-page) |
+| Rig health rule placement | Every rule maps to a node, an edge, a lane mark or the venue (`RULE_PLACE` in `lib/monitor/flow.ts`, pinned by its unit tests). Owner-approved over the earlier "every rule to its node or edge" wording |
 
 ## Flagged risks & open items
 

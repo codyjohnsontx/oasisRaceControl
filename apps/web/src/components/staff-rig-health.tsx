@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { RIG_HEALTH_REFRESH_MS } from "@/lib/monitor/refresh";
 import type { Problem, RigTile, TileColour } from "@/lib/monitor/rig-health";
 import type { Severity } from "@/lib/monitor/rules";
 
@@ -28,7 +29,11 @@ export type RigHealthBoard = {
 
 type Notice = { ok: boolean; text: string; area: "event" | "monitor" };
 
+// Red is a problem, flashing (`rig-tile-broken`, globals.css) only when the
+// rig is broken right now; yellow and green are about the seat. The key under
+// the grid draws its swatches from this same table, so it cannot drift.
 const TILE_BORDER: Record<TileColour, string> = {
+  "red-flashing": "border-invalid rig-tile-broken",
   red: "border-invalid",
   yellow: "border-gold",
   green: "border-valid",
@@ -36,18 +41,39 @@ const TILE_BORDER: Record<TileColour, string> = {
 };
 
 const TILE_TEXT: Record<TileColour, string> = {
+  "red-flashing": "text-invalid",
   red: "text-invalid",
   yellow: "text-gold",
   green: "text-valid",
   grey: "text-muted",
 };
 
+/** The data-flow view's dots, in rig-flow.tsx's colours. */
+const LEGEND: Array<[colour: string, label: string, small?: boolean]> = [
+  ["accent", "heartbeat", true],
+  ["valid", "lap that ranks"],
+  ["sunset", "invalid lap"],
+  ["purple", "lap with nobody signed in"],
+  ["gold", "queued on the rig"],
+  ["invalid", "refused by the site"],
+];
+
+const TILE_KEY: readonly [TileColour, string][] = [
+  ["red-flashing", "broken now"],
+  ["red", "warning"],
+  ["yellow", "available"],
+  ["green", "driver signed in"],
+  ["grey", "off"],
+];
+
+// Gold means "available" on this page, so a warning is orange, not gold.
 function severityText(severity: Severity): string {
-  return severity === "urgent" ? "text-invalid" : "text-gold";
+  return severity === "urgent" ? "text-invalid" : "text-sunset";
 }
 
 export function StaffRigHealth({
   staffName,
+  flow,
   tiles,
   venueProblems,
   event,
@@ -56,6 +82,8 @@ export function StaffRigHealth({
   alerts,
 }: {
   staffName: string;
+  /** The data-flow view, rendered on the server; null when there are no rigs. */
+  flow: ReactNode;
   tiles: RigTile[];
   venueProblems: Problem[];
   event: { on: boolean; line: string; override: "on" | "off" | null };
@@ -69,7 +97,7 @@ export function StaffRigHealth({
 
   // The same 15 s cadence as the staff dashboard.
   useEffect(() => {
-    const timer = setInterval(() => router.refresh(), 15_000);
+    const timer = setInterval(() => router.refresh(), RIG_HEALTH_REFRESH_MS);
     return () => clearInterval(timer);
   }, [router]);
 
@@ -179,6 +207,29 @@ export function StaffRigHealth({
         </section>
       )}
 
+      {flow && (
+        // One card, title and legend inside its padding: this panel is the
+        // picture people share, so nothing in it sits flush with its edge.
+        <section className="bg-surface border border-edge rounded-xl p-4 flex flex-col gap-3">
+          <h2 className="text-muted font-bold uppercase tracking-wider text-sm">Data flow</h2>
+          <div className="overflow-x-auto">
+            {flow}
+          </div>
+          <ul className="flex flex-wrap gap-x-4 gap-y-1 text-muted text-xs">
+            {LEGEND.map(([colour, label, small]) => (
+              <li key={label} className="flex items-center gap-1.5">
+                <span
+                  className={`inline-block shrink-0 rounded-full ${small ? "size-1.5" : "size-2.5"}`}
+                  style={{ background: `var(--${colour})` }}
+                />
+                {label}
+              </li>
+            ))}
+            <li>Last 10 minutes: the further along, the older</li>
+          </ul>
+        </section>
+      )}
+
       <section>
         <h2 className="text-muted font-bold uppercase tracking-wider text-sm mb-3">Rigs</h2>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -208,10 +259,10 @@ export function StaffRigHealth({
               <p className="text-muted text-[10px]">
                 {tile.agent}
                 {tile.oldAgent && (
-                  <span className="ml-1 font-bold uppercase text-gold">old agent</span>
+                  <span className={`ml-1 font-bold uppercase ${severityText("warning")}`}>old agent</span>
                 )}
                 {tile.outdated && !tile.oldAgent && (
-                  <span className="ml-1 font-bold uppercase text-gold">outdated</span>
+                  <span className={`ml-1 font-bold uppercase ${severityText("warning")}`}>outdated</span>
                 )}
               </p>
               {tile.footprint && <p className="text-muted text-[10px]">{tile.footprint}</p>}
@@ -221,6 +272,19 @@ export function StaffRigHealth({
           ))}
         </div>
         {tiles.length === 0 && <p className="text-muted text-sm">No rigs registered.</p>}
+        {tiles.length > 0 && (
+          <ul aria-label="Tile colours" className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-muted text-xs">
+            {TILE_KEY.map(([colour, meaning]) => (
+              <li key={colour} className="flex items-center gap-1.5">
+                <span
+                  aria-hidden
+                  className={`inline-block w-3 h-3 shrink-0 rounded border bg-surface ${TILE_BORDER[colour]}`}
+                />
+                {meaning}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section>
