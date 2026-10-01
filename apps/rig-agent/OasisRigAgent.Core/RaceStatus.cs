@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json.Nodes;
 
 namespace OasisRigAgent.Core;
@@ -99,9 +100,9 @@ public interface IRaceStatusSource
 /// changed goes at once, and an unchanged one - a car parked in the pits or the
 /// garage - goes again once <see cref="KeepAlive"/> has passed, because the
 /// live feed dims a rig it has not heard from in 15 s and drops it at 60 s. A
-/// report the backend did not take is not recorded as sent, so the first
-/// sample after <see cref="RaceStatusReporter.FailureBackoff"/> goes whatever
-/// it holds. Pure, and only ever used from the one loop.
+/// report the backend did not take is not recorded as sent, so the next sample
+/// the reporter posts goes whatever it holds. Pure, and only ever used from the
+/// one loop.
 /// </summary>
 public sealed class RaceStatusThrottle
 {
@@ -129,12 +130,14 @@ public sealed class RaceStatusThrottle
 /// <summary>
 /// The agent's race-status loop body: sample, decide, post, and forget. There
 /// is no outbox and no retry - a position is worth something for seconds, so a
-/// report that fails is dropped, and nothing is posted again until
-/// <see cref="FailureBackoff"/> has passed, when a fresh sample goes in its
-/// place: a site without the route, or one that is down, hears from each rig
-/// twice a minute, not every interval. Each post is cut off at one
-/// <see cref="RaceStatusThrottle.Interval"/>, so a slow backend costs one
-/// sample, never a queue of them. It never touches the
+/// report that fails is dropped and a fresh sample goes in its place on the
+/// next interval: one timeout or 5xx mid-race costs one sample, not a car
+/// dimmed on the board. Only a 404 (a site without the route) or
+/// <see cref="FailuresBeforeBackoff"/> failures in a row hold the reporter
+/// back for <see cref="FailureBackoff"/>, so a site that cannot take the
+/// reports hears from each rig twice a minute, not every interval. Each post
+/// is cut off at one <see cref="RaceStatusThrottle.Interval"/>, so a slow
+/// backend costs one sample, never a queue of them. It never touches the
 /// agent's online/offline state, for the heartbeat's reason: a site that does
 /// not have the route yet would otherwise flap the rig's status line every few
 /// seconds.
@@ -142,6 +145,7 @@ public sealed class RaceStatusThrottle
 public sealed class RaceStatusReporter
 {
     public static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(30);
+    public const int FailuresBeforeBackoff = 3;
 
     private readonly IRaceStatusSource _source;
     private readonly BackendClient _client;
@@ -149,10 +153,11 @@ public sealed class RaceStatusReporter
     private readonly Func<long> _nowMs;
     private readonly RaceStatusThrottle _throttle = new();
     private bool _failing;
+    private int _consecutiveFailures;
     private long _resumeAtMs = long.MinValue;
 
-    /// <param name="notice">One line when reports stop getting through, and
-    /// not again until one has.</param>
+    /// <param name="notice">One line when the reporter starts backing off, and
+    /// not again until a report has got through.</param>
     /// <param name="nowMs">A monotonic millisecond clock; defaults to <see cref="Environment.TickCount64"/>.</param>
     public RaceStatusReporter(IRaceStatusSource source, BackendClient client, Action<string> notice, Func<long>? nowMs = null)
     {
@@ -181,15 +186,21 @@ public sealed class RaceStatusReporter
         }
         catch (Exception ex)
         {
-            _resumeAtMs = now + (long)FailureBackoff.TotalMilliseconds;
-            if (!_failing)
+            _consecutiveFailures++;
+            if (ex is HttpRequestException { StatusCode: HttpStatusCode.NotFound }
+                || _consecutiveFailures >= FailuresBeforeBackoff)
             {
-                _failing = true;
-                _notice($"[agent] live race position is not reaching the site ({Describe(ex)}); "
-                    + $"laps are unaffected, and it tries again every {FailureBackoff.TotalSeconds:0} s.");
+                _resumeAtMs = now + (long)FailureBackoff.TotalMilliseconds;
+                if (!_failing)
+                {
+                    _failing = true;
+                    _notice($"[agent] live race position is not reaching the site ({Describe(ex)}); "
+                        + $"laps are unaffected, and it tries again every {FailureBackoff.TotalSeconds:0} s.");
+                }
             }
             return;
         }
+        _consecutiveFailures = 0;
         _failing = false;
         _throttle.Sent(report, now);
     }

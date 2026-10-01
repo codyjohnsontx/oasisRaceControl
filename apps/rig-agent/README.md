@@ -242,13 +242,15 @@ session clock; an unchanged one - a car parked in the pits - goes again after
 
 **Failure.** No outbox and no retry: a position is worth something for
 seconds. A report the site does not take is dropped, cut off after one
-interval if the site is slow, and nothing more is posted for 30 s
-(`RaceStatusReporter.FailureBackoff`); then a fresh sample goes in its place.
-So a site without the route, or one that is down, hears from each rig twice a
-minute, not every 2.5 s. It never changes the rig's online/offline status
-line - a site without the route yet would otherwise flap it - and prints one
-notice when reports stop getting through (`live race position is not reaching
-the site (HTTP 404)`), not one per attempt. Laps are unaffected either way.
+interval if the site is slow, and a fresh sample goes in its place on the
+next interval - one timeout or 5xx mid-race costs one sample, not a dimmed
+car. Only a 404 (a site without the route) or three failures in a row hold
+the rig back for 30 s (`RaceStatusReporter.FailureBackoff`), so a site that
+cannot take the reports hears from each rig twice a minute, not every 2.5 s.
+It never changes the rig's online/offline status line - a site without the
+route yet would otherwise flap it - and prints one notice when it starts
+backing off (`live race position is not reaching the site (HTTP 404)`), not
+one per attempt. Laps are unaffected either way.
 
 **What it costs.** One more `RunLoop` in `AgentService` - the poll and flush's
 timer pattern, on the thread pool, no new thread - in the same below-normal
@@ -775,7 +777,8 @@ posting to the hosted app from a rig is not yet verified.
 
 The live race position (`0.6-race-status`) is covered the same way and no
 further: the array-element read, the session-type scan, every sampler rule,
-the send cadence, the drop-on-failure loop and its 30 s backoff by the xUnit
+the send cadence, the drop-on-failure loop and its 30 s backoff on a 404 or
+three failures in a row by the xUnit
 suite. On 2026-10-01 the report's JSON - an ordinary row, every sentinel,
 every upper and lower bound, values past them, non-finite and unknown
 channels - was parsed by hand with `raceStatusEvent` as it stands on the web

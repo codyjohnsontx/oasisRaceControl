@@ -473,9 +473,10 @@ together. The row is built only by the pure `RaceStatusSampler`
 (`Iracing/RaceStatusSampler.cs`), which also nulls iRacing's sentinels and
 clamps to the schema, since one field past it 400s the report and the car
 leaves the board. Four rules are easy to undo: there is no outbox and no
-retry (a dropped report is replaced by a fresh sample, and only after
-`RaceStatusReporter.FailureBackoff`, so a site without the route is not
-polled every 2.5 s by every rig); the loop never touches the agent's
+retry (a dropped report is replaced by a fresh sample on the next interval,
+and only a 404 or three failures in a row hold the rig back for
+`RaceStatusReporter.FailureBackoff`, so one blip mid-race does not dim a car
+and a site without the route is not polled every 2.5 s by every rig); the loop never touches the agent's
 online/offline state; `raceStatus: false` in the config turns off both the
 reads and the posts, and is the fallback rather than the old exe; and an
 unchanged row still goes within `RaceStatusThrottle.KeepAlive`, under the

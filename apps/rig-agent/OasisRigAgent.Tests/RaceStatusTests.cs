@@ -333,9 +333,105 @@ public sealed class RaceStatusTests : IDisposable
     }
 
     [Fact]
-    public async Task A_report_the_site_did_not_take_is_dropped_and_nothing_goes_again_for_the_backoff()
+    public async Task A_single_timeout_or_5xx_is_dropped_and_the_next_interval_posts_again()
     {
         var backend = new RaceBackend { Status = 500 };
+        var notices = new List<string>();
+        var row = Sampler(Racing()).RaceStatus(At);
+        var reporter = new RaceStatusReporter(new SourceOf(_ => row), Client(backend), notices.Add, () => _now);
+
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Single(backend.Posts);
+
+        // Not recorded as sent, so the same row goes again on the next
+        // interval: a blip mid-race costs one sample, not a dimmed car.
+        backend.Status = 200;
+        _now += 2_500;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(2, backend.Posts.Count);
+
+        // A success between failures starts the count again: two failures,
+        // a success, two more never back off.
+        backend.Down = true;
+        for (var i = 0; i < 2; i++)
+        {
+            row = row! with { Position = 4 + i };
+            _now += 2_500;
+            await reporter.TickAsync(CancellationToken.None);
+        }
+        backend.Down = false;
+        row = row! with { Position = 1 };
+        _now += 2_500;
+        await reporter.TickAsync(CancellationToken.None);
+        backend.Status = 503;
+        for (var i = 0; i < 2; i++)
+        {
+            row = row! with { Position = 2 + i };
+            _now += 2_500;
+            await reporter.TickAsync(CancellationToken.None);
+        }
+        backend.Status = 200;
+        row = row! with { Position = 7 };
+        _now += 2_500;
+        await reporter.TickAsync(CancellationToken.None);
+
+        Assert.Equal(8, backend.Posts.Count);
+        Assert.Equal(7, backend.Posts[^1]["position"]!.GetValue<int>());
+        Assert.Empty(notices);
+    }
+
+    [Fact]
+    public async Task Three_failures_in_a_row_back_off_for_thirty_seconds_then_a_fresh_sample_goes()
+    {
+        var backend = new RaceBackend { Status = 500 };
+        var notices = new List<string>();
+        var row = Sampler(Racing()).RaceStatus(At);
+        var reporter = new RaceStatusReporter(new SourceOf(_ => row), Client(backend), notices.Add, () => _now);
+        var backoff = (long)RaceStatusReporter.FailureBackoff.TotalMilliseconds;
+        Assert.InRange(RaceStatusReporter.FailureBackoff.TotalSeconds, 30, double.MaxValue);
+
+        await reporter.TickAsync(CancellationToken.None);
+        _now += 2_500;
+        await reporter.TickAsync(CancellationToken.None);
+        backend.Down = true;
+        _now += 2_500;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(RaceStatusReporter.FailuresBeforeBackoff, backend.Posts.Count);
+        var notice = Assert.Single(notices);
+        Assert.Contains("laps are unaffected", notice);
+
+        // Even a changed row waits out the backoff.
+        row = row! with { Position = 2 };
+        _now += backoff - 1;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(3, backend.Posts.Count);
+
+        // Still failing after it: back off again at once, without a second notice.
+        _now += 1;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(4, backend.Posts.Count);
+        _now += 2_500;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(4, backend.Posts.Count);
+        Assert.Single(notices);
+
+        // Taken after the next backoff: back to the ordinary cadence.
+        backend.Down = false;
+        backend.Status = 200;
+        _now += backoff;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(5, backend.Posts.Count);
+        Assert.Equal(2, backend.Posts[^1]["position"]!.GetValue<int>());
+        row = row! with { Position = 1 };
+        _now += 2_500;
+        await reporter.TickAsync(CancellationToken.None);
+        Assert.Equal(6, backend.Posts.Count);
+    }
+
+    [Fact]
+    public async Task A_404_backs_off_at_once_because_the_site_has_no_route()
+    {
+        var backend = new RaceBackend { Status = 404 };
         var notices = new List<string>();
         var row = Sampler(Racing()).RaceStatus(At);
         var reporter = new RaceStatusReporter(new SourceOf(_ => row), Client(backend), notices.Add, () => _now);
@@ -343,9 +439,8 @@ public sealed class RaceStatusTests : IDisposable
 
         await reporter.TickAsync(CancellationToken.None);
         Assert.Single(backend.Posts);
+        Assert.Contains("HTTP 404", Assert.Single(notices));
 
-        // A changed row is still held back: a site without the route hears
-        // from the rig once per backoff, not once per interval.
         row = row! with { Position = 2 };
         for (var waited = 2_500L; waited < backoff; waited += 2_500)
         {
@@ -353,38 +448,13 @@ public sealed class RaceStatusTests : IDisposable
             await reporter.TickAsync(CancellationToken.None);
         }
         Assert.Single(backend.Posts);
-        Assert.InRange(RaceStatusReporter.FailureBackoff.TotalSeconds, 30, double.MaxValue);
 
-        // Not recorded as sent, so after the backoff the row goes whatever it
-        // holds - and the person at the rig heard about it once.
-        backend.Down = true;
-        _now += 2_500;
-        await reporter.TickAsync(CancellationToken.None);
-        Assert.Equal(2, backend.Posts.Count);
-        Assert.Equal(2, backend.Posts[^1]["position"]!.GetValue<int>());
-        var notice = Assert.Single(notices);
-        Assert.Contains("HTTP 500", notice);
-        Assert.Contains("laps are unaffected", notice);
-
-        backend.Down = false;
+        // The route deployed: the first sample after the backoff goes, and a
+        // fresh outage after recovering is worth saying again.
         backend.Status = 200;
-        _now += backoff - 1;
+        _now += 2_500;
         await reporter.TickAsync(CancellationToken.None);
         Assert.Equal(2, backend.Posts.Count);
-        _now += 1;
-        await reporter.TickAsync(CancellationToken.None);
-        Assert.Equal(3, backend.Posts.Count);
-
-        // Taken: back to the ordinary cadence, which skips an unchanged row.
-        _now += 2_500;
-        await reporter.TickAsync(CancellationToken.None);
-        Assert.Equal(3, backend.Posts.Count);
-        row = row! with { Position = 1 };
-        _now += 2_500;
-        await reporter.TickAsync(CancellationToken.None);
-        Assert.Equal(4, backend.Posts.Count);
-
-        // A fresh failure after recovering is worth saying again.
         backend.Status = 404;
         row = row! with { Position = 3 };
         _now += 2_500;
