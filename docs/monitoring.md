@@ -25,8 +25,9 @@ on it without claiming an evaluation, so opening it posts nothing.
   seated and for how long, iRacing's session, the last lap today, the upload
   queue and parked laps, the agent build, its CPU and memory, clock skew and
   the last heartbeat. An agent older than `rig-agent/0.4` sends none of that
-  and is badged **old agent** rather than shown as blanks; any build other
-  than `CURRENT_AGENT_VERSION` is badged **outdated** (rule 11). A finding
+  and is badged **old agent**, its iRacing, queue, CPU and memory and clock
+  skew lines reading "agent too old to report" rather than shown as blanks;
+  any build other than `CURRENT_AGENT_VERSION` is badged **outdated** (rule 11). A finding
   about something finer than the rig - rule 11's build, rule 14's lap - is
   on its rig's tile (`flapScope`).
 - **Venue** problems (no featured combo, a dark board) above the tiles.

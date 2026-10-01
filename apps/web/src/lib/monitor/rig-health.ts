@@ -106,11 +106,16 @@ function rigTile(now: number, rig: RigSnapshot, mine: Finding[], lastLapAt: numb
         ? `queue: ${state ? TOO_OLD : "unknown"}`
         : `queue ${state.pendingLaps} · parked ${state.rejectedLaps ?? 0}`,
     agent: state?.agentVersion?.replace(/^rig-agent\//, "agent ") ?? "agent unknown",
-    footprint:
-      state?.agentCpuPercent != null && state.agentMemoryMb != null
+    footprint: oldAgent
+      ? `CPU and MB: ${TOO_OLD}`
+      : state?.agentCpuPercent != null && state.agentMemoryMb != null
         ? `${state.agentCpuPercent.toFixed(1)}% CPU · ${Math.round(state.agentMemoryMb)} MB`
         : null,
-    clockSkew: state?.clockSkewMs == null ? null : `clock ${skew(state.clockSkewMs)}`,
+    clockSkew: oldAgent
+      ? `clock: ${TOO_OLD}`
+      : state?.clockSkewMs == null
+        ? null
+        : `clock ${skew(state.clockSkewMs)}`,
     heartbeat: state === null ? "no heartbeat" : `heartbeat ${duration(now - state.receivedAt)} ago`,
     oldAgent,
     outdated: mine.some((f) => f.rule === "agent_outdated"),

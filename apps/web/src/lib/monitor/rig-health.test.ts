@@ -223,8 +223,8 @@ describe("rig tile fields", () => {
       agent: "agent 0.3-event",
       iracing: "iRacing: agent too old to report",
       queue: "queue: agent too old to report",
-      footprint: null,
-      clockSkew: null,
+      footprint: "CPU and MB: agent too old to report",
+      clockSkew: "clock: agent too old to report",
     });
   });
 

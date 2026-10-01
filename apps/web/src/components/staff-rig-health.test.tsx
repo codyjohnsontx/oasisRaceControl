@@ -85,7 +85,14 @@ describe("StaffRigHealth", () => {
     tile(2, { colour: "yellow", problems: [{ severity: "warning", headline: "Rig 02: 200 MB" }] }),
     tile(3, { colour: "red", problems: [{ severity: "urgent", headline: "Rig 03: lap reading stopped" }] }),
     tile(4, { colour: "grey", status: "never seen" }),
-    tile(5, { oldAgent: true, outdated: true, agent: "agent 0.3-event", iracing: "iRacing: agent too old to report" }),
+    tile(5, {
+      oldAgent: true,
+      outdated: true,
+      agent: "agent 0.3-event",
+      iracing: "iRacing: agent too old to report",
+      footprint: "CPU and MB: agent too old to report",
+      clockSkew: "clock: agent too old to report",
+    }),
     tile(6, { colour: "yellow", outdated: true, agent: "agent 0.4-monitor" }),
   ]);
 
@@ -103,6 +110,8 @@ describe("StaffRigHealth", () => {
     // R05 is both: the stronger badge alone. R06 is outdated only.
     expect(html.match(/>outdated</g)).toHaveLength(1);
     expect(html).toContain("iRacing: agent too old to report");
+    expect(html).toContain("CPU and MB: agent too old to report");
+    expect(html).toContain("clock: agent too old to report");
   });
 
   it("shows venue problems, event mode with the active override pressed, and the checks", () => {
