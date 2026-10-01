@@ -468,6 +468,77 @@ it, exactly as 0006 went. It needs 0006 applied first.
    -- ago under 30 seconds while the page is open
    ```
 
+### Applying 0008_race_status.sql
+
+`0008_race_status.sql` holds each rig's latest race status for the league-night
+race board ([live-race.md](./live-race.md)). It is additive: one new table
+with a foreign key to `rigs`, and nothing existing is altered. Apply it to Neon
+**before merging** the change that adds it, as with 0007. Until the merge
+deploys, nothing reads or writes the table.
+
+1. Point at production exactly as in
+   [step 2 of the recovery runbook](#2-point-at-production-and-prove-it).
+2. Precheck. From `apps/web`: `npm run db:check`. Read the target line, then
+   expect exactly one missing file, `0008_race_status.sql`. Anything more and
+   stop. In the SQL Editor, the same answer reads as one row with every column
+   `t` (read-only, one statement):
+
+   ```sql
+   select
+     exists (select 1 from schema_migrations where version = '0007_board_heartbeats.sql') as has_0007,
+     not exists (select 1 from schema_migrations where version = '0008_race_status.sql') as lacks_0008,
+     to_regclass('public.rig_race_status') is null as table_absent;
+   ```
+
+3. `npm run db:migrate`. Read the `migrating <host>/<database>` line; expect
+   `applied 0008_race_status.sql` and `skip` for the rest. The runner applies
+   the file and its bookkeeping row in one transaction.
+
+   Only if you cannot run it, paste this into Neon's SQL Editor as one
+   explicit transaction, with the whole of `db/migrations/0008_race_status.sql`
+   copied in unaltered where marked:
+
+   ```sql
+   begin;
+   -- the whole of db/migrations/0008_race_status.sql, unaltered
+   insert into schema_migrations (version) values ('0008_race_status.sql');
+   commit;
+   ```
+
+   If anything in it fails, nothing is applied - fix the paste and run it
+   again. Without the `insert` the build gate keeps refusing to deploy.
+4. Verify, whichever way you applied it. `db/verify/0008_race_status.sql`
+   fingerprints the new table's columns, its primary key and its foreign key
+   against a database built from the migration. Like 0007's, it is a **single
+   SELECT with no transaction around it**. Paste the whole file and the result
+   grid is the answer. Or from `psql`:
+
+   ```bash
+   psql "$DATABASE_URL" -f ../../db/verify/0008_race_status.sql
+   ```
+
+   Expect four rows, every one `ok = t`. Any `f` means the database does not
+   hold what the file says: stop and compare `actual` with `expected`.
+5. After the merge deploys, the public feed answers from the new table. With
+   no rig in a session it is empty:
+
+   ```bash
+   curl -s https://<hosted address>/api/race/live
+   # {"session":null,"rows":[],"otherRigs":0}
+   ```
+
+   A 500 there means the table is missing on the database the deployment
+   uses. Once a rig with the race-reporting agent is in a session, its row
+   shows within a few seconds (read-only, one statement):
+
+   ```sql
+   select r.rig_number, s.session_unique_id, s.session_type, s.position,
+          now() - s.received_at as ago
+   from rig_race_status s join rigs r on r.id = s.rig_id
+   order by r.rig_number;
+   -- ago under 3 seconds for every rig in the session
+   ```
+
 ---
 
 ## Recovering a database that is behind the code

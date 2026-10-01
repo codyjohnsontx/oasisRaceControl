@@ -18,6 +18,8 @@
  *     --work <dir>        where worker logs/metrics land     default: a temp dir
  *     --out <path>        write the summary JSON here        default: print only
  *     --overwrite         replace an existing --out file    default: refuse
+ *     --race              every rig also reports its car in one simulated race
+ *                         (fake-rig --race), and the live feed is checked
  *
  * The database is provisioned by this script and must be disposable: it is read
  * through the same guard the integration suite uses (src/test/db-guard.ts), so a
@@ -29,6 +31,13 @@
  * It does NOT put the customer-facing read path under load: twenty writers, no
  * wall polling alongside them. The numbers are the ingestion path's, and the
  * doc says so rather than implying more.
+ *
+ * `--race` adds the league-night race to the load: each rig drives one car of
+ * a single simulated race (scripts/fake-race.ts) and posts its race status every
+ * 2.5 s, as the agent does in a hosted session. Before the workers stop, the
+ * live feed is read once and must show every rig, each in a different place and
+ * under the driver checked in on it - the end-to-end claim the board relies on.
+ * That one read is the only read load it adds.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -50,6 +59,7 @@ import {
   describeAttributionFailures,
   type ExpectedOwner,
 } from "./soak-attribution";
+import { RACE_STALE_AFTER_S, type LiveRace } from "../src/lib/race-live";
 import {
   accountForLaps,
   type Metric,
@@ -69,6 +79,16 @@ import {
 const AGENT_FLUSH_INTERVAL_MS = 5_000;
 const AGENT_HTTP_TIMEOUT_MS = 15_000;
 
+/**
+ * The race ceilings come from the race contract (raceStatusEvent in
+ * src/lib/events.ts), for the same reason. A rig reports every 2-3 s with one
+ * report in flight, so a report slower than the 2.5 s the simulator uses
+ * delays the next one and the board falls behind the sim; one slower than the
+ * feed's stale threshold dims a car that is still racing.
+ */
+const RACE_REPORT_INTERVAL_MS = 2_500;
+const RACE_STALE_MS = RACE_STALE_AFTER_S * 1000;
+
 const arg = (name: string, fallback: string): string => {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
@@ -81,6 +101,7 @@ const BASE = arg("base", "http://localhost:3000").replace(/\/$/, "");
 const OUT = arg("out", "") && resolve(arg("out", ""));
 /** Opt-in to replacing an existing --out file; see the refusal in main(). */
 const OVERWRITE = process.argv.includes("--overwrite");
+const RACE = process.argv.includes("--race");
 /** Kept clear of the seed's rigs 1-3 so a soak can run on a seeded database. */
 const RIG_NUMBER_BASE = 101;
 
@@ -112,6 +133,10 @@ async function main(): Promise<void> {
     if (!Number.isFinite(value) || value <= 0) {
       throw new Error(`--${name} must be a positive number, got "${arg(name, "")}".`);
     }
+  }
+  // Each rig drives one car, and an iRacing session holds 64.
+  if (RACE && RIGS > 64) {
+    throw new Error(`--race needs --rigs of 64 or fewer, got ${RIGS}.`);
   }
 
   const configured = process.env.SOAK_DATABASE_URL;
@@ -180,10 +205,13 @@ async function main(): Promise<void> {
     // every request a worker made falls inside the window the rates are
     // computed over. At an hour the ramp is one interval and moves nothing.
     const startedAt = new Date();
-    await startWorkers(rigs, workers);
+    await startWorkers(rigs, workers, startedAt);
     console.log(`[soak] ${workers.length} workers up — holding load for ${MINUTES} min`);
     await sleep(MINUTES * 60_000);
     const endedAt = new Date();
+    // Read while every worker is still reporting: once they stop, the rows
+    // age out of the feed and there is nothing left to check.
+    const raceFeed = RACE ? await readLiveRace() : null;
 
     console.log(`[soak] ${MINUTES} min elapsed — stopping ${workers.length} workers`);
     const diedEarly = await stopAll(workers);
@@ -219,6 +247,7 @@ async function main(): Promise<void> {
       startedAt,
       endedAt,
       url,
+      raceFeed,
     );
   } finally {
     // Nothing past this point is measured, so a worker still alive here is one
@@ -345,10 +374,14 @@ const logPath = (rig: Rig): string =>
  * down, and a backend that only ever sees a thundering herd is measured against
  * a load it will not meet. The spread costs one interval of the run.
  */
-async function startWorkers(rigs: Rig[], started: ChildProcess[]): Promise<void> {
+async function startWorkers(
+  rigs: Rig[],
+  started: ChildProcess[],
+  startedAt: Date,
+): Promise<void> {
   const gapMs = (INTERVAL_S * 1000) / rigs.length;
-  for (const rig of rigs) {
-    started.push(startWorker(rig));
+  for (const [car, rig] of rigs.entries()) {
+    started.push(startWorker(rig, car, startedAt));
     await sleep(gapMs);
     throwIfLaunchFailed();
   }
@@ -376,7 +409,7 @@ function throwIfLaunchFailed(): void {
  * makes each rig exactly one process that this script signals directly.
  * (~88 MB resident each either way — the saving is in moving parts, not RAM.)
  */
-function startWorker(rig: Rig): ChildProcess {
+function startWorker(rig: Rig, car: number, startedAt: Date): ChildProcess {
   // A worker's chatter is one line per request and nobody reads it live, but it
   // is where a worker that died says why - a failed metrics append, say, which
   // ends it - and the only thing to look at when a run is refused for a worker
@@ -392,6 +425,18 @@ function startWorker(rig: Rig): ChildProcess {
       "--base", BASE,
       "--interval", String(INTERVAL_S),
       "--metrics", metricsPath(rig),
+      // One race for the whole run: every worker gets the same start and a
+      // race longer than the hold, so no worker crosses into the next session
+      // while the feed is being read.
+      ...(RACE
+        ? [
+            "--race",
+            "--car", String(car),
+            "--field", String(RIGS),
+            "--race-start", startedAt.toISOString(),
+            "--race-minutes", String(MINUTES + 10),
+          ]
+        : []),
     ],
     {
       cwd: join(__dirname, ".."),
@@ -507,6 +552,76 @@ function readMetrics(rig: Rig): { metrics: Metric[]; unreadableLines: number } {
 
 type Check = { name: string; pass: boolean; detail: string };
 
+type RaceFeedRead = { feed: LiveRace } | { error: string };
+
+/** One read of the public live feed, as the board would make it. */
+async function readLiveRace(): Promise<RaceFeedRead> {
+  try {
+    const res = await fetch(`${BASE}/api/race/live`);
+    if (!res.ok) return { error: `GET /api/race/live answered HTTP ${res.status}` };
+    return { feed: (await res.json()) as LiveRace };
+  } catch (error) {
+    return { error: `GET /api/race/live failed: ${(error as Error).message}` };
+  }
+}
+
+/**
+ * What the live feed must say about a run in which every rig drove one car of
+ * the same race: all of them, nobody else, each with a place inside the field
+ * and in race order, each car under the driver provisioned into its seat.
+ * Named rather than counted, so a failure says which rig to look at.
+ *
+ * It does NOT require every place to be held once. Each rig samples its own
+ * car at its own instant, so two neighbours that have just traded places can
+ * both report the same one until the slower rig's next report - which real
+ * rigs in a hosted session do too (docs/live-race.md). The places shared at
+ * the moment of the read are reported, not failed.
+ */
+function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
+  if ("error" in read) {
+    return [{ name: "the live feed answered while the rigs were racing", pass: false, detail: read.error }];
+  }
+  const { feed } = read;
+  const shown = new Map(feed.rows.map((row) => [row.rigNumber, row]));
+  const missing = rigs.filter((rig) => !shown.has(rig.rigNumber)).map((rig) => rig.rigNumber);
+  const strangers = feed.rows
+    .filter((row) => !rigs.some((rig) => rig.rigNumber === row.rigNumber))
+    .map((row) => row.rigNumber);
+  const positions = feed.rows.map((row) => row.position);
+  const outside = positions.filter((p) => p === null || p < 1 || p > rigs.length);
+  const inOrder = positions.every((p, i) => i === 0 || (positions[i - 1] ?? 0) <= (p ?? 0));
+  const shared = positions.filter((p, i) => positions.indexOf(p) !== i).length;
+  const misnamed = rigs
+    .filter((rig) => shown.has(rig.rigNumber) && shown.get(rig.rigNumber)!.driverName !== rig.driverName)
+    .map((rig) => `rig ${rig.rigNumber} as ${shown.get(rig.rigNumber)!.driverName ?? "nobody"}`);
+
+  return [
+    {
+      name: "the live feed shows every rig in one race",
+      pass: missing.length === 0 && strangers.length === 0 && feed.otherRigs === 0,
+      detail:
+        `${feed.rows.length} rows for ${rigs.length} rigs, ${feed.otherRigs} in another session` +
+        (missing.length > 0 ? `; missing rigs ${missing.join(", ")}` : "") +
+        (strangers.length > 0 ? `; rigs not in this run ${strangers.join(", ")}` : ""),
+    },
+    {
+      name: "every car has a place in the field, in race order",
+      pass: outside.length === 0 && inOrder,
+      detail:
+        `positions ${positions.join(", ")}` +
+        (shared > 0
+          ? ` (${shared} place(s) reported by two cars at once: neighbours sampled ` +
+            `either side of a pass)`
+          : ""),
+    },
+    {
+      name: "every car is shown under the driver in that seat",
+      pass: misnamed.length === 0,
+      detail: misnamed.length === 0 ? `${feed.rows.length} named correctly` : misnamed.join("; "),
+    },
+  ];
+}
+
 /** Nearest-rank percentile: the smallest sample at or above the given share. */
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
@@ -536,6 +651,7 @@ async function summarise(
   startedAt: Date,
   endedAt: Date,
   url: string,
+  raceFeed: RaceFeedRead | null,
 ) {
   const requests = metrics.filter((m): m is RequestMetric => m.kind !== "attempt");
   const byKind = (kind: RequestMetric["kind"]) => requests.filter((m) => m.kind === kind);
@@ -623,6 +739,7 @@ async function summarise(
 
   const events = latency([...lapPosts, ...byKind("heartbeat")].map((m) => m.ms));
   const polls = latency(byKind("poll").map((m) => m.ms));
+  const raceReports = latency(byKind("race").map((m) => m.ms));
   const durationS = (endedAt.getTime() - startedAt.getTime()) / 1000;
 
   const { rows: pgRows } = await client.query<{ version: string }>("select version()");
@@ -746,6 +863,21 @@ async function summarise(
       pass: events.maxMs < AGENT_HTTP_TIMEOUT_MS,
       detail: `max ${events.maxMs} ms`,
     },
+    ...(raceFeed
+      ? [
+          ...raceFeedChecks(rigs, raceFeed),
+          {
+            name: `race reports p95 under the ${RACE_REPORT_INTERVAL_MS / 1000}s report interval`,
+            pass: raceReports.count > 0 && raceReports.p95Ms < RACE_REPORT_INTERVAL_MS,
+            detail: `p95 ${raceReports.p95Ms} ms over ${raceReports.count} reports`,
+          },
+          {
+            name: `race reports max under the feed's ${RACE_STALE_AFTER_S}s stale threshold`,
+            pass: raceReports.count > 0 && raceReports.maxMs < RACE_STALE_MS,
+            detail: `max ${raceReports.maxMs} ms`,
+          },
+        ]
+      : []),
   ];
 
   return {
@@ -757,8 +889,10 @@ async function summarise(
       rigs: rigs.length,
       lapIntervalSeconds: INTERVAL_S,
       base: BASE,
-      note:
-        "Ingestion path only — no customer-display read load ran alongside these writers.",
+      race: RACE,
+      note: RACE
+        ? "Ingestion path plus one race report per rig every 2.5 s; the live feed was read once, at the end of the hold."
+        : "Ingestion path only — no customer-display read load ran alongside these writers.",
     },
     machine: {
       cpu: cpus()[0]?.model ?? "unknown",
@@ -774,6 +908,7 @@ async function summarise(
       lapPosts: lapPosts.length,
       heartbeats: byKind("heartbeat").length,
       assignmentPolls: byKind("poll").length,
+      raceReports: byKind("race").length,
       transportErrors: transportErrors.length,
       nonOk: nonOk.length,
       /** Answered, but with nothing usable in it - a 200 whose body would not
@@ -812,7 +947,7 @@ async function summarise(
         error: tally("error"),
       },
     },
-    latency: { events, assignmentPolls: polls },
+    latency: { events, assignmentPolls: polls, ...(RACE ? { raceReports } : {}) },
     thresholds: {
       eventsP95Ms: AGENT_FLUSH_INTERVAL_MS,
       eventsMaxMs: AGENT_HTTP_TIMEOUT_MS,
@@ -827,7 +962,8 @@ function report(s: Awaited<ReturnType<typeof summarise>>): void {
   console.log(
     `requests ${s.requests.total} (${s.requests.perSecond}/s): ` +
       `${s.requests.lapPosts} lap posts, ${s.requests.heartbeats} heartbeats, ` +
-      `${s.requests.assignmentPolls} polls`,
+      `${s.requests.assignmentPolls} polls` +
+      (s.load.race ? `, ${s.requests.raceReports} race reports` : ""),
   );
   console.log(
     `laps     ${s.laps.sent} sent (${s.laps.distinct} distinct, ` +
@@ -847,6 +983,12 @@ function report(s: Awaited<ReturnType<typeof summarise>>): void {
     `polls    p50 ${s.latency.assignmentPolls.p50Ms}ms  ` +
       `p95 ${s.latency.assignmentPolls.p95Ms}ms  max ${s.latency.assignmentPolls.maxMs}ms`,
   );
+  if (s.latency.raceReports) {
+    console.log(
+      `race     p50 ${s.latency.raceReports.p50Ms}ms  ` +
+        `p95 ${s.latency.raceReports.p95Ms}ms  max ${s.latency.raceReports.maxMs}ms`,
+    );
+  }
   console.log("");
   for (const check of s.checks) {
     console.log(`${check.pass ? "PASS" : "FAIL"}  ${check.name} — ${check.detail}`);

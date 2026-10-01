@@ -22,7 +22,8 @@
 /** One request as the rig experienced it (scripts/fake-rig.ts --metrics). */
 export type RequestMetric = {
   t: string;
-  kind: "lap" | "heartbeat" | "poll";
+  /** "race" is a race-status post (fake-rig --race), which carries no lap. */
+  kind: "lap" | "heartbeat" | "poll" | "race";
   ms: number;
   status?: number;
   error?: string;

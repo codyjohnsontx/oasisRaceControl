@@ -159,6 +159,21 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   it, and when it skips versus hard-fails, is in the root README's
   [Integration tests](README.md#integration-tests) section.
 
+## The live race feed
+
+League night's race board reads `GET /api/race/live`, built from one row per
+rig in `rig_race_status` that each agent replaces every 2-3 s
+(`POST /api/agent/race-status`). The wire contract is `raceStatusEvent` in
+`apps/web/src/lib/events.ts`; the agent, `scripts/fake-rig.ts --race` and that
+schema change together, and [docs/live-race.md](docs/live-race.md) has the rest.
+Three things are easy to undo. It stays off `/api/agent/events` and out of the
+outbox, because a queued position is a wrong one. The upsert keeps the report
+that arrived last, never the newest by the rig's clock, because a clock stepped
+back would freeze a racing car until it aged off the board. Grouping,
+ordering, staleness and intervals live only in `lib/race-live.ts`, and a board
+numbers its rows by `place`, not `position`: two rigs sampled either side of a
+pass report the same position for up to one cadence.
+
 ## Lap attribution
 
 A lap belongs to whoever was in the seat when it was captured, not to whoever is
