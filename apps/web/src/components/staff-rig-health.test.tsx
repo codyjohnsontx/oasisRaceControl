@@ -6,8 +6,9 @@ import type { RigHealthAlert } from "./staff-rig-health";
 /**
  * The Rig health page as served. The colours themselves are decided in
  * lib/monitor/rig-health.ts from the rules (its tests); here what must hold is
- * that each tile carries the colour it was given, an old agent is badged, and
- * an alert shows whether it is still open and links its GitHub issue.
+ * that each tile carries the colour it was given - and only the broken tile
+ * carries the flash - an old agent is badged, and an alert shows whether it
+ * is still open and links its GitHub issue.
  *
  * `next/navigation` is stubbed: the server render here has no app router, and
  * the page only uses it to refresh.
@@ -82,10 +83,11 @@ function render(tiles: RigTile[], alerts: RigHealthAlert[] = ALERTS): string {
 describe("StaffRigHealth", () => {
   const html = render([
     tile(1, { colour: "green", driver: "Matt G · 18 min" }),
-    tile(2, { colour: "yellow", problems: [{ severity: "warning", headline: "Rig 02: 200 MB" }] }),
-    tile(3, { colour: "red", problems: [{ severity: "urgent", headline: "Rig 03: lap reading stopped" }] }),
+    tile(2, { colour: "red", problems: [{ severity: "warning", headline: "Rig 02: 200 MB" }] }),
+    tile(3, { colour: "red-flashing", problems: [{ severity: "urgent", headline: "Rig 03: lap reading stopped" }] }),
     tile(4, { colour: "grey", status: "never seen" }),
     tile(5, {
+      colour: "red",
       oldAgent: true,
       outdated: true,
       agent: "agent 0.3-event",
@@ -93,16 +95,55 @@ describe("StaffRigHealth", () => {
       footprint: "CPU and MB: agent too old to report",
       clockSkew: "clock: agent too old to report",
     }),
-    tile(6, { colour: "yellow", outdated: true, agent: "agent 0.4-monitor" }),
+    tile(6, { colour: "red", outdated: true, agent: "agent 0.4-monitor" }),
+    tile(7, { colour: "yellow" }),
   ]);
 
+  /** Each tile's data-colour and the class list of that same element. */
+  const tileClasses = [...html.matchAll(/data-colour="([\w-]+)" class="([^"]*)"[^>]*>.*?font-black">(R\d+)</g)].map(
+    ([, colour, classes, label]) => ({ label, colour, classes }),
+  );
+
   it("gives every tile the colour it was handed", () => {
-    const colours = [...html.matchAll(/data-colour="(\w+)"[^>]*>.*?font-black">(R\d+)</g)].map(
-      ([, colour, label]) => `${label} ${colour}`,
-    );
-    expect(colours).toEqual(["R01 green", "R02 yellow", "R03 red", "R04 grey", "R05 green", "R06 yellow"]);
-    expect(html).toContain("border-invalid");
-    expect(html).toContain("border-gold");
+    expect(tileClasses.map((t) => `${t.label} ${t.colour}`)).toEqual([
+      "R01 green",
+      "R02 red",
+      "R03 red-flashing",
+      "R04 grey",
+      "R05 red",
+      "R06 red",
+      "R07 yellow",
+    ]);
+    expect(tileClasses.map((t) => t.classes.match(/border-\w+/)![0])).toEqual([
+      "border-valid",
+      "border-invalid",
+      "border-invalid",
+      "border-edge",
+      "border-invalid",
+      "border-invalid",
+      "border-gold",
+    ]);
+  });
+
+  it("flashes only the broken tile: a warning is the same red, held still", () => {
+    const flashing = tileClasses.filter((t) => t.classes.includes("rig-tile-broken"));
+    expect(flashing.map((t) => t.label)).toEqual(["R03"]);
+    expect(flashing[0]!.colour).toBe("red-flashing");
+  });
+
+  it("colours the status line with its tile and keys the colours under the grid", () => {
+    expect(html).toMatch(/data-colour="red-flashing".*?text-invalid">online</);
+    expect(html).toMatch(/data-colour="yellow".*?text-gold">online</);
+    expect(html).toMatch(/data-colour="grey".*?text-muted">never seen</);
+    const key = html.match(/<ul aria-label="Tile colours".*?<\/ul>/)![0];
+    expect(key.match(/<li/g)).toHaveLength(5);
+    expect(key).toContain("rig-tile-broken");
+    for (const meaning of ["broken now", "warning", "available", "driver signed in", "off"]) {
+      expect(key).toContain(meaning);
+    }
+    // Gold means available here, so a warning's headline is not gold.
+    expect(html).not.toMatch(/text-gold">Rig 02: 200 MB/);
+    expect(html).toMatch(/text-sunset">Rig 02: 200 MB/);
   });
 
   it("badges an agent too old to report, and an outdated build once", () => {
@@ -135,6 +176,7 @@ describe("StaffRigHealth", () => {
   it("says so when there are no rigs and no alerts", () => {
     const empty = render([], []);
     expect(empty).toContain("No rigs registered.");
+    expect(empty).not.toContain("Tile colours");
     expect(empty).toContain("No alerts yet.");
   });
 });
