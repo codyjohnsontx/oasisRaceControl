@@ -54,7 +54,7 @@ public sealed class WalkUpViewModel : IDisposable
     private readonly LapBoard _laps = new();
     private readonly List<string> _standing = new();
     private readonly List<string> _recent = new();
-    private SignInFlow _flow = new();
+    private SignInFlow _flow = new(front: SignInFront.Window);
     private DriverCheckIn? _driver;
     private string? _busyText = "Connecting to Oasis Race Control...";
     private CancellationToken _quit;
@@ -81,7 +81,7 @@ public sealed class WalkUpViewModel : IDisposable
         var notice = await WalkUpRules.EmptySeatAsync(_agent, quit).ConfigureAwait(false);
         lock (_lock)
         {
-            _flow = new SignInFlow(notice);
+            _flow = new SignInFlow(notice, SignInFront.Window);
             _busyText = null;
         }
         RaiseChanged();
@@ -141,7 +141,7 @@ public sealed class WalkUpViewModel : IDisposable
         {
             _driver = null;
             _busyText = null;
-            _flow = new SignInFlow(WalkUpRules.LoggedOut(driver.DisplayName, result));
+            _flow = new SignInFlow(WalkUpRules.LoggedOut(driver.DisplayName, result), SignInFront.Window);
         }
         RaiseChanged();
     }

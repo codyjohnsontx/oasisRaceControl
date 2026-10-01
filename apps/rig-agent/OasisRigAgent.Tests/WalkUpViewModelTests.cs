@@ -184,6 +184,27 @@ public sealed class WalkUpViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task ATakenNameIsExplainedInTheWindowsOwnButtons()
+    {
+        await using var rig = new Rig(_dbPath);
+        await rig.Model.StartAsync(CancellationToken.None);
+        await rig.Model.ChooseReturningAsync(false);
+        await rig.Model.SubmitAsync("Mike");
+        await rig.Model.SubmitAsync("1234");
+        await rig.Model.SubmitAsync("1234");
+
+        var view = rig.Model.Snapshot();
+        Assert.Equal(SignInStep.AskName, view.Step);
+        Assert.Equal("The name \"Mike\" is already registered. If it is yours, press Back and choose \"Yes, I have raced here\"; otherwise type a different name.", view.Notice);
+
+        await rig.Model.BackAsync();
+        await rig.Model.ChooseReturningAsync(true);
+        await rig.Model.SubmitAsync("Mike");
+        await rig.Model.SubmitAsync("4321");
+        Assert.Equal("Mike", rig.Model.Snapshot().Driver?.DisplayName);
+    }
+
+    [Fact]
     public async Task LogOutEndsTheStintAndReturnsToSignInWithThanks()
     {
         await using var rig = new Rig(_dbPath);

@@ -25,7 +25,8 @@ namespace OasisRigAgent.Core.WalkUp;
 /// that differ ask for both again, on the rig, with no backend call; the same
 /// PIN twice goes to <see cref="Register"/>.</item>
 /// <item><see cref="Register"/>: a new driver is signed in. A taken name (409)
-/// goes back to the name, saying to answer y if it is theirs. Never logs in; a
+/// goes back to the name, saying how to go back and answer as a returning
+/// driver if it is theirs, in the front's own wording. Never logs in; a
 /// check-in that fails after the sign-up goes back to the name on the
 /// returning path, since the name is theirs now.</item>
 /// <item><see cref="SignedIn"/>: done; <see cref="SignInFlow.Driver"/> is the
@@ -70,6 +71,10 @@ public enum SignInOutcome
 
 public sealed record SignInResult(SignInOutcome Outcome, DriverCheckIn? Driver = null, string? Message = null);
 
+/// <summary>Which front drives a <see cref="SignInFlow"/>: a notice that says
+/// how to answer is worded for the keys or buttons that front has.</summary>
+public enum SignInFront { Console, Window }
+
 /// <summary>
 /// The sign-in rules as one pure state machine, shared by the console loop and
 /// the window so the rig has one set of them (<see cref="SignInStep"/> is the
@@ -84,9 +89,14 @@ public sealed class SignInFlow
     public const int LoginsPerName = 2;
 
     private readonly Dictionary<string, int> _misses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SignInFront _front;
     private string _pin = "";
 
-    public SignInFlow(string? notice = null) => Notice = notice;
+    public SignInFlow(string? notice = null, SignInFront front = SignInFront.Console)
+    {
+        Notice = notice;
+        _front = front;
+    }
 
     public SignInStep Step { get; private set; } = SignInStep.AskRacedBefore;
 
@@ -209,7 +219,9 @@ public sealed class SignInFlow
                 Step = SignInStep.SignedIn;
                 break;
             case SignInOutcome.NoMatch when !request.Returning:
-                Notice = $"The name \"{Name}\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
+                Notice = _front == SignInFront.Window
+                    ? $"The name \"{Name}\" is already registered. If it is yours, press Back and choose \"Yes, I have raced here\"; otherwise type a different name."
+                    : $"The name \"{Name}\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
                 Step = SignInStep.AskName;
                 break;
             case SignInOutcome.NoMatch when (_misses[Name] = _misses.GetValueOrDefault(Name) + 1) < LoginsPerName:
