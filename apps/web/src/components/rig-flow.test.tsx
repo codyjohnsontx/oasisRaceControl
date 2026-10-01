@@ -119,6 +119,40 @@ describe("RigFlow", () => {
     expect(html).toMatch(/class="flow-held" data-status="queued"[^>]*><circle r="4.5"><\/circle><text y="-13">3 queued</);
   });
 
+  it("drops a lap's label that would print over a newer lap's or the queued badge, and keeps its dot", () => {
+    // A lap a minute: the invalid one rides the shorter route, to the
+    // database, so a minute older it sits about a label's width further on.
+    const busy = renderToStaticMarkup(
+      <RigFlow
+        model={model([
+          lane({
+            traffic: [
+              { kind: "lap", id: "l1", ageMs: 60_000, lapTimeMs: 138_058, status: "accepted" },
+              { kind: "lap", id: "l2", ageMs: 120_000, lapTimeMs: 143_315, status: "invalid" },
+            ],
+          }),
+        ])}
+      />,
+    );
+    expect(busy).toContain("2:18.058");
+    expect(busy).not.toContain("2:23.315");
+    expect(busy).toMatch(/data-status="invalid"[^>]*><circle r="4.5"><\/circle><\/g>/);
+
+    const queued = renderToStaticMarkup(
+      <RigFlow
+        model={model([
+          lane({
+            traffic: [{ kind: "lap", id: "l1", ageMs: 120_000, lapTimeMs: 141_946, status: "accepted" }],
+            held: [{ status: "queued", count: 1 }],
+          }),
+        ])}
+      />,
+    );
+    expect(queued).toContain("1 queued");
+    expect(queued).not.toContain("2:21.946");
+    expect(queued.match(/data-kind="lap"/g)).toHaveLength(1);
+  });
+
   it("writes a shared break's reason under the shared nodes", () => {
     const shared = renderToStaticMarkup(
       <RigFlow

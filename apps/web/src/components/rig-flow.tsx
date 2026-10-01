@@ -61,6 +61,12 @@ const LINE_H = 13;
  * reason line of the lane above.
  */
 const LABEL_Y = -13;
+/**
+ * The room one label needs along its lane: a lap time or a held badge is
+ * about eight monospace characters at 10px. A lap label closer than this to
+ * a newer one, or to the lane's queued badge, is dropped; its dot stays.
+ */
+const LABEL_W = 52;
 
 const WINDOW_S = TRAFFIC_WINDOW_MS / 1000;
 
@@ -160,11 +166,13 @@ export function RigFlow({ model }: { model: FlowModel }) {
       <g key={model.now}>
         {lanes.map((lane, i) => {
           const newest = newestHeartbeat(lane.traffic);
+          const labelled = labelledLaps(lane, laneY(i), sharedY);
           return lane.traffic.map((t) => (
             <Dot
               key={`${lane.rigId}:${t.kind}:${t.id}`}
               traveller={t}
               still={t.kind === "heartbeat" && t !== newest}
+              labelled={labelled.has(t)}
               y={laneY(i)}
               sharedY={sharedY}
             />
@@ -243,11 +251,13 @@ function Lane({ lane, y, sharedY }: { lane: FlowLane; y: number; sharedY: number
 function Dot({
   traveller: t,
   still,
+  labelled,
   y,
   sharedY,
 }: {
   traveller: Traveller;
   still: boolean;
+  labelled: boolean;
   y: number;
   sharedY: number;
 }) {
@@ -277,21 +287,41 @@ function Dot({
       </g>
     );
   }
-  // Only a lap on its rig's own straight lane is labelled: on the curves
-  // into the server, and on the shared line past it, every rig's lap times
-  // would print over each other and over the converging edges.
-  const length =
-    X.network - X.iracing +
-    curveLength(y, sharedY) +
-    (X.database - X.server) +
-    (t.status === "accepted" ? X.feed - X.database : 0);
-  const labelled = at * length <= X.network - X.iracing;
   return (
     <g className="flow-dot" data-kind="lap" data-status={t.status} style={style}>
       <circle r={4.5} />
       {labelled && <text y={LABEL_Y}>{formatLapTime(t.lapTimeMs)}</text>}
     </g>
   );
+}
+
+/**
+ * The laps whose time is printed. Only a lap on its rig's own straight lane
+ * is labelled: on the curves into the server, and on the shared line past
+ * it, every rig's lap times would print over each other and over the
+ * converging edges. On the straight, newest first, a label that would land
+ * within one label of a label already kept, or of the queued badge, is
+ * dropped - laps ride routes of different lengths, so two a minute apart
+ * can sit almost on top of each other.
+ */
+function labelledLaps(lane: FlowLane, y: number, sharedY: number): Set<Traveller> {
+  const taken = lane.held.some((h) => h.status === "queued") ? [X.agent + 26] : [];
+  const labelled = new Set<Traveller>();
+  const laps = lane.traffic.filter((t) => t.kind === "lap").sort((a, b) => a.ageMs - b.ageMs);
+  for (const t of laps) {
+    const length =
+      X.network - X.iracing +
+      curveLength(y, sharedY) +
+      (X.database - X.server) +
+      (t.status === "accepted" ? X.feed - X.database : 0);
+    const along = Math.min(1, t.ageMs / TRAFFIC_WINDOW_MS) * length;
+    if (along > X.network - X.iracing) continue;
+    const x = X.iracing + along;
+    if (taken.some((other) => Math.abs(other - x) < LABEL_W)) continue;
+    taken.push(x);
+    labelled.add(t);
+  }
+  return labelled;
 }
 
 /** The heartbeat that moves: the lane's freshest. */
