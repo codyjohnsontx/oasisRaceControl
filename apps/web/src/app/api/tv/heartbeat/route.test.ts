@@ -29,7 +29,7 @@ function post(body: unknown, contentType = "application/json") {
   });
 }
 
-/** The upsert's parameters: board id, mode, host, visible, feed ok, failures, closing, reopened. */
+/** The upsert's parameters: board id, mode, host, visible, feed ok, failures, closing. */
 function stored(): unknown[] {
   const call = query.mock.calls.find(([sql]) => String(sql).includes("insert into board_heartbeats"));
   return call![1] as unknown[];
@@ -52,7 +52,7 @@ describe("POST /api/tv/heartbeat", () => {
     const response = await POST(post({ ticket, visible: true, feedOk: false, feedFailures: 3 }));
 
     expect(response.status).toBe(200);
-    expect(stored()).toEqual([BOARD, "event", "cadillac", true, false, 3, false, false]);
+    expect(stored()).toEqual([BOARD, "event", "cadillac", true, false, 3, false]);
     const { ticket: renewed } = (await response.json()) as { ticket: string };
     await expect(verifyBoardTicket(renewed)).resolves.toEqual({ boardId: BOARD, mode: "event", host: "cadillac" });
     expect(scheduleMonitor).toHaveBeenCalledTimes(1);
@@ -85,7 +85,7 @@ describe("POST /api/tv/heartbeat", () => {
     const response = await POST(post({ ticket, visible: false, feedOk: true, feedFailures: 0, closing: true }, "text/plain;charset=UTF-8"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true });
-    expect(stored()).toEqual([BOARD, "event", null, false, true, 0, true, false]);
+    expect(stored()).toEqual([BOARD, "event", null, false, true, 0, true]);
     expect(scheduleMonitor).not.toHaveBeenCalled();
   });
 

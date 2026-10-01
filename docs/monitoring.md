@@ -255,10 +255,11 @@ how many of its boards' loads have failed in a row (`lib/tv-feed-health.ts`,
 which counts every registered board type's loads - the same failures the
 footer shows as "Reconnecting"). As the page closes it sends a goodbye with
 `navigator.sendBeacon`; a killed browser or a sleeping laptop sends nothing,
-and that silence is rule 8a. A page that comes back from the browser's
-back-forward cache says `reopened` on every heartbeat from then on, because
-the goodbye it sent as it left can reach the server after its first
-heartbeat back.
+and that silence is rule 8a. A goodbye is final for its board: nothing
+reopens it. A page shown again from the browser's back-forward cache reloads
+instead, as a new board with a ticket of its own, because the goodbye it sent
+as it left and the heartbeats after it keep no order on the way to the
+server.
 
 The route is public, like `/tv`, so it believes a heartbeat only as far as
 its **ticket**: when the server renders `/tv` it mints a board id and signs

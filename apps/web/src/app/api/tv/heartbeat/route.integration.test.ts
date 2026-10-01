@@ -5,10 +5,11 @@ import { closeTestDb, describeDb, resetDb, testDb } from "@/test/db";
 
 /**
  * The board heartbeat against real Postgres: a page's heartbeats keep one row,
- * its goodbye closes it, a heartbeat that was still in flight as it closed
- * does not reopen it, and the same page saying it was restored from the
- * back-forward cache does. The evaluation it schedules is the
- * monitor's, tested in src/lib/monitor/monitor.integration.test.ts.
+ * and its goodbye closes it for good - a heartbeat that was still in flight as
+ * it closed does not reopen it, and a page restored from the back-forward
+ * cache reloads as a new board instead (board-heartbeat.tsx). The evaluation
+ * it schedules is the monitor's, tested in
+ * src/lib/monitor/monitor.integration.test.ts.
  */
 
 vi.mock("@/lib/monitor/run", () => ({ scheduleMonitor: () => {} }));
@@ -49,7 +50,7 @@ describeDb("POST /api/tv/heartbeat against real Postgres", () => {
     await closeTestDb();
   });
 
-  it("keeps one row per page: heartbeats update it, a goodbye closes it, a return reopens it", async () => {
+  it("keeps one row per page: heartbeats update it, a goodbye closes it", async () => {
     const boardId = randomUUID();
     const ticket = await mintBoardTicket({ boardId, mode: "event", host: "cadillac" });
 
@@ -63,32 +64,20 @@ describeDb("POST /api/tv/heartbeat against real Postgres", () => {
 
     await POST(post({ ticket, visible: false, feedOk: false, feedFailures: 4, closing: true }));
     expect(await row(boardId)).toMatchObject([{ closed: true }]);
-
-    await POST(post({ ticket, visible: true, feedOk: true, feedFailures: 0, reopened: true }));
-    expect(await row(boardId)).toMatchObject([{ feed_ok: true, feed_failures: 0, closed: false }]);
   });
 
-  it("keeps a board restored from the back-forward cache open when its old goodbye lands late", async () => {
-    // The page's goodbye is a beacon and its heartbeats are fetches, and the
-    // two keep no order: the goodbye sent as it left can reach the server
-    // after its first heartbeat back. The page says reopened on every
-    // heartbeat after a restore, so the next one undoes that late goodbye.
+  it("never reopens a board after its goodbye, whatever a later heartbeat claims", async () => {
+    // A page from before this rule asked to undo its goodbye with
+    // reopened: true; nothing honours that now, so a restored page that has
+    // not reloaded yet cannot bring a closed board back.
     const boardId = randomUUID();
     const ticket = await mintBoardTicket({ boardId, mode: "event", host: null });
     const beat = { ticket, visible: true, feedOk: true, feedFailures: 0 };
 
     await POST(post(beat));
     await POST(post({ ...beat, visible: false, closing: true }));
-    await POST(post({ ...beat, reopened: true }));
-    expect(await row(boardId)).toMatchObject([{ closed: false }]);
-
-    // The goodbye from before the restore, delivered late.
-    await POST(post({ ...beat, visible: false, closing: true }));
+    expect((await POST(post({ ...beat, reopened: true }))).status).toBe(200);
     expect(await row(boardId)).toMatchObject([{ closed: true }]);
-
-    // The restored page's next periodic heartbeat still says reopened.
-    await POST(post({ ...beat, reopened: true }));
-    expect(await row(boardId)).toMatchObject([{ closed: false }]);
   });
 
   it("keeps a closed board closed when an ordinary heartbeat lands after its goodbye", async () => {

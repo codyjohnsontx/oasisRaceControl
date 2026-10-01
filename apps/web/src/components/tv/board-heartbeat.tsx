@@ -13,6 +13,24 @@ type Props = {
 const HEARTBEAT_TIMEOUT_MS = 10_000;
 
 /**
+ * A page shown again from the browser's back-forward cache reloads instead of
+ * reporting again. It said goodbye as it left, and a goodbye is final for its
+ * board: a beacon and a fetch keep no order, so letting the restored page undo
+ * its goodbye would let a goodbye that lands late close a board still on the
+ * wall, or a restored heartbeat reopen a board that really closed. The reload
+ * is a new page, with a board and ticket of its own (owner's decision,
+ * 2026-10-01). Returns whether it reloaded.
+ */
+export function reloadIfRestored(
+  event: Pick<PageTransitionEvent, "persisted">,
+  reload: () => void = () => window.location.reload(),
+): boolean {
+  if (!event.persisted) return false;
+  reload();
+  return true;
+}
+
+/**
  * The /tv page telling the rig monitor it is still on the wall: every
  * BOARD_HEARTBEAT_INTERVAL_MS, with whether its boards are loading their
  * numbers (lib/tv-feed-health.ts) and whether it is the visible tab. As the
@@ -29,11 +47,6 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
   useEffect(() => {
     let ticket = initialTicket;
     let refused = false;
-    // Set once the page comes back from the back-forward cache, and kept for
-    // the rest of its life: the goodbye it sent as it left can reach the
-    // server after its first heartbeat back (a beacon and a fetch keep no
-    // order), so every later heartbeat must undo it too.
-    let restored = false;
 
     const payload = (closing: boolean) => {
       const feed = feedHealth();
@@ -43,7 +56,6 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
         feedOk: feed.ok,
         feedFailures: feed.failures,
         closing,
-        ...(restored && !closing ? { reopened: true } : {}),
       });
     };
 
@@ -76,12 +88,8 @@ export function BoardHeartbeat({ ticket: initialTicket }: Props) {
     const onPageHide = () => {
       if (!refused) navigator.sendBeacon("/api/tv/heartbeat", payload(true));
     };
-    // Back from the back-forward cache: the goodbye went, so report at once,
-    // and say so on every heartbeat from now on - only that undoes a goodbye.
     const onPageShow = (event: PageTransitionEvent) => {
-      if (!event.persisted) return;
-      restored = true;
-      void beat();
+      reloadIfRestored(event);
     };
 
     window.addEventListener("pagehide", onPageHide);
