@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { RigFlow } from "@/components/rig-flow";
 import { StaffRigHealth, type RigHealthAlert } from "@/components/staff-rig-health";
 import { boardName, boardState, boardsToday, eventMode } from "@/lib/monitor/event-mode";
 import { REPOSITORY } from "@/lib/monitor/handoff";
@@ -48,11 +49,12 @@ export default async function RigHealthPage() {
   const mode = eventMode(snapshot);
   // Everything else - the venue, the TV boards - is listed above the tiles.
   const rigSubjects = new Set(snapshot.rigs.map((rig) => rigSubject(rig.id)));
+  const flow = flowModel(snapshot, findings, clock.lastEvaluatedAt);
 
   return (
     <StaffRigHealth
       staffName={staff.displayName}
-      flow={flowModel(snapshot, findings, clock.lastEvaluatedAt)}
+      flow={flow.lanes.length > 0 ? <RigFlow model={flow} /> : null}
       tiles={rigTiles(snapshot, findings, lastLaps)}
       venueProblems={problems(findings.filter((f) => !rigSubjects.has(flapScope(f.subject))))}
       event={{

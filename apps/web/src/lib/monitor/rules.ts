@@ -279,6 +279,11 @@ export type AlertDetail = {
    * may name a driver it cannot redact, so it is never diagnosed (store.ts).
    */
   driver?: string | null;
+  /**
+   * The rigs a venue note speaks for, as rig subjects: the ones its headline
+   * names. The data-flow view draws the note on these lanes and no others.
+   */
+  rigs?: string[];
 };
 
 export type Finding = {
@@ -426,7 +431,8 @@ function silence(
   const covered =
     !anyLive && (together || (venueOpen && heardAgainAt === -Infinity)) ? unexplained : [];
   if ((!anyLive && (together || venueOpen)) || venueRecovering) {
-    const names = [...dark, ...covered].map(({ rig }) => rig.name);
+    const quiet = [...dark, ...covered];
+    const names = quiet.map(({ rig }) => rig.name);
     findings.push({
       rule: "venue_silent",
       subject: VENUE_SUBJECT,
@@ -436,6 +442,7 @@ function silence(
         headline: `${names.length > 0 ? names.join(", ") : "Every rig"} went quiet together - venue closed?`,
         where: "Venue",
         fields: [{ name: "Rigs", value: names.join(", ") || "-" }],
+        rigs: quiet.map(({ rig }) => rigSubject(rig.id)),
       },
     });
   }

@@ -64,7 +64,7 @@ export const RULE_PLACE: Record<RuleKey, { node?: RigNode | SharedNode; edge?: E
   footprint_high: { node: "agent" },
   checkout_not_saved: { node: "agent" },
   rig_silent: { node: "agent", edge: 2 },
-  // Its subject is the venue; it is drawn on each rig that went quiet.
+  // Its subject is the venue; it is drawn on each rig it names.
   venue_silent: { edge: 2 },
   agent_outdated: { node: "agent" },
   sign_in_failures: { node: "agent" },
@@ -137,7 +137,6 @@ export function flowModel(
   lastEvaluatedAt: number | null,
 ): FlowModel {
   const { now } = snapshot;
-  const venueSilent = findings.find((f) => f.rule === "venue_silent");
 
   const lanes = snapshot.rigs.map((rig): FlowLane => {
     const state = rigState(rig.heartbeats);
@@ -156,12 +155,11 @@ export function flowModel(
     ];
 
     // A rule may name something finer than the rig (rule 11 a build, rule 14
-    // a lap); flapScope is the rig it is about.
-    const mine = findings.filter((f) => flapScope(f.subject) === rigSubject(rig.id));
-    // A quiet rig, not closed on purpose, that the venue note covers.
-    if (venueSilent && rig.lastSeenAt !== null && !running && !state?.shuttingDown) {
-      mine.push(venueSilent);
-    }
+    // a lap); flapScope is the rig it is about. A venue note names its rigs.
+    const subject = rigSubject(rig.id);
+    const mine = findings.filter(
+      (f) => flapScope(f.subject) === subject || f.detail.rigs?.includes(subject),
+    );
     for (const f of mine) {
       const place = RULE_PLACE[f.rule];
       if (place.node && place.node in nodes) mark(nodes[place.node as RigNode], f);

@@ -344,13 +344,41 @@ describe("flowModel", () => {
     expect(m.shared.edges[0].reason).toMatch(/has not run for 30 min/);
   });
 
-  it("draws the venue-closed note on each rig that went quiet", () => {
+  it("draws the venue-closed note on each rig it names, and on no other", () => {
     const quiet = (n: number, lastAgo: number) =>
       rig(n, minutely(lastAgo + 5 * MIN, lastAgo), { seated: null });
-    const m = model(snapshot([quiet(1, 10 * MIN), quiet(2, 8 * MIN)], { boards: [] }));
-    expect(m.lanes.map((l) => [l.broken, l.edges[1].state])).toEqual([
-      [2, "yellow"],
-      [2, "yellow"],
+    // Rig 05 lost power two days ago without a goodbye: past the note's
+    // lookback, so the note does not speak for it.
+    const m = model(
+      snapshot([quiet(1, 10 * MIN), quiet(2, 8 * MIN), quiet(5, 48 * 60 * MIN)], { boards: [] }),
+    );
+    expect(m.lanes.map((l) => [l.label, l.broken, l.edges[1].state, l.edges[1].reason])).toEqual([
+      ["R01", 2, "yellow", "Rig 01, Rig 02 went quiet together - venue closed?"],
+      ["R02", 2, "yellow", "Rig 01, Rig 02 went quiet together - venue closed?"],
+      ["R05", null, "grey", null],
+    ]);
+  });
+
+  it("draws a venue note still open only on the rigs its stored copy names", () => {
+    // Both rigs are back, and the note waits on its second clean evaluation.
+    const snap = snapshot([rig(1, minutely(14 * MIN)), rig(2, minutely(14 * MIN))]);
+    const open = [
+      {
+        rule: "venue_silent",
+        subject: "venue",
+        severity: "warning" as const,
+        detail: {
+          headline: "Rig 01 went quiet together - venue closed?",
+          where: "Venue",
+          fields: [],
+          rigs: ["rig:rig-1"],
+        },
+      },
+    ];
+    const m = flowModel(snap, shownFindings(evaluateRules(snap), open), NOW - 20 * S);
+    expect(m.lanes.map((l) => [l.label, l.edges[1].reason])).toEqual([
+      ["R01", "Rig 01 went quiet together - venue closed?"],
+      ["R02", null],
     ]);
   });
 

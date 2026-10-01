@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { FlowModel } from "@/lib/monitor/flow";
 import type { RigTile } from "@/lib/monitor/rig-health";
 import type { RigHealthAlert } from "./staff-rig-health";
 
@@ -66,31 +65,11 @@ const ALERTS: RigHealthAlert[] = [
   },
 ];
 
-/** The data-flow view has its own tests (rig-flow.test.tsx). */
-const NO_FLOW: FlowModel = {
-  now: 0,
-  lanes: [],
-  shared: {
-    nodes: {
-      server: { state: "green", reason: null, dimmed: false },
-      database: { state: "green", reason: null, dimmed: false },
-      feed: { state: "grey", reason: null, dimmed: false },
-      board: { state: "grey", reason: null, dimmed: false },
-    },
-    edges: [
-      { state: "green", reason: null, dimmed: false },
-      { state: "grey", reason: null, dimmed: false },
-      { state: "grey", reason: null, dimmed: false },
-    ],
-    broken: null,
-  },
-};
-
 function render(tiles: RigTile[], alerts: RigHealthAlert[] = ALERTS): string {
   return renderToStaticMarkup(
     <StaffRigHealth
       staffName="Cody"
-      flow={NO_FLOW}
+      flow={null}
       tiles={tiles}
       venueProblems={[{ severity: "urgent", headline: "No featured car and track for Oct 4" }]}
       event={{ on: true, line: "started by Cody until midnight", override: "on" }}

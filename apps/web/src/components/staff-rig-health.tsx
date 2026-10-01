@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { FlowModel } from "@/lib/monitor/flow";
 import type { Problem, RigTile, TileColour } from "@/lib/monitor/rig-health";
-import { RigFlow } from "./rig-flow";
 import type { Severity } from "@/lib/monitor/rules";
 
 export type RigHealthAlert = {
@@ -69,7 +67,8 @@ export function StaffRigHealth({
   alerts,
 }: {
   staffName: string;
-  flow: FlowModel;
+  /** The data-flow view, rendered on the server; null when there are no rigs. */
+  flow: ReactNode;
   tiles: RigTile[];
   venueProblems: Problem[];
   event: { on: boolean; line: string; override: "on" | "off" | null };
@@ -193,13 +192,13 @@ export function StaffRigHealth({
         </section>
       )}
 
-      {flow.lanes.length > 0 && (
+      {flow && (
         // One card, title and legend inside its padding: this panel is the
         // picture people share, so nothing in it sits flush with its edge.
         <section className="bg-surface border border-edge rounded-xl p-4 flex flex-col gap-3">
           <h2 className="text-muted font-bold uppercase tracking-wider text-sm">Data flow</h2>
           <div className="overflow-x-auto">
-            <RigFlow model={flow} />
+            {flow}
           </div>
           <ul className="flex flex-wrap gap-x-4 gap-y-1 text-muted text-xs">
             {LEGEND.map(([colour, label, small]) => (
