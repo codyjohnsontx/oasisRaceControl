@@ -100,7 +100,8 @@ unit-tested there:
   agent stopped while the car is still out there; if another car reports that
   same position, the car still reporting goes first.
 - `driverId` and `driverName` come from whoever is checked in on the rig right
-  now. With nobody checked in they are null, and the board shows the rig by
+  now. With nobody checked in, or with a driver who is not `active` (hidden
+  from the leaderboards too), they are null, and the board shows the rig by
   `rigNumber`.
 
 **Number the board by `place`, not `position`.** `place` is the row's number
