@@ -1,4 +1,4 @@
-import { tvHostLogo } from "@/lib/tv-host-logo";
+import { tvHostLogo, tvHostNames } from "@/lib/tv-host-logo";
 
 /**
  * The TV boards as the monitor sees them, and event mode, which they switch.
@@ -136,6 +136,18 @@ export function eventDisplays(input: EventModeInput): BoardSnapshot[] {
   if (mode.cause !== "override" || !mode.on || event.some((b) => b.closedAt === null)) return event;
   const began = eventModeBegan(input)!;
   return today.filter((b) => b.mode === "rotation" && b.lastSeenAt >= began - BOARD_DARK_AFTER_MS);
+}
+
+/**
+ * Whether `name` is one boardName() can produce - the monitor's own words and
+ * an allowlisted host's name, so it is safe to say anywhere public.
+ */
+export function isBoardName(name: string): boolean {
+  return [
+    boardName({ mode: "rotation", host: null }),
+    boardName({ mode: "event", host: null }),
+    ...tvHostNames().map((host) => `Event board (${host})`),
+  ].includes(name);
 }
 
 /** "Event board (Cadillac)", "Shop wall board". */

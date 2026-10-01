@@ -927,7 +927,7 @@ describeDb("rig monitor against real Postgres", () => {
         expect(calls).toHaveLength(2);
         expect(calls[1]!.url).toBe(`${GITHUB}/42/comments`);
         expect(calls[1]!.body.body).toMatch(
-          /^Every rig on this issue has recovered: alert \d+ \(Rig 2\) after \d+ s\. The issue stays open/,
+          /^Everything on this issue has recovered: alert \d+ \(Rig 2\) after \d+ s\. The issue stays open/,
         );
 
         // The same rule within a day: a comment, not a second issue.
@@ -1250,7 +1250,7 @@ describeDb("rig monitor against real Postgres", () => {
         await recover(first);
         expect(await issueNumbers()).toEqual([42, null]);
         const recoveries = () =>
-          issues.get(42)!.comments.filter((c) => c.body.startsWith("Every rig on this issue has recovered"));
+          issues.get(42)!.comments.filter((c) => c.body.startsWith("Everything on this issue has recovered"));
         expect(recoveries()).toHaveLength(0);
 
         geminiAnswers = ["answer"];
@@ -1281,7 +1281,7 @@ describeDb("rig monitor against real Postgres", () => {
         await nextEvaluation();
         expect((await alerts()).every((a) => a.resolved)).toBe(true);
         const comments = () => issues.get(42)!.comments.map((c) => c.body);
-        const recoveries = () => comments().filter((b) => b.startsWith("Every rig on this issue has recovered"));
+        const recoveries = () => comments().filter((b) => b.startsWith("Everything on this issue has recovered"));
         expect(recoveries()).toHaveLength(0);
 
         await retryDue();
@@ -1313,7 +1313,7 @@ describeDb("rig monitor against real Postgres", () => {
         await nextEvaluation();
         expect((await alerts()).every((a) => a.resolved)).toBe(true);
         const comments = () => issues.get(42)!.comments.map((c) => c.body);
-        const recoveries = () => comments().filter((b) => b.startsWith("Every rig on this issue has recovered"));
+        const recoveries = () => comments().filter((b) => b.startsWith("Everything on this issue has recovered"));
         expect(recoveries()).toHaveLength(0);
 
         releaseModel();
@@ -1349,7 +1349,7 @@ describeDb("rig monitor against real Postgres", () => {
         expect(new Set(named).size).toBe(20);
 
         // Nineteen recover: the issue says nothing while one rig is still down.
-        const recoveries = () => issue.comments.filter((c) => c.body.startsWith("Every rig on this issue has recovered"));
+        const recoveries = () => issue.comments.filter((c) => c.body.startsWith("Everything on this issue has recovered"));
         for (const rig of rigs.slice(0, 19)) await heartbeat(rig, 0);
         await nextEvaluation();
         await nextEvaluation();

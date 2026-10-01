@@ -44,6 +44,11 @@ const HOST_LOGOS: Record<string, TvHostLogo> = {
   },
 };
 
+/** Every bundled host's name, as its logo's alt text says it. */
+export function tvHostNames(): string[] {
+  return Object.values(HOST_LOGOS).map((logo) => logo.alt);
+}
+
 /**
  * Reads the host off the page's `host` search parameter: the logo to draw, or
  * null for no parameter, a repeated one, or a name that is not bundled.
