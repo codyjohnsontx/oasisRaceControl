@@ -97,7 +97,8 @@ Details worth knowing:
   refused. Its message names today's combo and which part is wrong, never the
   rig's own session strings. Its two inputs are signals at the moment each was
   heard - a wrong session at its heartbeat while a driver is seated, the
-  last right session the rig reported, a run of 3 refused laps at the last
+  last right session the rig reported (only when its current session, by
+  send order, is not a wrong one), a run of 3 refused laps at the last
   of them, a valid lap at its arrival - and the newest decides, so putting
   the car right clears the alert at the next heartbeat even with the refused
   laps still in view, it stays clear when the driver then signs out or quits
