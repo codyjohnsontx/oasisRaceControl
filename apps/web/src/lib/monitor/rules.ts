@@ -803,9 +803,17 @@ function seatAndLapFindings(
     const mismatch = (session: NonNullable<Heartbeat["session"]>) =>
       comboMismatch({ track_name: combo.trackName, track_config: combo.trackConfig, car_name: combo.carName }, session);
     const wrongSession = rig.seated && live?.simConnected === true && live.session ? mismatch(live.session) : null;
-    if (wrongSession) signals.push({ at: live!.receivedAt, from: "session", wrong: wrongSession });
-    const right = lastSent(rig.heartbeats, (h) => h.simConnected === true && h.session !== null && !mismatch(h.session));
-    if (right) signals.push({ at: right.receivedAt, from: "session", wrong: null });
+    // The rig's current state (rigState, by send order) is the session signal
+    // when it is a judged wrong one: an earlier right-combo heartbeat that
+    // merely arrived later must not outvote it. Only without one does the last
+    // right session count, which is what keeps a cleared alert clear once the
+    // seat empties, the sim closes or the rig goes quiet.
+    if (wrongSession) {
+      signals.push({ at: live!.receivedAt, from: "session", wrong: wrongSession });
+    } else {
+      const right = lastSent(rig.heartbeats, (h) => h.simConnected === true && h.session !== null && !mismatch(h.session));
+      if (right) signals.push({ at: right.receivedAt, from: "session", wrong: null });
+    }
     const recent = rigLaps.filter((lap) => now - lap.receivedAt <= COMBO_REJECTED_WINDOW_MS);
     const last = recent.slice(-COMBO_REJECTED_LAPS);
     if (last.length === COMBO_REJECTED_LAPS && last.every((lap) => COMBO_REASONS.has(lap.invalidReason ?? ""))) {

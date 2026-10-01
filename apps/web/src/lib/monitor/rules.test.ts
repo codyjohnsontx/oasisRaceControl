@@ -1052,6 +1052,19 @@ describe("rule 7: wrong car or track", () => {
     const fixedAt = (fixedAgo: number) =>
       minutely(14 * MIN, 0, (ago) => ({ session: ago > fixedAgo ? wrongCar : COMBO }));
 
+    it("keeps the rig's current wrong session over an earlier right one that arrived after it", () => {
+      // Sequence 1002 (wrong car) lands first; 1001 (right car), sent before
+      // it, is delayed and lands 30 s later. The rig is on the wrong car.
+      const heartbeats = [
+        ...minutely(14 * MIN, 2 * MIN, () => ({ session: wrongCar })),
+        hb(MIN, { sequence: 1_002, session: wrongCar }),
+        hb(30 * S, { sequence: 1_001, session: COMBO }),
+      ];
+      expect(rulesOf(evaluate([rig(1, { seated: SEATED, heartbeats })], [], combo))).toEqual([
+        "wrong_combo rig:rig-1 warning",
+      ]);
+    });
+
     it("clears when the session is put right, with the refused laps still in view", () => {
       expect(evaluate([rig(1, { seated: SEATED, heartbeats: fixedAt(2 * MIN) })], [], { ...combo, laps: streak })).toEqual([]);
     });
