@@ -64,17 +64,24 @@ export type OpenAlertShown = { rule: string; subject: string; severity: Severity
  * channel and the Alerts list still have it open; a tile that went green
  * then would contradict both. Until the row is resolved, the open alert
  * keeps its severity and its stored headline. Where both exist, the fresh
- * finding wins, since it says how things stand now.
+ * finding's wording wins, since it says how things stand now, at the worse
+ * of the two severities.
  */
 export function shownFindings(
   findings: readonly Finding[],
   openAlerts: readonly OpenAlertShown[],
 ): Finding[] {
-  const found = new Set(findings.map((f) => `${f.rule}|${f.subject}`));
+  const open = new Map(openAlerts.map((a) => [`${a.rule}|${a.subject}`, a]));
   return [
-    ...findings,
+    // A fresh finding says how things stand now, but its alert keeps the
+    // severity it was opened at until the monitor updates the row: rule 1
+    // goes from urgent to warning when the seated driver signs out, and the
+    // channel was told urgent.
+    ...findings.map((f) =>
+      open.get(`${f.rule}|${f.subject}`)?.severity === "urgent" ? { ...f, severity: "urgent" as const } : f,
+    ),
     ...openAlerts
-      .filter((a) => !found.has(`${a.rule}|${a.subject}`))
+      .filter((a) => !findings.some((f) => f.rule === a.rule && f.subject === a.subject))
       .map((a) => ({
         rule: a.rule as RuleKey,
         subject: a.subject,

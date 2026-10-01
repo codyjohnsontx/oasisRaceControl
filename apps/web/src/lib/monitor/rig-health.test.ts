@@ -252,6 +252,20 @@ describe("an alert still open after its problem cleared", () => {
     expect(tile!.colour).toBe("red");
   });
 
+  it("keeps an open urgent alert urgent while a fresh finding of it reads only a warning", () => {
+    // Rule 1: silent with a driver seated is urgent; once the driver is signed
+    // out, the same silence is a warning - but the channel was told urgent.
+    const silent = rig(1, minutely(20 * MIN).filter((h) => h.receivedAt <= NOW - 7 * MIN));
+    const fresh = evaluateRules(snapshot([silent])).find((f) => f.rule === "rig_silent");
+    expect(fresh?.severity).toBe("warning");
+    const [tile] = shown(
+      [silent],
+      [{ ...stored("urgent", "Rig 01 has been silent for 6 min with Matt G signed in"), rule: "rig_silent" }],
+    );
+    expect(tile!.colour).toBe("red");
+    expect(tile!.problems).toEqual([{ severity: "urgent", headline: fresh!.detail.headline }]);
+  });
+
   it("puts an open alert about the rig's build or lap on that rig's tile", () => {
     const [tile] = shown(
       [FIXTURES.green!],

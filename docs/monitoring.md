@@ -24,7 +24,9 @@ opening it posts nothing.
   headline on the tile. An alert that is still open keeps its colour and its
   stored headline after the rules stop finding it, until the evaluation that
   resolves it, so a tile never goes green while the channel and the Alerts
-  list still have the alert open (`shownFindings`). With neither it is green while the rig is running,
+  list still have the alert open (`shownFindings`). While the rules still find
+  it, the tile shows their current wording at the worse of the two severities,
+  so a seated rig's urgent silence stays red after the driver signs out. With neither it is green while the rig is running,
   grey when it is not (never seen, closed, or off for the day). Then who is
   seated and for how long, iRacing's session (or how long since the rig was
   last heard, once it is not running), the last lap today, the upload
