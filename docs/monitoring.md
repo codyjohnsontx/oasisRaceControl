@@ -31,7 +31,7 @@ opening it posts nothing.
   seated and for how long, iRacing's session (or how long since the rig was
   last heard, once it is not running), the last lap today, the upload
   queue and parked laps, the agent build, its CPU and memory, clock skew and
-  the last heartbeat. An agent older than `rig-agent/0.4` sends none of that
+  the last heartbeat. An agent older than `rig-agent/0.4-monitor` sends none of that
   and is badged **old agent**, its iRacing, queue, CPU and memory and clock
   skew lines reading "agent too old to report" rather than shown as blanks;
   any build other than `CURRENT_AGENT_VERSION` is badged **outdated** (rule 11). A finding

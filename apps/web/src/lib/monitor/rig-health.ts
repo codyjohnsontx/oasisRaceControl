@@ -46,7 +46,7 @@ export type RigTile = {
   footprint: string | null;
   clockSkew: string | null;
   heartbeat: string;
-  /** Its heartbeats carry nothing but a version: an agent from before rig-agent/0.4. */
+  /** Its heartbeats carry nothing but a version: an agent from before rig-agent/0.4-monitor. */
   oldAgent: boolean;
   /** Rule 11: not the build the venue should be running. */
   outdated: boolean;
