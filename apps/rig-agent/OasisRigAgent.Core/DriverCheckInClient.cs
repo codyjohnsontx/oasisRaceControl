@@ -41,7 +41,7 @@ public sealed class SignedUpButNotCheckedInException : Exception
 ///
 /// The rig asks which the driver is ("Raced here before?") rather than
 /// guessing from a failed login, so a wrong PIN is never mistaken for a new
-/// name; see SignInState in DriverPrompt.cs.
+/// name; see SignInStep in WalkUp/SignInFlow.cs.
 ///
 /// A name and PIN are the driver's across both event days, so a returning
 /// driver's laps accumulate on one leaderboard row. Logging in is repeatable,

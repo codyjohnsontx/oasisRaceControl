@@ -444,7 +444,7 @@ poll adopt a stint again, or a restart credits the departed driver. Every
 exit path in `Program.cs` signs out the seated driver durably and waits for
 it, and sends nothing when nobody is seated (`SignOutSeatedDriverAsync`) - an
 unnamed checkout would close whatever stint is open on the rig. The
-loop itself is `OasisRigAgent/DriverPrompt.cs`; the served-backend
+console loop is `OasisRigAgent/DriverPrompt.cs`; the served-backend
 test is `OasisRigAgent.Tests/NameLoopIntegrationTests.cs` (opt-in via
 `OASIS_TEST_BACKEND_URL`).
 
@@ -454,13 +454,13 @@ the rig and on the web's sign-up and guest "Save profile" forms
 never sign back in with, and only staff can fix it, with Reset PIN on
 `/staff` (2026-09-28). The
 rig asks "Raced here before?" instead of guessing from a failed login - that
-guess is what told chuy to use a different name - and its sign-in is one small
-state machine, `SignInState` in `DriverPrompt.cs`, over the client's separate
-`CheckInReturningAsync` (login only) and `CheckInNewAsync` (register only).
-The rules are documented on the enum and every sequence is a row of
-`EverySignInSequenceEndsWhereTheRulesSay`, so change a rule and its row
-together. The load-bearing ones: the returning path never registers and makes
-at most two failed logins per name for the whole sign-in - typing the name
+guess is what told chuy to use a different name - and its sign-in is
+`SignInFlow` (above), over the client's separate `CheckInReturningAsync`
+(login only) and `CheckInNewAsync` (register only). The rules are documented
+on `SignInStep` and every sequence is a row of
+`SignInFlowTests.EverySignInSequenceEndsWhereTheRulesSay`, so change a rule
+and its row together. The load-bearing ones: the returning path never
+registers and makes at most two failed logins per name for the whole sign-in - typing the name
 again gets no fresh tries - so a stranger cannot lock the real driver out
 (the backend locks at five) from one sign-in; the new path never logs in, and compares its two
 PINs on the rig. The website says the same in `driver-auth-refusal.ts`.
@@ -484,9 +484,10 @@ is in `apps/rig-agent/README.md` (Heartbeat and footprint).
 
 - Building or testing `apps/rig-agent` needs the .NET SDK at `~/.dotnet`, which
   is not on the default PATH; the exact commands are in
-  `apps/rig-agent/README.md` (Run from source). No CI workflow builds the agent
-  (`spike-safety.yml` covers `spike/` only), so that local run is the only
-  check it gets. The iRacing source only reads on Windows; on macOS
+  `apps/rig-agent/README.md` (Run from source).
+  `.github/workflows/rig-agent.yml` builds both targets and runs the suite on
+  Windows and Ubuntu for pull requests touching the agent; run it locally
+  first anyway. The iRacing source only reads on Windows; on macOS
   `--diagnose` exits 3 and `"telemetry": "iracing"` fails at start-up, so run
   the agent here with `OASIS_TELEMETRY=simulated`.
 - `apps/web/.env.local` is gitignored and its comments have gone stale before.
