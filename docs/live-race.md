@@ -143,7 +143,8 @@ phone agree by construction:
   wall the header says only "Race", then the track and nothing else, under
   green and under the flag: the owner asked for no round number, session
   state, layout, car, car count, or time or laps left up there, since the room
-  knows the combo and the order shows the field. The phone panel keeps the session's state and the car count.
+  knows the combo and the order shows the field. The phone panel keeps the
+  session's state, the time or laps left, and the car count.
 - After the chequered flag the **finishing order stays up for one minute**,
   counted from the first report that showed the flag, still updating as cars
   cross the line, then the standings come back even if the rigs are still
