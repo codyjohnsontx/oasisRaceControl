@@ -17,7 +17,7 @@ const render = (
     <LiveRaceTable live={{ race, finished: false, moves: new Map(), stale: false, ...extra }} />,
   );
 
-const rowsIn = (html: string) => html.match(/<li[^>]*data-live-race-row[^>]*>.*?<\/li>/gs) ?? [];
+const rowsIn = (html: string) => html.match(/<li[^>]*data-live-race-row[^>]*>[\s\S]*?<\/li>/g) ?? [];
 
 describe("LiveRacePanel", () => {
   it("renders nothing until the feed has answered", () => {

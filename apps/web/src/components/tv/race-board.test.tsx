@@ -24,7 +24,7 @@ const render = (
     />,
   );
 
-const rowsIn = (html: string) => html.match(/<li[^>]*data-tv-race-row[^>]*>.*?<\/li>/gs) ?? [];
+const rowsIn = (html: string) => html.match(/<li[^>]*data-tv-race-row[^>]*>[\s\S]*?<\/li>/g) ?? [];
 
 describe("RaceOrder", () => {
   it("numbers the rows by the feed's place, in the feed's order", () => {
