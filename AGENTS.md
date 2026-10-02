@@ -329,7 +329,9 @@ reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
 migration, and a verify fingerprints only the columns its own migration
-created, so a later `alter table` does not fail an earlier verify. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
+created, so a later `alter table` does not fail an earlier verify. A
+fingerprint over a table's constraints filters `contype <> 'n'`: production
+runs Postgres 18, which stores NOT NULL as constraint rows that 16 does not. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
 GitHub issue (`diagnosis/`, `handoff.ts`, `github.ts`) are written from
 `incidentContext`, an allowlist of what the server can vouch for - numbers,
 flags, enum values, known agent notices as codes - that never carries a rig's
