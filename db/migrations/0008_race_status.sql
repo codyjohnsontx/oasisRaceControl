@@ -4,9 +4,10 @@
 -- position, lap, gap to the leader, session state - every few seconds
 -- (POST /api/agent/race-status, contract `raceStatusEvent` in
 -- apps/web/src/lib/events.ts). This table keeps exactly one row per rig, the
--- latest, replaced on every report. GET /api/race/live reads the rows received
--- in the last minute, groups them by iRacing session and joins each to the
--- rig's signed-in driver through v_rig_status (docs/live-race.md).
+-- latest the rig sampled (POST /api/agent/race-status says which report wins).
+-- GET /api/race/live reads the rows received in the last minute, groups them
+-- by iRacing session and joins each to the rig's signed-in driver through
+-- v_rig_status (docs/live-race.md).
 --
 -- Latest-only on purpose: a race position is worth something for seconds, and
 -- history or a replay is a different table with a different retention, not
@@ -25,8 +26,9 @@ create table rig_race_status (
   rig_id uuid primary key references rigs (id),
   -- The server's clock, and the only time a row's freshness is judged by.
   received_at timestamptz not null default now(),
-  -- The rig's clock when it read the sim. Kept for diagnosis, never for
-  -- ordering or staleness: a rig's clock can be anywhere.
+  -- The rig's clock when it read the sim. Orders one rig's reports, so a late
+  -- request cannot rewind its row, and never judges staleness: a rig's clock
+  -- can be anywhere, so a row stale by received_at is replaced by any report.
   sampled_at timestamptz not null,
   -- iRacing's SessionUniqueID and SessionNum: which server session, and which
   -- session of its weekend (practice, qualifying, race). Rigs in the same

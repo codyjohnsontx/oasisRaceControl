@@ -571,12 +571,15 @@ async function readLiveRace(): Promise<RaceFeedRead> {
  * and in race order, each car under the driver provisioned into its seat.
  * Named rather than counted, so a failure says which rig to look at.
  *
- * Race order is the one the feed says it is in: how far round each car is
- * under green, iRacing's position on the grid and after the flag. Under green
- * it does NOT require iRacing's positions to follow that order or to be held
- * once each: a reported position only moves when the car crosses the line, as
- * iRacing's does (docs/live-race.md). The positions shared at the
- * moment of the read are reported, not failed.
+ * The feed is read during the green hold - the soak's race runs ten minutes
+ * past it - so it must call the session a race ordered by track (`isRace`,
+ * `byTrack`), number its rows 1..N by `place`, and list them by how far round
+ * each car is. Reading the feed's own `byTrack` to choose which order to check
+ * would let a regression that stopped ordering by track pass. It does NOT
+ * require iRacing's positions to follow that order or to be held once each: a
+ * reported position only moves when the car crosses the line, as iRacing's
+ * does (docs/live-race.md). The positions shared at the moment of the read are
+ * reported, not failed.
  */
 function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
   if ("error" in read) {
@@ -590,10 +593,10 @@ function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
     .map((row) => row.rigNumber);
   const positions = feed.rows.map((row) => row.position);
   const outside = positions.filter((p) => p === null || p < 1 || p > rigs.length);
-  const order = feed.session?.byTrack
-    ? feed.rows.map((row) => -((row.lapsCompleted ?? -1) + (row.lapDistPct ?? 0)))
-    : positions.map((p) => p ?? Infinity);
-  const inOrder = order.every((p, i) => i === 0 || order[i - 1]! <= p);
+  const places = feed.rows.map((row) => row.place);
+  const placesExact = places.every((p, i) => p === i + 1);
+  const progress = feed.rows.map((row) => (row.lapsCompleted ?? -1) + (row.lapDistPct ?? 0));
+  const inOrder = progress.every((p, i) => i === 0 || progress[i - 1]! >= p);
   const shared = positions.filter((p, i) => positions.indexOf(p) !== i).length;
   const misnamed = rigs
     .filter((rig) => shown.has(rig.rigNumber) && shown.get(rig.rigNumber)!.driverName !== rig.driverName)
@@ -609,10 +612,17 @@ function raceFeedChecks(rigs: Rig[], read: RaceFeedRead): Check[] {
         (strangers.length > 0 ? `; rigs not in this run ${strangers.join(", ")}` : ""),
     },
     {
+      name: "the live feed calls it a race under green, ordered by track",
+      pass: feed.session?.isRace === true && feed.session.byTrack === true,
+      detail: feed.session
+        ? `isRace ${feed.session.isRace}, byTrack ${feed.session.byTrack}`
+        : "no session in the feed",
+    },
+    {
       name: "every car has a place in the field, in race order",
-      pass: outside.length === 0 && inOrder,
+      pass: outside.length === 0 && placesExact && inOrder,
       detail:
-        `positions ${positions.join(", ")}` +
+        `places ${places.join(", ")}; positions ${positions.join(", ")}` +
         (shared > 0
           ? ` (${shared} position(s) reported by two cars at once: a pass not yet ` +
             `counted at the line)`

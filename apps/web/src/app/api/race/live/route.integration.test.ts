@@ -4,7 +4,7 @@ import { afterAll, beforeEach, expect, it } from "vitest";
 import { POST } from "../../agent/race-status/route";
 import { GET } from "./route";
 import type { RaceStatusEvent } from "@/lib/events";
-import type { LiveRace } from "@/lib/race-live";
+import { RACE_STALE_AFTER_S, type LiveRace } from "@/lib/race-live";
 import {
   closeTestDb,
   describeDb,
@@ -18,8 +18,8 @@ import {
 
 /**
  * The live race loop against real Postgres, from a rig's report to the public
- * feed: one row per rig replaced on every report, rows grouped into iRacing
- * sessions, race order, staleness judged by the database clock, and each rig
+ * feed: one row per rig replaced by each newer report, rows grouped into
+ * iRacing sessions, race order, staleness judged by the database clock, and each rig
  * joined to whoever is checked in on it. The rules themselves are unit-tested
  * in src/lib/race-live.test.ts; this is what only the database can show.
  */
@@ -84,8 +84,8 @@ describeDb("the live race feed against real Postgres", () => {
 
   it("keeps one row per rig, replaced by each report", async () => {
     const rig = await seedRig(7);
-    await report(rig, { position: 3, lap: 5 });
-    await report(rig, { position: 2, lap: 6, sessionFlags: 1 });
+    await report(rig, { sampledAt: "2026-10-07T19:30:01.000Z", position: 3, lap: 5 });
+    await report(rig, { sampledAt: "2026-10-07T19:30:02.000Z", position: 2, lap: 6, sessionFlags: 1 });
 
     const { rows } = await testDb().query(
       `select position, lap, session_flags, sampled_at is not null as sampled,
@@ -95,6 +95,38 @@ describeDb("the live race feed against real Postgres", () => {
     );
     // bigint comes back from pg as a string.
     expect(rows).toEqual([{ position: 2, lap: 6, session_flags: "1", sampled: true, received: true }]);
+  });
+
+  it("keeps the newer sample when an older one lands after it", async () => {
+    const rig = await seedRig(7);
+    await report(rig, { sampledAt: "2026-10-07T19:30:02.000Z", lapDistPct: 0.8, sessionUniqueId: 2 });
+    // A request abandoned on a timeout, from the session the rig just left.
+    await report(rig, { sampledAt: "2026-10-07T19:30:01.000Z", lapDistPct: 0.1, sessionUniqueId: 1 });
+
+    const { rows } = await testDb().query(
+      "select sampled_at, lap_dist_pct, session_unique_id from rig_race_status where rig_id = $1",
+      [rig.id],
+    );
+    expect(rows).toEqual([
+      { sampled_at: new Date("2026-10-07T19:30:02.000Z"), lap_dist_pct: 0.8, session_unique_id: 2 },
+    ]);
+  });
+
+  it("replaces a row the feed already calls stale with any report, so a clock stepped back dims the rig instead of freezing it", async () => {
+    const rig = await seedRig(7);
+    await report(rig, { sampledAt: "2026-10-07T19:30:02.000Z", lapDistPct: 0.8 });
+    await silence(rig, RACE_STALE_AFTER_S + 1);
+    // The rig's clock has been stepped back half an hour.
+    await report(rig, { sampledAt: "2026-10-07T19:00:00.000Z", lapDistPct: 0.1 });
+
+    const { rows } = await testDb().query(
+      `select sampled_at, lap_dist_pct, received_at > now() - interval '5 seconds' as fresh
+       from rig_race_status where rig_id = $1`,
+      [rig.id],
+    );
+    expect(rows).toEqual([
+      { sampled_at: new Date("2026-10-07T19:00:00.000Z"), lap_dist_pct: 0.1, fresh: true },
+    ]);
   });
 
   it("stores the full unsigned flags word iRacing sends", async () => {
