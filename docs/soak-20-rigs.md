@@ -161,8 +161,9 @@ every 2.5 s. Before the workers stop, `GET /api/race/live` is read once. It
 must show every rig in one race, each with a place inside the field, in race
 order, and each under the driver checked in on its rig. Two more checks hold
 race-report latency under the 2.5 s cadence (p95) and under the feed's 15 s
-stale threshold (max). Race order is how far round each car is under green and
-iRacing's position after the chequered flag. Positions that two cars report at
+stale threshold (max). The read lands during the green hold, so the feed must
+call the session a race ordered by track (`isRace`, `byTrack`), number its rows
+1..N by `place`, and list them by how far round each car is. Positions that two cars report at
 once are listed but do not fail the run, because iRacing's position only
 catches up with a pass at the line, on the night as well. The committed result
 above predates `--race` and has none of these checks.

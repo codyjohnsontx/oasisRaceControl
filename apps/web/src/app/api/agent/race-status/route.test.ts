@@ -72,8 +72,7 @@ describe("POST /api/agent/race-status", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("");
     expect(query).toHaveBeenCalledTimes(1);
-    const [sql, params] = query.mock.calls[0]!;
-    expect(sql).toMatch(/on conflict \(rig_id\) do update/);
+    const [, params] = query.mock.calls[0]!;
     expect(params[0]).toBe(RIG.id);
     expect(params).toContain(0x8000_0004);
   });
@@ -84,6 +83,7 @@ describe("POST /api/agent/race-status", () => {
         ...REPORT,
         sessionType: null,
         sessionTimeRemainS: null,
+        sessionLapsRemain: null,
         position: null,
         classPosition: null,
         lap: null,
@@ -97,6 +97,11 @@ describe("POST /api/agent/race-status", () => {
     expect(res.status).toBe(200);
   });
 
+  it("accepts remaining time and laps just under the unlimited sentinels", async () => {
+    const res = await POST(post({ ...REPORT, sessionTimeRemainS: 604_799.9, sessionLapsRemain: 32_766 }));
+    expect(res.status).toBe(200);
+  });
+
   it.each([
     ["a position of 0, iRacing's unclassified", { position: 0 }],
     ["a position past a full field", { position: 65 }],
@@ -105,7 +110,9 @@ describe("POST /api/agent/race-status", () => {
     ["flags read as a signed int", { sessionFlags: -2_147_483_644 }],
     ["iRacing's -1 lap time", { lastLapMs: -1 }],
     ["a lap distance past the line", { lapDistPct: 1.2 }],
-    ["iRacing's unlimited time sentinel past a week", { sessionTimeRemainS: 604_801 }],
+    ["iRacing's unlimited time sentinel itself, which must be sent as null", { sessionTimeRemainS: 604_800 }],
+    ["a time remaining past the unlimited sentinel", { sessionTimeRemainS: 604_801 }],
+    ["iRacing's unlimited laps sentinel itself, which must be sent as null", { sessionLapsRemain: 32_767 }],
     ["a negative gap", { gapToLeaderS: -0.1 }],
     ["a missing pit flag", { onPitRoad: undefined }],
     ["a missing sample time", { sampledAt: undefined }],

@@ -58,10 +58,15 @@ How the agent sends it:
   A 400 carries zod's `detail` for the rig's log. 401 means the token is wrong.
   413 means the body is over 4 KiB. A 500 is dropped like any other failure.
 
-The server keeps whichever report **arrived** last, not the one the rig's clock
-calls newest. If it ordered by the rig's clock, a clock stepped backwards would
-freeze the row until the clock caught up, and a car still racing would drop off
-the board. Arrival order is safe because the agent sends one report at a time.
+The server keeps the report the rig's clock calls **newest**, by `sampledAt`,
+not whichever arrived last: a request abandoned on a timeout that lands after
+its successor would otherwise rewind the car, or put it back in the session it
+just left, until the next report. The rig's clock only ever decides between
+reports, though. Once the stored row has gone unreplaced past the 15 s stale
+mark, any report replaces it, so a rig whose clock steps backwards is dimmed
+for at most that long rather than frozen until its clock catches up and then
+dropped off the board. A refused report still answers 200: it was valid, only
+late.
 
 ## What the feed returns
 
