@@ -148,7 +148,20 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   Nothing else in the codebase encodes a points table. The scale is the venue's
   own and is final: P1-P5 score 5, 4, 3, 2, 1, and every other entrant scores 1.
   Fifth place and the participation point being equal is intended. Season total
-  is the sum of every round entered - no drops, no bonus points.
+  is the sum of every round entered - no drops.
+- League night is open qualifying then a race in one hosted iRacing session, and
+  the owner's rule (2026-10-01) is that a round with a race result is placed by
+  its finishing order plus 1 bonus point for the fastest valid qualifying lap;
+  a driver with laps but no race finish still scores the 1. A round with no
+  race result is placed by fastest lap with no bonus, which keeps every round
+  played before races were recorded scoring as it did. Placing stays in the one
+  query (`queryRoundResults`), points stay in `league-scoring.ts`.
+  `lib/race-results.ts` is the only writer of the result: captured from race
+  reports at the chequered flag, swept at close, corrected and frozen by staff
+  on `/staff` ([docs/live-race.md](docs/live-race.md#the-race-result)). Which
+  captured rows are the round's race is `v_league_race_session` - the session
+  with the most cars, so a solo race on a spare rig never replaces it; a
+  capture must never delete another session's rows.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the
   round restores whatever was there (`league_rounds.prior_featured_combo`, null

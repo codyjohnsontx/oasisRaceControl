@@ -90,7 +90,8 @@ row with its clock skew worked out by the database, the rig monitor's alerts
 firing once and recovering once however many evaluations run at once, event
 mode and its once-per-flip line and 20-minute update, the TV board heartbeat's
 one row per open page, the live race feed's one row per rig and its grouping,
-order, staleness and driver join, the
+order, staleness and driver join, league night's race result (captured at the
+flag, swept at close, frozen by a staff correction) and the points it scores, the
 upgrade path of a migration onto a database that already holds laps, and the
 staff PIN reset judged through the driver sign-in it repairs (new PIN in, old
 PIN out, lockout gone, laps kept, audit row written) - are covered by a

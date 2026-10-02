@@ -541,6 +541,76 @@ deploys, nothing reads or writes the table.
 
 ---
 
+### Applying 0009_race_results.sql
+
+`0009_race_results.sql` records league night's race result, which a round is
+now scored by ([live-race.md](./live-race.md#the-race-result)). It is
+additive: two new tables (`league_race_results`, `league_race_starts`) with
+foreign keys to `league_rounds`, `drivers` and `rigs`, and two views over
+them; nothing existing is altered. It needs 0008 applied first. Apply it to
+Neon **before merging** the change that adds it, as with 0008. Until the merge
+deploys, nothing reads or writes the tables, and every round already played
+keeps scoring exactly as before.
+
+1. Point at production exactly as in
+   [step 2 of the recovery runbook](#2-point-at-production-and-prove-it).
+2. Precheck. From `apps/web`: `npm run db:check`. Read the target line, then
+   expect exactly one missing file, `0009_race_results.sql`. Anything more and
+   stop. In the SQL Editor, the same answer reads as one row with every column
+   `t` (read-only, one statement):
+
+   ```sql
+   select
+     exists (select 1 from schema_migrations where version = '0008_race_status.sql') as has_0008,
+     not exists (select 1 from schema_migrations where version = '0009_race_results.sql') as lacks_0009,
+     to_regclass('public.league_race_results') is null as results_absent,
+     to_regclass('public.league_race_starts') is null as starts_absent,
+     to_regclass('public.v_league_race_session') is null as session_view_absent,
+     to_regclass('public.v_league_race_results') is null as results_view_absent;
+   ```
+
+3. `npm run db:migrate`. Read the `migrating <host>/<database>` line; expect
+   `applied 0009_race_results.sql` and `skip` for the rest. The runner applies
+   the file and its bookkeeping row in one transaction.
+
+   Only if you cannot run it, paste this into Neon's SQL Editor as one
+   explicit transaction, with the whole of `db/migrations/0009_race_results.sql`
+   copied in unaltered where marked:
+
+   ```sql
+   begin;
+   -- the whole of db/migrations/0009_race_results.sql, unaltered
+   insert into schema_migrations (version) values ('0009_race_results.sql');
+   commit;
+   ```
+
+   If anything in it fails, nothing is applied - fix the paste and run it
+   again. Without the `insert` the build gate keeps refusing to deploy.
+4. Verify, whichever way you applied it. `db/verify/0009_race_results.sql`
+   fingerprints both tables' columns and constraints and both views against a
+   database built from the migration. Like 0008's, it is a **single SELECT
+   with no transaction around it**. Paste the whole file and the result grid
+   is the answer. Or from `psql`:
+
+   ```bash
+   psql "$DATABASE_URL" -f ../../db/verify/0009_race_results.sql
+   ```
+
+   Expect seven rows, every one `ok = t`. Any `f` means the database does not
+   hold what the file says: stop and compare `actual` with `expected`.
+5. After the merge deploys, `/league` and `/staff` answer as before; a 500 on
+   either means the tables are missing on the database the deployment uses.
+   On league night, once the race session starts while the round is open,
+   it shows here within a few seconds (read-only, one statement):
+
+   ```sql
+   select st.session_unique_id, st.session_num, st.started_at,
+          (select count(*) from league_race_results rr where rr.round_id = st.round_id) as places
+   from league_race_starts st
+   join league_rounds r on r.id = st.round_id and r.closed_at is null;
+   -- one row for the race; places fills in from the chequered flag
+   ```
+
 ## Recovering a database that is behind the code
 
 **Symptom.** Routes that need a migration return HTTP 500 while the rest of the
