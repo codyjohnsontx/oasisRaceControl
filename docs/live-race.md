@@ -154,11 +154,12 @@ its finishing order, and the fastest valid qualifying lap earns a bonus point
 every round was before. `lib/race-results.ts` is the only writer, called from
 `POST /api/agent/race-status` for each report it stores while a round is open:
 
-- Any report from a `Race` session records when that session was first heard
-  (`league_race_starts`). Laps carry no session, so that time is what makes a
-  lap a qualifying lap: one completed before the round's race began.
+- Any report from a `Race` session records that its rig was heard in that
+  session, and when (`league_race_starts`). Laps carry no session, so the
+  round's race's first report is what makes a lap a qualifying lap: one
+  completed before the round's race began.
 - From the chequered flag on (`SessionState` checkered or cool-down), each
-  report records the rig's signed-in driver at iRacing's place
+  report from the round's race records the rig's signed-in driver at iRacing's place
   (`league_race_results`, source `flag`), replaced by every later report, so
   a car still crossing the line settles where iRacing puts it. A rig keeps
   the first driver it recorded for a race: somebody signing in during
@@ -172,10 +173,12 @@ every round was before. `lib/race-results.ts` is the only writer, called from
   it, mark a DNF or take a driver out. Saving replaces the round's rows with
   source `staff` and nothing captures into that round again.
 
-The round's race is the session the most cars were captured in
+The round's race is the race session the most rigs were heard in while the
+round was open, and never one only a single rig was heard in
 (`v_league_race_session` in `db/migrations/0009_race_results.sql`), so a
-walk-in's solo race on a spare rig that finishes while the round is open never
-replaces the league race. Places are renumbered 1..n among the venue's drivers
+walk-in's solo race on a spare rig is never the league race - not at the flag,
+not as the qualifying cut-off, and not for the close sweep, whenever it
+finishes. Places are renumbered 1..n among the venue's drivers
 when the round is placed: a car nobody was signed in to leaves no gap, and two
 rigs reporting one place are put in order by laps completed and shown to staff
 as a repeat.

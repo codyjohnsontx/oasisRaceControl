@@ -150,6 +150,26 @@ describe("reconcileDraft", () => {
     expect(draft.out).toEqual([]);
   });
 
+  it("keeps a driver staff already put in the order where they put them when the flag records them", () => {
+    const ana = entry("Ana", { finish_position: 1 });
+    const cal = { driver_id: "driver-Cal", display_name: "Cal" };
+    const capturedBen = entry("Ben", { finish_position: 3 });
+    // Staff added Cal and then Ben, because Cal really finished second; Ben's
+    // flag row arrived and staff made another edit against that review.
+    const basis = review([ana, capturedBen], [cal]);
+    const edited = { finishers: [ana, cal, capturedBen], dnf: [], out: [] };
+
+    const draft = reconcileDraft(
+      edited,
+      basis,
+      review([ana, entry("Cal", { finish_position: 2 }), capturedBen], []),
+    );
+
+    expect(ids(draft.finishers)).toEqual(["driver-Ana", "driver-Cal", "driver-Ben"]);
+    expect(draft.dnf).toEqual([]);
+    expect(draft.out).toEqual([]);
+  });
+
   it("keeps staff's choices for drivers whose place in the review has not changed", () => {
     const ana = entry("Ana", { finish_position: 1 });
     const ben = entry("Ben", { finish_position: 2 });

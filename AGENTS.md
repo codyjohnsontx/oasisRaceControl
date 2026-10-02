@@ -158,10 +158,12 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   query (`queryRoundResults`), points stay in `league-scoring.ts`.
   `lib/race-results.ts` is the only writer of the result: captured from race
   reports at the chequered flag, swept at close, corrected and frozen by staff
-  on `/staff` ([docs/live-race.md](docs/live-race.md#the-race-result)). Which
-  captured rows are the round's race is `v_league_race_session` - the session
-  with the most cars, so a solo race on a spare rig never replaces it; a
-  capture must never delete another session's rows.
+  on `/staff` ([docs/live-race.md](docs/live-race.md#the-race-result)). The
+  round's race is `v_league_race_session` - the race session the most rigs
+  were heard in while the round was open, and never one heard from a single
+  rig, so a walk-in's solo race on a spare rig is never it. The flag capture,
+  the qualifying cut-off and the close sweep all read that view; a capture
+  must never delete another session's rows.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the
   round restores whatever was there (`league_rounds.prior_featured_combo`, null

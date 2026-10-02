@@ -85,6 +85,13 @@ async function report(rig: SeededRig, change: Partial<RaceStatusEvent>): Promise
   expect(res.status).toBe(200);
 }
 
+/** Each rig reporting the league race under green, as every rig does long before the flag. */
+async function racing(...seats: Seat[]): Promise<void> {
+  for (const [i, s] of seats.entries()) await report(s.rig, { position: i + 1 });
+}
+
+const SOLO_RACE = { sessionUniqueId: 99_000_001, sessionNum: 0 };
+
 const atFlag = (position: number, lapsCompleted = 12) => ({
   sessionState: SESSION_STATE.checkered,
   position,
@@ -115,11 +122,12 @@ async function lap(seat: Seat, lapTimeMs: number, minutesAgo: number): Promise<v
   );
 }
 
-/** Moves the race's start back, so laps can be driven on either side of it. */
-async function raceBeganMinutesAgo(minutes: number): Promise<void> {
+/** Moves a race's start back, so laps can be driven on either side of it. */
+async function raceBeganMinutesAgo(minutes: number, race = LEAGUE_RACE): Promise<void> {
   await testDb().query(
-    "update league_race_starts set started_at = now() - make_interval(mins => $1)",
-    [minutes],
+    `update league_race_starts set started_at = now() - make_interval(mins => $1)
+     where session_unique_id = $2 and session_num = $3`,
+    [minutes, race.sessionUniqueId, race.sessionNum],
   );
 }
 
@@ -154,7 +162,7 @@ describeDb("league night's race result against real Postgres", () => {
     await lap(cal, 92_000, 40);
 
     // Gridding and racing: the race is heard, nothing is placed yet.
-    for (const [i, s] of [ana, ben, cal].entries()) await report(s.rig, { position: i + 1 });
+    await racing(ana, ben, cal);
     expect((await getRoundField(roundId)).every((row) => !row.raced)).toBe(true);
     await raceBeganMinutesAgo(20);
     // Cal's fastest lap of the night is a race lap: it is no qualifying lap.
@@ -185,7 +193,8 @@ describeDb("league night's race result against real Postgres", () => {
 
   it("settles a place as the car crosses the line, never from a report sampled earlier", async () => {
     const roundId = await openLeagueRound(COMBO);
-    const ana = await seat("Ana");
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await racing(ana, ben);
 
     await report(ana.rig, atFlag(3, 11));
     await report(ana.rig, { ...atFlag(2, 12), sessionState: SESSION_STATE.coolDown });
@@ -200,7 +209,8 @@ describeDb("league night's race result against real Postgres", () => {
 
   it("does not hand a rig's place to a driver who signs in during cool-down", async () => {
     const roundId = await openLeagueRound(COMBO);
-    const ana = await seat("Ana");
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await racing(ana, ben);
     await report(ana.rig, atFlag(1));
 
     await testDb().query(
@@ -218,14 +228,63 @@ describeDb("league night's race result against real Postgres", () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben] = [await seat("Ana"), await seat("Ben")];
     const walkIn = await seat("Walk-in");
+    await racing(ana, ben);
     await report(ana.rig, atFlag(1));
     await report(ben.rig, atFlag(2));
 
-    await report(walkIn.rig, { ...atFlag(1), sessionUniqueId: 99_000_001, sessionNum: 0 });
+    await report(walkIn.rig, { ...atFlag(1), ...SOLO_RACE });
 
     expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
       ["Ana", 1],
       ["Ben", 2],
+    ]);
+  });
+
+  it("never takes a walk-in's solo race that finishes first for the round's race", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    const walkIn = await seat("Walk-in");
+    await lap(ana, 91_000, 40);
+    await lap(ben, 90_000, 40);
+
+    await report(walkIn.rig, { ...SOLO_RACE, position: 1 });
+    await report(walkIn.rig, { ...atFlag(1), ...SOLO_RACE });
+    await raceBeganMinutesAgo(60, SOLO_RACE);
+
+    // The solo race is no race of the round: nothing is placed, nothing heard.
+    expect((await getRoundField(roundId)).every((row) => !row.raced)).toBe(true);
+    expect(await getRaceReview(roundId)).toMatchObject({ raceHeard: false, entries: [] });
+
+    await racing(ana, ben);
+    await raceBeganMinutesAgo(20);
+    await report(ben.rig, atFlag(1));
+    await report(ana.rig, atFlag(2));
+
+    // Qualifying ran until the league race began, not the solo race.
+    expect(await placing(roundId)).toEqual([
+      {
+        name: "Ben",
+        position: 1,
+        qualifying: 1,
+        points: POINTS_BY_POSITION[0] + QUALIFYING_BONUS_POINTS,
+      },
+      { name: "Ana", position: 2, qualifying: 2, points: POINTS_BY_POSITION[1] },
+    ]);
+  });
+
+  it("closing mid-race sweeps the league race, not a solo race that already took the flag", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    const walkIn = await seat("Walk-in");
+    await report(walkIn.rig, { ...SOLO_RACE, position: 1 });
+    await report(walkIn.rig, { ...atFlag(1), ...SOLO_RACE });
+    await report(ana.rig, { position: 2 });
+    await report(ben.rig, { position: 1 });
+
+    expect((await closeLeagueRound(roundId))?.racePlacesSwept).toBe(2);
+    expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
+      ["Ben", 1],
+      ["Ana", 2],
     ]);
   });
 
@@ -271,6 +330,7 @@ describeDb("league night's race result against real Postgres", () => {
   it("places two cars reporting one place by laps completed, and shows staff the repeat", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await racing(ana, ben);
     await report(ana.rig, atFlag(1, 9));
     await report(ben.rig, atFlag(1, 10));
 
@@ -289,6 +349,7 @@ describeDb("league night's race result against real Postgres", () => {
     const eve = await seat("Eve");
     await lap(dee, 89_000, 40); // qualified fastest, never raced
     await lap(ana, 90_000, 40);
+    await racing(ana, ben, cal, eve);
     await report(ana.rig, atFlag(1));
     await report(ben.rig, atFlag(2));
     await report(cal.rig, atFlag(3));
@@ -335,7 +396,8 @@ describeDb("league night's race result against real Postgres", () => {
 
   it("refuses a correction naming a driver outside the round, or on a closed round", async () => {
     const roundId = await openLeagueRound(COMBO);
-    const ana = await seat("Ana");
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await racing(ana, ben);
     await report(ana.rig, atFlag(1));
     const stranger = await seedDriver("Stranger");
 

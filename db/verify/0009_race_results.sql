@@ -49,7 +49,7 @@ with fingerprints (check_name, expected, actual) as (
     ),
     (
       'race starts columns',
-      '6562bfe20cd1a784cff58790dbb9e873',
+      '3a138788efe181001c44672fc497e462',
       (select md5(string_agg(
                 concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, '')),
                 ',' order by ordinal_position))
@@ -58,14 +58,14 @@ with fingerprints (check_name, expected, actual) as (
     ),
     (
       'race starts constraints',
-      '3c04efe9382846cbe002e904a107e096',
+      '5877c17aeeded93e758442f213e7a455',
       (select md5(string_agg(conname || '|' || pg_get_constraintdef(oid), ',' order by conname))
        from pg_constraint
        where conrelid = to_regclass('public.league_race_starts'))
     ),
     (
       'race session view',
-      '383250b517120e36ccb803b1e49afc63',
+      'b0f9d18fab984972cbc224c07ceb5da1',
       (select md5(regexp_replace(pg_get_viewdef(to_regclass('public.v_league_race_session')), '\s+', ' ', 'g')))
     ),
     (

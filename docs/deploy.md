@@ -604,11 +604,14 @@ keeps scoring exactly as before.
    it shows here within a few seconds (read-only, one statement):
 
    ```sql
-   select st.session_unique_id, st.session_num, st.started_at,
+   select st.session_unique_id, st.session_num, min(st.started_at) as started_at,
+          count(*) as rigs,
           (select count(*) from league_race_results rr where rr.round_id = st.round_id) as places
    from league_race_starts st
-   join league_rounds r on r.id = st.round_id and r.closed_at is null;
-   -- one row for the race; places fills in from the chequered flag
+   join league_rounds r on r.id = st.round_id and r.closed_at is null
+   group by st.round_id, st.session_unique_id, st.session_num;
+   -- one row for the race, rigs counting every rig in it; places fills in
+   -- from the chequered flag
    ```
 
 ## Recovering a database that is behind the code

@@ -114,9 +114,8 @@ export async function listSeasonRounds(seasonId: string): Promise<LeagueRound[]>
  * race result is ranked by best valid lap, exactly as every round was before.
  *
  * Qualifying is the laps completed before the round's race began - the start
- * of its race session (v_league_race_session), else of the latest race heard
- * while the round was open (league_race_starts) - or every lap when no race
- * was heard.
+ * of its race session (v_league_race_session) - or every lap when the round
+ * has no race.
  * The start is the server's clock and lap times are the rig's; iRacing grids
  * and paces the field between the end of qualifying and the green, so ordinary
  * clock skew does not move a lap across it.
@@ -138,14 +137,8 @@ async function queryRoundResults(
        select rr.* from v_league_race_results rr join r on r.id = rr.round_id
      ),
      race_start as (
-       select distinct on (st.round_id) st.round_id, st.started_at
-       from league_race_starts st
-       join r on r.id = st.round_id
-       left join v_league_race_session rs
-         on rs.round_id = st.round_id
-        and rs.session_unique_id = st.session_unique_id
-        and rs.session_num = st.session_num
-       order by st.round_id, rs.round_id is not null desc, st.started_at desc
+       select rs.round_id, rs.started_at
+       from v_league_race_session rs join r on r.id = rs.round_id
      ),
      field as (
        select f.round_id, f.driver_id, d.display_name

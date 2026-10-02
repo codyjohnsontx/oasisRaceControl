@@ -26,19 +26,26 @@ function reviewBuckets(review: RaceReview): Map<string, { bucket: Bucket; driver
 
 /**
  * The draft as it stands against the latest review. `basis` is the review the
- * draft was last edited against: a driver whose place in the review has
- * changed since - a car that crossed the line, a driver new to the round - is
- * moved to where the review now has them, at the end of that list; a driver
- * the round no longer has is dropped; everyone else stays where staff put
- * them. Saving names every driver the server will keep, so a draft that
- * missed a late finisher would delete their place.
+ * draft was last edited against. A driver staff have not moved from where
+ * that review had them, whose place in the review has changed since - a car
+ * that crossed the line, a driver new to the round - is moved to where the
+ * review now has them, at the end of that list; a driver the round no longer
+ * has is dropped; everyone else stays where staff put them. Saving names every
+ * driver the server will keep, so a draft that missed a late finisher would
+ * delete their place.
  */
 export function reconcileDraft(draft: Draft, basis: RaceReview, review: RaceReview): Draft {
   const before = reviewBuckets(basis);
   const now = reviewBuckets(review);
-  const changed = [...now.values()].filter(
-    ({ driver, bucket }) => before.get(driver.driver_id)?.bucket !== bucket,
-  );
+  const placed = new Map<string, Bucket>();
+  for (const bucket of ["finishers", "dnf", "out"] as const) {
+    for (const driver of draft[bucket]) placed.set(driver.driver_id, bucket);
+  }
+  const changed = [...now.values()].filter(({ driver, bucket }) => {
+    const was = before.get(driver.driver_id)?.bucket;
+    const at = placed.get(driver.driver_id);
+    return was !== bucket && (at === undefined || at === was);
+  });
   const moved = new Set(changed.map(({ driver }) => driver.driver_id));
   const list = (bucket: Bucket) => [
     ...draft[bucket].filter(

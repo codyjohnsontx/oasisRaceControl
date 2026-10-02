@@ -18,16 +18,17 @@
 --   report arrived (rig_assignments), the same rule that owns the rig's laps.
 --   lib/race-results.ts is the only writer.
 --
--- v_league_race_session / v_league_race_results - which of those rows are the
---   round's race. A rig can finish some other race while a round is open (a
---   walk-in's solo race on a spare rig), so a capture never deletes another
---   session's rows; the round's race is the session the most cars were
---   captured in, and only its rows count. Change that rule here, nowhere else.
+-- league_race_starts - every rig heard in each iRacing race session while a
+--   round was open, and when. Laps carry no session, so the session's first
+--   report is what separates a qualifying lap from a race lap: the qualifying
+--   bonus only looks at laps completed before the round's race began.
 --
--- league_race_starts - when each iRacing race session was first heard while a
---   round was open. Laps carry no session, so this is what separates a
---   qualifying lap from a race lap: the qualifying bonus only looks at laps
---   completed before the race the results came from began.
+-- v_league_race_session / v_league_race_results - which race is the round's,
+--   and which result rows count. A rig can run some other race while a round
+--   is open (a walk-in's solo race on a spare rig), so the round's race is the
+--   session the most rigs were heard in, and never one heard from a single
+--   rig. The flag capture, the qualifying cut-off and the close sweep all read
+--   it. Change that rule here, nowhere else.
 --
 -- Additive: two new tables and two views, nothing existing altered. The
 -- foreign keys take a brief SHARE ROW EXCLUSIVE on league_rounds, drivers and
@@ -63,8 +64,8 @@ create table league_race_results (
   recorded_at timestamptz not null default now(),
   primary key (round_id, driver_id),
   constraint race_result_session_whole check ((session_unique_id is null) = (session_num is null)),
-  -- A captured row always says which rig and session it came from; the views
-  -- below choose the round's race by it.
+  -- A captured row always says which rig and session it came from;
+  -- v_league_race_results counts it only for the round's race.
   constraint race_result_capture_has_origin
     check (source = 'staff' or (rig_id is not null and session_unique_id is not null))
 );
@@ -74,20 +75,22 @@ create table league_race_starts (
   -- iRacing's SessionUniqueID and SessionNum, as rig_race_status carries them.
   session_unique_id int not null,
   session_num int not null,
-  -- The server's clock when the first rig reported this race session.
+  rig_id uuid not null references rigs (id),
+  -- The server's clock when this rig first reported this race session.
   started_at timestamptz not null default now(),
-  primary key (round_id, session_unique_id, session_num)
+  primary key (round_id, session_unique_id, session_num, rig_id)
 );
 
--- The round's race: the session the most of its result rows came from, the
--- latest recorded winning a tie. Staff rows keep the session they were
--- captured in, so a corrected result still names its race.
+-- The round's race: the race session the most rigs were heard in, and at
+-- least two - a solo race is never the round's. The latest to start wins a
+-- tie. started_at is when its first rig reported it.
 create view v_league_race_session as
-select distinct on (round_id) round_id, session_unique_id, session_num
-from league_race_results
-where session_unique_id is not null
+select distinct on (round_id) round_id, session_unique_id, session_num,
+       min(started_at) as started_at
+from league_race_starts
 group by round_id, session_unique_id, session_num
-order by round_id, count(*) desc, max(recorded_at) desc,
+having count(*) >= 2
+order by round_id, count(*) desc, min(started_at) desc,
          session_unique_id desc, session_num desc;
 
 -- The rows that are the round's race result. Saving on /staff replaces every
