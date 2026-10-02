@@ -203,11 +203,11 @@ the agent.
 For the league-night race board: when two cars swap places in a hosted
 iRacing race, the wall shows it within seconds. Every rig reports only its own
 car. The server keeps the latest row per rig, joins it to whoever is signed in
-on that rig, groups rigs by iRacing's `SessionUniqueID` and orders them by
-position (`GET /api/race/live`, docs on the web side). So identity comes from
-the rig's assignment exactly as a lap's does - there is no mapping of iRacing
-accounts to people - and a car driven from a PC without this agent does not
-appear.
+on that rig, groups rigs by iRacing's `SessionUniqueID` and puts them in race
+order (`GET /api/race/live`; how it orders them is the web side's
+`docs/live-race.md`). So identity comes from the rig's assignment exactly as a
+lap's does - there is no mapping of iRacing accounts to people - and a car
+driven from a PC without this agent does not appear.
 
 **What it reads.** Beside the lap detector's channels, every frame:
 `SessionState`, `SessionFlags`, `SessionTimeRemain`, `SessionLapsRemainEx`,
@@ -257,8 +257,9 @@ one per attempt. Laps are unaffected either way.
 **What it costs.** One more `RunLoop` in `AgentService` - the poll and flush's
 timer pattern, on the thread pool, no new thread - in the same below-normal
 priority process. On the telemetry thread, about fifteen more small reads per
-frame from memory it already maps and two small objects (the tick and its timestamp wrapper); the row is built
-only when the loop asks for it, every 2.5 s.
+frame from memory it already maps and two small objects (the tick and its
+timestamp wrapper); the row is built only when the loop asks for it, every
+2.5 s.
 
 ### The race line in the diagnostic
 
@@ -293,16 +294,16 @@ layout. Do this with the `0.6-race-status` exe, before trusting the board:
      `"Lone Qualify"`) in qualifying, and `type="Race"` in the race.
    - `state=` steps through the race start: get in car (1), parade laps (3),
      racing (4), then checkered (5) and cool down (6) at the end.
-   - In the race, **when one car passes the other, both rigs' `P` change
-     within a second**, and the two never show the same position.
+   - In the race, both rigs' `P` match iRacing's own standings, and the two
+     never show the same position.
    - **Overtake mid-lap**, well away from the start/finish line, and watch
      when `P` changes on both rigs: at the pass, or only when the cars next
-     cross the line. iRacing's `PlayerCarPosition` is reported to be the
-     scoring position, updated only at the line; if that is what the rigs
-     show, the board would show a pass up to a lap late. Write down which it
-     is and tell the developer before Wednesday - the order can then be
-     derived from `lapsCompleted` and `lapDistPct`, which the report already
-     carries, without changing the agent.
+     cross the line. The web feed orders a race under green by `done N at
+     NN%` (laps completed, then lap distance) on the assumption that `P`
+     moves only at the line, so also check that those two count up smoothly
+     and that a car just across the line never reads as further back than
+     one that has not crossed it. Write down what was seen and tell the
+     developer before Wednesday.
    - `CarIdxF2Time` reads `0.000s` on the leader and the other car's seconds
      behind it, growing and shrinking with the gap; compare it with iRacing's
      own relative or timing screen. In practice it holds a lap time instead,
@@ -315,7 +316,7 @@ layout. Do this with the `0.6-race-status` exe, before trusting the board:
    `POST /api/agent/race-status` deployed first), two rigs signed in to two
    drivers, in a hosted race: no `live race position is not reaching the site`
    line on either rig; `GET /api/race/live` lists both rigs in one session,
-   ordered by position, each with its signed-in driver; an overtake shows on
+   in race order, each with its signed-in driver; an overtake shows on
    the feed within about five seconds; closing one agent dims that rig after
    about 15 s and drops it after about 60 s.
 4. **Footprint:** the [FPS check below](#checking-the-footprint-on-a-rig-with-iracing)
