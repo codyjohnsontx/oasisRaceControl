@@ -417,18 +417,31 @@ the fallback when a rig cannot read the sim.
 ## Walk-up check-in on the rig
 
 With `rigQrToken` in its config the agent signs a typed name and 4-digit PIN
-in through the backend's existing login, register and check-in routes as an
-HTTP client with a cookie jar (`OasisRigAgent.Core/DriverCheckInClient.cs`),
-so a returning driver keeps one row and it works against whatever web commit
-is deployed without a server change - verify request shapes against the
-served commit, not only main.
+in through the backend's login, register and check-in routes as an HTTP
+client with a cookie jar (`OasisRigAgent.Core/DriverCheckInClient.cs`), so a
+returning driver keeps one row. Since 0.7 it first asks `GET /api/auth/name`
+whether the name is taken - the one route the rig needs that the event-night
+backends lacked - so verify request shapes against the served commit, not
+only main.
 
 The rig shows it as a WinForms window since 0.6, and the console screens of
 the 2026-09-27/28 event stay behind `--console` as the fallback. Both are thin
 fronts over `OasisRigAgent.Core/WalkUp/`: the sign-in rules are `SignInFlow`
 (one state machine, pinned by `SignInFlowTests` for both fronts - never write
-a second one in a view), `WalkUpViewModel` is everything the window draws, and
-`WalkUpRules` holds the warnings, log-out wording and seat-emptying. The host
+a second one in a view), `WalkUpViewModel` is everything the window draws,
+`TonightStanding` is the seated driver's place and best lap off the same
+public tonight feed the wall polls (never a second ranking), and
+`WalkUpRules` holds the warnings, log-out wording and seat-emptying. The
+window's look is `Windows/Brand.cs`: colours named after the tokens in
+`apps/web/src/app/globals.css`, Orbitron and Rajdhani embedded in the exe
+(OFL, texts beside them) and registered process-private at first use - never
+install a font on a rig, and never a web view. The owner's rules for it
+(2026-10-02): an ordinary resizable window opened centred, never topmost or
+full screen; name first, no "Raced here before?"; and nothing on a rig PC
+that costs iRacing frames - the standing poll is one GET every 20 s off the
+UI thread, stopped at log-out. Every screen has an HTML mockup with PNGs in
+`docs/images/rig-window/`; update them with the form, since nothing can
+screenshot the window off a rig. The host
 project multi-targets: `net8.0` is the console build the tests run as a
 process on macOS, `net8.0-windows` adds `OasisRigAgent/Windows/` and is what
 the rig runs (publish with `-f net8.0-windows`); the window cannot run on a
@@ -458,17 +471,19 @@ the rig and on the web's sign-up and guest "Save profile" forms
 (`apps/web/src/lib/new-pin.ts`): a PIN mistyped once is one its owner can
 never sign back in with, and only staff can fix it, with Reset PIN on
 `/staff` (2026-09-28). The
-rig asks "Raced here before?" instead of guessing from a failed login - that
-guess is what told chuy to use a different name - and its sign-in is
-`SignInFlow` (above), over the client's separate `CheckInReturningAsync`
-(login only) and `CheckInNewAsync` (register only). The rules are documented
-on `SignInStep` and every sequence is a row of
+rig looks the name up (`NameTakenAsync`, one bit) instead of guessing from
+a failed login - that guess is what told chuy to use a different name - and
+its sign-in is `SignInFlow` (above), over the client's separate
+`CheckInReturningAsync` (login only) and `CheckInNewAsync` (register only).
+The rules are documented on `SignInStep` and every sequence is a row of
 `SignInFlowTests.EverySignInSequenceEndsWhereTheRulesSay`, so change a rule
-and its row together. The load-bearing ones: the returning path never
-registers and makes at most two failed logins per name for the whole sign-in - typing the name
-again gets no fresh tries - so a stranger cannot lock the real driver out
-(the backend locks at five) from one sign-in; the new path never logs in, and compares its two
-PINs on the rig. The website says the same in `driver-auth-refusal.ts`.
+and its row together. The load-bearing ones: a taken name never registers
+and makes at most two failed logins per name for the whole sign-in - typing
+the name again gets no fresh tries and no lookup - so a stranger cannot lock
+the real driver out (the backend locks at five) from one sign-in; a free
+name never logs in, and compares its two PINs on the rig; empty input after
+the name goes back to it ("Not you?"). The website says the same in
+`driver-auth-refusal.ts`.
 
 ## Rig heartbeat
 

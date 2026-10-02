@@ -347,7 +347,8 @@ internal sealed class WalkUpForm : Form
         _laps.OwnerDraw = true;
         _laps.DrawColumnHeader += (_, e) =>
         {
-            e.Graphics.FillRectangle(new SolidBrush(Brand.Bg), e.Bounds);
+            using var back = new SolidBrush(Brand.Bg);
+            e.Graphics.FillRectangle(back, e.Bounds);
             TextRenderer.DrawText(e.Graphics, e.Header!.Text.ToUpperInvariant(), _placeEyebrow.Font,
                 new Rectangle(e.Bounds.X + 6, e.Bounds.Y, e.Bounds.Width - 6, e.Bounds.Height), Brand.Muted,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);

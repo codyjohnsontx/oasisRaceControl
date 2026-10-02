@@ -65,10 +65,16 @@ Built and verified end-to-end against the live backend:
   not been verified against the real sim.
 
 - ✅ **Sign-in window** (`0.6`): on the rig the walk-up sign-in and driving
-  screens are a WinForms window - "Raced here before?", name, masked PIN,
-  the driver's name and laps, a Log out button - over the same Core and the
-  same server routes as the console screens, which stay one flag away
-  (`--console`). See [Walk-up mode](#walk-up-mode-the-rig-is-the-check-in).
+  screens are a WinForms window over the same Core and the same server routes
+  as the console screens, which stay one flag away (`--console`). See
+  [Walk-up mode](#walk-up-mode-the-rig-is-the-check-in).
+- ✅ **The venue's look, name first** (`0.7`): the window is drawn in the
+  wall's and the website's colours and faces with the Oasis mark; the driver
+  types a name and the rig works out whether they are new or returning
+  (`GET /api/auth/name`), so "Raced here before?" is gone; the driving screen
+  carries their best lap tonight and their place on tonight's board, off the
+  feed the wall reads. Mockups of every screen are in
+  `docs/images/rig-window/` (the window only runs on a rig PC).
 
 One host, two builds. The `net8.0` build is a console program that runs on
 macOS, Linux and Windows, so the whole agent can be tested anywhere (the
@@ -317,35 +323,61 @@ slugs were inserted for the event, use those.
 With `rigQrToken` set, the rig runs the loop the owner asked for: "the user
 types their name and then as they make laps it assigns it accordingly. When
 they are done, they just exit out the program and then it waits for the next
-person." Since `0.6` it is a window; the console screens the 2026-09-27/28
-event ran are the fallback, one flag away.
+person." Since `0.6` it is a window, and since `0.7` it wears the venue's look
+and asks for the name first; the console screens the 2026-09-27/28 event ran
+are the fallback, one flag away.
 
 ### The sign-in window
 
-`OasisRigAgent.exe` on the rig opens one window, sized to be read from the
-seat: the rig number in the header, the warnings standing right now under it
-in amber, one prompt at a time in large type with the error on its own line in
-red above it, and the last few lines the console would have printed in small
-grey type at the bottom (lap skipped and why, iRacing connected, the status
-line when it changes).
+`OasisRigAgent.exe` on the rig opens one ordinary window - resizable, centred
+on the screen, never on top of iRacing and never full screen, so staff can
+reach anything else beside it - in the venue's look: the near-black of the
+wall and the website, the cyan and pink accents, Orbitron for headings and
+Rajdhani for text, the Oasis helmet in the header over the site's gradient
+rule (`Windows/Brand.cs` takes the colours from `apps/web/src/app/globals.css`
+by name; the two faces travel inside the exe under the Open Font License and
+are registered process-private, nothing is installed on the rig). Type is
+sized to be read from the seat and scales with the window when a resize ends.
+Under the header: the warnings standing right now in orange, one prompt at a
+time in large type with its notice on the line above (red for a problem,
+green for the last driver's thank-you), and the last few lines the console
+would have printed in small grey type at the bottom (lap skipped and why,
+iRacing connected, the status line when it changes). Every screen is drawn in
+`docs/images/rig-window/` as an HTML mockup with the same layout, colours,
+sizes and wording, with a PNG of each, because the window itself only runs on
+the rig.
 
-**Sign in.** "Raced here before?" with two buttons (y and n on the keyboard
-answer it too); then the name, Enter or Next; then the PIN - a masked field
-that takes four digits and nothing else, Enter or Sign in. A new driver picks
-a PIN and types it again before anything is registered. Back goes one step,
-as Enter alone does on the console. A refused sign-in - wrong PIN, name taken,
-two tries used, backend unreachable, the previous log-out still owed - comes
-back to the name with the reason on the red line; the rules are the console's
-exactly (below), and so are the words, except that a taken name says to press
-Back and choose "Yes, I have raced here" rather than to answer y. The window shows "Signing in Mike..." while
-the backend is asked and takes no input until it answers.
+**Sign in.** The name, Enter or Next, and nothing else until the backend has
+said whether that name is already somebody's (`GET /api/auth/name`; the
+window shows "Looking up Mike..." meanwhile). A taken name shows "WELCOME
+BACK" over it and asks for the PIN - a masked field that takes four digits
+and nothing else, Enter or Sign in - with **Not you? Pick a different name**
+(Escape does the same) for a newcomer who happened to type a name that is
+somebody else's. A free name shows "NEW DRIVER" and has its owner pick a PIN
+and type it again before anything is registered. A refused sign-in - wrong
+PIN, two tries used, a name taken between the lookup and the sign-up, backend
+unreachable, the previous log-out still owed - comes back with the reason on
+the red line; the rules are the console's exactly (below), and so are the
+words. The window takes no input while the backend is asked.
 
-**Driving.** The driver's name large and green, the welcome line, their laps
-as a list - lap number, time, incidents, and `queued` until the backend has
-the lap, then `posted` - and one **Log out** button. Only laps stamped with
-this driver's stint are listed; a lap read while nobody was signed in appears
-in the grey lines as "lap not counted - sign in first", as on the console.
-Log out ends the stint here at once, tells the backend now or when it can be
+**Driving.** "DRIVING AS" and the driver's name in cyan, the welcome line,
+and a card with the two numbers the owner asked for: their **best lap
+tonight** in the largest type on the screen (gold when it leads) and their
+**place on tonight's board** ("P2", "of 3 drivers tonight"), read off the
+same public feed the wall's tonight board polls
+(`/api/leaderboard/tonight?limit=all`), so the rig and the wall agree by
+construction - a lap in the wrong car or over the incident limit is on
+neither, and the card says "No valid lap yet in <combo>" until the first
+clean one. The feed is read every 20 seconds while a driver is seated, once
+more about a second after one of their laps posts, on a thread-pool loop
+that never touches the window's thread, and not at all once they log out; a
+feed that cannot be reached keeps the last answer and says so once in the
+grey lines. Below the card, their laps as a list - lap number, time,
+incidents, and `queued` until the backend has the lap, then `posted` - and
+the **Log out** button at the top right. Only laps stamped with this
+driver's stint are listed; a lap read while nobody was signed in appears in
+the grey lines as "lap not counted - sign in first", as on the console. Log
+out ends the stint here at once, tells the backend now or when it can be
 reached, and returns to the sign-in screen, which thanks the driver and says
 what the backend has been told.
 
@@ -366,8 +398,10 @@ ending whatever is open on the rig, and the status line says a sign-out is
 owed until then.
 
 The window is deliberately light: plain WinForms controls, no web view, no
-timer, no animation, a redraw only when something changed, in a process that
-already runs below normal priority - iRacing keeps the CPU and the frame rate
+timer, no animation, a redraw only when something changed and fonts rebuilt
+only when a resize ends, one small GET every 20 seconds for the standing card
+while someone is driving, in a process that already runs below normal
+priority - iRacing keeps the CPU and the frame rate
 (see [Heartbeat and footprint](#heartbeat-and-footprint)). Everything it
 shows comes from `WalkUpViewModel.Snapshot()` in Core, and the agent's loops
 never wait on the window.
@@ -385,20 +419,22 @@ easiest way to run it.
 The console is two screens, and it is cleared whenever it moves between
 them.
 
-**Sign in.** "Raced here before?" first, then a name and a 4-digit PIN - typed
-twice by a new driver. Each prompt is its own screen. The PIN shows as it is
-typed (the rig keyboards are hard to type on blind), and the screen is cleared
-the moment Enter is pressed, so it is gone before the next person sits down.
-Enter alone at any prompt goes back one step. A refused sign-in comes back to
-the name with the reason.
+**Sign in.** The name first; it is looked up, and a taken name is asked for
+its 4-digit PIN while a free name has its owner pick one - typed twice. Each
+prompt is its own screen. The PIN shows as it is typed (the rig keyboards are
+hard to type on blind), and the screen is cleared the moment Enter is
+pressed, so it is gone before the next person sits down. Enter alone at any
+prompt after the name goes back to the name - "not you?" for a newcomer who
+typed somebody else's name. A refused sign-in comes back to the name with the
+reason.
 
 ```text
 ============================================================
   OASIS RACE CONTROL - RIG 01 - SIGN IN
 ============================================================
 
-Raced here before? Type y or n and press Enter:
-y
+Type your name for the leaderboard and press Enter:
+Mike
 ```
 
 ```text
@@ -406,8 +442,8 @@ y
   OASIS RACE CONTROL - RIG 01 - SIGN IN
 ============================================================
 
-Name: Mike
-Type your 4-digit PIN and press Enter (Enter alone goes back to the name):
+Welcome back, Mike
+Type your 4-digit PIN and press Enter (not you? Enter alone goes back to the name):
 4821
 ```
 
@@ -447,13 +483,16 @@ A name and a 4-digit PIN are the driver's for the whole event: the same name
 and PIN on either rig, on either day, come back to the same driver, so every
 attempt at a fast time lands on one leaderboard row.
 
-How it works, with nothing new on the server: a returning driver's name and
-PIN are logged in through the backend's own driver sign-in (`POST
-/api/auth/login`), and a new driver's are registered (`POST
-/api/auth/register`) once the PIN has been typed the same twice; then `POST
-/api/checkin` with this rig's QR token
-and the takeover confirmed - the same requests the phone pages send, so it
-runs against the deployed app as it is. The next lap is stamped with the new
+How it works, with one small route of its own on the server: the typed name
+is looked up (`GET /api/auth/name?displayName=...`, one bit - taken or not,
+the same bit the leaderboards and a 409 from register already gave away),
+then a returning driver's name and PIN are logged in through the backend's
+own driver sign-in (`POST /api/auth/login`), and a new driver's are
+registered (`POST /api/auth/register`) once the PIN has been typed the same
+twice; then `POST /api/checkin` with this rig's QR token and the takeover
+confirmed - the same requests the phone pages send. A backend older than the
+lookup answers it 404, which the rig reports as such at the name; `--console`
+on the same build is no help there, since both fronts share the flow. The next lap is stamped with the new
 stint at once. Logging out goes through the agent's existing
 switch-driver (durable: a sign-out the backend cannot be told about now is
 delivered later, and until then this rig's laps carry no owner). A sign-in
@@ -473,25 +512,31 @@ agent only ever stamps a lap with a stint its own check-in created, so a lap
 driven before anyone signs in on this run is nobody's, never the last
 driver's.
 
-- The rig asks whether the driver has raced here before instead of guessing
-  it from a failed login. That guess is what went wrong at the 2026-09-28
+- The rig looks the name up instead of guessing from a failed login, and
+  instead of asking "Raced here before?" as the first window did (the owner
+  had the question dropped). The guess is what went wrong at the 2026-09-28
   event: a returning driver's wrong PIN was tried as a new sign-up and they
-  were told to use a different name.
-- Returning (y): the PIN is asked once, and a wrong one once more. After the
+  were told to use a different name. The lookup is deliberately one bit:
+  whether the name exists, which the leaderboards show anyway; not whether it
+  is a guest's, banned, or without a PIN.
+- A taken name: the PIN is asked once, and a wrong one once more. After the
   second wrong PIN: "That PIN does not match. Ask staff to reset your PIN, or
   press Enter to try a different name." A name that has used its two tries
   gets the same message immediately if it is typed again, in any case, without
-  asking the backend, until someone signs in. So one sign-in makes at most two
-  failed logins for a name, and someone typing a name that is not theirs
-  cannot lock the real driver out (the backend locks a name at five). This
-  path never registers anything. Staff reset a PIN on `/staff`; there is no
-  PIN reset on the rig.
-- New (n): the PIN is typed twice, and two that differ are both asked for
+  asking the backend (or looking it up), until someone signs in. So one
+  sign-in makes at most two failed logins for a name, and someone typing a
+  name that is not theirs cannot lock the real driver out (the backend locks
+  a name at five). This path never registers anything. Staff reset a PIN on
+  `/staff`; there is no PIN reset on the rig. A newcomer who typed somebody
+  else's name goes back to the name (Not you? / Enter alone) and nothing was
+  tried for it.
+- A free name: the PIN is typed twice, and two that differ are both asked for
   again on the rig, without a backend call. A PIN mistyped once at sign-up is
-  one its owner can never sign back in with. A name that is already taken
-  says so, and says to answer y if it is theirs. This path never logs in. A
-  check-in that fails after the sign-up says the driver is signed up and goes
-  back to the name as a returning driver, so the retry logs in.
+  one its owner can never sign back in with. A name taken between the lookup
+  and the sign-up (two rigs, one name, the same minute) says so and goes back
+  to the name, where typing it again finds it taken and asks for the PIN.
+  This path never logs in. A check-in that fails after the sign-up says the
+  driver is signed up and goes back to the name, which is theirs now.
   Names are unique across everyone the app has ever stored, not only this
   event's drivers.
 - Five wrong PINs lock that name for 15 minutes; the console says until when.
@@ -688,21 +733,32 @@ The window cannot run on the Mac that builds it, so these are checked on the
 rig before the night, with the hosted backend and the rig's real
 `agent.config.json`:
 
-1. **Start.** Double-click the exe. One window, no console behind it; "Rig NN"
-   in the header; "Connecting to Oasis Race Control..." then "Raced here
-   before?" within a few seconds; `/staff` shows the rig's seat empty even if
-   someone was checked in before.
-2. **Returning driver.** Yes, a known name, the PIN masked as dots, a wrong
-   PIN says "That PIN does not match "<name>". Type it again." with the name
-   kept; a second wrong one says to ask staff; the right one shows the name in
-   green and `/staff` shows them checked in on this rig.
-3. **New driver.** No, a free name, a PIN typed twice (two that differ are
-   both asked again, nothing registered); the driver appears in `/staff`
-   and the name is taken from then on.
-4. **Laps.** Drive one: the row appears `queued` and turns `posted`; the lap
-   is on `/leaderboards` under the driver. Pull the network, drive one, the
-   amber warning appears and the row stays `queued`; plug it back and it
-   posts.
+1. **Start.** Double-click the exe. One ordinary window, centred, no console
+   behind it, in the venue's colours with the helmet and "RIG NN" in the
+   header; headings in Orbitron and text in Rajdhani (if everything is in
+   Segoe UI the embedded faces did not register - the grey lines say so at
+   start-up); "Connecting to Oasis Race Control..." then "Type your name"
+   within a few seconds; `/staff` shows the rig's seat empty even if someone
+   was checked in before. Drag the window larger and smaller: the type
+   follows when the drag ends, nothing overlaps, and the window can be moved
+   aside and iRacing clicked.
+2. **Returning driver.** A known name: "Looking up <name>..." then "WELCOME
+   BACK" with the name in cyan and the PIN masked as dots; **Not you? Pick a
+   different name** returns to the name. A wrong PIN says "That PIN does not
+   match "<name>". Type it again." with the name kept; a second wrong one
+   says to ask staff; the right one shows "DRIVING AS <name>" and `/staff`
+   shows them checked in on this rig.
+3. **New driver.** A free name: "NEW DRIVER" with the name in pink, a PIN
+   typed twice (two that differ are both asked again, nothing registered);
+   the driver appears in `/staff` and the name is taken from then on - type
+   it again on the other rig and it asks for the PIN.
+4. **Laps and the card.** With no valid lap the card reads "--:--.---" and
+   "No valid lap yet in <tonight's combo>". Drive one: the row appears
+   `queued` and turns `posted`, and within a couple of seconds the card shows
+   the time and "P<n> of <m> drivers tonight", matching the wall's tonight
+   board and `/leaderboards`; a time that leads is gold. Pull the network,
+   drive one, the orange warning appears and the row stays `queued`; plug it
+   back and it posts and the card catches up.
 5. **Log out.** The button returns to sign-in with "Thanks <name>, you are
    logged out."; `/staff` shows the seat empty.
 6. **Every way out.** With a driver signed in: close button; Alt+F4; Task

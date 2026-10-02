@@ -360,6 +360,9 @@ static int RunWindow(WalkUpViewModel model, AgentService agent, string priority)
 static void ShowWindow(WalkUpViewModel model, AgentService agent, string priority)
 {
     model.Log(priority);
+    // The first thing a rig check reads off the grey lines: whether the window
+    // is drawing in the venue's faces or fell back to Segoe UI.
+    model.Log(Brand.FontsLoaded ? "Brand faces loaded (Orbitron, Rajdhani)." : "Brand faces not loaded - drawing in Segoe UI.");
     var quit = new CancellationTokenSource();
     // The model's exit sign-out owns the sign-in that may be in flight: it
     // waits for it out of the same bound, seats and ends the stint it opened,
