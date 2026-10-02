@@ -9,6 +9,18 @@
  *     --pace <base lap ms>         default: 138500
  *     --metrics <path>             append one JSON line per request (off by default)
  *
+ *   Race mode, for the live race feed (docs/live-race.md):
+ *     --race                       also post this rig's race status every 2.5 s
+ *     --car <n>                    which car of the field this rig drives, from 0   default: 0
+ *     --field <n>                  cars in the simulated race                       default: 3
+ *     --race-minutes <n>           length of each race; the next is a new session   default: 20
+ *     --race-start <iso time>      when the first race started    default: 2026-01-01T00:00:00Z
+ *
+ * Every rig started with the same --field, --race-minutes and --race-start
+ * drives the same race, computed from the clock (scripts/fake-race.ts), and
+ * reports its own car - so `--car 0`, `--car 1` and `--car 2` on the seed's
+ * three rigs put one race on GET /api/race/live, with cars passing each other.
+ *
  * Sends a v2 heartbeat every 30s and a LAP_COMPLETED every interval, with
  * jittered lap times around the pace, ~15% dirty laps (incidentDelta > 0),
  * and an occasional deliberate duplicate eventId to prove idempotency.
@@ -33,6 +45,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { uptime } from "node:os";
 import type { HeartbeatEvent, LapCompletedEvent } from "../src/lib/events";
+import { fakeRaceProblem, fakeRaceStatus, type FakeRace } from "./fake-race";
 
 type AgentEvent = HeartbeatEvent | LapCompletedEvent;
 
@@ -46,6 +59,27 @@ const BASE = arg("base", "http://localhost:3000").replace(/\/$/, "");
 const INTERVAL_MS = Number(arg("interval", "20")) * 1000;
 const PACE_MS = Number(arg("pace", "138500"));
 const METRICS_PATH = arg("metrics", "");
+
+const RACE_MODE = process.argv.includes("--race");
+const RACE_CAR = Number(arg("car", "0"));
+const RACE: FakeRace = {
+  field: Number(arg("field", "3")),
+  lapMs: PACE_MS,
+  startMs: Date.parse(arg("race-start", "2026-01-01T00:00:00Z")),
+  raceMs: Number(arg("race-minutes", "20")) * 60_000,
+  // Clear of anything a real iRacing server is likely to report on the same
+  // database during a demo.
+  sessionBase: 400_000,
+};
+/** Inside the 2-3 s the agent's contract asks for (raceStatusEvent). */
+const RACE_REPORT_MS = 2_500;
+if (RACE_MODE) {
+  const problem = fakeRaceProblem(RACE, RACE_CAR);
+  if (problem) {
+    console.error(`[fake-rig] ${problem}`);
+    process.exit(2);
+  }
+}
 
 /** One line per request plus one per lap about to be sent, or nothing at all
  *  when --metrics is not given. Appends are synchronous and each process owns
@@ -274,6 +308,40 @@ async function post(events: AgentEvent[]): Promise<void> {
   }
 }
 
+/**
+ * Posts this rig's car as the agent does: one report at a time, and a report
+ * that fails is dropped rather than retried, because the next one replaces it.
+ */
+let raceInFlight = false;
+
+async function postRaceStatus(): Promise<void> {
+  if (raceInFlight) return;
+  raceInFlight = true;
+  inFlight += 1;
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(`${BASE}/api/agent/race-status`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify(fakeRaceStatus(RACE, RACE_CAR, Date.now())),
+    });
+    record({ kind: "race", ms: Date.now() - startedAt, status: res.status });
+    if (!res.ok) {
+      console.error(`[fake-rig] race status refused: HTTP ${res.status}`, await res.text());
+    }
+  } catch (error) {
+    record({ kind: "race", ms: Date.now() - startedAt, error: (error as Error).message });
+    console.error(`[fake-rig] race status failed:`, (error as Error).message);
+  } finally {
+    raceInFlight = false;
+    inFlight -= 1;
+    exitWhenDrained();
+  }
+}
+
 /** Only called once a poll has succeeded, so assignmentId is a real answer. */
 function nextLap(assignment: string | null): LapCompletedEvent {
   lapNumber += 1;
@@ -312,6 +380,12 @@ function nextLap(assignment: string | null): LapCompletedEvent {
 
 console.log(`[fake-rig] driving ${COMBO.trackName} / ${COMBO.carName}`);
 console.log(`[fake-rig] api=${BASE} lap every ${INTERVAL_MS / 1000}s — Ctrl+C to stop`);
+if (RACE_MODE) {
+  console.log(
+    `[fake-rig] racing car ${RACE_CAR} of ${RACE.field}, ` +
+      `race status every ${RACE_REPORT_MS / 1000}s`,
+  );
+}
 
 void pollAssignment();
 void post([heartbeat()]);
@@ -329,6 +403,7 @@ const timers = [
     }
     void post([nextLap(assignmentId)]);
   }, INTERVAL_MS),
+  ...(RACE_MODE ? [setInterval(() => void postRaceStatus(), RACE_REPORT_MS)] : []),
 ];
 
 /**

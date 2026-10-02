@@ -1,5 +1,6 @@
 import { query, queryOne } from "@/lib/db";
 import { rigFromBearer } from "@/lib/agent-auth";
+import { parseJson, readBody } from "@/lib/http";
 import { scheduleMonitor } from "@/lib/monitor/run";
 import {
   agentEventsBody,
@@ -103,40 +104,6 @@ export async function POST(request: Request) {
     // idempotency keys keep the retry from double-inserting.
     console.error("[agent/events] batch failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });
-  }
-}
-
-/**
- * The request body as text, or null once it passes `maxBytes`. Reads the stream
- * and stops there rather than buffering whatever was sent, and trusts a
- * Content-Length only to refuse early, never to accept.
- */
-async function readBody(request: Request, maxBytes: number): Promise<string | null> {
-  const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) return null;
-  if (!request.body) return "";
-
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > maxBytes) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
   }
 }
 
