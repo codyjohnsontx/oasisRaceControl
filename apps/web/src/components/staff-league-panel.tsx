@@ -26,11 +26,15 @@ const ERROR_MESSAGES = new Map<string, string>([
     "unknown_driver",
     "Someone in that order is no longer in the round - the list has been refreshed.",
   ],
+  [
+    "race_changed",
+    "Another car finished while you were editing - it has been added. Check the order and save again.",
+  ],
 ]);
 
 /** Errors that mean this page is behind the database rather than that the
  *  action was wrong, so re-reading fixes what staff are looking at. */
-const STALE_ERRORS = new Set(["not_open", "no_season", "unknown_driver"]);
+const STALE_ERRORS = new Set(["not_open", "no_season", "unknown_driver", "race_changed"]);
 
 export type ComboOption = {
   track_name: string;
@@ -279,8 +283,13 @@ export function StaffLeaguePanel({
             <StaffRaceResult
               review={raceReview}
               busy={busy}
-              onSave={(finishers, dnf) =>
-                post("/api/staff/league/race-result", { roundId: openRound.id, finishers, dnf })
+              onSave={(finishers, dnf, out) =>
+                post("/api/staff/league/race-result", {
+                  roundId: openRound.id,
+                  finishers,
+                  dnf,
+                  out,
+                })
               }
             />
           )}

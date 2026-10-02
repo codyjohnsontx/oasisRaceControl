@@ -13,10 +13,14 @@ const body = z
     finishers: z.array(z.uuid()).max(MAX_ENTRANTS),
     /** In the race but not classified. */
     dnf: z.array(z.uuid()).max(MAX_ENTRANTS),
+    /** Taken out of the race: in the round, with no race finish. */
+    out: z.array(z.uuid()).max(MAX_ENTRANTS),
   })
   .refine((input) => input.finishers.length + input.dnf.length > 0, "empty_result")
   .refine(
-    (input) => new Set([...input.finishers, ...input.dnf]).size === input.finishers.length + input.dnf.length,
+    (input) =>
+      new Set([...input.finishers, ...input.dnf, ...input.out]).size ===
+      input.finishers.length + input.dnf.length + input.out.length,
     "driver_named_twice",
   );
 
@@ -37,12 +41,12 @@ export async function POST(request: Request) {
   if (input instanceof Response) return input;
 
   try {
-    const saved = await saveRaceResult(input.roundId, input.finishers, input.dnf);
+    const saved = await saveRaceResult(input.roundId, input.finishers, input.dnf, input.out);
     if (saved.status === "not_open") {
       return Response.json({ error: "not_open" }, { status: 404 });
     }
-    if (saved.status === "unknown_driver") {
-      return Response.json({ error: "unknown_driver" }, { status: 409 });
+    if (saved.status === "unknown_driver" || saved.status === "race_changed") {
+      return Response.json({ error: saved.status }, { status: 409 });
     }
 
     await writeAudit({

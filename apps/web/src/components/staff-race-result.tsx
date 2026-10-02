@@ -74,7 +74,7 @@ export function StaffRaceResult({
   review: RaceReview;
   busy: boolean;
   /** Resolves true once the server has the result. */
-  onSave: (finishers: string[], dnf: string[]) => Promise<boolean>;
+  onSave: (finishers: string[], dnf: string[], out: string[]) => Promise<boolean>;
 }) {
   const [editing, setEditing] = useState<{ draft: Draft; basis: RaceReview } | null>(null);
   const draft = editing && reconcileDraft(editing.draft, editing.basis, review);
@@ -94,6 +94,7 @@ export function StaffRaceResult({
     const saved = await onSave(
       draft.finishers.map((driver) => driver.driver_id),
       draft.dnf.map((driver) => driver.driver_id),
+      draft.out.map((driver) => driver.driver_id),
     );
     if (saved) setEditing(null);
   }

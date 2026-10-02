@@ -178,7 +178,10 @@ every round was before. `lib/race-results.ts` is the only writer, called from
 - Staff review the result on `/staff` while the round is open, with every
   driver in the round who has no race finish listed under it, and can reorder
   it, mark a DNF or take a driver out. Saving replaces the round's rows with
-  source `staff` and nothing captures into that round again.
+  source `staff` and nothing captures into that round again. A save that
+  does not account for a place captured since staff last read the result is
+  refused (`race_changed`) and the page re-reads, so a late finisher is
+  never deleted unseen.
 
 The round's race is the race session the most rigs were heard in while the
 round was open, and never one only a single rig was heard in

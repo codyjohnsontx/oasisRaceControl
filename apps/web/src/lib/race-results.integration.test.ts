@@ -456,9 +456,14 @@ describeDb("league night's race result against real Postgres", () => {
     expect(before.notInRace.map((driver) => driver.display_name)).toEqual(["Dee"]);
 
     // Ana was penalised behind Cal; Ben retired.
-    expect(await saveRaceResult(roundId, [cal.driverId, ana.driverId], [ben.driverId])).toEqual({
-      status: "saved",
-    });
+    expect(
+      await saveRaceResult(
+        roundId,
+        [cal.driverId, ana.driverId],
+        [ben.driverId],
+        [eve.driverId, dee.driverId],
+      ),
+    ).toEqual({ status: "saved" });
 
     // The rigs keep reporting through cool-down, and the round closes.
     await report(ben.rig, { ...atFlag(1), sessionState: SESSION_STATE.coolDown });
@@ -495,11 +500,47 @@ describeDb("league night's race result against real Postgres", () => {
     await report(ana.rig, atFlag(1));
     const stranger = await seedDriver("Stranger");
 
-    expect(await saveRaceResult(roundId, [ana.driverId, stranger.id], [])).toEqual({
+    expect(await saveRaceResult(roundId, [ana.driverId, stranger.id], [], [])).toEqual({
       status: "unknown_driver",
     });
     await closeLeagueRound(roundId);
-    expect(await saveRaceResult(roundId, [ana.driverId], [])).toEqual({ status: "not_open" });
+    expect(await saveRaceResult(roundId, [ana.driverId], [], [])).toEqual({ status: "not_open" });
+  });
+
+  it("refuses a correction that would delete a place captured after staff last read the result", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben, cal] = [await seat("Ana"), await seat("Ben"), await seat("Cal")];
+    await racing(ana, ben, cal);
+    await report(ana.rig, atFlag(1));
+    await report(ben.rig, atFlag(2));
+
+    const read = await getRaceReview(roundId);
+    expect(read.entries.map((entry) => entry.display_name)).toEqual(["Ana", "Ben"]);
+    // Cal crosses the line between the dashboard's refresh and staff's save.
+    await report(cal.rig, atFlag(3));
+
+    expect(
+      await saveRaceResult(
+        roundId,
+        read.entries.map((entry) => entry.driver_id),
+        [],
+        read.notInRace.map((driver) => driver.driver_id),
+      ),
+    ).toEqual({ status: "race_changed" });
+    expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
+      ["Ana", 1],
+      ["Ben", 2],
+      ["Cal", 3],
+    ]);
+
+    // Taken out deliberately, a captured driver's place is staff's to remove.
+    expect(
+      await saveRaceResult(roundId, [ana.driverId, ben.driverId], [], [cal.driverId]),
+    ).toEqual({ status: "saved" });
+    expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
+      ["Ana", 1],
+      ["Ben", 2],
+    ]);
   });
 
   it("places a round with no race result by fastest lap, exactly as before, with no bonus", async () => {

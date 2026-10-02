@@ -225,13 +225,21 @@ export async function getRaceReview(roundId: string): Promise<RaceReview> {
  * placed 1..n, and `dnf` in the race but not classified. Replaces every row of
  * the round, keeping where each captured place came from, and freezes the
  * round against capture. Only drivers already in the round - a lap in it or a
- * place in its race - can be named.
+ * place in its race - can be named. `out` is everyone staff took out of the
+ * race; a place recorded for a driver in none of the three lists arrived after
+ * staff last read the result, and the save is refused rather than delete it.
  */
 export async function saveRaceResult(
   roundId: string,
   finishers: string[],
   dnf: string[],
-): Promise<{ status: "saved" } | { status: "not_open" } | { status: "unknown_driver" }> {
+  out: string[],
+): Promise<
+  | { status: "saved" }
+  | { status: "not_open" }
+  | { status: "unknown_driver" }
+  | { status: "race_changed" }
+> {
   return withTransaction(async (client) => {
     const round = await client.query(
       "select id from league_rounds where id = $1 and closed_at is null for update",
@@ -250,6 +258,16 @@ export async function saveRaceResult(
       [roundId, named],
     );
     if (known.rows.length !== named.length) return { status: "unknown_driver" as const };
+
+    const unseen = await client.query(
+      `select 1
+       from v_league_race_results rr
+       join drivers d on d.id = rr.driver_id and d.status = 'active'
+       where rr.round_id = $1 and rr.driver_id <> all ($2::uuid[])
+       limit 1`,
+      [roundId, [...named, ...out]],
+    );
+    if (unseen.rows[0]) return { status: "race_changed" as const };
 
     await client.query(
       "delete from league_race_results where round_id = $1 and driver_id <> all ($2::uuid[])",
