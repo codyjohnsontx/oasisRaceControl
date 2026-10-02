@@ -84,8 +84,8 @@ describeDb("the live race feed against real Postgres", () => {
 
   it("keeps one row per rig, replaced by each report", async () => {
     const rig = await seedRig(7);
-    await report(rig, { position: 3, lap: 5 });
-    await report(rig, { position: 2, lap: 6, sessionFlags: 1 });
+    await report(rig, { sampledAt: "2026-10-07T19:30:01.000Z", position: 3, lap: 5 });
+    await report(rig, { sampledAt: "2026-10-07T19:30:02.000Z", position: 2, lap: 6, sessionFlags: 1 });
 
     const { rows } = await testDb().query(
       `select position, lap, session_flags, sampled_at is not null as sampled,
@@ -110,19 +110,6 @@ describeDb("the live race feed against real Postgres", () => {
     expect(rows).toEqual([
       { sampled_at: new Date("2026-10-07T19:30:02.000Z"), lap_dist_pct: 0.8, session_unique_id: 2 },
     ]);
-  });
-
-  it("lets a report from another session win a tie on the rig's clock", async () => {
-    const rig = await seedRig(7);
-    await report(rig, { sampledAt: "2026-10-07T19:30:02.000Z", sessionUniqueId: 1, position: 4 });
-    await report(rig, { sampledAt: "2026-10-07T19:30:02.000Z", sessionUniqueId: 1, position: 3 });
-    await report(rig, { sampledAt: "2026-10-07T19:30:02.000Z", sessionUniqueId: 2, position: 1 });
-
-    const { rows } = await testDb().query(
-      "select position, session_unique_id from rig_race_status where rig_id = $1",
-      [rig.id],
-    );
-    expect(rows).toEqual([{ position: 1, session_unique_id: 2 }]);
   });
 
   it("replaces a row the feed already calls stale with any report, so a clock stepped back dims the rig instead of freezing it", async () => {

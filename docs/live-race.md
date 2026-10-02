@@ -65,8 +65,8 @@ just left, until the next report. The rig's clock only ever decides between
 reports, though. Once the stored row has gone unreplaced past the 15 s stale
 mark, any report replaces it, so a rig whose clock steps backwards is dimmed
 for at most that long rather than frozen until its clock catches up and then
-dropped off the board. A report from a different session also wins a tie on
-`sampledAt`. A refused report still answers 200: it was valid, only late.
+dropped off the board. A refused report still answers 200: it was valid, only
+late.
 
 ## What the feed returns
 

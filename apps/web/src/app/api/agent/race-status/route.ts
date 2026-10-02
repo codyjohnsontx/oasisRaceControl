@@ -23,8 +23,7 @@ import { RACE_STALE_AFTER_S } from "@/lib/race-live";
  * row that has gone unreplaced past the feed's stale threshold
  * (RACE_STALE_AFTER_S) is replaced by any report, so a rig whose clock steps
  * backwards is dimmed for at most that long rather than frozen until its
- * clock catches up and then dropped off the board. A report from a different
- * session also wins a tie on `sampled_at`.
+ * clock catches up and then dropped off the board.
  *
  * A refused report still answers 200: it was valid, only late, and the agent
  * has nothing to do about it.
@@ -82,9 +81,7 @@ export async function POST(request: Request) {
          on_pit_road = excluded.on_pit_road,
          incidents = excluded.incidents
        where excluded.sampled_at > rig_race_status.sampled_at
-          or rig_race_status.received_at < now() - make_interval(secs => $21)
-          or (excluded.session_unique_id <> rig_race_status.session_unique_id
-              and excluded.sampled_at >= rig_race_status.sampled_at)`,
+          or rig_race_status.received_at < now() - make_interval(secs => $21)`,
       [
         rig.id,
         s.sampledAt,
