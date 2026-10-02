@@ -29,6 +29,10 @@ internal sealed class WalkUpBackend : HttpMessageHandler
     /// between the server creating the stint and the rig learning its id.</summary>
     public volatile TaskCompletionSource? HoldCheckInAnswer;
 
+    /// <summary>When set, a checkout is applied and then holds its answer
+    /// until this completes (or the request is cancelled).</summary>
+    public volatile TaskCompletionSource? HoldCheckoutAnswer;
+
     /// <summary>The stint open on the rig as the backend sees it.</summary>
     public string? OpenAssignmentId => _open;
     private int _stints;
@@ -62,6 +66,7 @@ internal sealed class WalkUpBackend : HttpMessageHandler
         };
         lock (Calls) Calls.Add($"{path} {answer}");
         if (path == "/api/checkin" && HoldCheckInAnswer is { } hold) await hold.Task.WaitAsync(ct);
+        if (path == "/api/agent/checkout" && HoldCheckoutAnswer is { } held) await held.Task.WaitAsync(ct);
         return new HttpResponseMessage(status) { Content = new StringContent(answer, Encoding.UTF8, "application/json") };
     }
 

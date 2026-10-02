@@ -338,8 +338,21 @@ static void AttachDriverLog(IracingTelemetrySource source, Action<string> log, A
 /// the handler returns, so the handler must not return before the sign-out is
 /// recorded. The exit work starts on the thread pool, never on the UI thread,
 /// so that synchronous wait cannot deadlock on a continuation posted back to
-/// the thread it blocks.</summary>
+/// the thread it blocks.
+///
+/// Windows Forms needs a single-threaded apartment, and the main thread of an
+/// async top-level program is not one, so the window runs on a thread of its
+/// own that the main thread waits for.</summary>
 static int RunWindow(WalkUpViewModel model, AgentService agent, string priority)
+{
+    var ui = new Thread(() => ShowWindow(model, agent, priority));
+    ui.SetApartmentState(ApartmentState.STA);
+    ui.Start();
+    ui.Join();
+    return 0;
+}
+
+static void ShowWindow(WalkUpViewModel model, AgentService agent, string priority)
 {
     model.Log(priority);
     var quit = new CancellationTokenSource();
@@ -402,7 +415,6 @@ static int RunWindow(WalkUpViewModel model, AgentService agent, string priority)
     _ = model.StartAsync(quit.Token);
     Application.Run(form);
     exitWork.Value.GetAwaiter().GetResult();
-    return 0;
 }
 #endif
 

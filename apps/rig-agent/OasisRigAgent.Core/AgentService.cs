@@ -347,14 +347,17 @@ public sealed class AgentService : IAsyncDisposable
     /// before the first name anyway (<see cref="EmptySeatAsync"/>); the record
     /// makes that survive a start whose attempts all fail, and says on the
     /// status line that a sign-out is still owed. Only walk-up mode writes it,
-    /// where this agent is the rig's only check-in.</summary>
+    /// where this agent is the rig's only check-in. Only the settles that run
+    /// before a check-in deliver it - the empty seat and the one every sign-in
+    /// starts with - never the poll: nothing orders a poll against a check-in,
+    /// and an unqualified checkout landing after one would end the stint it
+    /// just opened.</summary>
     public const string UnknownStint = "*";
 
     /// <summary>Walk-up mode, on the way out: a sign-in was still in flight
     /// when the program closed and did not answer in time, so the backend may
     /// hold a stint this agent never heard the id of. Record a durable
-    /// <see cref="UnknownStint"/> checkout so the next start - or the next
-    /// successful poll, if this process lives that long - ends whatever is
+    /// <see cref="UnknownStint"/> checkout so the next start ends whatever is
     /// open here. Replaces a named checkout already owed: if the abandoned
     /// check-in landed, it took that stint over, and only an unqualified
     /// checkout reaches the one it opened.</summary>
@@ -695,7 +698,7 @@ public sealed class AgentService : IAsyncDisposable
 
         // The backend is reachable, so this is the moment a checkout the driver
         // pressed during an outage can finally be delivered.
-        await SettlePendingCheckoutAsync();
+        if (_pendingCheckout != UnknownStint) await SettlePendingCheckoutAsync();
     }
 
     /// <summary>Deliver a checkout the backend could not be told about when the

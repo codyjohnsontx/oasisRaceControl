@@ -239,6 +239,35 @@ public sealed class WalkUpViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task ClosingKeepsSigningOutUpWhenTheStartFinishesAfterIt()
+    {
+        await using var rig = new Rig(_dbPath);
+        var closing = rig.Model.SignOutOnExitAsync(WalkUpRules.ExitLimit);
+        await rig.Model.StartAsync(CancellationToken.None);
+        await closing;
+
+        var view = rig.Model.Snapshot();
+        Assert.Equal(WalkUpStage.Busy, view.Stage);
+        Assert.Equal("Signing out...", view.BusyText);
+    }
+
+    [Fact]
+    public async Task ClosingKeepsSigningOutUpWhenALogOutFinishesAfterIt()
+    {
+        await using var rig = new Rig(_dbPath);
+        await rig.SignInMikeAsync();
+        var hold = rig.Backend.HoldCheckoutAnswer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logOut = rig.Model.LogOutAsync();
+        await rig.Model.SignOutOnExitAsync(TimeSpan.FromMilliseconds(100));
+        hold.SetResult();
+        await logOut;
+
+        var view = rig.Model.Snapshot();
+        Assert.Equal(WalkUpStage.Busy, view.Stage);
+        Assert.Equal("Signing out...", view.BusyText);
+    }
+
+    [Fact]
     public async Task InputIsIgnoredWhileDrivingAndLogOutWhileSigningIn()
     {
         await using var rig = new Rig(_dbPath);

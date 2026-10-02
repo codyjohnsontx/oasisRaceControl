@@ -354,6 +354,40 @@ public sealed class AgentServiceTests : IDisposable
         });
     }
 
+    /// <summary>An unknown-stint checkout left by a close during a sign-in
+    /// closes whatever is open on the rig, so nothing that can land after a
+    /// check-in may send it. The poll is not ordered against a check-in: if it
+    /// delivered the record, a late checkout would end the stint a driver had
+    /// just opened and every lap after it would arrive unclaimed. Only the
+    /// settle a sign-in runs before its check-in delivers it.</summary>
+    [Fact]
+    public async Task The_poll_never_delivers_an_unknown_stint_checkout()
+    {
+        var backend = new StubBackend();
+        backend.Assign(AssignmentId);
+        var telemetry = new FakeTelemetrySource();
+        using var queue = new EventQueue(_dbPath);
+        queue.SetPendingCheckout(AgentService.UnknownStint);
+        using var http = new HttpClient(backend);
+        var client = new BackendClient(http, "https://x.test", "t");
+        await using var agent = new AgentService(WalkUpConfig(), client, queue, telemetry);
+
+        var polled = WaitForStatus(agent, s => s.AssignmentKnown);
+        agent.Start();
+        await polled;
+        await Task.Delay(300);
+
+        Assert.Empty(backend.Checkouts);
+        Assert.Equal(AssignmentId, backend.OpenAssignmentId);
+        Assert.Equal(AgentService.UnknownStint, queue.ReadPendingCheckout());
+        Assert.Equal(CheckoutDelivery.Queued, agent.CurrentStatus().Checkout);
+
+        Assert.True(await agent.SettlePendingCheckoutAsync());
+        Assert.Equal(new string?[] { null }, backend.Checkouts);
+        Assert.Null(backend.OpenAssignmentId);
+        Assert.Null(queue.ReadPendingCheckout());
+    }
+
     /// <summary>The ordinary walk-up path: the stint the rig's own check-in
     /// created stamps the next lap at once, without waiting for a poll, and the
     /// driver pressing Enter ends it.</summary>

@@ -89,7 +89,7 @@ public sealed class WalkUpViewModel : IDisposable
         lock (_lock)
         {
             _flow = new SignInFlow(notice, SignInFront.Window);
-            _busyText = null;
+            _busyText = _closing ? ClosingText : null;
         }
         RaiseChanged();
     }
@@ -124,7 +124,8 @@ public sealed class WalkUpViewModel : IDisposable
 
         try
         {
-            var result = await SignInAttempt.PerformAsync(_agent, _checkIn, request, _attempts.Token).ConfigureAwait(false);
+            var token = _attempts.Token;
+            var result = await Task.Run(() => SignInAttempt.PerformAsync(_agent, _checkIn, request, token)).ConfigureAwait(false);
             DriverCheckIn? seated = null;
             lock (_lock)
             {
@@ -204,7 +205,7 @@ public sealed class WalkUpViewModel : IDisposable
         lock (_lock)
         {
             _driver = null;
-            _busyText = null;
+            _busyText = _closing ? ClosingText : null;
             _flow = new SignInFlow(WalkUpRules.LoggedOut(driver.DisplayName, result), SignInFront.Window);
         }
         RaiseChanged();
