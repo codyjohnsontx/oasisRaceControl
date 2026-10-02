@@ -168,7 +168,9 @@ every round was before. `lib/race-results.ts` is the only writer, called from
   correct on `/staff`. The driver is whoever was signed in to the rig when
   the report arrived - the route stores that assignment on the report's
   `rig_race_status` row - so somebody signing in during cool-down does not
-  take the place.
+  take the place. A rig that takes the flag with nobody signed in records
+  its place as empty (`league_race_unsigned_places`), so neither a cool-down
+  sign-in nor the close sweep fills it.
 - Closing the round sweeps once more: a car of the race the flag never
   recorded - it stopped reporting, or the round closed mid-race - is recorded
   at its last reported place (source `close`) and placed behind every car
@@ -178,10 +180,13 @@ every round was before. `lib/race-results.ts` is the only writer, called from
 - Staff review the result on `/staff` while the round is open, with every
   driver in the round who has no race finish listed under it, and can reorder
   it, mark a DNF or take a driver out. Saving replaces the round's rows with
-  source `staff` and nothing captures into that round again. A save that
-  would delete a place captured since staff last read the result is
-  refused (`race_changed`) and the page re-reads, so a late finisher is
-  never deleted unseen.
+  source `staff` and nothing captures into that round again. The review
+  carries when its newest captured place was recorded (`capturedThrough`);
+  a save sent from a review older than the newest capture is refused
+  (`race_changed`) and the page re-reads, folding the late finisher into the
+  draft without moving anyone staff placed, so a place is never deleted
+  unseen. Captures take the round one at a time, so they are recorded in
+  the order they commit and that one timestamp is enough.
 
 The round's race is the race session the most rigs were heard in while the
 round was open, and never one only a single rig was heard in
@@ -193,7 +198,8 @@ when the round is placed: a car nobody was signed in to leaves no gap, and two
 rigs reporting one place are put in order by laps completed and shown to staff
 as a repeat.
 
-Applying the migration: [deploy.md](deploy.md#applying-0009_race_resultssql).
+Applying the migrations: [0009](deploy.md#applying-0009_race_resultssql),
+[0010](deploy.md#applying-0010_race_unsigned_placessql).
 
 ## Not settled yet
 

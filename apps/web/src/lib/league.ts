@@ -92,6 +92,9 @@ export type RaceReview = {
   entries: RaceReviewEntry[];
   /** Drivers with a lap in the round and no entry in its race. */
   notInRace: { driver_id: string; display_name: string }[];
+  /** When the newest place the rigs captured was recorded, null before any:
+   *  saving this review is refused once a newer one arrives. */
+  capturedThrough: string | null;
 };
 
 /** A single lap inside a round, for the expanded driver view. */

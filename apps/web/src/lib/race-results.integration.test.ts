@@ -318,6 +318,27 @@ describeDb("league night's race result against real Postgres", () => {
     expect((await getRaceReview(roundId)).entries.map((entry) => entry.display_name)).toEqual(["Ana"]);
   });
 
+  it("keeps a rig that took the flag with nobody signed in empty, at the flag and at close", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await racing(ana, ben);
+    await testDb().query(
+      "update rig_assignments set ended_at = now(), end_reason = 'driver_ended' where id = $1",
+      [ana.assignmentId],
+    );
+    await report(ana.rig, atFlag(1));
+    await report(ben.rig, atFlag(2));
+
+    // Dee signs in on Rig 1 while iRacing is still in cool-down.
+    const dee = await seedDriver("Dee");
+    await openAssignment(ana.rig.id, dee.id);
+    await report(ana.rig, { ...atFlag(1), sessionState: SESSION_STATE.coolDown });
+    expect((await getRaceReview(roundId)).entries.map((entry) => entry.display_name)).toEqual(["Ben"]);
+
+    expect((await closeLeagueRound(roundId))?.racePlacesSwept).toBe(0);
+    expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([["Ben", 1]]);
+  });
+
   it("keeps the league race when a walk-in's solo race on a spare rig finishes later", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben] = [await seat("Ana"), await seat("Ben")];
@@ -461,7 +482,7 @@ describeDb("league night's race result against real Postgres", () => {
         roundId,
         [cal.driverId, ana.driverId],
         [ben.driverId],
-        before.entries.map((entry) => entry.driver_id),
+        before.capturedThrough,
       ),
     ).toEqual({ status: "saved" });
 
@@ -499,15 +520,18 @@ describeDb("league night's race result against real Postgres", () => {
     await racing(ana, ben);
     await report(ana.rig, atFlag(1));
     const stranger = await seedDriver("Stranger");
+    const { capturedThrough } = await getRaceReview(roundId);
 
-    expect(await saveRaceResult(roundId, [ana.driverId, stranger.id], [], [])).toEqual({
-      status: "unknown_driver",
-    });
+    expect(
+      await saveRaceResult(roundId, [ana.driverId, stranger.id], [], capturedThrough),
+    ).toEqual({ status: "unknown_driver" });
     await closeLeagueRound(roundId);
-    expect(await saveRaceResult(roundId, [ana.driverId], [], [])).toEqual({ status: "not_open" });
+    expect(await saveRaceResult(roundId, [ana.driverId], [], capturedThrough)).toEqual({
+      status: "not_open",
+    });
   });
 
-  it("refuses a correction that would delete a place captured after staff last read the result", async () => {
+  it("refuses a correction saved from a review older than the newest place captured", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben, cal] = [await seat("Ana"), await seat("Ben"), await seat("Cal")];
     await lap(cal, 92_000, 40);
@@ -522,8 +546,9 @@ describeDb("league night's race result against real Postgres", () => {
     // Cal crosses the line between the dashboard's refresh and staff's save.
     await report(cal.rig, atFlag(3));
 
-    const seen = read.entries.map((entry) => entry.driver_id);
-    expect(await saveRaceResult(roundId, seen, [], seen)).toEqual({ status: "race_changed" });
+    expect(
+      await saveRaceResult(roundId, [ana.driverId, ben.driverId], [], read.capturedThrough),
+    ).toEqual({ status: "race_changed" });
     expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
       ["Ana", 1],
       ["Ben", 2],
@@ -531,10 +556,10 @@ describeDb("league night's race result against real Postgres", () => {
     ]);
 
     // Taken out deliberately once staff have seen it, a captured place is theirs to remove.
-    const reread = (await getRaceReview(roundId)).entries.map((entry) => entry.driver_id);
-    expect(await saveRaceResult(roundId, [ana.driverId, ben.driverId], [], reread)).toEqual({
-      status: "saved",
-    });
+    const reread = await getRaceReview(roundId);
+    expect(
+      await saveRaceResult(roundId, [ana.driverId, ben.driverId], [], reread.capturedThrough),
+    ).toEqual({ status: "saved" });
     expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
       ["Ana", 1],
       ["Ben", 2],
@@ -571,6 +596,24 @@ describeDb("league night's race result against real Postgres", () => {
       "select (select count(*) from league_race_results)::int as results, (select count(*) from league_race_starts)::int as starts",
     );
     expect(rows).toEqual([{ results: 0, starts: 0 }]);
+  });
+
+  it("passes the read-only verify the owner runs after hand-applying 0010", async () => {
+    const verify = readFileSync(join(REPO_ROOT, "db", "verify", "0010_race_unsigned_places.sql"), "utf8");
+    const client = await testDb().connect();
+    try {
+      await client.query(
+        `create temporary table schema_migrations (version text primary key);
+         insert into schema_migrations values ('0010_race_unsigned_places.sql')`,
+      );
+      const { rows } = await client.query<{ check_name: string; ok: boolean }>(verify);
+
+      expect(rows).toHaveLength(3);
+      expect(rows.filter((check) => !check.ok)).toEqual([]);
+    } finally {
+      await client.query("drop table if exists pg_temp.schema_migrations");
+      client.release();
+    }
   });
 
   it("passes the read-only verify the owner runs after hand-applying 0009", async () => {

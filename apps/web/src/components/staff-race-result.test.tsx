@@ -29,7 +29,7 @@ function render(review: RaceReview): string {
 
 describe("StaffRaceResult", () => {
   it("says there is no race yet, and offers a hand entry once the round has drivers", () => {
-    const empty = render({ raceHeard: false, confirmed: false, entries: [], notInRace: [] });
+    const empty = render({ raceHeard: false, confirmed: false, entries: [], notInRace: [], capturedThrough: null });
     expect(empty).toContain("No race yet");
     expect(empty).not.toContain("Enter result by hand");
 
@@ -38,6 +38,7 @@ describe("StaffRaceResult", () => {
       confirmed: false,
       entries: [],
       notInRace: [{ driver_id: "d", display_name: "Dee" }],
+      capturedThrough: null,
     });
     expect(withField).toContain("Race on - places record at the flag");
     expect(withField).toContain("Enter result by hand");
@@ -53,6 +54,7 @@ describe("StaffRaceResult", () => {
         entry("Ben", { finish_position: 3, rig_number: 5, laps_completed: 11 }),
       ],
       notInRace: [],
+      capturedThrough: null,
     });
     expect(html).toContain("Captured - check before closing");
     expect(html).toMatch(/P2<\/span><span[^>]*>Ben<\/span><span[^>]*>Rig 5 · iRacing P3 · 11 laps/);
@@ -70,6 +72,7 @@ describe("StaffRaceResult", () => {
         entry("Dan", { finish_position: null, source: "staff" }),
       ],
       notInRace: [{ driver_id: "e", display_name: "Eve" }],
+      capturedThrough: null,
     });
     expect(html.match(/same place twice/g)).toHaveLength(2);
     expect(html).toContain("not seen at the flag");
@@ -83,6 +86,7 @@ describe("StaffRaceResult", () => {
       confirmed: true,
       entries: [entry("Ana", { source: "staff", rig_number: null, laps_completed: null })],
       notInRace: [],
+      capturedThrough: null,
     });
     expect(html).toContain("Confirmed by staff");
     expect(html).not.toContain("iRacing P");
@@ -96,6 +100,7 @@ describe("reconcileDraft", () => {
     confirmed: false,
     entries,
     notInRace,
+    capturedThrough: null,
   });
 
   it("moves a car still racing when editing began into the order once it is captured at the flag", () => {

@@ -28,7 +28,7 @@ const ERROR_MESSAGES = new Map<string, string>([
   ],
   [
     "race_changed",
-    "Another car finished while you were editing - it has been added. Check the order and save again.",
+    "A car was recorded at the flag while you were editing - it has been added. Check the order and save again.",
   ],
 ]);
 
@@ -283,12 +283,12 @@ export function StaffLeaguePanel({
             <StaffRaceResult
               review={raceReview}
               busy={busy}
-              onSave={(finishers, dnf, seen) =>
+              onSave={(finishers, dnf, capturedThrough) =>
                 post("/api/staff/league/race-result", {
                   roundId: openRound.id,
                   finishers,
                   dnf,
-                  seen,
+                  capturedThrough,
                 })
               }
             />

@@ -13,8 +13,8 @@ const body = z
     finishers: z.array(z.uuid()).max(MAX_ENTRANTS),
     /** In the race but not classified. */
     dnf: z.array(z.uuid()).max(MAX_ENTRANTS),
-    /** Every driver the result held when staff last read it. */
-    seen: z.array(z.uuid()).max(MAX_ENTRANTS),
+    /** The review staff corrected (RaceReview.capturedThrough). */
+    capturedThrough: z.iso.datetime().nullable(),
   })
   .refine((input) => input.finishers.length + input.dnf.length > 0, "empty_result")
   .refine(
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
   if (input instanceof Response) return input;
 
   try {
-    const saved = await saveRaceResult(input.roundId, input.finishers, input.dnf, input.seen);
+    const saved = await saveRaceResult(input.roundId, input.finishers, input.dnf, input.capturedThrough);
     if (saved.status === "not_open") {
       return Response.json({ error: "not_open" }, { status: 404 });
     }

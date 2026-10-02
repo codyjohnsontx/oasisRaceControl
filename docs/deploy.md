@@ -622,6 +622,57 @@ keeps scoring exactly as before.
    -- fills in from the chequered flag
    ```
 
+### Applying 0010_race_unsigned_places.sql
+
+`0010_race_unsigned_places.sql` records a rig that takes the round's race
+flag with nobody signed in, so the next person to sign in on it during
+cool-down is not credited with its place
+([live-race.md](./live-race.md#the-race-result)). It is additive: one new
+table, `league_race_unsigned_places`, with foreign keys to `league_rounds`
+and `rigs`; nothing existing is rewritten. It needs 0009 applied first.
+Apply it to Neon **before merging** the change that adds it, as with 0009:
+once the code deploys, every flagged race report writes to it while a round
+is open.
+
+1. Point at production exactly as in
+   [step 2 of the recovery runbook](#2-point-at-production-and-prove-it).
+2. Precheck. From `apps/web`: `npm run db:check`. Read the target line, then
+   expect exactly one missing file, `0010_race_unsigned_places.sql`. Anything
+   more and stop. In the SQL Editor, the same answer reads as one row with
+   every column `t` (read-only, one statement):
+
+   ```sql
+   select
+     exists (select 1 from schema_migrations where version = '0009_race_results.sql') as has_0009,
+     not exists (select 1 from schema_migrations where version = '0010_race_unsigned_places.sql') as lacks_0010,
+     to_regclass('public.league_race_unsigned_places') is null as table_absent;
+   ```
+
+3. `npm run db:migrate`. Read the `migrating <host>/<database>` line; expect
+   `applied 0010_race_unsigned_places.sql` and `skip` for the rest.
+
+   Only if you cannot run it, paste this into Neon's SQL Editor as one
+   explicit transaction, with the whole of
+   `db/migrations/0010_race_unsigned_places.sql` copied in unaltered where
+   marked:
+
+   ```sql
+   begin;
+   -- the whole of db/migrations/0010_race_unsigned_places.sql, unaltered
+   insert into schema_migrations (version) values ('0010_race_unsigned_places.sql');
+   commit;
+   ```
+
+4. Verify, whichever way you applied it, with
+   `db/verify/0010_race_unsigned_places.sql` - a single SELECT, like 0009's:
+
+   ```bash
+   psql "$DATABASE_URL" -f ../../db/verify/0010_race_unsigned_places.sql
+   ```
+
+   Expect three rows, every one `ok = t`. Any `f`: stop and compare `actual`
+   with `expected`.
+
 ## Recovering a database that is behind the code
 
 **Symptom.** Routes that need a migration return HTTP 500 while the rest of the

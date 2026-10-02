@@ -169,7 +169,11 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   whoever holds the seat when the row is written - the close sweep reads
   reports minutes old - and a rig's first place at the flag is final, since
   the live feed deliberately accepts an older report after a quiet rig, so
-  only staff move it.
+  only staff move it. A rig flagged with nobody signed in records an empty
+  place (`league_race_unsigned_places`, 0010) so a cool-down sign-in never
+  takes it. A staff save carries the review's `capturedThrough` and is
+  refused once a newer capture exists; that only holds because captures lock
+  the round one at a time and stamp `clock_timestamp()`.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the
   round restores whatever was there (`league_rounds.prior_featured_combo`, null

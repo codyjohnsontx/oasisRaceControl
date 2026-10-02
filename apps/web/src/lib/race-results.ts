@@ -5,8 +5,9 @@ import type { RaceReview, RaceReviewEntry } from "./league";
 import { isRaceSession } from "./race-live";
 
 /**
- * League night's race result: the only writer of league_race_results and
- * league_race_starts (db/migrations/0009_race_results.sql). Which race is the
+ * League night's race result: the only writer of league_race_results,
+ * league_race_starts (db/migrations/0009_race_results.sql) and
+ * league_race_unsigned_places (0010_race_unsigned_places.sql). Which race is the
  * round's, and which rows count, is the views' rule, v_league_race_session
  * and v_league_race_results; how a result turns into points is
  * league-scoring.ts.
@@ -26,12 +27,16 @@ import { isRaceSession } from "./race-live";
  * A captured row names its driver by the assignment the route stored with the
  * report (rig_race_status.rig_assignment_id) - whoever was in the seat when it
  * arrived, the rule laps use - never by whoever is in the seat when the row is
- * written. A rig whose race place is already recorded records nothing more for
- * that race, so a driver signing in during cool-down does not inherit it.
+ * written. A rig that takes the flag with nobody signed in records that its
+ * place is empty (league_race_unsigned_places). A rig whose race place is
+ * already recorded, either way, records nothing more for that race, so a
+ * driver signing in during cool-down does not inherit it.
  *
- * A flag capture takes a share lock on the open round, and saving and closing
+ * Flag captures take the open round one at a time, and saving and closing
  * lock it exclusively before anything else, so each of them waits for a
  * capture in flight and a capture behind them reads what they committed.
+ * Captures in turn stamp their rows in commit order, which is what lets a
+ * staff review name the newest place it saw (`capturedThrough`).
  */
 
 /** What one race report means for the round's result. */
@@ -48,7 +53,7 @@ export function raceReportCapture(
 /**
  * Records what a stored race report says about tonight's round, if one is
  * open. `assignmentId` is the rig's open assignment the route stored with the
- * report, null when nobody was checked in - then there is no driver to place.
+ * report, null when nobody was checked in - then the rig's place stays empty.
  */
 export async function captureRaceReport(
   rigId: string,
@@ -67,22 +72,35 @@ export async function captureRaceReport(
      on conflict do nothing`,
     [report.sessionUniqueId, report.sessionNum, rigId],
   );
-  if (!capture.finish || assignmentId === null) return;
+  if (!capture.finish) return;
 
   await withTransaction(async (client) => {
     // Its own statement: the insert below must read with a snapshot taken
-    // after any staff save or close this lock waited behind.
+    // after any staff save, close or other capture this lock waited behind.
     const open = await client.query<{ id: string }>(
-      "select id from league_rounds where closed_at is null for share",
+      "select id from league_rounds where closed_at is null for no key update",
     );
     const round = open.rows[0];
     if (!round) return;
 
+    if (assignmentId === null) {
+      await client.query(
+        `insert into league_race_unsigned_places (round_id, rig_id, session_unique_id, session_num)
+         select $1, $2, $3, $4
+         where exists (select 1 from v_league_race_session v
+                       where v.round_id = $1
+                         and v.session_unique_id = $3 and v.session_num = $4)
+         on conflict do nothing`,
+        [round.id, rigId, report.sessionUniqueId, report.sessionNum],
+      );
+      return;
+    }
+
     await client.query(
       `insert into league_race_results
          (round_id, driver_id, finish_position, source, rig_id,
-          session_unique_id, session_num, laps_completed)
-       select $1, ra.driver_id, $3, 'flag', $2, $4, $5, $6
+          session_unique_id, session_num, laps_completed, recorded_at)
+       select $1, ra.driver_id, $3, 'flag', $2, $4, $5, $6, clock_timestamp()
        from rig_assignments ra
        where ra.id = $7
          and exists (select 1 from v_league_race_session v
@@ -93,6 +111,9 @@ export async function captureRaceReport(
          and not exists (select 1 from league_race_results x
                          where x.round_id = $1 and x.rig_id = $2
                            and x.session_unique_id = $4 and x.session_num = $5)
+         and not exists (select 1 from league_race_unsigned_places u
+                         where u.round_id = $1 and u.rig_id = $2
+                           and u.session_unique_id = $4 and u.session_num = $5)
        -- A row already held from this race is final. One from another session
        -- no longer counts (it stopped being the round's race), so this race
        -- replaces it.
@@ -103,7 +124,7 @@ export async function captureRaceReport(
          session_unique_id = excluded.session_unique_id,
          session_num = excluded.session_num,
          laps_completed = excluded.laps_completed,
-         recorded_at = now()
+         recorded_at = excluded.recorded_at
        where league_race_results.source = 'flag'
          and (league_race_results.session_unique_id, league_race_results.session_num)
              is distinct from (excluded.session_unique_id, excluded.session_num)`,
@@ -152,6 +173,10 @@ export async function sweepRaceResultsTx(client: PoolClient, roundId: string): P
                        where x.round_id = $1 and x.rig_id = s.rig_id
                          and x.session_unique_id = s.session_unique_id
                          and x.session_num = s.session_num)
+       and not exists (select 1 from league_race_unsigned_places u
+                       where u.round_id = $1 and u.rig_id = s.rig_id
+                         and u.session_unique_id = s.session_unique_id
+                         and u.session_num = s.session_num)
      order by ra.driver_id, s.received_at desc
      -- As at the flag: a row from this race stands, one from another session
      -- no longer counts and is replaced.
@@ -184,6 +209,7 @@ export async function getRaceReview(roundId: string): Promise<RaceReview> {
     race_heard: boolean;
     entries: RaceReviewEntry[];
     not_in_race: RaceReview["notInRace"];
+    captured_through: string | null;
   }>(
     `with entries as (
        select rr.driver_id, d.display_name::text as display_name, rr.finish_position,
@@ -208,7 +234,10 @@ export async function getRaceReview(roundId: string): Promise<RaceReview> {
                                             e.display_name)
                  from entries e), '[]') as entries,
        coalesce((select json_agg(n order by n.display_name) from not_in_race n), '[]')
-         as not_in_race`,
+         as not_in_race,
+       (select to_char(max(rr.recorded_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+        from league_race_results rr
+        where rr.round_id = $1 and rr.source <> 'staff') as captured_through`,
     [roundId],
   );
   const entries = review?.entries ?? [];
@@ -217,6 +246,7 @@ export async function getRaceReview(roundId: string): Promise<RaceReview> {
     confirmed: entries.length > 0 && entries.every((entry) => entry.source === "staff"),
     entries,
     notInRace: review?.not_in_race ?? [],
+    capturedThrough: review?.captured_through ?? null,
   };
 }
 
@@ -225,15 +255,15 @@ export async function getRaceReview(roundId: string): Promise<RaceReview> {
  * placed 1..n, and `dnf` in the race but not classified. Replaces every row of
  * the round, keeping where each captured place came from, and freezes the
  * round against capture. Only drivers already in the round - a lap in it or a
- * place in its race - can be named. `seen` is every driver the result held
- * when staff last read it; a place recorded for a driver neither named nor
- * seen arrived after that, and the save is refused rather than delete it.
+ * place in its race - can be named. `capturedThrough` is the review staff
+ * last read (RaceReview.capturedThrough); a place captured after it is one
+ * staff have not seen, and the save is refused rather than delete it.
  */
 export async function saveRaceResult(
   roundId: string,
   finishers: string[],
   dnf: string[],
-  seen: string[],
+  capturedThrough: string | null,
 ): Promise<
   | { status: "saved" }
   | { status: "not_open" }
@@ -247,6 +277,15 @@ export async function saveRaceResult(
     );
     if (!round.rows[0]) return { status: "not_open" as const };
 
+    const newer = await client.query(
+      `select 1 from league_race_results
+       where round_id = $1 and source <> 'staff'
+         and ($2::timestamptz is null or recorded_at > $2::timestamptz)
+       limit 1`,
+      [roundId, capturedThrough],
+    );
+    if (newer.rows[0]) return { status: "race_changed" as const };
+
     const named = [...finishers, ...dnf];
     const known = await client.query<{ driver_id: string }>(
       `select f.driver_id
@@ -258,16 +297,6 @@ export async function saveRaceResult(
       [roundId, named],
     );
     if (known.rows.length !== named.length) return { status: "unknown_driver" as const };
-
-    const unseen = await client.query(
-      `select 1
-       from v_league_race_results rr
-       join drivers d on d.id = rr.driver_id and d.status = 'active'
-       where rr.round_id = $1 and rr.driver_id <> all ($2::uuid[])
-       limit 1`,
-      [roundId, [...named, ...seen]],
-    );
-    if (unseen.rows[0]) return { status: "race_changed" as const };
 
     await client.query(
       "delete from league_race_results where round_id = $1 and driver_id <> all ($2::uuid[])",
