@@ -255,6 +255,28 @@ describeDb("league night's race result against real Postgres", () => {
     expect((await placing(roundId)).map((row) => row.name)).toEqual(["Cal"]);
   });
 
+  it("closes a round where one driver's race was reported from two rigs, from their latest report", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await report(ben.rig, { position: 1 });
+    await report(ana.rig, { position: 3 });
+
+    // Ana's rig dies mid-race; she signs in on a spare and rejoins the session.
+    await testDb().query(
+      "update rig_assignments set ended_at = now(), end_reason = 'driver_ended' where id = $1",
+      [ana.assignmentId],
+    );
+    const spare = await seedRig(++rigNumber);
+    await openAssignment(spare.id, ana.driverId);
+    await report(spare, { position: 2 });
+
+    expect((await closeLeagueRound(roundId))?.racePlacesSwept).toBe(2);
+    expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
+      ["Ben", 1],
+      ["Ana", 2],
+    ]);
+  });
+
   it("replaces a place from a race that stopped being the round's when the bigger race takes the flag", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben, cal] = [await seat("Ana"), await seat("Ben"), await seat("Cal")];

@@ -126,7 +126,8 @@ export async function captureRaceReport(
  * (v_league_race_session) that the flag capture never recorded, at the place
  * it last reported - a car that stopped before the flag, or every car when the
  * round closes mid-race - for the driver that report was stored for, not
- * whoever is in the seat at close. Nothing when staff saved a result or the
+ * whoever is in the seat at close, from that driver's latest report when they
+ * raced on more than one rig. Nothing when staff saved a result or the
  * round has no race. Returns the rows recorded.
  */
 export async function sweepRaceResultsTx(client: PoolClient, roundId: string): Promise<number> {
@@ -134,7 +135,8 @@ export async function sweepRaceResultsTx(client: PoolClient, roundId: string): P
     `insert into league_race_results
        (round_id, driver_id, finish_position, source, rig_id,
         session_unique_id, session_num, laps_completed)
-     select $1, ra.driver_id, s.position, 'close', s.rig_id,
+     select distinct on (ra.driver_id)
+            $1, ra.driver_id, s.position, 'close', s.rig_id,
             s.session_unique_id, s.session_num, s.laps_completed
      from rig_race_status s
      join v_league_race_session t on t.round_id = $1
@@ -150,6 +152,7 @@ export async function sweepRaceResultsTx(client: PoolClient, roundId: string): P
                        where x.round_id = $1 and x.rig_id = s.rig_id
                          and x.session_unique_id = s.session_unique_id
                          and x.session_num = s.session_num)
+     order by ra.driver_id, s.received_at desc
      -- As at the flag: a row from this race stands, one from another session
      -- no longer counts and is replaced.
      on conflict (round_id, driver_id) do update set
