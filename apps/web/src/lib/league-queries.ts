@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { constraintName, query, queryOne, withTransaction } from "./db";
 import { DRIVER_LAP_CAP, ROUND_LAP_CAP } from "./league";
 import type { LeagueRound, LeagueSeason, RoundLap, RoundResult } from "./league";
+import { sweepRaceResultsTx } from "./race-results";
 import { venueMonthName } from "./venue";
 
 /**
@@ -98,7 +99,8 @@ export async function listSeasonRounds(seasonId: string): Promise<LeagueRound[]>
  * never disagree about who finished where.
  *
  * The field is every driver with a lap attributed to the round or an entry in
- * its race result (league_race_results, written only by lib/race-results.ts).
+ * its race result (v_league_race_results, which owns which captured rows are
+ * the round's race; lib/race-results.ts is the only writer).
  * Attribution ignores validity, so a driver who binned every lap is still on
  * the board with position null. Banned/flagged drivers are filtered out BEFORE
  * ranking, so they never occupy a position.
@@ -112,8 +114,9 @@ export async function listSeasonRounds(seasonId: string): Promise<LeagueRound[]>
  * race result is ranked by best valid lap, exactly as every round was before.
  *
  * Qualifying is the laps completed before the round's race began - the start
- * of the session its result came from, else the latest race heard while the
- * round was open (league_race_starts) - or every lap when no race was heard.
+ * of its race session (v_league_race_session), else of the latest race heard
+ * while the round was open (league_race_starts) - or every lap when no race
+ * was heard.
  * The start is the server's clock and lap times are the rig's; iRacing grids
  * and paces the field between the end of qualifying and the green, so ordinary
  * clock skew does not move a lap across it.
@@ -132,18 +135,17 @@ async function queryRoundResults(
        select l.* from v_league_round_laps l join r on r.id = l.round_id
      ),
      res as (
-       select rr.* from league_race_results rr join r on r.id = rr.round_id
+       select rr.* from v_league_race_results rr join r on r.id = rr.round_id
      ),
      race_start as (
        select distinct on (st.round_id) st.round_id, st.started_at
        from league_race_starts st
        join r on r.id = st.round_id
-       order by st.round_id,
-                exists (select 1 from res
-                        where res.round_id = st.round_id
-                          and res.session_unique_id = st.session_unique_id
-                          and res.session_num = st.session_num) desc,
-                st.started_at desc
+       left join v_league_race_session rs
+         on rs.round_id = st.round_id
+        and rs.session_unique_id = st.session_unique_id
+        and rs.session_num = st.session_num
+       order by st.round_id, rs.round_id is not null desc, st.started_at desc
      ),
      field as (
        select f.round_id, f.driver_id, d.display_name
@@ -313,7 +315,7 @@ export async function countRoundDrivers(roundId: string): Promise<number> {
     `select count(*)::int as drivers
      from (select driver_id from v_league_round_laps where round_id = $1
            union
-           select driver_id from league_race_results where round_id = $1) f
+           select driver_id from v_league_race_results where round_id = $1) f
      join drivers d on d.id = f.driver_id and d.status = 'active'`,
     [roundId],
   );
@@ -522,20 +524,23 @@ export async function openLeagueRound(input: {
 }
 
 /**
- * Close a round and put the featured combo back the way opening it found it -
+ * Close a round, record any race place still missing (sweepRaceResultsTx), and
+ * put the featured combo back the way opening it found it -
  * restoring the venue's own combo if it had one, deleting the row if it had
  * none. Without this the round's combo stays pinned for the rest of the venue
  * day and every ordinary customer lap on other content is stored invalid and
  * drops off Fastest Tonight.
  *
- * Both halves share one transaction: a round whose combo was not restored
- * would be final with no control left to undo it. Returns null when the round
- * is already closed or unknown.
+ * All of it shares one transaction: a round whose combo was not restored
+ * would be final with no control left to undo it, and the sweep must read the
+ * race as it stood when the round closed. Returns null when the round is
+ * already closed or unknown.
  */
 export async function closeLeagueRound(roundId: string): Promise<{
   id: string;
   roundNumber: number;
   restoredCombo: PriorFeaturedCombo | null;
+  racePlacesSwept: number;
 } | null> {
   return withTransaction(async (client) => {
     const closed = await client.query<{
@@ -552,6 +557,8 @@ export async function closeLeagueRound(roundId: string): Promise<{
     );
     const round = closed.rows[0];
     if (!round) return null;
+
+    const racePlacesSwept = await sweepRaceResultsTx(client, round.id);
 
     const prior = round.prior_featured_combo;
     if (prior) {
@@ -572,6 +579,7 @@ export async function closeLeagueRound(roundId: string): Promise<{
       id: round.id,
       roundNumber: round.round_number,
       restoredCombo: prior,
+      racePlacesSwept,
     };
   });
 }

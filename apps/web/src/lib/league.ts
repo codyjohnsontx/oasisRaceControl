@@ -71,6 +71,29 @@ export type RoundResult = {
   finish_source: FinishSource | null;
 };
 
+/** One row of a round's race result as staff review it on /staff. */
+export type RaceReviewEntry = {
+  driver_id: string;
+  display_name: string;
+  /** As recorded: iRacing's place, or staff's. Null is a staff-marked DNF. */
+  finish_position: number | null;
+  source: FinishSource;
+  /** The rig the place was captured from; null for a driver staff added. */
+  rig_number: number | null;
+  laps_completed: number | null;
+};
+
+export type RaceReview = {
+  /** A race session was heard from the rigs while the round was open. */
+  raceHeard: boolean;
+  /** Staff have saved this result, so no capture changes it any more. */
+  confirmed: boolean;
+  /** In the order the round will be placed by. */
+  entries: RaceReviewEntry[];
+  /** Drivers with a lap in the round and no entry in its race. */
+  notInRace: { driver_id: string; display_name: string }[];
+};
+
 /** A single lap inside a round, for the expanded driver view. */
 export type RoundLap = {
   id: string;
@@ -182,4 +205,20 @@ export function lapsByDriver(laps: RoundLap[]): Record<string, RoundLap[]> {
     (grouped[lap.driver_id] ??= []).push(lap);
   }
   return grouped;
+}
+
+/**
+ * Places recorded for more than one driver - two rigs that reported the same
+ * place, or a car the close sweep found at a place a finisher took. The round
+ * still places them in some order; staff should check which is right.
+ */
+export function repeatedPlaces(entries: Pick<RaceReviewEntry, "finish_position">[]): Set<number> {
+  const seen = new Set<number>();
+  const repeated = new Set<number>();
+  for (const { finish_position: place } of entries) {
+    if (place === null) continue;
+    if (seen.has(place)) repeated.add(place);
+    seen.add(place);
+  }
+  return repeated;
 }
