@@ -158,16 +158,22 @@ every round was before. `lib/race-results.ts` is the only writer, called from
   session, and when (`league_race_starts`). Laps carry no session, so the
   round's race's first report is what makes a lap a qualifying lap: one
   completed before the round's race began.
-- From the chequered flag on (`SessionState` checkered or cool-down), each
-  report from the round's race records the rig's signed-in driver at iRacing's place
-  (`league_race_results`, source `flag`), replaced by every later report, so
-  a car still crossing the line settles where iRacing puts it. A rig keeps
-  the first driver it recorded for a race: somebody signing in during
-  cool-down does not take the place.
+- From the chequered flag on (`SessionState` checkered or cool-down), the
+  first report from each rig in the round's race records its driver at
+  iRacing's place (`league_race_results`, source `flag`), and that place is
+  final: no later report moves it, nor an older one the live feed accepts
+  late after a rig has been quiet. The flag shows for the whole field the
+  moment the leader crosses the line, so a car still on its last lap is
+  recorded where it was running then; a pass after that is staff's to
+  correct on `/staff`. The driver is whoever was signed in to the rig when
+  the report arrived - the route stores that assignment on the report's
+  `rig_race_status` row - so somebody signing in during cool-down does not
+  take the place.
 - Closing the round sweeps once more: a car of the race the flag never
   recorded - it stopped reporting, or the round closed mid-race - is recorded
   at its last reported place (source `close`) and placed behind every car
-  seen at the flag.
+  seen at the flag. It is credited to the driver stored with that last
+  report, not to whoever sits in the rig at close.
 - Staff review the result on `/staff` while the round is open, with every
   driver in the round who has no race finish listed under it, and can reorder
   it, mark a DNF or take a driver out. Saving replaces the round's rows with
@@ -203,10 +209,11 @@ Applying the migration: [deploy.md](deploy.md#applying-0009_race_resultssql).
 - Twenty rigs reporting every 2.5 s is about eight requests a second during a
   race, which is several thousand serverless invocations an hour. Check that
   against the Vercel plan before the night.
-- The race result takes iRacing's `PlayerCarPosition` during the chequered
-  flag and cool-down as the finishing order. That it is the final
-  classification by then, including for a car that crashed out and was towed,
-  is not yet seen on a real hosted race; compare the staff review on `/staff`
-  with iRacing's own results screen on the first night.
+- The race result takes iRacing's `PlayerCarPosition` in each rig's first
+  report under the chequered flag as the finishing order. How far that is
+  from the final classification - a car still on its last lap, one that
+  crashed out and was towed - is not yet seen on a real hosted race; compare
+  the staff review on `/staff` with iRacing's own results screen on the
+  first night, and correct it there before closing the round.
 
 Applying the migration to production: [deploy.md](deploy.md#applying-0008_race_statussql).

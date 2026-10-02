@@ -163,7 +163,13 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   were heard in while the round was open, and never one heard from a single
   rig, so a walk-in's solo race on a spare rig is never it. The flag capture,
   the qualifying cut-off and the close sweep all read that view; a capture
-  must never delete another session's rows.
+  must never delete another session's rows. Two more rules are easy to undo:
+  a captured row names the driver from the assignment the race-status route
+  stored with the report (`rig_race_status.rig_assignment_id`), never from
+  whoever holds the seat when the row is written - the close sweep reads
+  reports minutes old - and a rig's first place at the flag is final, since
+  the live feed deliberately accepts an older report after a quiet rig, so
+  only staff move it.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the
   round restores whatever was there (`league_rounds.prior_featured_combo`, null
