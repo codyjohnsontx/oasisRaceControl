@@ -332,11 +332,12 @@ window's fallback, one flag away.
 `OasisRigAgent.exe` on the rig opens one ordinary window - resizable, centred
 on the screen, never on top of iRacing and never full screen, so staff can
 reach anything else beside it - in the venue's look: the near-black of the
-wall and the website, the cyan and pink accents, Orbitron for headings and
-Rajdhani for text, the Oasis helmet in the header over the site's gradient
-rule (`Windows/Brand.cs` takes the colours from `apps/web/src/app/globals.css`
-by name; the two faces travel inside the exe under the Open Font License and
-are registered process-private, nothing is installed on the rig). Type is
+wall and the website, the cyan and pink accents, Orbitron for headings,
+Rajdhani for text and Windows' own Consolas for lap times, the Oasis helmet
+in the header over the site's gradient rule (`Windows/Brand.cs` takes the
+colours from `apps/web/src/app/globals.css` by name; the two faces travel
+inside the exe under the Open Font License and are registered
+process-private, nothing is installed on the rig). Type is
 sized to be read from the seat and scales with the window when a resize ends.
 Under the header: the warnings standing right now in orange, one prompt at a
 time in large type with its notice on the line above (red for a problem,
@@ -616,13 +617,15 @@ after a goodbye with a lower sequence.
 **Sign-in failures** are counted from the answers the check-in routes give
 (`SignInFailureWatch`, handed to `DriverCheckInClient` as its HTTP handler), not
 from the prompt's exceptions: `wrong_pin_or_name` (a returning driver's wrong
-PIN - a login answering 401 - or a new driver's name that is already taken or
-not allowed), `locked`, `rate_limited`, `unreachable`, `other`. Only the
-returning path logs in and only the new path registers, so each refused
-answer is one failed sign-in. A failure stays in every heartbeat until one is
-answered, so from `rig-agent/0.5-monitor` each heartbeat also carries every
-reported failure's own sequence number (`signInFailureSeqs`, the newest ten),
-and the monitor counts a failure re-reported after a lost answer once.
+PIN - a login answering 401 - or a name that is already taken or not allowed,
+including one the name lookup refuses), `locked`, `rate_limited` (also the
+lookup's shared-address limit), `unreachable`, `other`. Only the returning
+path logs in and only the new path registers, and a refused lookup stops the
+driver before either, so each refused answer is one failed sign-in. A
+failure stays in every heartbeat until one is answered, so from
+`rig-agent/0.5-monitor` each heartbeat also carries every reported failure's
+own sequence number (`signInFailureSeqs`, the newest ten), and the monitor
+counts a failure re-reported after a lost answer once.
 
 ### Checking the footprint on a rig with iRacing
 
