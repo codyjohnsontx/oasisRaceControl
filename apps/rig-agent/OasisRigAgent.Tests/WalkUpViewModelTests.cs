@@ -271,6 +271,89 @@ public sealed class WalkUpViewModelTests : IDisposable
         Assert.Contains(rig.Model.Snapshot().Warnings, w => w.StartsWith("ERROR: lap reading stopped"));
     }
 
+    /// <summary>Closing the window while a check-in is on the wire. The
+    /// backend has committed the stint and is about to answer with its id;
+    /// closing must not abort that answer, because it is the only thing that
+    /// names the stint to sign out. It arrives within the exit bound here, so
+    /// the driver is seated and signed out by id before the process ends -
+    /// the same durable checkout the Log out button uses.</summary>
+    [Fact]
+    public async Task ClosingWhileACheckInIsAnsweringSignsThatVeryStintOut()
+    {
+        await using var rig = new Rig(_dbPath);
+        await rig.Model.StartAsync(CancellationToken.None);
+        await rig.Model.ChooseReturningAsync(true);
+        await rig.Model.SubmitAsync("Mike");
+        var hold = rig.Backend.HoldCheckInAnswer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var signIn = rig.Model.SubmitAsync("4321");
+        await WaitUntil(() => rig.Backend.OpenAssignmentId is not null, "the backend commits the stint");
+
+        var exit = rig.Model.SignOutOnExitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal((WalkUpStage.Busy, "Signing out..."), (rig.Model.Snapshot().Stage, rig.Model.Snapshot().BusyText));
+        await Task.Delay(100);
+        hold.SetResult();
+        await exit;
+        await signIn;
+
+        Assert.Null(rig.Backend.OpenAssignmentId);
+        lock (rig.Backend.Checkouts) Assert.Equal(new string?[] { null, WalkUpBackend.MikeAssignmentId }, rig.Backend.Checkouts);
+        Assert.Null(rig.Queue.ReadPendingCheckout());
+        Assert.Null(rig.Agent.CurrentStatus().Assignment);
+        // Closing took the input away: nothing typed after it moves the flow.
+        await rig.Model.SubmitAsync("y");
+        Assert.Equal(WalkUpStage.Busy, rig.Model.Snapshot().Stage);
+    }
+
+    /// <summary>The same close, but the answer never comes within the bound:
+    /// the stint may exist on the backend and nothing on the rig can name it.
+    /// The exit records a durable unknown-stint checkout and abandons the
+    /// attempt, and the next start of the agent on the same outbox ends
+    /// whatever is open on the rig and clears the record.</summary>
+    [Fact]
+    public async Task ClosingBeforeTheCheckInAnswersLeavesARecordTheNextStartSettles()
+    {
+        var backend = new WalkUpBackend();
+        var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 2, RigQrToken = "qr-rig-2" };
+        var checkIn = new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-2", () => backend);
+        using var http = new HttpClient(backend);
+        using var queue = new EventQueue(_dbPath);
+
+        var firstAgent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
+        var first = new WalkUpViewModel(firstAgent, checkIn, 2);
+        firstAgent.Start();
+        await first.StartAsync(CancellationToken.None);
+        await first.ChooseReturningAsync(true);
+        await first.SubmitAsync("Mike");
+        backend.HoldCheckInAnswer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var signIn = first.SubmitAsync("4321");
+        await WaitUntil(() => backend.OpenAssignmentId is not null, "the backend commits the stint");
+
+        await first.SignOutOnExitAsync(TimeSpan.FromMilliseconds(300));
+        // Abandoning the attempt cancels its request, which ends the sign-in.
+        await signIn;
+
+        Assert.Equal(AgentService.UnknownStint, queue.ReadPendingCheckout());
+        Assert.Equal(CheckoutDelivery.Queued, firstAgent.CurrentStatus().Checkout);
+        Assert.Equal(WalkUpBackend.MikeAssignmentId, backend.OpenAssignmentId);
+        Assert.Null(firstAgent.CurrentStatus().Assignment);
+        first.Dispose();
+        await firstAgent.DisposeAsync();
+
+        // The next start, on the outbox the record lives in.
+        backend.HoldCheckInAnswer = null;
+        using var secondHttp = new HttpClient(backend);
+        await using var secondAgent = new AgentService(config, new BackendClient(secondHttp, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
+        Assert.Equal(CheckoutDelivery.Queued, secondAgent.CurrentStatus().Checkout);
+        using var second = new WalkUpViewModel(secondAgent, checkIn, 2);
+        secondAgent.Start();
+        await second.StartAsync(CancellationToken.None);
+
+        Assert.Null(backend.OpenAssignmentId);
+        Assert.Null(queue.ReadPendingCheckout());
+        Assert.Equal(CheckoutDelivery.None, secondAgent.CurrentStatus().Checkout);
+        Assert.Equal(SignInStep.AskRacedBefore, second.Snapshot().Step);
+    }
+
     public void Dispose()
     {
         // A disposed SqliteConnection goes back to the pool with the file

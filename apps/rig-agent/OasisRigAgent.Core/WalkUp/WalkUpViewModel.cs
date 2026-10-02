@@ -40,8 +40,9 @@ public sealed record WalkUpView(
 /// Sign-in and sign-out are the console's exact moves: a check-in through
 /// <see cref="SignInAttempt"/> then <see cref="AgentService.SeatCheckedInDriver"/>,
 /// a log-out through <see cref="AgentService.SwitchDriverAsync"/>, the seat
-/// emptied on start by <see cref="WalkUpRules.EmptySeatAsync"/>. Closing the
-/// window is the host's to handle (<see cref="WalkUpRules.SignOutOnExitAsync"/>).
+/// emptied on start by <see cref="WalkUpRules.EmptySeatAsync"/>, and the
+/// close-time sign-out through <see cref="SignOutOnExitAsync"/>, which the
+/// host calls from every way the window can close.
 /// </summary>
 public sealed class WalkUpViewModel : IDisposable
 {
@@ -58,6 +59,11 @@ public sealed class WalkUpViewModel : IDisposable
     private DriverCheckIn? _driver;
     private string? _busyText = "Connecting to Oasis Race Control...";
     private CancellationToken _quit;
+    // The sign-in attempt in flight, so closing can wait for it; and the token
+    // that aborts it once closing has waited long enough.
+    private Task? _inFlight;
+    private CancellationTokenSource _attempts = new();
+    private bool _closing;
 
     public WalkUpViewModel(AgentService agent, DriverCheckInClient checkIn, int rigNumber)
     {
@@ -78,6 +84,7 @@ public sealed class WalkUpViewModel : IDisposable
     public async Task StartAsync(CancellationToken quit)
     {
         _quit = quit;
+        _attempts = CancellationTokenSource.CreateLinkedTokenSource(quit);
         var notice = await WalkUpRules.EmptySeatAsync(_agent, quit).ConfigureAwait(false);
         lock (_lock)
         {
@@ -100,27 +107,84 @@ public sealed class WalkUpViewModel : IDisposable
     public async Task SubmitAsync(string typed)
     {
         SignInRequest? request;
+        var attempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_lock)
         {
-            if (_busyText is not null || _driver is not null) return;
+            if (_busyText is not null || _driver is not null || _closing) return;
             _flow.Submit(typed);
             request = _flow.Pending;
             if (request is not null)
+            {
                 _busyText = request.Returning ? $"Signing in {request.Name}..." : $"Signing up {request.Name}...";
+                _inFlight = attempt.Task;
+            }
         }
         RaiseChanged();
         if (request is null) return;
 
-        var result = await SignInAttempt.PerformAsync(_agent, _checkIn, request, _quit).ConfigureAwait(false);
-        DriverCheckIn? seated = null;
+        try
+        {
+            var result = await SignInAttempt.PerformAsync(_agent, _checkIn, request, _attempts.Token).ConfigureAwait(false);
+            DriverCheckIn? seated = null;
+            lock (_lock)
+            {
+                _flow.Apply(result);
+                _busyText = _closing ? ClosingText : null;
+                if (_flow.Step == SignInStep.SignedIn) seated = _driver = _flow.Driver;
+            }
+            // Seated even while closing: the exit sign-out below is what ends
+            // it, by its id, and it must find the stint to do so.
+            if (seated is not null) _agent.SeatCheckedInDriver(seated);
+        }
+        finally
+        {
+            lock (_lock)
+            {
+                if (_inFlight == attempt.Task) _inFlight = null;
+            }
+            attempt.SetResult();
+        }
+        RaiseChanged();
+    }
+
+    private const string ClosingText = "Signing out...";
+
+    /// <summary>The program is closing: sign the seated driver out, durably,
+    /// within <paramref name="limit"/>. A sign-in still in flight is waited
+    /// for first, out of the same bound, because its check-in may already have
+    /// opened a stint on the backend that only its answer names; when the
+    /// answer arrives in time the driver is seated and that stint is ended by
+    /// id through the same durable checkout the Log out button uses. When it
+    /// does not, nothing here can name the stint, so a durable
+    /// <see cref="AgentService.UnknownStint"/> checkout is recorded for the
+    /// next start to settle and the attempt is abandoned. From the first call
+    /// the window shows "Signing out..." and takes no more input.</summary>
+    public async Task SignOutOnExitAsync(TimeSpan limit)
+    {
+        Task? inFlight;
         lock (_lock)
         {
-            _flow.Apply(result);
-            _busyText = null;
-            if (_flow.Step == SignInStep.SignedIn) seated = _driver = _flow.Driver;
+            _closing = true;
+            _busyText = ClosingText;
+            inFlight = _inFlight;
         }
-        if (seated is not null) _agent.SeatCheckedInDriver(seated);
         RaiseChanged();
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        if (inFlight is not null)
+        {
+            var finished = await Task.WhenAny(inFlight, Task.Delay(limit)).ConfigureAwait(false) == inFlight;
+            if (!finished)
+            {
+                // Transport-ambiguous: the request may have been committed and
+                // its answer lost. Record first, abort second, so a crash
+                // between the two still leaves the record.
+                _agent.RecordAbandonedSignIn();
+                _attempts.Cancel();
+                return;
+            }
+        }
+        await WalkUpRules.SignOutOnExitAsync(_agent, limit - started.Elapsed).ConfigureAwait(false);
     }
 
     /// <summary>The Log out button: end the stint here at once, tell the
@@ -131,7 +195,7 @@ public sealed class WalkUpViewModel : IDisposable
         DriverCheckIn driver;
         lock (_lock)
         {
-            if (_driver is null || _busyText is not null) return;
+            if (_driver is null || _busyText is not null || _closing) return;
             driver = _driver;
             _busyText = $"Logging out {driver.DisplayName}...";
         }
@@ -198,6 +262,7 @@ public sealed class WalkUpViewModel : IDisposable
         _agent.LapQueued -= OnLapQueued;
         _agent.LapsPosted -= OnLapsPosted;
         _agent.Notice -= Log;
+        _attempts.Dispose();
     }
 
     private void OnStatus(AgentStatus _) => RaiseChanged();

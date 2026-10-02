@@ -66,15 +66,26 @@ public static class WalkUpRules
     /// the next start's empty seat. Nobody seated - closed from the sign-in
     /// screen, or after the log-out that input ending already ran - sends
     /// nothing: there is no stint of this agent's to name.</summary>
-    public static async Task SignOutOnExitAsync(AgentService agent)
+    public static Task SignOutOnExitAsync(AgentService agent) => SignOutOnExitAsync(agent, ExitSignOutLimit);
+
+    /// <summary>The same, waited for up to <paramref name="limit"/>: the window
+    /// host spends part of its exit bound on a sign-in still in flight first.
+    /// The durable tombstone is written before the first await, so even a
+    /// limit of zero leaves the checkout queued.</summary>
+    public static async Task SignOutOnExitAsync(AgentService agent, TimeSpan limit)
     {
         try
         {
-            await agent.SignOutSeatedDriverAsync().WaitAsync(ExitSignOutLimit).ConfigureAwait(false);
+            await agent.SignOutSeatedDriverAsync().WaitAsync(limit < TimeSpan.Zero ? TimeSpan.Zero : limit).ConfigureAwait(false);
         }
         catch (Exception)
         {
             // Nothing more can be done on the way out; the next start covers it.
         }
     }
+
+    /// <summary>How long the whole exit may take: the console's signal handlers
+    /// and the window's close share it, because Windows ends a process soon
+    /// after a close handler returns.</summary>
+    public static TimeSpan ExitLimit => ExitSignOutLimit;
 }

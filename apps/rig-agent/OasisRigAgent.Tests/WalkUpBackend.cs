@@ -23,6 +23,14 @@ internal sealed class WalkUpBackend : HttpMessageHandler
     public volatile bool RefuseLaps;
     public int AssignmentPolls;
     private volatile string? _open;
+
+    /// <summary>When set, a check-in commits its stint and then holds its
+    /// answer until this completes (or the request is cancelled) - the window
+    /// between the server creating the stint and the rig learning its id.</summary>
+    public volatile TaskCompletionSource? HoldCheckInAnswer;
+
+    /// <summary>The stint open on the rig as the backend sees it.</summary>
+    public string? OpenAssignmentId => _open;
     private int _stints;
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -53,6 +61,7 @@ internal sealed class WalkUpBackend : HttpMessageHandler
             _ => (HttpStatusCode.OK, Accept(body)),
         };
         lock (Calls) Calls.Add($"{path} {answer}");
+        if (path == "/api/checkin" && HoldCheckInAnswer is { } hold) await hold.Task.WaitAsync(ct);
         return new HttpResponseMessage(status) { Content = new StringContent(answer, Encoding.UTF8, "application/json") };
     }
 

@@ -335,13 +335,18 @@ static int RunWindow(WalkUpViewModel model, AgentService agent, string priority)
 {
     model.Log(priority);
     var quit = new CancellationTokenSource();
+    // The model's exit sign-out owns the sign-in that may be in flight: it
+    // waits for it out of the same bound, seats and ends the stint it opened,
+    // or records the one it may have opened. So quit is cancelled AFTER the
+    // exit work, never before - cancelling first would abort that sign-in at
+    // the moment its answer is the only thing that names the stint.
     var exitWork = new Lazy<Task>(() => Task.Run(() => Task.WhenAll(
-        WalkUpRules.SignOutOnExitAsync(agent),
-        agent.SendGoodbyeAsync(TimeSpan.FromSeconds(3)))));
+        model.SignOutOnExitAsync(WalkUpRules.ExitLimit),
+        agent.SendGoodbyeAsync(WalkUpRules.ExitLimit))));
     void FinishBeforeExit()
     {
-        quit.Cancel();
         exitWork.Value.GetAwaiter().GetResult();
+        quit.Cancel();
     }
     // The console-control routes still exist when --console gave the process a
     // console; a windowed process without one simply never hears them.
