@@ -546,8 +546,11 @@ deploys, nothing reads or writes the table.
 `0009_race_results.sql` records league night's race result, which a round is
 now scored by ([live-race.md](./live-race.md#the-race-result)). It is
 additive: two new tables (`league_race_results`, `league_race_starts`) with
-foreign keys to `league_rounds`, `drivers` and `rigs`, and two views over
-them; nothing existing is altered. It needs 0008 applied first. Apply it to
+foreign keys to `league_rounds`, `drivers` and `rigs`, two views over them,
+and one nullable column on 0008's `rig_race_status`, `rig_assignment_id`
+(who was signed in to the rig when each report arrived); nothing existing is
+rewritten. Adding the column briefly locks `rig_race_status`, so a race
+report in flight at that moment waits; apply it outside a race. It needs 0008 applied first. Apply it to
 Neon **before merging** the change that adds it, as with 0008. Until the merge
 deploys, nothing reads or writes the tables, and every round already played
 keeps scoring exactly as before.
@@ -566,7 +569,10 @@ keeps scoring exactly as before.
      to_regclass('public.league_race_results') is null as results_absent,
      to_regclass('public.league_race_starts') is null as starts_absent,
      to_regclass('public.v_league_race_session') is null as session_view_absent,
-     to_regclass('public.v_league_race_results') is null as results_view_absent;
+     to_regclass('public.v_league_race_results') is null as results_view_absent,
+     not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'rig_race_status'
+                   and column_name = 'rig_assignment_id') as assignment_column_absent;
    ```
 
 3. `npm run db:migrate`. Read the `migrating <host>/<database>` line; expect
@@ -587,8 +593,9 @@ keeps scoring exactly as before.
    If anything in it fails, nothing is applied - fix the paste and run it
    again. Without the `insert` the build gate keeps refusing to deploy.
 4. Verify, whichever way you applied it. `db/verify/0009_race_results.sql`
-   fingerprints both tables' columns and constraints and both views against a
-   database built from the migration. Like 0008's, it is a **single SELECT
+   fingerprints both tables' columns and constraints, the column added to
+   `rig_race_status` and its foreign key, and both views against a database
+   built from the migration. Like 0008's, it is a **single SELECT
    with no transaction around it**. Paste the whole file and the result grid
    is the answer. Or from `psql`:
 
@@ -596,7 +603,7 @@ keeps scoring exactly as before.
    psql "$DATABASE_URL" -f ../../db/verify/0009_race_results.sql
    ```
 
-   Expect seven rows, every one `ok = t`. Any `f` means the database does not
+   Expect nine rows, every one `ok = t`. Any `f` means the database does not
    hold what the file says: stop and compare `actual` with `expected`.
 5. After the merge deploys, `/league` and `/staff` answer as before; a 500 on
    either means the tables are missing on the database the deployment uses.
