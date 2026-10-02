@@ -118,7 +118,7 @@ no inbound connectivity to the venue is required. Build the self-contained exe
 
 ```bash
 cd apps/rig-agent/OasisRigAgent
-dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+dotnet publish -c Release -f net8.0-windows -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
 Configure per rig with `agent.config.json` beside the exe (or `OASIS_*` env
@@ -140,7 +140,9 @@ vars, which override the file):
   through the app's own sign-in and check-in, posts their laps, and signs them
   out when they press Log out or close the program. The same name and PIN bring a returning driver back to
   their own row on either rig, both days; five wrong PINs lock the name for 15
-  minutes (`apps/rig-agent/README.md`, Walk-up mode).
+  minutes (`apps/rig-agent/README.md`, Walk-up mode). Deploy the web app
+  before replacing a rig's exe with 0.7 or later: an older site has no
+  `/api/auth/name`, and the rig cannot sign anyone in against it.
   Leave it out to keep the staff console.
 - `backendBaseUrl` must be `https://` (the agent rejects non-HTTPS except
   localhost, since the token rides on every request).
@@ -153,7 +155,7 @@ vars, which override the file):
   (`apps/rig-agent/README.md`, iRacing telemetry).
 - The agent must run in the interactive desktop session of the Windows user
   who runs iRacing: the shared-memory map it reads is session-scoped
-  (`Local\`), and in walk-up mode the driver signs in at its console window.
+  (`Local\`), and in walk-up mode the driver signs in at its window.
   Auto-start it with a Task Scheduler task triggered at that user's logon and
   set to "Run only when user is logged on". Do not install it as a Windows
   Service: a service runs in session 0, where it can neither see iRacing's map
