@@ -42,6 +42,9 @@ public sealed class IracingFrameProcessor
     public static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(30);
 
     private readonly LapDetector _detector;
+    private readonly RaceStatusSampler? _race;
+    private readonly IReadOnlySet<string> _watched;
+    private readonly IReadOnlyList<string> _expected;
     private readonly Func<long> _nowMs;
     private int? _progressTick;
     private long _progressAtMs;
@@ -58,10 +61,17 @@ public sealed class IracingFrameProcessor
     private string? _lastRejection;
 
     /// <param name="nowMs">A monotonic millisecond clock; defaults to <see cref="Environment.TickCount64"/>.</param>
-    public IracingFrameProcessor(LapDetector detector, Func<long>? nowMs = null)
+    /// <param name="race">Also fed every new tick, with the race channels read
+    /// beside the lap detector's; without one, none of them is read.</param>
+    public IracingFrameProcessor(LapDetector detector, Func<long>? nowMs = null, RaceStatusSampler? race = null)
     {
         _detector = detector;
+        _race = race;
         _nowMs = nowMs ?? (() => Environment.TickCount64);
+        _watched = race is null
+            ? TelemetryTick.VariableNames
+            : new HashSet<string>(TelemetryTick.VariableNames.Concat(RaceTick.VariableNames), StringComparer.Ordinal);
+        _expected = race is null ? _watched.ToList() : _watched.Concat(RaceTick.ElementNames).ToList();
     }
 
     public bool Connected { get; private set; }
@@ -105,7 +115,7 @@ public sealed class IracingFrameProcessor
             }
 
             _parser ??= new IracingMemoryParser(reader);
-            var parsed = _parser.Parse(TelemetryTick.VariableNames);
+            var parsed = _parser.Parse(_watched);
             if (!parsed.IsConnected)
             {
                 _progressTick = null;
@@ -136,14 +146,19 @@ public sealed class IracingFrameProcessor
             if (!_reportedMissing)
             {
                 _reportedMissing = true;
-                var missing = TelemetryTick.VariableNames.Where(n => !parsed.Variables.ContainsKey(n)).Order().ToList();
+                var missing = _expected.Where(n => !parsed.Variables.ContainsKey(n)).Order().ToList();
                 if (missing.Count > 0) MissingVariables?.Invoke(missing);
             }
 
-            // Named sessions are re-read only when iRacing bumps the update
-            // counter; one still unnamed is retried once a second of sim time.
+            // Complete session info is re-read only when iRacing bumps the
+            // update counter. Info still being filled in is retried once a
+            // second of sim time under the same counter: info that does not
+            // name the combo yet, or - with race reporting on - that has no
+            // SessionType for the session the telemetry says is running, since
+            // iRacing can publish the sessions list after the track and car.
             if (parsed.SessionInfoUpdate != _sessionReadUpdate
-                || (!_sessionNamed && parsed.TickCount - _sessionReadTick >= parsed.TickRate))
+                || ((!_sessionNamed || !ActiveSessionTyped(parsed))
+                    && parsed.TickCount - _sessionReadTick >= parsed.TickRate))
             {
                 if (!ReadSessionInfo(parsed))
                 {
@@ -156,6 +171,7 @@ public sealed class IracingFrameProcessor
             {
                 _lastTick = parsed.TickCount;
                 _detector.Observe(TelemetryTick.FromValues(parsed.Values));
+                if (_race is not null) ObserveRace(parsed);
             }
             return FrameOutcome.Frame;
         }
@@ -198,6 +214,24 @@ public sealed class IracingFrameProcessor
         return now - _progressAtMs >= (long)StallTimeout.TotalMilliseconds;
     }
 
+    /// <summary>The race channels of this frame, the player's three array
+    /// elements read from the same buffer as the scalars.</summary>
+    private void ObserveRace(ParsedMemorySnapshot parsed)
+    {
+        var player = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
+        var parser = _parser!;
+        _race!.Observe(RaceTick.FromValues(parsed.Values,
+            name => player is int carIdx ? parser.ReadElement(parsed, name, carIdx) : null));
+    }
+
+    /// <summary>Whether the race sampler already has a type for the running
+    /// SessionNum. True when there is nothing to wait for: no sampler, or no
+    /// SessionNum channel to look it up by.</summary>
+    private bool ActiveSessionTyped(ParsedMemorySnapshot parsed)
+        => _race is null
+           || !(parsed.Values.TryGetValue("SessionNum", out var value) && value is int sessionNum)
+           || _race.SessionTypes.ContainsKey(sessionNum);
+
     /// <summary>False when the sim left the session before its session info could be read.</summary>
     private bool ReadSessionInfo(ParsedMemorySnapshot parsed)
     {
@@ -207,11 +241,13 @@ public sealed class IracingFrameProcessor
         _sessionReadTick = parsed.TickCount;
         var yaml = SessionInfoParser.Decode(bytes);
         var playerIdx = parsed.Values.TryGetValue("PlayerCarIdx", out var idx) && idx is int i ? i : (int?)null;
-        var combo = SessionInfoParser.Parse(yaml, playerIdx);
+        var scan = SessionInfoParser.Scan(yaml, playerIdx);
+        var combo = scan.Combo;
+        if (_race is not null) _race.SessionTypes = scan.SessionTypes;
         _sessionNamed = combo is not null;
         if (combo is null)
         {
-            var found = SessionInfoParser.DescribeFound(yaml, playerIdx);
+            var found = scan.Found;
             if (_detector.Combo is null && found != _reportedIncomplete)
             {
                 _reportedIncomplete = found;
@@ -249,6 +285,7 @@ public sealed class IracingFrameProcessor
         {
             _detector.Reset();
             _detector.Combo = null;
+            _race?.Reset();
             _lastTick = int.MinValue;
             _sessionReadUpdate = int.MinValue;
             _sessionNamed = false;

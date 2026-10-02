@@ -25,7 +25,7 @@ namespace OasisRigAgent.Core.Iracing;
 /// header on attach and on rejection, the combo strings as parsed, every lap
 /// decision, and the variables iRacing did not publish.
 /// </summary>
-public sealed class IracingTelemetrySource : ITelemetrySource, ISimHealthSource, IDisposable
+public sealed class IracingTelemetrySource : ITelemetrySource, ISimHealthSource, IRaceStatusSource, IDisposable
 {
     private const string MemoryMapName = "Local\\IRSDKMemMapFileName";
     private const string DataEventName = "Local\\IRSDKDataValidEvent";
@@ -39,8 +39,11 @@ public sealed class IracingTelemetrySource : ITelemetrySource, ISimHealthSource,
     private readonly CancellationTokenSource _stop = new();
     private Thread? _thread;
 
-    public IracingTelemetrySource(LapDetector? detector = null)
+    /// <param name="raceStatus">False reads none of the race channels, and
+    /// <see cref="RaceStatus"/> is always null.</param>
+    public IracingTelemetrySource(LapDetector? detector = null, bool raceStatus = true)
     {
+        RaceSampler = raceStatus ? new RaceStatusSampler() : null;
         var lapDetector = detector ?? new LapDetector();
         lapDetector.Decided += decision =>
         {
@@ -48,7 +51,7 @@ public sealed class IracingTelemetrySource : ITelemetrySource, ISimHealthSource,
             if (decision.Lap is not null) LapCompleted?.Invoke(decision.Lap);
         };
         lapDetector.Resynced += message => LapCounterResynced?.Invoke(message);
-        _frames = new IracingFrameProcessor(lapDetector);
+        _frames = new IracingFrameProcessor(lapDetector, race: RaceSampler);
         _frames.ConnectionChanged += up => ConnectionChanged?.Invoke(up);
         _frames.Attached += header => Attached?.Invoke(header);
         _frames.HeaderRejected += (header, reason) => HeaderRejected?.Invoke(header, reason);
@@ -58,6 +61,12 @@ public sealed class IracingTelemetrySource : ITelemetrySource, ISimHealthSource,
     }
 
     public bool SimRunning => _frames.Connected;
+
+    /// <summary>This rig's car in the session, built from the newest tick; null
+    /// when the race status is switched off.</summary>
+    public RaceStatusSampler? RaceSampler { get; }
+
+    public RaceStatusReport? RaceStatus(DateTimeOffset sampledAt) => RaceSampler?.RaceStatus(sampledAt);
     public event Action<LapCompleted>? LapCompleted;
 
     /// <summary>iRacing connected (true) or went away (false).</summary>
