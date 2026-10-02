@@ -7,11 +7,16 @@ import {
   type BoardRow,
   trackKey,
 } from "@/lib/leaderboards";
-import { comboLabel, roundLabel, type LeagueRound, type RoundResult } from "@/lib/league";
+import {
+  comboLabel,
+  isOpenTonight,
+  roundLabel,
+  type LeagueRound,
+  type RoundResult,
+} from "@/lib/league";
 import type { SeasonStanding } from "@/lib/league-scoring";
 import { remainingLabel } from "@/lib/race-board";
 import { useLiveRace } from "@/components/use-live-race";
-import { venueToday } from "@/lib/venue";
 import { reportingFeedHealth } from "@/lib/tv-feed-health";
 import {
   type AnyTvBoardDefinition,
@@ -289,20 +294,6 @@ type LeagueData = {
  */
 const LEAGUE_TAKEOVER_MS = 30_000;
 
-/**
- * Whether a round is the one the wall should be showing right now: still open,
- * and belonging to the venue's current day.
- *
- * The venue-day half is what keeps a forgotten round off the wall. Nothing
- * closes a round automatically - `rollLeagueSeason` refuses while one is open
- * precisely because staff are expected to do it - so without this a Wednesday
- * night nobody closed out would still own the TV on Saturday. `round_date` is
- * the venue-local day the round opened (`venue_today()` at insert), compared
- * against the same venue day the rest of the product means by "tonight".
- */
-const ownsTheWall = (round: LeagueRound) =>
-  round.closed_at === null && round.round_date === venueToday();
-
 const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
   kind: "league",
   async load(_spec, signal) {
@@ -313,7 +304,7 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
     // Only the round that owns the wall tonight is qualifying; the field is
     // read from the round endpoint so the wall ranks exactly what the phone's
     // round page ranks.
-    const tonightsRound = data.rounds.find(ownsTheWall) ?? null;
+    const tonightsRound = data.rounds.find(isOpenTonight) ?? null;
     let qualifying: LeagueData["qualifying"] = null;
     if (tonightsRound) {
       const round = (await fetchJson(`/api/league/rounds/${tonightsRound.id}`, signal)) as {
@@ -349,13 +340,15 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
  *  - Qualifying, while tonight's round is open: the round's field ranked by
  *    fastest valid lap, the same ranking as `/league/[roundId]`, labelled as
  *    qualifying. This is the screen that takes the wall over.
- *  - The race, when the live feed reports a Race session with a field
- *    (`useLiveRace`): the running order in place of the ranking, refreshed on
- *    the feed's own cadence, and after the chequered flag the finishing order
- *    held for a minute before the board goes back to qualifying.
+ *  - The race, while tonight's round is open and the live feed reports a Race
+ *    session with a field (`useLiveRace`): the running order in place of the
+ *    ranking, refreshed on the feed's own cadence, and after the chequered
+ *    flag the finishing order held for a minute before the board goes back to
+ *    qualifying. Any other race at the venue is not league night and never
+ *    reaches the wall; with no round open the feed is not even asked.
  *
  * League night takes the wall over rather than taking a turn on it: while
- * tonight's round is open, or a race is on screen, this board renews the
+ * tonight's round is open, this board renews the
  * rotation's own `hold` on every refresh, so it stays up and keeps updating
  * instead of cycling back to the arcade boards every fifteen seconds. That is
  * the whole takeover, expressed through the board contract - the rotation
@@ -363,9 +356,8 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
  *
  * The hold lapses on its own, and the arcade rotation resumes, when the round
  * closes, when the feed stops refreshing this board, and at venue midnight - so
- * a night nobody closed out stops owning the wall the next morning. A race
- * holds only while its rigs report (the feed drops a silent rig after a
- * minute), so that condition is bounded too. Only the display lapses: the
+ * a night nobody closed out stops owning the wall the next morning, and a race
+ * cannot hold it on any other day. Only the display lapses: the
  * round stays open until staff close it, exactly as `rollLeagueSeason`
  * expects. The rest of the week this is one slide among the others.
  *
@@ -373,18 +365,18 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
  * than the lap-time formatter, and the columns are renamed to match.
  */
 function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
-  const live = useLiveRace(true);
+  const tonightsRound = data.rounds.find(isOpenTonight) ?? null;
+  const live = useLiveRace(tonightsRound !== null);
 
   useEffect(() => {
     // Read off `data` rather than a memo so that every refresh - each one a
     // fresh payload - re-tests the venue day and renews the hold.
-    if (data.rounds.some(ownsTheWall) || live.race) hold(LEAGUE_TAKEOVER_MS);
-  }, [data, live.race, hold]);
+    if (data.rounds.some(isOpenTonight)) hold(LEAGUE_TAKEOVER_MS);
+  }, [data, hold]);
 
-  const tonightsRound = data.rounds.find(ownsTheWall) ?? null;
   const title = data.season?.league_name ?? "Oasis League";
 
-  if (live.race?.session) {
+  if (tonightsRound && live.race?.session) {
     const { session } = live.race;
     return (
       // The owner's header for the race (2026-10-01): the eyebrow says only
@@ -395,7 +387,7 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
       <RaceOrder
         eyebrow="Race"
         title={title}
-        subtitle={[tonightsRound?.track_name, remainingLabel(session)].filter(Boolean).join(" · ")}
+        subtitle={[tonightsRound.track_name, remainingLabel(session)].filter(Boolean).join(" · ")}
         race={live.race}
         finished={live.finished}
         moves={live.moves}

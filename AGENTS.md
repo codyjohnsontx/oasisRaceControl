@@ -180,7 +180,9 @@ pass at the line; the grid and the finish keep iRacing's own order.
 
 The screens that draw it are the wall's league board and a panel on `/league`,
 and what they show is decided once, in `lib/race-board.ts` (pure, tested): a
-`Race` session with two or more rigs replaces the standings, a row that
+`Race` session with two or more rigs replaces the standings - only while
+tonight's round is open (`isOpenTonight` in `lib/league.ts`); with none open
+neither screen polls the feed or shows a race - a row that
 changed place is flashed and marked, and the finishing order is held for one
 minute from the first report of the flag, remembered per session so it does
 not come back. Both poll the feed every 2.5 s through

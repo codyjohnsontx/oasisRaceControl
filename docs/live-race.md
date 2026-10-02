@@ -125,14 +125,17 @@ board polls. That is fast enough for a wall, but it is not a timing screen.
 Two screens read the feed, and they are one screen drawn twice: the wall's
 league board (`apps/web/src/components/tv/board-types.tsx`, drawing
 `tv/race-board.tsx`) and the panel at the top of `/league`
-(`components/live-race-panel.tsx`). Both poll the feed every 2.5 s through
+(`components/live-race-panel.tsx`). While tonight's league round is open
+(`isOpenTonight` in `apps/web/src/lib/league.ts`), both poll the feed every 2.5 s through
 `components/use-live-race.ts`, and every rule about *what* is shown lives in
 `apps/web/src/lib/race-board.ts`, pure and unit-tested, so the wall and the
 phone agree by construction:
 
-- The race replaces the standings when the feed reports a **`Race` session
-  with at least two rigs**, from the grid onwards. One rig in a race session
-  is a test drive and shows nothing.
+- The race replaces the standings when **tonight's league round is open** and
+  the feed reports a **`Race` session with at least two rigs**, from the grid
+  onwards. One rig in a race session is a test drive and shows nothing, and a
+  race with no round open is not league night: neither screen shows it, the
+  wall keeps rotating, and neither asks the feed.
 - Rows are numbered by `place`. A row that just changed place flashes once
   (green up, red down) and carries ▲n / ▼n beside the name for a few seconds.
   A `stale` rig is dimmed where it was; a rig with nobody signed in reads

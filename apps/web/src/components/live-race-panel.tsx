@@ -14,9 +14,11 @@ import { useLiveRace, type LiveRaceView } from "@/components/use-live-race";
 /**
  * The live race on `/league`: the same feed, the same rules and the same
  * minute under the flag as the wall's race screen (`lib/race-board.ts`,
- * `useLiveRace`), drawn for a phone held in the paddock. Renders nothing at
- * all while no race is on - the standings page is unchanged on an ordinary
- * day - and sits above the standings while one is.
+ * `useLiveRace`), drawn for a phone held in the paddock. Only league night
+ * has a race here: while `active` is false - no round open tonight - it asks
+ * the feed for nothing and renders nothing, and it renders nothing while no
+ * race is on either, so the standings page is unchanged on an ordinary day.
+ * During a race it sits above the standings.
  *
  * Phone-first: three columns at 390px (place, driver with laps and last lap
  * under the name, gap with the interval under it), so nothing needs a
@@ -25,9 +27,9 @@ import { useLiveRace, type LiveRaceView } from "@/components/use-live-race";
  * carries a PIT chip, and a row that just changed place flashes and shows
  * ▲n / ▼n for a few seconds, exactly as on the wall.
  */
-export function LiveRacePanel() {
-  const live = useLiveRace(true);
-  if (!live.race?.session) return null;
+export function LiveRacePanel({ active }: { active: boolean }) {
+  const live = useLiveRace(active);
+  if (!active || !live.race?.session) return null;
   return <LiveRaceTable live={live} />;
 }
 

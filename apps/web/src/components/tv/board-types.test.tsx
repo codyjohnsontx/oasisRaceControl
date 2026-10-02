@@ -8,8 +8,14 @@ import { SLOT_COUNT } from "./arcade-board";
 
 const liveRace = vi.hoisted(() => ({
   view: { race: null, finished: false, moves: new Map(), stale: false } as LiveRaceView,
+  asked: [] as boolean[],
 }));
-vi.mock("@/components/use-live-race", () => ({ useLiveRace: () => liveRace.view }));
+vi.mock("@/components/use-live-race", () => ({
+  useLiveRace: (active: boolean) => {
+    liveRace.asked.push(active);
+    return liveRace.view;
+  },
+}));
 
 /**
  * The two rotation lists. The event view is one slide - the tonight board
@@ -230,6 +236,42 @@ describe("league board on league night", () => {
       for (const absent of ["Round 1", "Qualifying", "Racing", "Grand Prix Pits", "Porsche 911 GT3 R", "3 cars"]) {
         expect(html).not.toContain(absent);
       }
+    } finally {
+      liveRace.view = { race: null, finished: false, moves: new Map(), stale: false };
+    }
+  });
+
+  it("shows a race only while tonight's round is open, and asks the feed only then", () => {
+    liveRace.view = {
+      race: liveRaceFeed([liveRaceRow(1, 1), liveRaceRow(2, 2)]),
+      finished: false,
+      moves: new Map(),
+      stale: false,
+    };
+    const yesterday = new Date(Date.now() - 86_400_000);
+    const render = (rounds: ReturnType<typeof round>[]) => {
+      liveRace.asked = [];
+      const data = { season, rounds, standings: [standing], qualifying: null };
+      const html = renderToStaticMarkup(
+        <league.Board spec={null} data={data} stale={false} hold={() => {}} />,
+      );
+      return { html, asked: liveRace.asked };
+    };
+    try {
+      for (const rounds of [
+        [round(venueToday(), "2026-10-02T03:00:00Z")],
+        [round(venueToday(yesterday))],
+      ]) {
+        const ordinary = render(rounds);
+        expect(ordinary.asked).toEqual([false]);
+        expect(ordinary.html).toContain("Season standings");
+        expect(ordinary.html).not.toContain("data-tv-race-row");
+      }
+
+      const leagueNight = render([round(venueToday())]);
+      expect(leagueNight.asked).toEqual([true]);
+      expect(leagueNight.html).toContain("data-tv-race-row");
+      expect(leagueNight.html).not.toContain("Season standings");
     } finally {
       liveRace.view = { race: null, finished: false, moves: new Map(), stale: false };
     }

@@ -1,8 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SESSION_STATE } from "@/lib/events";
 import { liveRaceFeed, liveRaceRow } from "@/test/live-race-fixture";
+import type { LiveRaceView } from "@/components/use-live-race";
 import { LiveRacePanel, LiveRaceTable } from "./live-race-panel";
+
+const liveRace = vi.hoisted(() => ({
+  view: { race: null, finished: false, moves: new Map(), stale: false } as LiveRaceView,
+  asked: [] as boolean[],
+}));
+vi.mock("@/components/use-live-race", () => ({
+  useLiveRace: (active: boolean) => {
+    liveRace.asked.push(active);
+    return liveRace.view;
+  },
+}));
 
 /**
  * The phone's live race panel says the same things about each car as the
@@ -21,7 +33,27 @@ const rowsIn = (html: string) => html.match(/<li[^>]*data-live-race-row[^>]*>[\s
 
 describe("LiveRacePanel", () => {
   it("renders nothing until the feed has answered", () => {
-    expect(renderToStaticMarkup(<LiveRacePanel />)).toBe("");
+    expect(renderToStaticMarkup(<LiveRacePanel active />)).toBe("");
+  });
+
+  it("shows a race only while tonight's round is open, and asks the feed only then", () => {
+    liveRace.view = {
+      race: liveRaceFeed([liveRaceRow(1, 1), liveRaceRow(2, 2)]),
+      finished: false,
+      moves: new Map(),
+      stale: false,
+    };
+    try {
+      liveRace.asked = [];
+      expect(renderToStaticMarkup(<LiveRacePanel active={false} />)).toBe("");
+      expect(liveRace.asked).toEqual([false]);
+
+      liveRace.asked = [];
+      expect(renderToStaticMarkup(<LiveRacePanel active />)).toContain("Live race");
+      expect(liveRace.asked).toEqual([true]);
+    } finally {
+      liveRace.view = { race: null, finished: false, moves: new Map(), stale: false };
+    }
   });
 
   it("renders nothing while no race is on", () => {
