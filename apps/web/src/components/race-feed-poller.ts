@@ -16,8 +16,8 @@ import type { LiveRace } from "@/lib/race-live";
  *     a timed-out request counts as a failed one, so the screen marks itself
  *     stale and the race ages off through the same path as a feed that errors.
  *   - `stop()` aborts the request in flight without reporting it: it is what
- *     polling stops with - the round closed, the tab is hidden, the component
- *     unmounted - and an abandoned screen has no failure to show.
+ *     polling stops with - the round closed, the component unmounted - and an
+ *     abandoned screen has no failure to show.
  *
  * Plain TypeScript with the fetch injected, so the whole contract is tested
  * without React or a DOM (`race-feed-poller.test.ts`). The response-order
