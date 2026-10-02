@@ -14,18 +14,20 @@ import { isRaceSession } from "./race-live";
  * Three writers, one per moment of the night:
  *   - every race report a rig sends (POST /api/agent/race-status) while a
  *     round is open records that the rig was heard in its race session, and
- *     while the round's race shows the chequered flag or cool-down records
- *     the rig's driver at iRacing's own place - refreshed on every report, so
- *     a car still crossing the line settles where iRacing puts it;
+ *     the first one from the round's race showing the chequered flag or
+ *     cool-down records the rig's driver at iRacing's own place. That place is
+ *     final: a later report, or an older one the live feed accepts late, never
+ *     moves it - only staff do;
  *   - closing the round sweeps once more for any car of the round's race
  *     still missing, at its last reported place;
  *   - staff save the order they reviewed on /staff, which replaces every row of
  *     the round and freezes it against the other two.
  *
- * A captured row names its driver by the rig's open assignment when the report
- * arrives - whoever is in the seat, the rule laps use. A rig whose race place
- * is already held by one driver never records another for the same race, so a
- * driver signing in during cool-down does not inherit the place.
+ * A captured row names its driver by the assignment the route stored with the
+ * report (rig_race_status.rig_assignment_id) - whoever was in the seat when it
+ * arrived, the rule laps use - never by whoever is in the seat when the row is
+ * written. A rig whose race place is already recorded records nothing more for
+ * that race, so a driver signing in during cool-down does not inherit it.
  *
  * A flag capture takes a share lock on the open round, and saving and closing
  * lock it exclusively before anything else, so each of them waits for a
@@ -45,11 +47,12 @@ export function raceReportCapture(
 
 /**
  * Records what a stored race report says about tonight's round, if one is
- * open. Called only for a report the race-status route actually stored, so a
- * late sample never rewinds a recorded place.
+ * open. `assignmentId` is the rig's open assignment the route stored with the
+ * report, null when nobody was checked in - then there is no driver to place.
  */
 export async function captureRaceReport(
   rigId: string,
+  assignmentId: string | null,
   report: Pick<
     RaceStatusEvent,
     "sessionUniqueId" | "sessionNum" | "sessionType" | "sessionState" | "position" | "lapsCompleted"
@@ -64,7 +67,7 @@ export async function captureRaceReport(
      on conflict do nothing`,
     [report.sessionUniqueId, report.sessionNum, rigId],
   );
-  if (!capture.finish) return;
+  if (!capture.finish || assignmentId === null) return;
 
   await withTransaction(async (client) => {
     // Its own statement: the insert below must read with a snapshot taken
@@ -81,7 +84,7 @@ export async function captureRaceReport(
           session_unique_id, session_num, laps_completed)
        select $1, ra.driver_id, $3, 'flag', $2, $4, $5, $6
        from rig_assignments ra
-       where ra.rig_id = $2 and ra.ended_at is null
+       where ra.id = $7
          and exists (select 1 from v_league_race_session v
                      where v.round_id = $1
                        and v.session_unique_id = $4 and v.session_num = $5)
@@ -89,8 +92,10 @@ export async function captureRaceReport(
                          where x.round_id = $1 and x.source = 'staff')
          and not exists (select 1 from league_race_results x
                          where x.round_id = $1 and x.rig_id = $2
-                           and x.session_unique_id = $4 and x.session_num = $5
-                           and x.driver_id <> ra.driver_id)
+                           and x.session_unique_id = $4 and x.session_num = $5)
+       -- A row already held from this race is final. One from another session
+       -- no longer counts (it stopped being the round's race), so this race
+       -- replaces it.
        on conflict (round_id, driver_id) do update set
          finish_position = excluded.finish_position,
          source = excluded.source,
@@ -99,7 +104,9 @@ export async function captureRaceReport(
          session_num = excluded.session_num,
          laps_completed = excluded.laps_completed,
          recorded_at = now()
-       where league_race_results.source = 'flag'`,
+       where league_race_results.source = 'flag'
+         and (league_race_results.session_unique_id, league_race_results.session_num)
+             is distinct from (excluded.session_unique_id, excluded.session_num)`,
       [
         round.id,
         rigId,
@@ -107,6 +114,7 @@ export async function captureRaceReport(
         report.sessionUniqueId,
         report.sessionNum,
         report.lapsCompleted,
+        assignmentId,
       ],
     );
   });
@@ -117,8 +125,9 @@ export async function captureRaceReport(
  * and closed the round: every car still reporting from the round's race
  * (v_league_race_session) that the flag capture never recorded, at the place
  * it last reported - a car that stopped before the flag, or every car when the
- * round closes mid-race. Nothing when staff saved a result or the round has no
- * race. Returns the rows recorded.
+ * round closes mid-race - for the driver that report was stored for, not
+ * whoever is in the seat at close. Nothing when staff saved a result or the
+ * round has no race. Returns the rows recorded.
  */
 export async function sweepRaceResultsTx(client: PoolClient, roundId: string): Promise<number> {
   const swept = await client.query(
@@ -132,7 +141,7 @@ export async function sweepRaceResultsTx(client: PoolClient, roundId: string): P
                                  and t.session_unique_id = s.session_unique_id
                                  and t.session_num = s.session_num
      join league_rounds r on r.id = $1
-     join rig_assignments ra on ra.rig_id = s.rig_id and ra.ended_at is null
+     join rig_assignments ra on ra.id = s.rig_assignment_id
      where s.position is not null
        and s.received_at >= r.opened_at
        and not exists (select 1 from league_race_results x
@@ -141,7 +150,18 @@ export async function sweepRaceResultsTx(client: PoolClient, roundId: string): P
                        where x.round_id = $1 and x.rig_id = s.rig_id
                          and x.session_unique_id = s.session_unique_id
                          and x.session_num = s.session_num)
-     on conflict (round_id, driver_id) do nothing`,
+     -- As at the flag: a row from this race stands, one from another session
+     -- no longer counts and is replaced.
+     on conflict (round_id, driver_id) do update set
+       finish_position = excluded.finish_position,
+       source = excluded.source,
+       rig_id = excluded.rig_id,
+       session_unique_id = excluded.session_unique_id,
+       session_num = excluded.session_num,
+       laps_completed = excluded.laps_completed,
+       recorded_at = now()
+     where (league_race_results.session_unique_id, league_race_results.session_num)
+           is distinct from (excluded.session_unique_id, excluded.session_num)`,
     [roundId],
   );
   return swept.rowCount ?? 0;
