@@ -217,9 +217,11 @@ the way every other channel is), plus the player's own element of three
 one 4-byte read at `offset + PlayerCarIdx * 4`
 (`IracingMemoryParser.ReadElement`), never the whole array. The session type
 ("Practice", "Open Qualify", "Race") is `SessionInfo.Sessions[SessionNum].SessionType`
-from the session-info YAML, scanned only when iRacing bumps its update counter,
-as the track and car already are. Everything is read-only, like the rest of
-the agent.
+from the session-info YAML, scanned when iRacing bumps its update counter, as
+the track and car already are - and, while the running session has no type in
+it yet, once a second under the same counter, because iRacing can publish the
+sessions list after the track and car. Everything is read-only, like the rest
+of the agent.
 
 **What it sends.** `RaceStatusReport` (`OasisRigAgent.Core/RaceStatus.cs`)
 mirrors `raceStatusEvent` in `apps/web/src/lib/events.ts`; both change
@@ -255,7 +257,7 @@ one per attempt. Laps are unaffected either way.
 **What it costs.** One more `RunLoop` in `AgentService` - the poll and flush's
 timer pattern, on the thread pool, no new thread - in the same below-normal
 priority process. On the telemetry thread, about fifteen more small reads per
-frame from memory it already maps and one small allocation; the row is built
+frame from memory it already maps and two small objects (the tick and its timestamp wrapper); the row is built
 only when the loop asks for it, every 2.5 s.
 
 ### The race line in the diagnostic

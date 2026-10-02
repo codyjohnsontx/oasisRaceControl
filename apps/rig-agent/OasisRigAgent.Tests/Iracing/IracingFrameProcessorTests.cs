@@ -499,6 +499,59 @@ public sealed class IracingFrameProcessorTests
                CarScreenName: FIA F4
             """);
 
+    /// <summary>Codex's reproduction from the review of PR 53: session info
+    /// that already names the combo, but not yet the active session's type,
+    /// must still be retried under the same update number - or every rig
+    /// reports sessionType null all race and the server never sees a race.</summary>
+    [Fact]
+    public void SessionInfoWithTheComboButNoTypeForTheActiveSessionIsRetriedOnceASecond()
+    {
+        var race = new RaceStatusSampler();
+        var frames = new IracingFrameProcessor(_detector, race: race);
+        var fixture = RaceFrame(); // SessionNum 2
+        const string combo = "WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n"
+                           + "DriverInfo:\n DriverCarIdx: 7\n Drivers:\n - CarIdx: 7\n   CarScreenName: FIA F4\n";
+        fixture.SetSessionInfo(combo);
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+        Assert.Equal("FIA F4", _detector.Combo?.CarScreenName);
+        Assert.Null(race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+
+        // Same update number: the sessions list arrives, but only practice so far.
+        fixture.SetSessionInfo(combo + "SessionInfo:\n Sessions:\n - SessionNum: 0\n   SessionType: Practice\n");
+        fixture.WriteInt(48, 160);
+        frames.Process(reader);
+        Assert.Null(race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+
+        // Still the same update number, now with the race entry.
+        fixture.SetSessionInfo(combo + "SessionInfo:\n Sessions:\n - SessionNum: 0\n   SessionType: Practice\n"
+                                     + " - SessionNum: 2\n   SessionType: Race\n");
+        fixture.WriteInt(48, 219);                // under a second of sim time later
+        frames.Process(reader);
+        Assert.Null(race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+        fixture.WriteInt(48, 220);
+        frames.Process(reader);
+        Assert.Equal("Race", race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+    }
+
+    [Fact]
+    public void OnceTheActiveSessionHasATypeSessionInfoIsNotReadAgainUntilTheNextUpdate()
+    {
+        var race = new RaceStatusSampler();
+        var frames = new IracingFrameProcessor(_detector, race: race);
+        var fixture = RaceFrame();
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        frames.Process(reader);
+        Assert.Equal("Race", race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+
+        // A document change under the same update number is not looked at.
+        fixture.SetSessionInfo("SessionInfo:\n Sessions:\n - SessionNum: 2\n   SessionType: Changed\n");
+        fixture.WriteInt(48, 1000);
+        frames.Process(reader);
+        Assert.Equal("Race", race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+    }
+
     [Fact]
     public void WithARaceSamplerEachFrameFeedsItThePlayersOwnRow()
     {

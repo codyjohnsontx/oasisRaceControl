@@ -150,10 +150,15 @@ public sealed class IracingFrameProcessor
                 if (missing.Count > 0) MissingVariables?.Invoke(missing);
             }
 
-            // Named sessions are re-read only when iRacing bumps the update
-            // counter; one still unnamed is retried once a second of sim time.
+            // Complete session info is re-read only when iRacing bumps the
+            // update counter. Info still being filled in is retried once a
+            // second of sim time under the same counter: info that does not
+            // name the combo yet, or - with race reporting on - that has no
+            // SessionType for the session the telemetry says is running, since
+            // iRacing can publish the sessions list after the track and car.
             if (parsed.SessionInfoUpdate != _sessionReadUpdate
-                || (!_sessionNamed && parsed.TickCount - _sessionReadTick >= parsed.TickRate))
+                || ((!_sessionNamed || !ActiveSessionTyped(parsed))
+                    && parsed.TickCount - _sessionReadTick >= parsed.TickRate))
             {
                 if (!ReadSessionInfo(parsed))
                 {
@@ -218,6 +223,14 @@ public sealed class IracingFrameProcessor
         _race!.Observe(RaceTick.FromValues(parsed.Values,
             name => player is int carIdx ? parser.ReadElement(parsed, name, carIdx) : null));
     }
+
+    /// <summary>Whether the race sampler already has a type for the running
+    /// SessionNum. True when there is nothing to wait for: no sampler, or no
+    /// SessionNum channel to look it up by.</summary>
+    private bool ActiveSessionTyped(ParsedMemorySnapshot parsed)
+        => _race is null
+           || !(parsed.Values.TryGetValue("SessionNum", out var value) && value is int sessionNum)
+           || _race.SessionTypes.ContainsKey(sessionNum);
 
     /// <summary>False when the sim left the session before its session info could be read.</summary>
     private bool ReadSessionInfo(ParsedMemorySnapshot parsed)
