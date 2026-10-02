@@ -325,7 +325,13 @@ function FieldRow({
             )}
           </span>
           <span className="laptime block text-xs text-muted leading-tight">
-            {gapMs === null ? "" : gapMs === 0 ? "leader" : formatGap(gapMs)}
+            {gapMs === null
+              ? ""
+              : gapMs === 0
+                ? row.raced
+                  ? "fastest lap"
+                  : "leader"
+                : formatGap(gapMs)}
           </span>
         </span>
 
