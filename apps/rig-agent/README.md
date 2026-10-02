@@ -63,12 +63,18 @@ Built and verified end-to-end against the live backend:
   track, layout and car exactly as iRacing names them. See
   [iRacing telemetry](#iracing-telemetry) below, including what has and has
   not been verified against the real sim.
+- 🟡 **Live race position** (`rig-agent/0.8-neon`, which also carries the redesigned window) - every few seconds
+  while iRacing is in a session, the rig reports its own car's place, lap and
+  gap to the leader for the league-night race board. Built and unit-tested;
+  **not yet run against real iRacing**. See
+  [Live race position](#live-race-position), and its checklist before
+  2026-10-07.
 
 - ✅ **Sign-in window** (`0.6`): on the rig the walk-up sign-in and driving
   screens are a WinForms window over the same Core and the same server routes
   as the console screens, which stay one flag away (`--console`). See
   [Walk-up mode](#walk-up-mode-the-rig-is-the-check-in).
-- ✅ **The venue's look, name first** (`0.7`): the window is drawn in the
+- ✅ **The venue's look, name first** (`0.8-neon`, one exe with the live race position): the window is drawn in the
   wall's and the website's colours and faces with the Oasis mark; the driver
   types a name and the rig works out whether they are new or returning
   (`GET /api/auth/name`), so "Raced here before?" is gone; the driving screen
@@ -205,6 +211,140 @@ A lap whose strings differ from the row is stored but marked invalid
 (`WRONG_TRACK_CONFIGURATION` / `WRONG_CAR`) and does not rank; fix the row, not
 the agent.
 
+## Live race position
+
+For the league-night race board: when two cars swap places in a hosted
+iRacing race, the wall shows it within seconds. Every rig reports only its own
+car. The server keeps the latest row per rig, joins it to whoever is signed in
+on that rig, groups rigs by iRacing's `SessionUniqueID` and puts them in race
+order (`GET /api/race/live`; how it orders them is the web side's
+`docs/live-race.md`). So identity comes from the rig's assignment exactly as a
+lap's does - there is no mapping of iRacing accounts to people - and a car
+driven from a PC without this agent does not appear.
+
+**What it reads.** Beside the lap detector's channels, every frame:
+`SessionState`, `SessionFlags`, `SessionTimeRemain`, `SessionLapsRemainEx`,
+`PlayerCarPosition`, `PlayerCarClassPosition` and `LapDistPct` (scalars, read
+the way every other channel is), plus the player's own element of three
+64-car arrays - `CarIdxF2Time`, `CarIdxLastLapTime`, `CarIdxBestLapTime` - each
+one 4-byte read at `offset + PlayerCarIdx * 4`
+(`IracingMemoryParser.ReadElement`), never the whole array. The session type
+("Practice", "Open Qualify", "Race") is `SessionInfo.Sessions[SessionNum].SessionType`
+from the session-info YAML, scanned when iRacing bumps its update counter, as
+the track and car already are - and, while the running session has no type in
+it yet, once a second under the same counter, because iRacing can publish the
+sessions list after the track and car. Everything is read-only, like the rest
+of the agent.
+
+**What it sends.** `RaceStatusReport` (`OasisRigAgent.Core/RaceStatus.cs`)
+mirrors `raceStatusEvent` in `apps/web/src/lib/events.ts`; both change
+together. One ~500-byte JSON object to `POST /api/agent/race-status`, built by
+`RaceStatusSampler` (`Iracing/RaceStatusSampler.cs`, pure, unit-tested like
+`LapDetector`), which also turns iRacing's sentinels into nulls (position 0,
+lap time -1, 32767 laps, 604800 s) and clamps the rest to the contract's
+bounds, because one value past them is a 400 and the car vanishes from the
+board. `gapToLeaderS` is `CarIdxF2Time[PlayerCarIdx]` as read: seconds behind
+the leader in a race, a lap time in any other session - the server only reads
+it as a gap when the session type says Race.
+
+**When.** Sampled every 2.5 s, and only while there is a row: iRacing
+connected, `SessionState` 1-6, a session id and a car index, no replay
+playing, and a tick within the last 5 s (a sim that stops ticking stops
+reporting, so the board dims it rather than freezing it in place). A row goes
+when it differs from the last one sent in anything but its sample time and the
+session clock; an unchanged one - a car parked in the pits - goes again after
+7 s, inside the feed's 15 s dim. Nothing is sent between sessions.
+
+**Failure.** No outbox and no retry: a position is worth something for
+seconds. A report the site does not take is dropped, cut off after one
+interval if the site is slow, and a fresh sample goes in its place on the
+next interval - one timeout or 5xx mid-race costs one sample, not a dimmed
+car. Only a 404 (a site without the route) or three failures in a row hold
+the rig back for 30 s (`RaceStatusReporter.FailureBackoff`), so a site that
+cannot take the reports hears from each rig twice a minute, not every 2.5 s.
+It never changes the rig's online/offline status line - a site without the
+route yet would otherwise flap it - and prints one notice when it starts
+backing off (`live race position is not reaching the site (HTTP 404)`), not
+one per attempt. Laps are unaffected either way.
+
+**What it costs.** One more `RunLoop` in `AgentService` - the poll and flush's
+timer pattern, on the thread pool, no new thread - in the same below-normal
+priority process. On the telemetry thread, about fifteen more small reads per
+frame from memory it already maps and two small objects (the tick and its
+timestamp wrapper); the row is built only when the loop asks for it, every
+2.5 s.
+
+### The race line in the diagnostic
+
+`--diagnose` prints the row once a second while it would report one, read off
+the same sampler the agent posts from:
+
+```text
+[20:14:03] RACE P2 (class P2)  type="Race" state=racing(4)  CarIdxF2Time=1.284s  SessionUniqueID=187643 SessionNum=2  |  lap 5 done 4 at 37.2%  last 1:42.341 best 1:41.900  pit=no inc=2 car=7 flags=0x00040000  left 0:23:41 / 12 laps
+```
+
+and, when it would not, why - once per change:
+
+```text
+[20:31:40] RACE not reported (not in a live session): SessionState=0 replay=False SessionUniqueID=187643 PlayerCarIdx=7
+```
+
+### Verify on a real rig before Wednesday 2026-10-07
+
+Nothing in this repository has read `PlayerCarPosition`, `SessionState`, a
+`CarIdx*` element or `SessionInfo.Sessions` on a real rig yet; every rule above
+is pinned against synthetic shared memory built from the SDK's documented
+layout. Do this with the `0.8-neon` exe, before trusting the board:
+
+1. **One rig, any session.** `OasisRigAgent.exe --diagnose`, get in the car.
+   `RACE` lines appear once a second, with no `WARNING this iRacing build does
+   not publish` line (one would name a race channel this build lacks), and
+   `type=` names the session as iRacing's own session screen does.
+2. **A hosted session with at least two rigs**, both running `--diagnose`:
+   - `SessionUniqueID` and `SessionNum` are the **same number on both rigs**.
+     If they differ, the server cannot put the two cars in one race.
+   - `type="Practice"` in practice, the qualifying type (`"Open Qualify"` or
+     `"Lone Qualify"`) in qualifying, and `type="Race"` in the race.
+   - `state=` steps through the race start: get in car (1), parade laps (3),
+     racing (4), then checkered (5) and cool down (6) at the end.
+   - In the race, both rigs' `P` match iRacing's own standings, and the two
+     never show the same position.
+   - **Overtake mid-lap**, well away from the start/finish line, and watch
+     when `P` changes on both rigs: at the pass, or only when the cars next
+     cross the line. The web feed orders a race under green by `done N at
+     NN%` (laps completed, then lap distance) on the assumption that `P`
+     moves only at the line, so also check that those two count up smoothly
+     and that a car just across the line never reads as further back than
+     one that has not crossed it. Write down what was seen and tell the
+     developer before Wednesday.
+   - `CarIdxF2Time` reads `0.000s` on the leader and the other car's seconds
+     behind it, growing and shrinking with the gap; compare it with iRacing's
+     own relative or timing screen. In practice it holds a lap time instead,
+     which is expected.
+   - `pit=yes` on pit road; `last` and `best` match iRacing's timing screen
+     after a lap; `lap` and the `at NN%` lap distance count up.
+   - Open a replay: the line turns to `RACE not reported ... replay=True`, and
+     comes back on returning to live. Leave the session: the `RACE` lines stop.
+3. **The running agent against the hosted site** (the web route
+   `POST /api/agent/race-status` deployed first), two rigs signed in to two
+   drivers, in a hosted race: no `live race position is not reaching the site`
+   line on either rig; `GET /api/race/live` lists both rigs in one session,
+   in race order, each with its signed-in driver; an overtake shows on
+   the feed within about five seconds; closing one agent dims that rig after
+   about 15 s and drops it after about 60 s.
+4. **Footprint:** the [FPS check below](#checking-the-footprint-on-a-rig-with-iracing)
+   on one rig during that race, agent running versus closed.
+
+Write what was seen into [Verified](#verified), as was done for lap detection.
+If it cannot be done by Tuesday, the night still runs on the fastest-lap
+format: install the `0.8-neon` exe anyway and set `"raceStatus": false`
+in each rig's `agent.config.json` (or `OASIS_RACE_STATUS=0`). The agent then
+reads none of the race channels and posts nothing to the race route, so laps,
+sign-in and the heartbeat run as they did on `0.5-monitor`, and the rig
+monitor sees the current version instead of warning about every rig. Do not
+leave `0.5-monitor` on the rigs: from the deploy that expects `0.6` the
+monitor's outdated-agent warning (rule 11) opens on each of them.
+
 ## Un-parking a quarantined lap
 
 Quarantine is one-way. The agent parks a lap the backend refused and nothing in
@@ -301,6 +441,7 @@ executable, or use env vars (which override the file):
 | `telemetry` | `OASIS_TELEMETRY` | `iracing` (read the sim), `simulated` (fake laps, testing only), `none` (heartbeat and driver display only) |
 | `rigQrToken` | `OASIS_RIG_QR_TOKEN` | this rig's check-in slug (the `/r/<token>` on its QR code). Set it to run [walk-up mode](#walk-up-mode-the-rig-is-the-check-in) - the sign-in window on the rig build, or the console screens with `--console`; leave it out for the staff console |
 | `simulateTelemetry` | `OASIS_SIMULATE=1` | older spelling of `telemetry: "simulated"`; ignored when `telemetry` is set |
+| `raceStatus` | `OASIS_RACE_STATUS` | `false` (or `0`) turns the [live race position](#live-race-position) off: none of its channels are read and nothing is posted to the race route. On when absent |
 
 Two rigs against the hosted app, tokens rotated on the backend first
 (`openssl rand -hex 32` each; store `encode(digest('<token>','sha256'),'hex')`
@@ -323,7 +464,7 @@ slugs were inserted for the event, use those.
 With `rigQrToken` set, the rig runs the loop the owner asked for: "the user
 types their name and then as they make laps it assigns it accordingly. When
 they are done, they just exit out the program and then it waits for the next
-person." Since `0.6` it is a window, and since `0.7` it wears the venue's look
+person." Since `0.6` it is a window, and since `0.8-neon` it wears the venue's look
 and asks for the name first; the same flow in a console window is the
 window's fallback, one flag away.
 
@@ -824,3 +965,18 @@ detector against synthetic shared-memory blocks and tick sequences, and the
 whole agent against a local backend with the simulated source. Against the real
 sim, lap detection is verified on the owner's rig with the diagnostic above;
 posting to the hosted app from a rig is not yet verified.
+
+The live race position (`0.8-neon`) is covered the same way and no
+further: the array-element read, the session-type scan, every sampler rule,
+the send cadence, the drop-on-failure loop and its 30 s backoff on a 404 or
+three failures in a row by the xUnit
+suite. On 2026-10-01 the report's JSON - an ordinary row, every sentinel,
+every upper and lower bound, values past them, non-finite and unknown
+channels - was parsed by hand with `raceStatusEvent` as it stands on the web
+lane `fm/oasis-race-status-web` (`80c7008`, zod 4.6.5): every row passed
+with exactly the schema's keys, and that check is what found the sampler
+letting `sessionNum` 64 through where the schema stops at 63. The schema is
+not in this branch, so nothing re-runs that check; re-do it when either side
+changes. It has not been run against real iRacing; the
+checklist in [Live race position](#verify-on-a-real-rig-before-wednesday-2026-10-07)
+is what is owed.

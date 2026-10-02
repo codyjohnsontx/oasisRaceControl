@@ -61,8 +61,8 @@ try
     telemetry = config.TelemetryMode switch
     {
         TelemetryMode.Iracing => config.RigQrToken is null
-            ? AttachTelemetryLog(new IracingTelemetrySource())
-            : new IracingTelemetrySource(),
+            ? AttachTelemetryLog(new IracingTelemetrySource(raceStatus: config.RaceStatus))
+            : new IracingTelemetrySource(raceStatus: config.RaceStatus),
         TelemetryMode.Simulated => new SimulatedTelemetrySource(TimeSpan.FromSeconds(8)),
         _ => new NullTelemetrySource(),
     };
@@ -317,7 +317,7 @@ static Action<AgentStatus> OnlyWhenItMatters(Action<AgentStatus> render)
 static void AttachDriverLog(IracingTelemetrySource source, Action<string> log, Action<string> standing)
 {
     source.ConnectionChanged += up => log(up ? "iRacing connected." : "iRacing is not running or not in a session - laps resume when it is back.");
-    source.MissingVariables += names => standing($"WARNING: this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected. Tell staff.");
+    source.MissingVariables += names => standing($"WARNING: this iRacing build does not publish: {string.Join(", ", names)} - laps or the live race position may not be reported. Tell staff.");
     source.LapDecided += d =>
     {
         if (d.Lap is null) log($"Lap {d.LapCompleted} not counted: {d.SkipReason}");
@@ -437,7 +437,7 @@ static IracingTelemetrySource AttachTelemetryLog(IracingTelemetrySource source)
     source.HeaderRejected += (header, reason) => Log($"iRacing shared memory not ready: {reason} (header: {header?.ToString() ?? "unreadable"}) - retrying every second");
     source.ComboChanged += combo => Log($"session: {Describe(combo)}");
     source.SessionInfoIncomplete += found => Log($"session info does not name a track and car yet (found: {found})");
-    source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps may not be detected");
+    source.MissingVariables += names => Log($"WARNING this iRacing build does not publish: {string.Join(", ", names)} - laps or the live race position may not be reported");
     source.LapDecided += d => Log(d.Lap is { } lap
         ? $"lap {d.LapCompleted} {LapTime.Format(lap.LapTimeMs)} incidents={(lap.IncidentDelta?.ToString() ?? "n/a")} queued as track=\"{lap.TrackName}\" config=\"{lap.TrackConfig}\" car=\"{lap.CarName}\""
         : $"lap {d.LapCompleted} skipped: {d.SkipReason}");
@@ -455,6 +455,7 @@ static int Diagnose()
 {
     Console.WriteLine("Oasis Rig Agent - iRacing DIAGNOSTIC (reads only; nothing is posted or saved)");
     Console.WriteLine("Start iRacing, join a session and get in the car. Drive laps. Press Enter to stop.");
+    Console.WriteLine("Once a second in a session it prints a RACE line: the live race status the agent would post.");
     Console.WriteLine(new string('-', 72));
 
     if (!OperatingSystem.IsWindows())
@@ -512,13 +513,61 @@ static int Diagnose()
 
     source.Start();
     Console.WriteLine($"[{Now()}] looking for iRacing shared memory...");
+    // The live race status, once a second, exactly as the agent would post it
+    // (it samples every 2.5 s). Read off the same sampler, so what this prints
+    // is what the board gets.
+    string? lastRaceLine = null;
+    using var race = new System.Threading.Timer(_ =>
+    {
+        var row = source.RaceStatus(DateTimeOffset.UtcNow);
+        var line = row is not null
+            ? DescribeRace(row)
+            : source.RaceSampler?.Latest is { } t
+                ? $"RACE not reported (not in a live session): SessionState={t.SessionState?.ToString() ?? "n/a"} replay={t.IsReplayPlaying?.ToString() ?? "n/a"} "
+                  + $"SessionUniqueID={t.SessionUniqueId?.ToString() ?? "n/a"} PlayerCarIdx={t.PlayerCarIdx?.ToString() ?? "n/a"}"
+                : null;
+        // A row prints every second; "not reported" only when it changes.
+        if (line is null || (row is null && line == lastRaceLine)) return;
+        lastRaceLine = line;
+        Console.WriteLine($"[{Now()}] {line}");
+    }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
     Console.ReadLine();
+    race.Dispose();
     source.Stop();
     Console.WriteLine($"stopped. {laps} lap(s) would have been posted.");
     return 0;
 
     static string Now() => DateTime.Now.ToString("HH:mm:ss");
     static string Sql(string? s) => s is null ? "null" : $"'{s.Replace("'", "''")}'";
+}
+
+/// <summary>One race-status row as the diagnostic prints it: the four things
+/// the real-rig check compares between two rigs first (position, session type
+/// and state, gap, session id), then the rest of the row.</summary>
+static string DescribeRace(RaceStatusReport r)
+{
+    var state = r.SessionState switch
+    {
+        1 => "get in car",
+        2 => "warmup",
+        3 => "parade laps",
+        4 => "racing",
+        5 => "checkered",
+        6 => "cool down",
+        _ => "?",
+    };
+    var position = r.Position is { } p ? $"P{p}" : "P-";
+    var classPosition = r.ClassPosition is { } c ? $"P{c}" : "P-";
+    // The same variable is a gap only in a race; in practice and qualifying it holds a lap time.
+    var f2 = r.GapToLeaderS is { } g ? $"{g:0.000}s" : "n/a";
+    var remain = r.SessionTimeRemainS is { } s ? $"{(int)s / 3600}:{(int)s % 3600 / 60:00}:{(int)s % 60:00}" : "untimed";
+    var lapsRemain = r.SessionLapsRemain?.ToString() ?? "unlimited";
+    return $"RACE {position} (class {classPosition})  type=\"{r.SessionType ?? "not named yet"}\" state={state}({r.SessionState})  "
+         + $"CarIdxF2Time={f2}  SessionUniqueID={r.SessionUniqueId} SessionNum={r.SessionNum}  |  "
+         + $"lap {r.Lap?.ToString() ?? "-"} done {r.LapsCompleted?.ToString() ?? "-"} at {(r.LapDistPct is { } d ? $"{d:P1}" : "-")}  "
+         + $"last {(r.LastLapMs is { } l ? LapTime.Format(l) : "-")} best {(r.BestLapMs is { } b ? LapTime.Format(b) : "-")}  "
+         + $"pit={(r.OnPitRoad ? "yes" : "no")} inc={r.Incidents} car={r.CarIdx} flags=0x{r.SessionFlags:x8}  "
+         + $"left {remain} / {lapsRemain} laps";
 }
 
 static string Describe(SessionCombo c)

@@ -436,7 +436,7 @@ the fallback when a rig cannot read the sim.
 With `rigQrToken` in its config the agent signs a typed name and 4-digit PIN
 in through the backend's login, register and check-in routes as an HTTP
 client with a cookie jar (`OasisRigAgent.Core/DriverCheckInClient.cs`), so a
-returning driver keeps one row. Since 0.7 it first asks `GET /api/auth/name`
+returning driver keeps one row. Since 0.8-neon it first asks `GET /api/auth/name`
 whether the name is taken - the one route the rig needs that the event-night
 backends lacked - so verify request shapes against the served commit, not
 only main.
@@ -517,6 +517,26 @@ path sends a `shuttingDown` goodbye, or a closed rig reads as a dead one.
 Walk-up sign-in failures are counted from the check-in routes' HTTP answers
 (`SignInFailureWatch`), not inside `DriverCheckInClient`. The on-rig FPS check
 is in `apps/rig-agent/README.md` (Heartbeat and footprint).
+
+## Live race position
+
+For the league-night race board each rig reports its own car every 2.5 s while
+iRacing is in a session: `RaceStatusReport` (`OasisRigAgent.Core/RaceStatus.cs`)
+mirrors `raceStatusEvent` in `apps/web/src/lib/events.ts`, and both change
+together. The row is built only by the pure `RaceStatusSampler`
+(`Iracing/RaceStatusSampler.cs`), which also nulls iRacing's sentinels and
+clamps to the schema, since one field past it 400s the report and the car
+leaves the board. Four rules are easy to undo: there is no outbox and no
+retry (a dropped report is replaced by a fresh sample on the next interval,
+and only a 404 or three failures in a row hold the rig back for
+`RaceStatusReporter.FailureBackoff`, so one blip mid-race does not dim a car
+and a site without the route is not polled every 2.5 s by every rig); the loop never touches the agent's
+online/offline state; `raceStatus: false` in the config turns off both the
+reads and the posts, and is the fallback rather than the old exe; and an
+unchanged row still goes within `RaceStatusThrottle.KeepAlive`, under the
+feed's 10 s ceiling, or a parked car dims. The `AgentService` change is one `RunLoop` and should stay that way.
+What still needs a real rig in a hosted session is the checklist in
+`apps/rig-agent/README.md` (Live race position).
 
 ## Local dev
 

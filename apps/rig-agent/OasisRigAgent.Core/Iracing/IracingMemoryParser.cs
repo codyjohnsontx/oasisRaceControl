@@ -92,7 +92,8 @@ public sealed class IracingMemoryParser
                 TickRate: raw.TickRate,
                 SessionInfoUpdate: raw.SessionInfoUpdate,
                 Variables: new Dictionary<string, TelemetryVariable>(),
-                Values: new Dictionary<string, object?>());
+                Values: new Dictionary<string, object?>(),
+                BufferOffset: -1);
         }
 
         var tickRate = raw.TickRate;
@@ -123,7 +124,24 @@ public sealed class IracingMemoryParser
             TickRate: tickRate,
             SessionInfoUpdate: sessionInfoUpdate,
             Variables: variables,
-            Values: values);
+            Values: values,
+            BufferOffset: bufferOffset);
+    }
+
+    /// <summary>Element <paramref name="index"/> of an array variable - one of
+    /// the 64-entry <c>CarIdx*</c> channels - from the same telemetry buffer
+    /// <paramref name="frame"/> was read from: one element-sized read at
+    /// <c>offset + index * elementSize</c>, never the whole array. Null when this
+    /// build does not publish the variable, when the frame was not connected,
+    /// or when the index is outside the array the header declares, so a bad
+    /// <c>PlayerCarIdx</c> degrades to "unknown" like a missing channel. Read
+    /// only, like everything else here.</summary>
+    public object? ReadElement(ParsedMemorySnapshot frame, string name, int index)
+    {
+        if (frame.BufferOffset < 0 || !frame.Variables.TryGetValue(name, out var variable)) return null;
+        if (index < 0 || index >= variable.Count) return null;
+        var size = TypeSizes[(int)variable.Type];
+        return ReadValue(variable, checked(frame.BufferOffset + variable.Offset + (long)index * size));
     }
 
     /// <summary>The session-info region as the header currently places it (empty
@@ -208,32 +226,35 @@ public sealed class IracingMemoryParser
         int bufferOffset)
     {
         var values = new Dictionary<string, object?>(watched.Count, StringComparer.Ordinal);
-        Span<byte> scalar = stackalloc byte[8];
 
         foreach (var name in watched)
         {
-            if (!variables.TryGetValue(name, out var variable))
-            {
-                values[name] = null;
-                continue;
-            }
-
-            var size = TypeSizes[(int)variable.Type];
-            var target = scalar[..size];
-            ReadChecked(checked(bufferOffset + variable.Offset), target);
-            values[name] = variable.Type switch
-            {
-                IracingVariableType.Char => (char)target[0],
-                IracingVariableType.Bool => target[0] != 0,
-                IracingVariableType.Int => BinaryPrimitives.ReadInt32LittleEndian(target),
-                IracingVariableType.BitField => BinaryPrimitives.ReadUInt32LittleEndian(target),
-                IracingVariableType.Float => BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(target)),
-                IracingVariableType.Double => BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(target)),
-                _ => throw new MalformedTelemetryException($"Unsupported variable type {variable.Type}.")
-            };
+            values[name] = variables.TryGetValue(name, out var variable)
+                ? ReadValue(variable, checked(bufferOffset + variable.Offset))
+                : null;
         }
 
         return values;
+    }
+
+    /// <summary>One value of <paramref name="variable"/>'s type at an absolute
+    /// offset into the block. ParseVariables already bounded the whole array
+    /// inside its buffer; ReadChecked bounds this read inside the block.</summary>
+    private object ReadValue(TelemetryVariable variable, long offset)
+    {
+        Span<byte> scalar = stackalloc byte[8];
+        var target = scalar[..TypeSizes[(int)variable.Type]];
+        ReadChecked(offset, target);
+        return variable.Type switch
+        {
+            IracingVariableType.Char => (char)target[0],
+            IracingVariableType.Bool => target[0] != 0,
+            IracingVariableType.Int => BinaryPrimitives.ReadInt32LittleEndian(target),
+            IracingVariableType.BitField => BinaryPrimitives.ReadUInt32LittleEndian(target),
+            IracingVariableType.Float => BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(target)),
+            IracingVariableType.Double => BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(target)),
+            _ => throw new MalformedTelemetryException($"Unsupported variable type {variable.Type}.")
+        };
     }
 
     private void ReadChecked(long offset, Span<byte> destination)
@@ -333,7 +354,11 @@ public sealed record ParsedMemorySnapshot(
     int TickRate,
     int SessionInfoUpdate,
     IReadOnlyDictionary<string, TelemetryVariable> Variables,
-    IReadOnlyDictionary<string, object?> Values);
+    IReadOnlyDictionary<string, object?> Values,
+    /// <summary>Where in the block the buffer these values came from starts;
+    /// -1 when not connected. <see cref="IracingMemoryParser.ReadElement"/>
+    /// reads array elements from the same buffer.</summary>
+    int BufferOffset);
 
 public sealed class MalformedTelemetryException : Exception
 {

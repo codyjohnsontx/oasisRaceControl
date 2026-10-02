@@ -141,7 +141,7 @@ vars, which override the file):
   out when they press Log out or close the program. The same name and PIN bring a returning driver back to
   their own row on either rig, both days; five wrong PINs lock the name for 15
   minutes (`apps/rig-agent/README.md`, Walk-up mode). Deploy the web app
-  before replacing a rig's exe with 0.7 or later: an older site has no
+  before replacing a rig's exe with 0.8-neon or later: an older site has no
   `/api/auth/name`, and the rig cannot sign anyone in against it.
   Leave it out to keep the staff console.
 - `backendBaseUrl` must be `https://` (the agent rejects non-HTTPS except

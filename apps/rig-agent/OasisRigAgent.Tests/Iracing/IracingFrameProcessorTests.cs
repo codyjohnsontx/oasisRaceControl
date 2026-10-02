@@ -465,6 +465,156 @@ public sealed class IracingFrameProcessorTests
         Assert.Equal(readsAtStop, reader.Reads);
     }
 
+    /// <summary>A race frame: the player in car 7, third, with the race
+    /// channels and the player's element of the CarIdx arrays set.</summary>
+    private static MemoryFixture RaceFrame() => new MemoryFixture()
+        .AddVariable("PlayerCarIdx", IracingVariableType.Int, 0, 7)
+        .AddVariable("SessionNum", IracingVariableType.Int, 4, 2)
+        .AddVariable("SessionUniqueID", IracingVariableType.Int, 8, 4242)
+        .AddVariable("SessionState", IracingVariableType.Int, 12, 4)
+        .AddVariable("PlayerCarPosition", IracingVariableType.Int, 16, 3)
+        .AddVariable("SessionFlags", IracingVariableType.BitField, 20, 0x10u)
+        .AddVariable("SessionTimeRemain", IracingVariableType.Double, 24, 600.0)
+        .AddVariable("LapDistPct", IracingVariableType.Float, 32, 0.5f)
+        .AddVariable("CarIdxF2Time", IracingVariableType.Float, 64, 0f, count: 64)
+        .AddVariable("CarIdxLastLapTime", IracingVariableType.Float, 64 + 256, 0f, count: 64)
+        .AddVariable("CarIdxBestLapTime", IracingVariableType.Float, 64 + 512, 0f, count: 64)
+        .SetElement(64, IracingVariableType.Float, 7, 2.341f)
+        .SetElement(64, IracingVariableType.Float, 6, 0.5f)
+        .SetElement(64 + 256, IracingVariableType.Float, 7, 102.341f)
+        .SetElement(64 + 512, IracingVariableType.Float, 7, 101.9f)
+        .SetSessionInfo("""
+            WeekendInfo:
+             TrackDisplayName: Circuit of the Americas
+            SessionInfo:
+             Sessions:
+             - SessionNum: 0
+               SessionType: Practice
+             - SessionNum: 2
+               SessionType: Race
+            DriverInfo:
+             DriverCarIdx: 7
+             Drivers:
+             - CarIdx: 7
+               CarScreenName: FIA F4
+            """);
+
+    /// <summary>Codex's reproduction from the review of PR 53: session info
+    /// that already names the combo, but not yet the active session's type,
+    /// must still be retried under the same update number - or every rig
+    /// reports sessionType null all race and the server never sees a race.</summary>
+    [Fact]
+    public void SessionInfoWithTheComboButNoTypeForTheActiveSessionIsRetriedOnceASecond()
+    {
+        var race = new RaceStatusSampler();
+        var frames = new IracingFrameProcessor(_detector, race: race);
+        var fixture = RaceFrame(); // SessionNum 2
+        const string combo = "WeekendInfo:\n TrackDisplayName: Circuit of the Americas\n"
+                           + "DriverInfo:\n DriverCarIdx: 7\n Drivers:\n - CarIdx: 7\n   CarScreenName: FIA F4\n";
+        fixture.SetSessionInfo(combo);
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+        Assert.Equal("FIA F4", _detector.Combo?.CarScreenName);
+        Assert.Null(race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+
+        // Same update number: the sessions list arrives, but only practice so far.
+        fixture.SetSessionInfo(combo + "SessionInfo:\n Sessions:\n - SessionNum: 0\n   SessionType: Practice\n");
+        fixture.WriteInt(48, 160);
+        frames.Process(reader);
+        Assert.Null(race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+
+        // Still the same update number, now with the race entry.
+        fixture.SetSessionInfo(combo + "SessionInfo:\n Sessions:\n - SessionNum: 0\n   SessionType: Practice\n"
+                                     + " - SessionNum: 2\n   SessionType: Race\n");
+        fixture.WriteInt(48, 219);                // under a second of sim time later
+        frames.Process(reader);
+        Assert.Null(race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+        fixture.WriteInt(48, 220);
+        frames.Process(reader);
+        Assert.Equal("Race", race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+    }
+
+    [Fact]
+    public void OnceTheActiveSessionHasATypeSessionInfoIsNotReadAgainUntilTheNextUpdate()
+    {
+        var race = new RaceStatusSampler();
+        var frames = new IracingFrameProcessor(_detector, race: race);
+        var fixture = RaceFrame();
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        frames.Process(reader);
+        Assert.Equal("Race", race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+
+        // A document change under the same update number is not looked at.
+        fixture.SetSessionInfo("SessionInfo:\n Sessions:\n - SessionNum: 2\n   SessionType: Changed\n");
+        fixture.WriteInt(48, 1000);
+        frames.Process(reader);
+        Assert.Equal("Race", race.RaceStatus(DateTimeOffset.UnixEpoch)!.SessionType);
+    }
+
+    [Fact]
+    public void WithARaceSamplerEachFrameFeedsItThePlayersOwnRow()
+    {
+        var race = new RaceStatusSampler();
+        var frames = new IracingFrameProcessor(_detector, race: race);
+        var fixture = RaceFrame();
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+
+        Assert.Equal(FrameOutcome.Frame, frames.Process(reader));
+        var row = race.RaceStatus(DateTimeOffset.UnixEpoch);
+
+        Assert.NotNull(row);
+        Assert.Equal((4242, 2, "Race", 4, 0x10u), (row!.SessionUniqueId, row.SessionNum, row.SessionType, row.SessionState, row.SessionFlags));
+        Assert.Equal((7, 3), (row.CarIdx, row.Position));
+        // The player's element, not element 0 or a neighbour's.
+        Assert.Equal(2.341, row.GapToLeaderS);
+        Assert.Equal((102_341, 101_900), (row.LastLapMs, row.BestLapMs));
+        Assert.Equal(600.0, row.SessionTimeRemainS);
+        Assert.Equal(0.5, row.LapDistPct);
+
+        // Two cars swap: the next frame carries the new place.
+        fixture.WriteInt(MemoryFixture.BufferOffset + 16, 2);
+        fixture.WriteInt(48, 101);
+        frames.Process(reader);
+        Assert.Equal(2, race.RaceStatus(DateTimeOffset.UnixEpoch)!.Position);
+    }
+
+    [Fact]
+    public void TheSimGoingAwayClearsTheRaceRow()
+    {
+        var race = new RaceStatusSampler();
+        var frames = new IracingFrameProcessor(_detector, race: race);
+        var fixture = RaceFrame();
+        var reader = new ByteArrayMemoryReader(fixture.Bytes);
+        frames.Process(reader);
+        Assert.NotNull(race.RaceStatus(DateTimeOffset.UnixEpoch));
+
+        fixture.WriteInt(4, 0);
+        Assert.Equal(FrameOutcome.NotConnected, frames.Process(reader));
+        Assert.Null(race.RaceStatus(DateTimeOffset.UnixEpoch));
+        Assert.Empty(race.SessionTypes);
+    }
+
+    [Fact]
+    public void RaceChannelsAreReadAndReportedMissingOnlyWithASampler()
+    {
+        var fixture = new MemoryFixture().AddVariable("LapCompleted", IracingVariableType.Int, 0, 3);
+        var withRace = new List<IReadOnlyList<string>>();
+        var lapsOnly = new List<IReadOnlyList<string>>();
+        var raceFrames = new IracingFrameProcessor(new LapDetector(() => DateTimeOffset.UnixEpoch, "r"), race: new RaceStatusSampler());
+        var lapFrames = new IracingFrameProcessor(new LapDetector(() => DateTimeOffset.UnixEpoch, "r"));
+        raceFrames.MissingVariables += withRace.Add;
+        lapFrames.MissingVariables += lapsOnly.Add;
+
+        raceFrames.Process(new ByteArrayMemoryReader(fixture.Bytes));
+        lapFrames.Process(new ByteArrayMemoryReader(fixture.Bytes));
+
+        Assert.Contains("PlayerCarPosition", withRace.Single());
+        Assert.Contains("CarIdxF2Time", withRace.Single());
+        Assert.DoesNotContain("PlayerCarPosition", lapsOnly.Single());
+        Assert.Contains("LapLastLapTime", lapsOnly.Single());
+    }
+
     private sealed class CountingReader(IReadOnlyMemoryReader inner) : IReadOnlyMemoryReader
     {
         public int Reads { get; private set; }
