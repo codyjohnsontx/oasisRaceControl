@@ -40,7 +40,7 @@ public sealed record AgentConfig
     /// CURRENT_AGENT_VERSION in apps/web/src/lib/monitor/agent-version.ts with
     /// it: the rig monitor warns about every rig on any other version, and
     /// agent-version.test.ts fails until the two agree.</summary>
-    public string AgentVersion { get; init; } = "rig-agent/0.5-monitor";
+    public string AgentVersion { get; init; } = "rig-agent/0.6-window";
 
     /// <summary>This rig's check-in QR token (the slug in its /r/&lt;token&gt; URL).
     /// When set, the console runs the walk-up loop: it asks for a name and a

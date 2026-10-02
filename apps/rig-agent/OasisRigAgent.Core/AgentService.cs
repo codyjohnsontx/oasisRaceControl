@@ -339,13 +339,57 @@ public sealed class AgentService : IAsyncDisposable
         PublishStatus();
     }
 
+    /// <summary>The pending-checkout record for a stint this agent may have
+    /// opened without ever learning its id: the program was closed while a
+    /// check-in was in flight and the backend's answer never arrived, so the
+    /// stint may or may not exist. Settled as an unqualified checkout - end
+    /// whatever is open on this rig - which is what every walk-up start does
+    /// before the first name anyway (<see cref="EmptySeatAsync"/>); the record
+    /// makes that survive a start whose attempts all fail, and says on the
+    /// status line that a sign-out is still owed. Only walk-up mode writes it,
+    /// where this agent is the rig's only check-in. Only the settles that run
+    /// before a check-in deliver it - the empty seat and the one every sign-in
+    /// starts with - never the poll: nothing orders a poll against a check-in,
+    /// and an unqualified checkout landing after one would end the stint it
+    /// just opened.</summary>
+    public const string UnknownStint = "*";
+
+    /// <summary>Walk-up mode, on the way out: a sign-in was still in flight
+    /// when the program closed and did not answer in time, so the backend may
+    /// hold a stint this agent never heard the id of. Record a durable
+    /// <see cref="UnknownStint"/> checkout so the next start ends whatever is
+    /// open here. Replaces a named checkout already owed: if the abandoned
+    /// check-in landed, it took that stint over, and only an unqualified
+    /// checkout reaches the one it opened.</summary>
+    public void RecordAbandonedSignIn()
+    {
+        lock (_stampLock)
+        {
+            var durable = false;
+            try
+            {
+                _queue.SetPendingCheckout(UnknownStint);
+                durable = true;
+            }
+            catch (Exception ex)
+            {
+                RaiseNotice($"[agent] failed to record the abandoned sign-in's checkout: {ex.Message}");
+            }
+            _pendingCheckout = UnknownStint;
+            _pendingCheckoutIsDurable = durable;
+        }
+        PublishStatus();
+    }
+
     /// <summary>Walk-up mode, on start: end whatever stint is open on this rig -
     /// one a previous run of this agent left behind when it was closed without
     /// a sign-out landing, or a phone check-in. True once the backend has
-    /// answered, whether or not there was anything to end.</summary>
+    /// answered, whether or not there was anything to end. This is also what
+    /// an <see cref="UnknownStint"/> checkout owes, so one is settled by it.</summary>
     public async Task<bool> EmptySeatAsync()
     {
         var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(null, ct)));
+        if (result.Ok && _pendingCheckout == UnknownStint) ClearPendingCheckout(UnknownStint);
         return result.Ok;
     }
 
@@ -654,7 +698,7 @@ public sealed class AgentService : IAsyncDisposable
 
         // The backend is reachable, so this is the moment a checkout the driver
         // pressed during an outage can finally be delivered.
-        await SettlePendingCheckoutAsync();
+        if (_pendingCheckout != UnknownStint) await SettlePendingCheckoutAsync();
     }
 
     /// <summary>Deliver a checkout the backend could not be told about when the
@@ -676,7 +720,9 @@ public sealed class AgentService : IAsyncDisposable
         var pending = _pendingCheckout;
         if (pending is null) return true;
 
-        var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(pending, ct)));
+        // An unknown stint has no id to name, so it is the one checkout that
+        // goes out unqualified (see UnknownStint for why that is safe here).
+        var result = await RunBackend(async ct => (Ok: true, Ended: await _client.CheckoutAsync(pending == UnknownStint ? null : pending, ct)));
         if (result.Ok) ClearPendingCheckout(pending);
         return result.Ok;
     }
