@@ -354,9 +354,16 @@ Windows shutdown all run the same exit work as the console's Ctrl+C, close
 button and shutdown: the seated driver's sign-out and the goodbye heartbeat,
 each waited for up to three seconds. The sign-out is recorded in the outbox
 before the network is touched, so a backend that does not answer gets it on
-the next start. A Windows shutdown reaches the window as `FormClosing` while
-Windows is still waiting for the answer, which is what gives the sign-out
-its three seconds.
+the next start. An ordinary close shows "Signing out..." and the window
+closes itself once the work is done; it never freezes while waiting. A
+Windows shutdown reaches the window as `FormClosing` while Windows is still
+waiting for the answer, and that one close waits in place, which is what
+gives the sign-out its three seconds. A sign-in still in flight when the
+window closes is waited for out of the same bound: an answer that arrives
+seats the driver and signs that stint out by id; one that does not leaves a
+durable record (`AgentService.UnknownStint`) that the next start settles by
+ending whatever is open on the rig, and the status line says a sign-out is
+owed until then.
 
 The window is deliberately light: plain WinForms controls, no web view, no
 timer, no animation, a redraw only when something changed, in a process that

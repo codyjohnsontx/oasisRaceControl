@@ -434,8 +434,13 @@ process on macOS, `net8.0-windows` adds `OasisRigAgent/Windows/` and is what
 the rig runs (publish with `-f net8.0-windows`); the window cannot run on a
 Mac, so the checklist in the agent README (Verify the window on a rig) is the
 check it gets. Exit work in the window host starts on the thread pool, never
-the UI thread, because `FormClosing` waits for it synchronously and a UI-thread
-continuation would deadlock.
+the UI thread: an ordinary close awaits it and shows "Signing out...", but the
+Windows-shutdown close waits for it synchronously (Windows owns that deadline),
+and a UI-thread continuation would deadlock there. The exit sign-out also owns
+a sign-in still in flight (`WalkUpViewModel.SignOutOnExitAsync`): it waits for
+it out of the exit bound and either signs the stint out by id or records
+`AgentService.UnknownStint`, the one unqualified checkout, for the next start.
+Cancel the host's quit token after the exit work, never before.
 
 In this mode the agent stamps laps only with a stint its own check-in created
 in this process (`AgentService`), and every start ends whatever is open on

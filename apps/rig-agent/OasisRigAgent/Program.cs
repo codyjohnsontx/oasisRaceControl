@@ -327,10 +327,18 @@ static void AttachDriverLog(IracingTelemetrySource source, Action<string> log, A
 /// still waits for the answer) and the runtime's own exit all run the same
 /// exit work once, as the console host's signal handlers do: the seated
 /// driver's sign-out and the goodbye heartbeat, each bounded to three seconds,
-/// so a backend that does not answer cannot hold the window open. The exit
-/// work starts on the thread pool, never on the UI thread, because the closing
-/// handler waits for it synchronously and an await continuation posted back
-/// to the blocked UI thread would be a deadlock.</summary>
+/// so a backend that does not answer cannot hold the window open.
+///
+/// An ordinary close (the button, Alt+F4, End task) is refused the first time
+/// and the window stays up showing "Signing out..." while the exit work runs;
+/// the UI thread only awaits it, so the window keeps painting and a slow
+/// backend never makes a normal close look hung, and it closes itself when
+/// the work is done. A Windows shutdown is the one close that waits
+/// synchronously: Windows owns that deadline and ends the process soon after
+/// the handler returns, so the handler must not return before the sign-out is
+/// recorded. The exit work starts on the thread pool, never on the UI thread,
+/// so that synchronous wait cannot deadlock on a continuation posted back to
+/// the thread it blocks.</summary>
 static int RunWindow(WalkUpViewModel model, AgentService agent, string priority)
 {
     model.Log(priority);
@@ -363,8 +371,26 @@ static int RunWindow(WalkUpViewModel model, AgentService agent, string priority)
     Application.ThreadException += (_, e) => model.Log($"[window] {e.Exception.GetType().Name}: {e.Exception.Message}");
 
     using var form = new WalkUpForm(model);
-    form.FormClosing += (_, _) => FinishBeforeExit();
-    // A signal that ran the exit work while the window is up closes it too.
+    form.FormClosing += async (_, e) =>
+    {
+        // The exit work is done (an earlier close, a signal, or the quit
+        // below): let this close through.
+        if (exitWork.IsValueCreated && exitWork.Value.IsCompleted) return;
+        if (e.CloseReason == CloseReason.WindowsShutDown)
+        {
+            FinishBeforeExit();
+            return;
+        }
+        e.Cancel = true;
+        // Already signing out from an earlier close: this one changes nothing.
+        if (exitWork.IsValueCreated) return;
+        try { await exitWork.Value; }
+        catch (Exception) { /* bounded inside; nothing more to do on the way out */ }
+        quit.Cancel();
+    };
+    // Whatever ran the exit work - a close above, a signal handler - the window
+    // closes once it is done, and never before: FormClosing lets it through
+    // only then.
     using var closeOnQuit = quit.Token.Register(() =>
     {
         if (!form.IsDisposed && form.IsHandleCreated)
