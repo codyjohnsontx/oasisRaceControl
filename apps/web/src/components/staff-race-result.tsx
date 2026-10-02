@@ -6,7 +6,37 @@ import { QUALIFYING_BONUS_POINTS } from "@/lib/league-scoring";
 
 type Driver = { driver_id: string; display_name: string };
 
-type Draft = { finishers: Driver[]; dnf: Driver[]; out: Driver[] };
+export type Draft = { finishers: Driver[]; dnf: Driver[]; out: Driver[] };
+
+/**
+ * The draft as it stands against the latest review: a driver the round no
+ * longer has is dropped, and one the review gained since editing began is
+ * added where the review has them - a car captured at the flag to the end of
+ * the order, a DNF to DNF, a new driver to not in the race. Saving names every
+ * driver the server will keep, so a draft that missed a late finisher would
+ * delete their place.
+ */
+export function reconcileDraft(draft: Draft, review: RaceReview): Draft {
+  const known = new Set(
+    [...review.entries, ...review.notInRace].map((driver) => driver.driver_id),
+  );
+  const keep = (list: Driver[]) => list.filter((driver) => known.has(driver.driver_id));
+  const named = new Set(
+    [...draft.finishers, ...draft.dnf, ...draft.out].map((driver) => driver.driver_id),
+  );
+  const added = (list: Driver[]) => list.filter((driver) => !named.has(driver.driver_id));
+  return {
+    finishers: [
+      ...keep(draft.finishers),
+      ...added(review.entries.filter((entry) => entry.finish_position !== null)),
+    ],
+    dnf: [
+      ...keep(draft.dnf),
+      ...added(review.entries.filter((entry) => entry.finish_position === null)),
+    ],
+    out: [...keep(draft.out), ...added(review.notInRace)],
+  };
+}
 
 /**
  * Tonight's race result as the rigs captured it, for staff to check and
@@ -28,7 +58,8 @@ export function StaffRaceResult({
   /** Resolves true once the server has the result. */
   onSave: (finishers: string[], dnf: string[]) => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const [started, setDraft] = useState<Draft | null>(null);
+  const draft = started && reconcileDraft(started, review);
 
   const finishers = review.entries.filter((entry) => entry.finish_position !== null);
   const dnf = review.entries.filter((entry) => entry.finish_position === null);

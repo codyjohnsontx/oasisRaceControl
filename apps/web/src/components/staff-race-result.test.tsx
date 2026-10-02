@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { StaffRaceResult } from "./staff-race-result";
+import { reconcileDraft, StaffRaceResult } from "./staff-race-result";
 import type { RaceReview, RaceReviewEntry } from "@/lib/league";
 
 /**
@@ -86,5 +86,55 @@ describe("StaffRaceResult", () => {
     });
     expect(html).toContain("Confirmed by staff");
     expect(html).not.toContain("iRacing P");
+  });
+});
+
+describe("reconcileDraft", () => {
+  const ids = (list: { driver_id: string }[]) => list.map((driver) => driver.driver_id);
+
+  it("adds a car captured at the flag after editing began, so saving keeps its place", () => {
+    const ana = entry("Ana", { finish_position: 1 });
+    const ben = entry("Ben", { finish_position: 2 });
+    const cal = entry("Cal", { finish_position: 3 });
+    const dee = { driver_id: "driver-Dee", display_name: "Dee" };
+    const started = { finishers: [ben, ana], dnf: [], out: [dee] };
+
+    const draft = reconcileDraft(started, {
+      raceHeard: true,
+      confirmed: false,
+      entries: [ana, ben, cal, entry("Eve", { finish_position: null, source: "staff" })],
+      notInRace: [dee, { driver_id: "driver-Fay", display_name: "Fay" }],
+    });
+
+    expect(ids(draft.finishers)).toEqual(["driver-Ben", "driver-Ana", "driver-Cal"]);
+    expect(ids(draft.dnf)).toEqual(["driver-Eve"]);
+    expect(ids(draft.out)).toEqual(["driver-Dee", "driver-Fay"]);
+  });
+
+  it("drops a driver the round no longer has, so a refused save can be retried", () => {
+    const ana = entry("Ana", { finish_position: 1 });
+    const gone = entry("Gus", { finish_position: 2 });
+    const started = { finishers: [ana, gone], dnf: [gone], out: [gone] };
+
+    const draft = reconcileDraft(started, {
+      raceHeard: true,
+      confirmed: false,
+      entries: [ana],
+      notInRace: [],
+    });
+
+    expect(ids(draft.finishers)).toEqual(["driver-Ana"]);
+    expect(draft.dnf).toEqual([]);
+    expect(draft.out).toEqual([]);
+  });
+
+  it("keeps staff's choices for drivers the review still has", () => {
+    const ana = entry("Ana", { finish_position: 1 });
+    const ben = entry("Ben", { finish_position: 2 });
+    const started = { finishers: [], dnf: [ana], out: [ben] };
+
+    expect(
+      reconcileDraft(started, { raceHeard: true, confirmed: false, entries: [ana, ben], notInRace: [] }),
+    ).toEqual(started);
   });
 });
