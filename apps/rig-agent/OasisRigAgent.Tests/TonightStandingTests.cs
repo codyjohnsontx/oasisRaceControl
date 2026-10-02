@@ -8,8 +8,6 @@ namespace OasisRigAgent.Tests;
 /// the wall's tonight board polls, so the two never disagree.</summary>
 public sealed class TonightStandingTests
 {
-    private static readonly DateTimeOffset Now = new(2026, 10, 7, 20, 15, 0, TimeSpan.FromHours(-5));
-
     private const string Feed = """
         {"rows":[
           {"driver_id":"d-ana","display_name":"Ana","lap_time_ms":131004,"car_name":"FIA F4","incident_delta":0},
@@ -47,12 +45,11 @@ public sealed class TonightStandingTests
     {
         var board = TonightBoard.Parse(JsonNode.Parse(Feed));
 
-        var mike = TonightStanding.For(board.Rows, "d-mike", board.Combo, Now);
+        var mike = TonightStanding.For(board.Rows, "d-mike", board.Combo);
         Assert.Equal((2, 3, 132217, false), (mike.Place, mike.Drivers, mike.BestLapMs, mike.Leading));
         Assert.Equal(board.Combo, mike.Combo);
-        Assert.Equal(Now, mike.AsOf);
 
-        var ana = TonightStanding.For(board.Rows, "d-ana", board.Combo, Now);
+        var ana = TonightStanding.For(board.Rows, "d-ana", board.Combo);
         Assert.True(ana.Leading);
         Assert.Equal(1, ana.Place);
     }
@@ -65,7 +62,7 @@ public sealed class TonightStandingTests
     {
         var board = TonightBoard.Parse(JsonNode.Parse(Feed));
 
-        var standing = TonightStanding.For(board.Rows, "d-new", board.Combo, Now);
+        var standing = TonightStanding.For(board.Rows, "d-new", board.Combo);
 
         Assert.Null(standing.Place);
         Assert.Null(standing.BestLapMs);

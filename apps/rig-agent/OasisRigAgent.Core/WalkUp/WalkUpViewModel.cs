@@ -351,7 +351,7 @@ public sealed class WalkUpViewModel : IDisposable
             try
             {
                 var board = await _tonight.FetchAsync(ct).ConfigureAwait(false);
-                var standing = TonightStanding.For(board.Rows, driverId, board.Combo, DateTimeOffset.Now);
+                var standing = TonightStanding.For(board.Rows, driverId, board.Combo);
                 lock (_lock)
                 {
                     if (ct.IsCancellationRequested) return;

@@ -14,19 +14,19 @@ public sealed record TonightRow(string DriverId, string DisplayName, int LapTime
 /// limit, is on neither. Null place and best lap mean the driver has no valid
 /// lap tonight yet, which is the normal state while they warm up.
 /// </summary>
-public sealed record TonightStanding(int? Place, int Drivers, int? BestLapMs, string? Combo, DateTimeOffset AsOf)
+public sealed record TonightStanding(int? Place, int Drivers, int? BestLapMs, string? Combo)
 {
     /// <summary>The driver's standing in a feed answer. The feed is ordered
     /// fastest first, so a driver's place is their row's position; drivers
     /// is how many rows there are.</summary>
-    public static TonightStanding For(IReadOnlyList<TonightRow> rows, string driverId, string? combo, DateTimeOffset asOf)
+    public static TonightStanding For(IReadOnlyList<TonightRow> rows, string driverId, string? combo)
     {
         for (var i = 0; i < rows.Count; i++)
         {
             if (rows[i].DriverId == driverId)
-                return new TonightStanding(i + 1, rows.Count, rows[i].LapTimeMs, combo, asOf);
+                return new TonightStanding(i + 1, rows.Count, rows[i].LapTimeMs, combo);
         }
-        return new TonightStanding(null, rows.Count, null, combo, asOf);
+        return new TonightStanding(null, rows.Count, null, combo);
     }
 
     /// <summary>True when the driver is leading tonight.</summary>
