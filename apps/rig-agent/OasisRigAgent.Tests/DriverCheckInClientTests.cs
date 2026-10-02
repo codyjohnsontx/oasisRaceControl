@@ -9,15 +9,16 @@ namespace OasisRigAgent.Tests;
 /// <summary>
 /// The rig-side check-in against a scripted backend that answers the way the
 /// deployed routes do (`api/auth/login`, `api/auth/register` and `api/checkin`
-/// at 695e080 and on main): a returning driver only ever logs in and a new one
-/// only ever registers, the cookie that sets must come back on the check-in,
-/// and every refusal becomes a sentence for the person at the rig.
+/// at 695e080 and on main, and `api/auth/name` since the name-first window):
+/// the lookup is one GET with no PIN, a returning driver only ever logs in and
+/// a new one only ever registers, the cookie that sets must come back on the
+/// check-in, and every refusal becomes a sentence for the person at the rig.
 /// </summary>
 public sealed class DriverCheckInClientTests
 {
     private sealed class ScriptedBackend : HttpMessageHandler
     {
-        public readonly List<(string Path, JsonNode? Body, string? Cookie)> Requests = new();
+        public readonly List<(string Path, JsonNode? Body, string? Cookie, string Query)> Requests = new();
         public Func<string, JsonNode?, (HttpStatusCode Status, string Body, string? SetCookie)> Answer = null!;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -25,7 +26,7 @@ public sealed class DriverCheckInClientTests
             var text = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
             var body = string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
             var cookie = request.Headers.TryGetValues("Cookie", out var values) ? string.Join("; ", values) : null;
-            Requests.Add((request.RequestUri!.AbsolutePath, body, cookie));
+            Requests.Add((request.RequestUri!.AbsolutePath, body, cookie, request.RequestUri.Query));
             var (status, answer, setCookie) = Answer(request.RequestUri.AbsolutePath, body);
             var response = new HttpResponseMessage(status)
             {
@@ -67,6 +68,46 @@ public sealed class DriverCheckInClientTests
     private const string CheckedIn = """{"status":"checked_in","assignmentId":"a-1","rig":{"rig_number":1}}""";
 
     private static IEnumerable<string> Paths(ScriptedBackend backend) => backend.Requests.Select(r => r.Path);
+
+    [Fact]
+    public async Task ANameLookupIsOneGetWithNoPinAndReadsTheOneBit()
+    {
+        var (client, backend) = Build();
+        backend.Answer = (path, _) => path == "/api/auth/name"
+            ? (HttpStatusCode.OK, """{"taken":true}""", null)
+            : (HttpStatusCode.NotFound, "{}", null);
+
+        Assert.True(await client.NameTakenAsync("Mike O'Neil", CancellationToken.None));
+
+        var request = Assert.Single(backend.Requests);
+        Assert.Equal("/api/auth/name", request.Path);
+        Assert.Equal("?displayName=Mike%20O%27Neil", request.Query);
+        Assert.Null(request.Body);
+        Assert.Null(request.Cookie);
+
+        backend.Answer = (_, _) => (HttpStatusCode.OK, """{"taken":false}""", null);
+        Assert.False(await client.NameTakenAsync("Alex", CancellationToken.None));
+    }
+
+    /// <summary>Each refusal the lookup can meet, worded for the seat: a name
+    /// the backend could never register (the sign-up's own words, before any
+    /// PIN is typed), the shared network limit, a backend older than this
+    /// program, and an answer that says nothing.</summary>
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, """{"error":"invalid_input"}""", "that name is not allowed")]
+    [InlineData(HttpStatusCode.TooManyRequests, """{"error":"rate_limited"}""", "too many sign-ins from this network")]
+    [InlineData(HttpStatusCode.NotFound, "", "older than this rig program")]
+    [InlineData(HttpStatusCode.InternalServerError, """{"error":"server_error"}""", "HTTP 500")]
+    [InlineData(HttpStatusCode.OK, """{"ok":true}""", "did not say whether the name is taken")]
+    public async Task ALookupTheBackendRefusesIsWordedForTheSeat(HttpStatusCode status, string body, string words)
+    {
+        var (client, backend) = Build();
+        backend.Answer = (_, _) => (status, body, null);
+
+        var ex = await Assert.ThrowsAsync<CheckInRefusedException>(() => client.NameTakenAsync("Mike", CancellationToken.None));
+
+        Assert.Contains(words, ex.Message);
+    }
 
     [Fact]
     public async Task AReturningNameAndPinLogInThenCheckInWithTheSessionCookie()

@@ -1,15 +1,22 @@
 namespace OasisRigAgent.Core.WalkUp;
 
 /// <summary>
-/// Where signing the next driver in has got to. The rig asks whether the
-/// driver has raced here before instead of guessing it from a failed login, so
-/// a wrong PIN is never offered as a new sign-up and a new driver is never told
-/// their PIN is wrong. An empty answer at any prompt goes back one step.
+/// Where signing the next driver in has got to. The driver types a name and
+/// nothing else is asked until the backend has said whether that name is
+/// already somebody's: a taken name is asked for its PIN, a free one has its
+/// owner pick a PIN. So a wrong PIN is never offered as a new sign-up, a new
+/// driver is never told their PIN is wrong, and nobody is asked "Raced here
+/// before?" (the first window asked it; the owner had it dropped). An empty
+/// answer at any prompt after the name goes back to the name - the window's
+/// "Not you? Pick a different name" button, for the newcomer who typed a name
+/// that turned out to be taken.
 /// <list type="bullet">
-/// <item><see cref="AskRacedBefore"/>: y goes to the returning path, n to the
-/// new one.</item>
-/// <item><see cref="AskName"/>: the name, then <see cref="AskPin"/> (returning)
-/// or <see cref="AskNewPin"/> (new).</item>
+/// <item><see cref="AskName"/>: the name, then <see cref="LookUpName"/>. A name
+/// that has already used its logins (below) goes straight to
+/// <see cref="PinRefused"/> without a lookup.</item>
+/// <item><see cref="LookUpName"/>: waits on the backend's name lookup. Taken
+/// goes to <see cref="AskPin"/>, free to <see cref="AskNewPin"/>; a lookup that
+/// fails goes back to the name with the reason.</item>
 /// <item><see cref="AskPin"/> then <see cref="LogIn"/>: a match signs the
 /// driver in. A miss asks for the PIN once more; the second miss goes to
 /// <see cref="PinRefused"/>. The misses are counted per name for the whole
@@ -24,28 +31,38 @@ namespace OasisRigAgent.Core.WalkUp;
 /// <item><see cref="AskNewPin"/> then <see cref="AskNewPinAgain"/>: two PINs
 /// that differ ask for both again, on the rig, with no backend call; the same
 /// PIN twice goes to <see cref="Register"/>.</item>
-/// <item><see cref="Register"/>: a new driver is signed in. A taken name (409)
-/// goes back to the name, saying how to go back and answer as a returning
-/// driver if it is theirs, in the front's own wording. Never logs in; a
-/// check-in that fails after the sign-up goes back to the name on the
-/// returning path, since the name is theirs now.</item>
+/// <item><see cref="Register"/>: a new driver is signed in. A name taken
+/// between the lookup and the sign-up (409) goes back to the name, saying to
+/// type it again and sign in with the PIN if it is theirs. Never logs in; a
+/// check-in that fails after the sign-up goes back to the name, since the name
+/// is theirs now and the lookup will ask for its PIN.</item>
 /// <item><see cref="SignedIn"/>: done; <see cref="SignInFlow.Driver"/> is the
 /// driver to seat.</item>
 /// </list>
-/// <see cref="LogIn"/> and <see cref="Register"/> are the two steps that wait
-/// on the backend (<see cref="SignInFlow.Pending"/> says what to send) rather
-/// than on the driver.
+/// <see cref="LookUpName"/>, <see cref="LogIn"/> and <see cref="Register"/> are
+/// the steps that wait on the backend (<see cref="SignInFlow.Pending"/> says
+/// what to send) rather than on the driver.
 /// </summary>
-public enum SignInStep { AskRacedBefore, AskName, AskPin, LogIn, PinRefused, AskNewPin, AskNewPinAgain, Register, SignedIn }
+public enum SignInStep { AskName, LookUpName, AskPin, LogIn, PinRefused, AskNewPin, AskNewPinAgain, Register, SignedIn }
 
-/// <summary>The one backend call a sign-in is waiting on: a returning driver's
-/// login or a new driver's registration, each followed by the check-in. The
-/// only place a PIN lives once the driver has typed it, and for as long as the
-/// call takes; its string form leaves the PIN out so a log line or a debugger
-/// cannot pick it up by accident.</summary>
-public sealed record SignInRequest(bool Returning, string Name, string Pin)
+/// <summary>Which backend call a <see cref="SignInRequest"/> is.</summary>
+public enum SignInCall
 {
-    public override string ToString() => $"SignInRequest {{ Returning = {Returning}, Name = {Name} }}";
+    /// <summary>Is this name somebody's? No PIN.</summary>
+    LookUpName,
+    /// <summary>A returning driver's login, then the check-in.</summary>
+    LogIn,
+    /// <summary>A new driver's registration, then the check-in.</summary>
+    Register,
+}
+
+/// <summary>The one backend call a sign-in is waiting on. For a login or a
+/// registration it is the only place a PIN lives once the driver has typed it,
+/// and for as long as the call takes; its string form leaves the PIN out so a
+/// log line or a debugger cannot pick it up by accident.</summary>
+public sealed record SignInRequest(SignInCall Call, string Name, string Pin = "")
+{
+    public override string ToString() => $"SignInRequest {{ Call = {Call}, Name = {Name} }}";
 }
 
 /// <summary>What a <see cref="SignInRequest"/> came to, mapped from
@@ -53,11 +70,15 @@ public sealed record SignInRequest(bool Returning, string Name, string Pin)
 public enum SignInOutcome
 {
     SignedIn,
+    /// <summary>The looked-up name is already a driver's.</summary>
+    NameTaken,
+    /// <summary>The looked-up name is nobody's yet.</summary>
+    NameFree,
     /// <summary>A returning driver's name and PIN matched nobody (401), or a
-    /// new driver's name is already taken (409). Which it was is known from the
-    /// request.</summary>
+    /// new driver's name was taken after all (409). Which it was is known from
+    /// the request.</summary>
     NoMatch,
-    /// <summary>The backend refused the sign-in for a reason it named
+    /// <summary>The backend refused the call for a reason it named
     /// (<see cref="CheckInRefusedException"/>).</summary>
     Refused,
     /// <summary>A new driver was registered and the check-in after it was
@@ -77,10 +98,6 @@ public enum SignInOutcome
 
 public sealed record SignInResult(SignInOutcome Outcome, DriverCheckIn? Driver = null, string? Message = null);
 
-/// <summary>Which front drives a <see cref="SignInFlow"/>: a notice that says
-/// how to answer is worded for the keys or buttons that front has.</summary>
-public enum SignInFront { Console, Window }
-
 /// <summary>
 /// The sign-in rules as one pure state machine, shared by the console loop and
 /// the window so the rig has one set of them (<see cref="SignInStep"/> is the
@@ -95,7 +112,6 @@ public sealed class SignInFlow
     public const int LoginsPerName = 2;
 
     private readonly Dictionary<string, int> _misses = new(StringComparer.OrdinalIgnoreCase);
-    private readonly SignInFront _front;
     // The PIN is held only between the prompt that takes it and the request
     // built from it (a new driver's, until the second typing confirms it);
     // every way out of those steps clears it, and the request is the one copy
@@ -103,15 +119,15 @@ public sealed class SignInFlow
     private string _pin = "";
     private SignInRequest? _pending;
 
-    public SignInFlow(string? notice = null, SignInFront front = SignInFront.Console)
+    public SignInFlow(string? notice = null)
     {
         Notice = notice;
-        _front = front;
     }
 
-    public SignInStep Step { get; private set; } = SignInStep.AskRacedBefore;
+    public SignInStep Step { get; private set; } = SignInStep.AskName;
 
-    /// <summary>Which path the driver chose at <see cref="SignInStep.AskRacedBefore"/>.</summary>
+    /// <summary>Whether the name turned out to be a driver's already (the
+    /// returning path) - known once the lookup has answered.</summary>
     public bool Returning { get; private set; }
 
     /// <summary>The name typed at <see cref="SignInStep.AskName"/>; shown on
@@ -123,7 +139,8 @@ public sealed class SignInFlow
     public string? Notice { get; private set; }
 
     /// <summary>The call the flow is waiting on, when <see cref="Step"/> is
-    /// <see cref="SignInStep.LogIn"/> or <see cref="SignInStep.Register"/>.</summary>
+    /// <see cref="SignInStep.LookUpName"/>, <see cref="SignInStep.LogIn"/> or
+    /// <see cref="SignInStep.Register"/>.</summary>
     public SignInRequest? Pending => _pending;
 
     /// <summary>Whether a typed PIN is still held outside a pending request.</summary>
@@ -136,46 +153,28 @@ public sealed class SignInFlow
     public bool ShowsName => Step is SignInStep.AskPin or SignInStep.PinRefused or SignInStep.AskNewPin or SignInStep.AskNewPinAgain;
 
     /// <summary>Whether the flow is waiting on the driver rather than the backend.</summary>
-    public bool AwaitsDriver => Step is not (SignInStep.LogIn or SignInStep.Register or SignInStep.SignedIn);
+    public bool AwaitsDriver => Step is not (SignInStep.LookUpName or SignInStep.LogIn or SignInStep.Register or SignInStep.SignedIn);
 
     /// <summary>What the driver typed or chose at the current prompt. Empty
-    /// goes back one step. Ignored while the flow waits on the backend.</summary>
+    /// goes back to the name (and at the name does nothing). Ignored while the
+    /// flow waits on the backend.</summary>
     public void Submit(string typed)
     {
         typed = typed.Trim();
         switch (Step)
         {
-            case SignInStep.AskRacedBefore:
-                Notice = null;
-                switch (typed.ToLowerInvariant())
-                {
-                    case "y" or "yes":
-                        Returning = true;
-                        Step = SignInStep.AskName;
-                        break;
-                    case "n" or "no":
-                        Returning = false;
-                        Step = SignInStep.AskName;
-                        break;
-                    case "":
-                        break;
-                    default:
-                        Notice = "Type y if you have raced here before, or n if you are new.";
-                        break;
-                }
-                break;
-
             case SignInStep.AskName:
+                if (typed.Length == 0) break;
                 Notice = null;
-                if (typed.Length == 0)
+                Name = typed;
+                if (_misses.GetValueOrDefault(Name) >= LoginsPerName)
                 {
-                    Step = SignInStep.AskRacedBefore;
+                    Returning = true;
+                    Step = SignInStep.PinRefused;
                     break;
                 }
-                Name = typed;
-                Step = !Returning ? SignInStep.AskNewPin
-                    : _misses.GetValueOrDefault(Name) >= LoginsPerName ? SignInStep.PinRefused
-                    : SignInStep.AskPin;
+                _pending = new SignInRequest(SignInCall.LookUpName, Name);
+                Step = SignInStep.LookUpName;
                 break;
 
             case SignInStep.AskPin:
@@ -185,7 +184,7 @@ public sealed class SignInFlow
                 else if (!DriverCheckInClient.IsPin(typed)) Notice = "The PIN is exactly 4 digits.";
                 else
                 {
-                    _pending = new SignInRequest(Returning: true, Name, typed);
+                    _pending = new SignInRequest(SignInCall.LogIn, Name, typed);
                     Step = SignInStep.LogIn;
                 }
                 break;
@@ -214,7 +213,7 @@ public sealed class SignInFlow
                 if (typed.Length == 0) Step = SignInStep.AskNewPin;
                 else if (typed == first)
                 {
-                    _pending = new SignInRequest(Returning: false, Name, typed);
+                    _pending = new SignInRequest(SignInCall.Register, Name, typed);
                     Step = SignInStep.Register;
                 }
                 else
@@ -241,10 +240,18 @@ public sealed class SignInFlow
                 Notice = null;
                 Step = SignInStep.SignedIn;
                 break;
-            case SignInOutcome.NoMatch when !request.Returning:
-                Notice = _front == SignInFront.Window
-                    ? $"The name \"{Name}\" is already registered. If it is yours, press Back and choose \"Yes, I have raced here\"; otherwise type a different name."
-                    : $"The name \"{Name}\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
+            case SignInOutcome.NameTaken:
+                Returning = true;
+                Notice = null;
+                Step = SignInStep.AskPin;
+                break;
+            case SignInOutcome.NameFree:
+                Returning = false;
+                Notice = null;
+                Step = SignInStep.AskNewPin;
+                break;
+            case SignInOutcome.NoMatch when request.Call == SignInCall.Register:
+                Notice = $"The name \"{Name}\" was taken just now. If it is yours, type it again and sign in with your PIN; otherwise type a different name.";
                 Step = SignInStep.AskName;
                 break;
             case SignInOutcome.NoMatch when (_misses[Name] = _misses.GetValueOrDefault(Name) + 1) < LoginsPerName:
@@ -289,18 +296,25 @@ public sealed class SignInFlow
 /// the console and the window map the client's answers one way.</summary>
 public static class SignInAttempt
 {
-    /// <summary>Deliver any sign-out still owed first, so the same driver
-    /// signing straight back in gets a fresh stint, then log in or register and
-    /// check in.</summary>
+    /// <summary>A name lookup asks the backend and nothing else. A login or a
+    /// registration delivers any sign-out still owed first, so the same driver
+    /// signing straight back in gets a fresh stint, then logs in or registers
+    /// and checks in.</summary>
     public static async Task<SignInResult> PerformAsync(
         AgentService agent, DriverCheckInClient checkIn, SignInRequest request, CancellationToken quit)
     {
         DriverCheckIn? driver;
         try
         {
+            if (request.Call == SignInCall.LookUpName)
+            {
+                return new SignInResult(await checkIn.NameTakenAsync(request.Name, quit).ConfigureAwait(false)
+                    ? SignInOutcome.NameTaken
+                    : SignInOutcome.NameFree);
+            }
             if (!await agent.SettlePendingCheckoutAsync().ConfigureAwait(false))
                 return new SignInResult(SignInOutcome.CheckoutUnsettled);
-            driver = request.Returning
+            driver = request.Call == SignInCall.LogIn
                 ? await checkIn.CheckInReturningAsync(request.Name, request.Pin, quit).ConfigureAwait(false)
                 : await checkIn.CheckInNewAsync(request.Name, request.Pin, quit).ConfigureAwait(false);
         }

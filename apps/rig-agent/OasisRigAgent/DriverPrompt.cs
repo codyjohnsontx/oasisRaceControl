@@ -37,11 +37,11 @@ internal sealed class SystemPromptConsole : IPromptConsole
 }
 
 /// <summary>
-/// The walk-up loop on the rig PC, as two screens. SIGN IN asks whether the
-/// driver has raced here before, then a name and a 4-digit PIN (twice for a
-/// new driver, before it is registered); the PIN shows as it is typed, and the
-/// screen is cleared the moment Enter is pressed so it is gone before the next
-/// person sits down.
+/// The walk-up loop on the rig PC, as two screens. SIGN IN asks for a name,
+/// looks it up, and then asks a returning driver for their 4-digit PIN or has
+/// a new one pick a PIN (typed twice, before it is registered); the PIN shows
+/// as it is typed, and the screen is cleared the moment Enter is pressed so it
+/// is gone before the next person sits down.
 /// DRIVING shows only the signed-in name and "Press Enter to log out", with the
 /// driver's laps printed below it - queued, then posted once the backend has
 /// them; Enter logs them out and clears back to SIGN IN. A lap driven while
@@ -118,7 +118,7 @@ internal static class DriverPrompt
         }
     }
 
-    /// <summary>Walk the next driver from "Raced here before?" to a check-in,
+    /// <summary>Walk the next driver from their name to a check-in,
     /// one console prompt per <see cref="SignInStep"/> of the shared
     /// <see cref="SignInFlow"/>; the rules are the flow's. Null when the
     /// program is closing.</summary>
@@ -130,7 +130,12 @@ internal static class DriverPrompt
         {
             if (flow.Pending is { } request)
             {
-                screen.Transition(request.Returning ? $"Signing in {request.Name}..." : $"Signing up {request.Name}...");
+                screen.Transition(request.Call switch
+                {
+                    SignInCall.LookUpName => $"Looking up {request.Name}...",
+                    SignInCall.LogIn => $"Signing in {request.Name}...",
+                    _ => $"Signing up {request.Name}...",
+                });
                 var result = await SignInAttempt.PerformAsync(agent, checkIn, request, quit);
                 if (result.Outcome == SignInOutcome.Cancelled) return null;
                 flow.Apply(result);
@@ -138,20 +143,26 @@ internal static class DriverPrompt
                 continue;
             }
 
-            var typed = await AskAsync(screen, rigNumber, flow.Notice, flow.ShowsName ? flow.Name : null, Prompt(flow), quit);
+            var typed = await AskAsync(screen, rigNumber, flow.Notice, NameLine(flow), Prompt(flow), quit);
             if (typed is null) return null;
             flow.Submit(typed);
         }
     }
 
+    /// <summary>The line above the prompt naming the driver, once the lookup
+    /// has said which they are; null at the name prompt.</summary>
+    private static string? NameLine(SignInFlow flow) => flow.Step switch
+    {
+        SignInStep.AskPin or SignInStep.PinRefused => $"Welcome back, {flow.Name}",
+        SignInStep.AskNewPin or SignInStep.AskNewPinAgain => $"New driver: {flow.Name}",
+        _ => null,
+    };
+
     /// <summary>The console's wording of each prompt.</summary>
     private static string Prompt(SignInFlow flow) => flow.Step switch
     {
-        SignInStep.AskRacedBefore => "Raced here before? Type y or n and press Enter:",
-        SignInStep.AskName => flow.Returning
-            ? "Type the name you raced under and press Enter (Enter alone goes back):"
-            : "Type a name for the leaderboard and press Enter (Enter alone goes back):",
-        SignInStep.AskPin => "Type your 4-digit PIN and press Enter (Enter alone goes back to the name):",
+        SignInStep.AskName => "Type your name for the leaderboard and press Enter:",
+        SignInStep.AskPin => "Type your 4-digit PIN and press Enter (not you? Enter alone goes back to the name):",
         SignInStep.PinRefused => "That PIN does not match. Ask staff to reset your PIN, or press Enter to try a different name.",
         SignInStep.AskNewPin => "Pick a 4-digit PIN, remember it, and press Enter (Enter alone goes back to the name):",
         SignInStep.AskNewPinAgain => "Type the same PIN again and press Enter (Enter alone goes back):",
@@ -191,7 +202,7 @@ internal static class DriverPrompt
                 console.WriteLine(notice);
             }
             console.WriteLine();
-            if (name is not null) console.WriteLine($"Name: {name}");
+            if (name is not null) console.WriteLine(name);
             console.WriteLine(prompt);
         });
     }

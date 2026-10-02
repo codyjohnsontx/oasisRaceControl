@@ -236,7 +236,7 @@ public sealed class HeartbeatTests : IDisposable
         var json = agent.BuildHeartbeat(shuttingDown: false).Report.ToEvent();
 
         Assert.Equal("RIG_HEARTBEAT", Text(json, "type"));
-        Assert.Equal("rig-agent/0.6-window", Text(json, "agentVersion"));
+        Assert.Equal("rig-agent/0.7-neon", Text(json, "agentVersion"));
         Assert.True(DateTimeOffset.TryParse(Text(json, "sentAt"), out _));
         Assert.True(DateTimeOffset.TryParse(Text(json, "processStartedAt"), out _));
         Assert.Equal(1, json["startCount"]!.GetValue<int>());

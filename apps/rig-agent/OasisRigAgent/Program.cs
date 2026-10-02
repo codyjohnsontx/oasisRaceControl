@@ -44,6 +44,7 @@ var configPath = Path.Combine(AppContext.BaseDirectory, "agent.config.json");
 AgentConfig config;
 EventQueue queueInit;
 HttpClient httpInit;
+HttpClient publicHttpInit;
 AgentService agentInit;
 ITelemetrySource telemetry;
 try
@@ -53,6 +54,9 @@ try
 
     queueInit = new EventQueue(Path.Combine(AppContext.BaseDirectory, "outbox.db"));
     httpInit = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+    // The public leaderboard feed the driving screen reads carries no rig
+    // token: a client of its own, so the bearer header never goes with it.
+    publicHttpInit = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
     var client = new BackendClient(httpInit, config.BackendBaseUrl, config.RigToken);
     telemetry = config.TelemetryMode switch
     {
@@ -82,6 +86,7 @@ catch (Exception ex)
 
 using var queue = queueInit;
 using var http = httpInit;
+using var publicHttp = publicHttpInit;
 await using var agent = agentInit;
 
 // The walk-up window is the Windows build's front for a rig with a QR token;
@@ -113,7 +118,7 @@ if (config.RigQrToken is null)
 }
 else if (window)
 {
-    var m = new WalkUpViewModel(agent, checkInClient!, config.RigNumber);
+    var m = new WalkUpViewModel(agent, checkInClient!, new TonightBoardClient(publicHttp, config.BackendBaseUrl), config.RigNumber);
     model = m;
     if (telemetry is IracingTelemetrySource iracing) AttachDriverLog(iracing, m.Log, m.Standing);
     agent.StatusChanged += OnlyWhenItMatters(s => m.Log(StatusLine(s)));

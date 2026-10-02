@@ -39,9 +39,12 @@ public sealed class SignedUpButNotCheckedInException : Exception
 /// server changes - the request shapes are the ones the deployed sign-in and
 /// check-in pages send (served at 695e080 and on main alike).
 ///
-/// The rig asks which the driver is ("Raced here before?") rather than
-/// guessing from a failed login, so a wrong PIN is never mistaken for a new
-/// name; see SignInStep in WalkUp/SignInFlow.cs.
+/// The rig asks for the name first and then <see cref="NameTakenAsync"/>
+/// (`GET /api/auth/name`) says whether that name is somebody's, so it asks a
+/// returning driver for their PIN and has a new one pick a PIN, and a wrong
+/// PIN is never mistaken for a new name; see SignInStep in WalkUp/SignInFlow.cs.
+/// The lookup is the one route newer than the event-night builds: a backend
+/// without it answers 404, which is reported as a refusal naming the fact.
 ///
 /// A name and PIN are the driver's across both event days, so a returning
 /// driver's laps accumulate on one leaderboard row. Logging in is repeatable,
@@ -68,6 +71,28 @@ public sealed class DriverCheckInClient
 
     /// <summary>The backend's PIN rule: exactly four digits.</summary>
     public static bool IsPin(string pin) => pin.Length == 4 && pin.All(char.IsAsciiDigit);
+
+    /// <summary>Whether <paramref name="name"/> is already a driver's, as the
+    /// backend's `GET /api/auth/name` says it: one bit, matched the way
+    /// register and login match (trimmed, without case). A name the backend
+    /// could never register (400) is refused here, before any PIN is asked
+    /// for, with the same words the sign-up would have used.</summary>
+    public async Task<bool> NameTakenAsync(string name, CancellationToken ct)
+    {
+        using var http = NewHttpClient();
+        using var res = await http.GetAsync("api/auth/name?displayName=" + Uri.EscapeDataString(name), ct);
+        var body = await ReadJson(res, ct);
+        if (res.StatusCode == HttpStatusCode.BadRequest)
+            throw NameNotAllowed();
+        if ((int)res.StatusCode == 429)
+            throw new CheckInRefusedException("too many sign-ins from this network in the last minute, across the rigs - wait a minute and try again");
+        if (res.StatusCode == HttpStatusCode.NotFound)
+            throw new CheckInRefusedException("the backend is older than this rig program and cannot look names up - tell staff to update the site or run the program with --console");
+        if (!res.IsSuccessStatusCode)
+            throw new CheckInRefusedException($"the backend could not look the name up (HTTP {(int)res.StatusCode}) - try again");
+        return body?["taken"]?.GetValue<bool>()
+            ?? throw new CheckInRefusedException("the backend did not say whether the name is taken - try again");
+    }
 
     /// <summary>Log a returning driver in and seat them. Null when the name and
     /// PIN match nobody (401) - the same answer, by design, for a wrong PIN, an
