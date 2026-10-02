@@ -126,17 +126,16 @@ function keepFinish(state: RaceBoardState, now: number): boolean {
 /**
  * Places gained (positive) or lost (negative) per rig between two answers
  * from the feed, for the screen to mark. A rig new to the board has nothing
- * to have moved from. Keyed by rig number, which is what identifies a row
- * across answers whether or not anyone is signed in on it.
+ * to have moved from, and neither has any rig when the answers are different
+ * sessions: the next race's grid is not a pass on the last one's finish.
+ * Keyed by rig number, which is what identifies a row across answers whether
+ * or not anyone is signed in on it.
  */
-export function placeChanges(
-  before: readonly LiveRaceRow[] | null,
-  after: readonly LiveRaceRow[],
-): Map<number, number> {
+export function placeChanges(before: LiveRace | null, after: LiveRace): Map<number, number> {
   const moves = new Map<number, number>();
-  if (!before) return moves;
-  const previous = new Map(before.map((row) => [row.rigNumber, row.place]));
-  for (const row of after) {
+  if (!before || sessionKey(before) !== sessionKey(after)) return moves;
+  const previous = new Map(before.rows.map((row) => [row.rigNumber, row.place]));
+  for (const row of after.rows) {
     const was = previous.get(row.rigNumber);
     if (was !== undefined && was !== row.place) moves.set(row.rigNumber, was - row.place);
   }

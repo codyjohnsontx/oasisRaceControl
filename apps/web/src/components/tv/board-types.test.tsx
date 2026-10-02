@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { venueToday } from "@/lib/venue";
+import type { LiveRaceView } from "@/components/use-live-race";
+import { liveRaceFeed, liveRaceRow } from "@/test/live-race-fixture";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
+
+const liveRace = vi.hoisted(() => ({
+  view: { race: null, finished: false, moves: new Map(), stale: false } as LiveRaceView,
+}));
+vi.mock("@/components/use-live-race", () => ({ useLiveRace: () => liveRace.view }));
 
 /**
  * The two rotation lists. The event view is one slide - the tonight board
@@ -118,7 +125,8 @@ describe("tonight board off-track mark", () => {
  * League night's screens. While tonight's round is open the league board is
  * the round's qualifying ranking, read from the round endpoint the phone's
  * round page reads; on every other day it is the season standings and asks
- * for nothing else. The race screen on top of both is `race-board.test.tsx`.
+ * for nothing else. What the race screen draws is `race-board.test.tsx`; its
+ * header, which this board builds, is pinned here.
  */
 describe("league board on league night", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -201,5 +209,29 @@ describe("league board on league night", () => {
     expect(standings).toContain("Season standings");
     expect(standings).toContain("Points");
     expect(standings).not.toContain("Qualifying");
+  });
+
+  it("heads the race with only 'Race', the track and what is left", () => {
+    liveRace.view = {
+      race: liveRaceFeed([liveRaceRow(1, 1), liveRaceRow(2, 2), liveRaceRow(3, 3)], {
+        timeRemainS: 754,
+      }),
+      finished: false,
+      moves: new Map(),
+      stale: false,
+    };
+    try {
+      const tonight = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field } };
+      const html = renderToStaticMarkup(
+        <league.Board spec={null} data={tonight} stale={false} hold={() => {}} />,
+      );
+      expect(html).toContain(">Race<");
+      expect(html).toContain("Spa-Francorchamps · 12:34 to go");
+      for (const absent of ["Round 1", "Qualifying", "Racing", "Grand Prix Pits", "Porsche 911 GT3 R", "3 cars"]) {
+        expect(html).not.toContain(absent);
+      }
+    } finally {
+      liveRace.view = { race: null, finished: false, moves: new Map(), stale: false };
+    }
   });
 });

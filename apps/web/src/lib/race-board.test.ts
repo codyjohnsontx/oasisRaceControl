@@ -144,8 +144,8 @@ describe("applyRaceFeedFailure", () => {
 
 describe("placeChanges", () => {
   it("names each rig that moved, with places gained positive and lost negative", () => {
-    const before = [row(1, 1), row(2, 2), row(3, 3)];
-    const after = [row(2, 1), row(3, 2), row(1, 3)];
+    const before = feed([row(1, 1), row(2, 2), row(3, 3)]);
+    const after = feed([row(2, 1), row(3, 2), row(1, 3)]);
     expect([...placeChanges(before, after)]).toEqual([
       [2, 1],
       [3, 1],
@@ -154,14 +154,22 @@ describe("placeChanges", () => {
   });
 
   it("has nothing to say about the first answer or a rig new to the board", () => {
-    expect(placeChanges(null, [row(1, 1)]).size).toBe(0);
-    expect(placeChanges([row(1, 1)], [row(1, 1), row(2, 2)]).size).toBe(0);
+    expect(placeChanges(null, feed([row(1, 1)])).size).toBe(0);
+    expect(placeChanges(feed([row(1, 1)]), feed([row(1, 1), row(2, 2)])).size).toBe(0);
   });
 
   it("keys on the rig, not the driver, so an empty seat moves too", () => {
-    const before = [row(7, 1, { driverName: null, driverId: null }), row(2, 2)];
-    const after = [row(2, 1), row(7, 2, { driverName: null, driverId: null })];
+    const before = feed([row(7, 1, { driverName: null, driverId: null }), row(2, 2)]);
+    const after = feed([row(2, 1), row(7, 2, { driverName: null, driverId: null })]);
     expect(placeChanges(before, after).get(7)).toBe(-1);
+  });
+
+  it("marks nothing when the next answer is a different session", () => {
+    const finish = feed([row(1, 1), row(2, 2)], { sessionState: SESSION_STATE.checkered });
+    const nextGrid = feed([row(2, 1), row(1, 2)], { sessionNum: 3 });
+    expect(placeChanges(finish, nextGrid).size).toBe(0);
+    const nextEvent = feed([row(2, 1), row(1, 2)], { sessionUniqueId: 101 });
+    expect(placeChanges(finish, nextEvent).size).toBe(0);
   });
 });
 

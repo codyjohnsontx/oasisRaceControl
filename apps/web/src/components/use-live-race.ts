@@ -68,7 +68,7 @@ export function useLiveRace(active: boolean): LiveRaceView {
     setStale(false);
     setState(next);
 
-    const changes = next.race && before.race ? placeChanges(before.race.rows, next.race.rows) : null;
+    const changes = next.race ? placeChanges(before.race, next.race) : null;
     if (!changes || changes.size === 0) return;
     setMoves((prev) => {
       const marked = new Map(prev);
