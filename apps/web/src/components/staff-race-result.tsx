@@ -8,34 +8,45 @@ type Driver = { driver_id: string; display_name: string };
 
 export type Draft = { finishers: Driver[]; dnf: Driver[]; out: Driver[] };
 
+type Bucket = keyof Draft;
+
+function reviewBuckets(review: RaceReview): Map<string, { bucket: Bucket; driver: Driver }> {
+  const buckets = new Map<string, { bucket: Bucket; driver: Driver }>();
+  for (const entry of review.entries) {
+    buckets.set(entry.driver_id, {
+      bucket: entry.finish_position === null ? "dnf" : "finishers",
+      driver: entry,
+    });
+  }
+  for (const driver of review.notInRace) {
+    buckets.set(driver.driver_id, { bucket: "out", driver });
+  }
+  return buckets;
+}
+
 /**
- * The draft as it stands against the latest review: a driver the round no
- * longer has is dropped, and one the review gained since editing began is
- * added where the review has them - a car captured at the flag to the end of
- * the order, a DNF to DNF, a new driver to not in the race. Saving names every
- * driver the server will keep, so a draft that missed a late finisher would
- * delete their place.
+ * The draft as it stands against the latest review. `basis` is the review the
+ * draft was last edited against: a driver whose place in the review has
+ * changed since - a car that crossed the line, a driver new to the round - is
+ * moved to where the review now has them, at the end of that list; a driver
+ * the round no longer has is dropped; everyone else stays where staff put
+ * them. Saving names every driver the server will keep, so a draft that
+ * missed a late finisher would delete their place.
  */
-export function reconcileDraft(draft: Draft, review: RaceReview): Draft {
-  const known = new Set(
-    [...review.entries, ...review.notInRace].map((driver) => driver.driver_id),
+export function reconcileDraft(draft: Draft, basis: RaceReview, review: RaceReview): Draft {
+  const before = reviewBuckets(basis);
+  const now = reviewBuckets(review);
+  const changed = [...now.values()].filter(
+    ({ driver, bucket }) => before.get(driver.driver_id)?.bucket !== bucket,
   );
-  const keep = (list: Driver[]) => list.filter((driver) => known.has(driver.driver_id));
-  const named = new Set(
-    [...draft.finishers, ...draft.dnf, ...draft.out].map((driver) => driver.driver_id),
-  );
-  const added = (list: Driver[]) => list.filter((driver) => !named.has(driver.driver_id));
-  return {
-    finishers: [
-      ...keep(draft.finishers),
-      ...added(review.entries.filter((entry) => entry.finish_position !== null)),
-    ],
-    dnf: [
-      ...keep(draft.dnf),
-      ...added(review.entries.filter((entry) => entry.finish_position === null)),
-    ],
-    out: [...keep(draft.out), ...added(review.notInRace)],
-  };
+  const moved = new Set(changed.map(({ driver }) => driver.driver_id));
+  const list = (bucket: Bucket) => [
+    ...draft[bucket].filter(
+      (driver) => now.has(driver.driver_id) && !moved.has(driver.driver_id),
+    ),
+    ...changed.filter((change) => change.bucket === bucket).map(({ driver }) => driver),
+  ];
+  return { finishers: list("finishers"), dnf: list("dnf"), out: list("out") };
 }
 
 /**
@@ -58,8 +69,9 @@ export function StaffRaceResult({
   /** Resolves true once the server has the result. */
   onSave: (finishers: string[], dnf: string[]) => Promise<boolean>;
 }) {
-  const [started, setDraft] = useState<Draft | null>(null);
-  const draft = started && reconcileDraft(started, review);
+  const [editing, setEditing] = useState<{ draft: Draft; basis: RaceReview } | null>(null);
+  const draft = editing && reconcileDraft(editing.draft, editing.basis, review);
+  const setDraft = (next: Draft) => setEditing({ draft: next, basis: review });
 
   const finishers = review.entries.filter((entry) => entry.finish_position !== null);
   const dnf = review.entries.filter((entry) => entry.finish_position === null);
@@ -76,7 +88,7 @@ export function StaffRaceResult({
       draft.finishers.map((driver) => driver.driver_id),
       draft.dnf.map((driver) => driver.driver_id),
     );
-    if (saved) setDraft(null);
+    if (saved) setEditing(null);
   }
 
   return (
@@ -109,7 +121,7 @@ export function StaffRaceResult({
           <>
             <button
               type="button"
-              onClick={() => setDraft(null)}
+              onClick={() => setEditing(null)}
               className="text-xs font-bold uppercase tracking-wider border border-edge rounded-md px-3 py-2"
             >
               Cancel

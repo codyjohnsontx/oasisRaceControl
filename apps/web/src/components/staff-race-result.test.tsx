@@ -91,50 +91,71 @@ describe("StaffRaceResult", () => {
 
 describe("reconcileDraft", () => {
   const ids = (list: { driver_id: string }[]) => list.map((driver) => driver.driver_id);
+  const review = (entries: RaceReviewEntry[], notInRace: { driver_id: string; display_name: string }[]) => ({
+    raceHeard: true,
+    confirmed: false,
+    entries,
+    notInRace,
+  });
 
-  it("adds a car captured at the flag after editing began, so saving keeps its place", () => {
+  it("moves a car still racing when editing began into the order once it is captured at the flag", () => {
     const ana = entry("Ana", { finish_position: 1 });
     const ben = entry("Ben", { finish_position: 2 });
-    const cal = entry("Cal", { finish_position: 3 });
+    const cal = { driver_id: "driver-Cal", display_name: "Cal" };
     const dee = { driver_id: "driver-Dee", display_name: "Dee" };
-    const started = { finishers: [ben, ana], dnf: [], out: [dee] };
+    const basis = review([ana, ben], [cal, dee]);
+    const started = { finishers: [ben, ana], dnf: [], out: [cal, dee] };
 
-    const draft = reconcileDraft(started, {
-      raceHeard: true,
-      confirmed: false,
-      entries: [ana, ben, cal, entry("Eve", { finish_position: null, source: "staff" })],
-      notInRace: [dee, { driver_id: "driver-Fay", display_name: "Fay" }],
-    });
+    const draft = reconcileDraft(
+      started,
+      basis,
+      review([ana, ben, entry("Cal", { finish_position: 3 })], [dee]),
+    );
 
     expect(ids(draft.finishers)).toEqual(["driver-Ben", "driver-Ana", "driver-Cal"]);
+    expect(draft.dnf).toEqual([]);
+    expect(ids(draft.out)).toEqual(["driver-Dee"]);
+  });
+
+  it("adds a driver new to the round where the review has them", () => {
+    const ana = entry("Ana", { finish_position: 1 });
+    const basis = review([ana], []);
+
+    const draft = reconcileDraft(
+      { finishers: [ana], dnf: [], out: [] },
+      basis,
+      review(
+        [ana, entry("Eve", { finish_position: null, source: "staff" })],
+        [{ driver_id: "driver-Fay", display_name: "Fay" }],
+      ),
+    );
+
+    expect(ids(draft.finishers)).toEqual(["driver-Ana"]);
     expect(ids(draft.dnf)).toEqual(["driver-Eve"]);
-    expect(ids(draft.out)).toEqual(["driver-Dee", "driver-Fay"]);
+    expect(ids(draft.out)).toEqual(["driver-Fay"]);
   });
 
   it("drops a driver the round no longer has, so a refused save can be retried", () => {
     const ana = entry("Ana", { finish_position: 1 });
-    const gone = entry("Gus", { finish_position: 2 });
-    const started = { finishers: [ana, gone], dnf: [gone], out: [gone] };
+    const gus = entry("Gus", { finish_position: 2 });
 
-    const draft = reconcileDraft(started, {
-      raceHeard: true,
-      confirmed: false,
-      entries: [ana],
-      notInRace: [],
-    });
+    const draft = reconcileDraft(
+      { finishers: [ana, gus], dnf: [], out: [] },
+      review([ana, gus], []),
+      review([ana], []),
+    );
 
     expect(ids(draft.finishers)).toEqual(["driver-Ana"]);
     expect(draft.dnf).toEqual([]);
     expect(draft.out).toEqual([]);
   });
 
-  it("keeps staff's choices for drivers the review still has", () => {
+  it("keeps staff's choices for drivers whose place in the review has not changed", () => {
     const ana = entry("Ana", { finish_position: 1 });
     const ben = entry("Ben", { finish_position: 2 });
-    const started = { finishers: [], dnf: [ana], out: [ben] };
+    const current = review([ana, ben], []);
+    const edited = { finishers: [], dnf: [ana], out: [ben] };
 
-    expect(
-      reconcileDraft(started, { raceHeard: true, confirmed: false, entries: [ana, ben], notInRace: [] }),
-    ).toEqual(started);
+    expect(reconcileDraft(edited, current, review([ana, ben], []))).toEqual(edited);
   });
 });
