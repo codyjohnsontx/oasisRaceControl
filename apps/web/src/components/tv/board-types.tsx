@@ -8,7 +8,6 @@ import {
   trackKey,
 } from "@/lib/leaderboards";
 import {
-  comboLabel,
   isOpenTonight,
   roundLabel,
   type LeagueRound,
@@ -397,10 +396,12 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
   if (data.qualifying && tonightsRound) {
     const { field } = data.qualifying;
     return (
+      // The same line under the title as the race screen (the owner, 2026-10-02):
+      // the track alone - no layout, no car, no driver count.
       <ArcadeHighScores
         eyebrow={`${roundLabel(tonightsRound)} · Qualifying · live`}
         title={title}
-        subtitle={[comboLabel(tonightsRound), driverCount(field.length)].join(" · ")}
+        subtitle={tonightsRound.track_name}
         entries={field.slice(0, SLOT_COUNT).map(toQualifyingEntry)}
         columns={{ detail: "Laps", score: "Best lap" }}
         stale={stale}

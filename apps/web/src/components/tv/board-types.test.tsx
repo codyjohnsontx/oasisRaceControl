@@ -201,6 +201,11 @@ describe("league board on league night", () => {
       <league.Board spec={null} data={tonight} stale={false} hold={() => {}} />,
     );
     expect(html).toContain("Round 1 · Qualifying · live");
+    // Under the title the track alone, as on the race screen (the owner, 2026-10-02).
+    expect(html).toContain(">Spa-Francorchamps</p>");
+    for (const absent of ["Grand Prix Pits", "Porsche 911 GT3 R", "drivers"]) {
+      expect(html).not.toContain(absent);
+    }
     expect(html).toContain("Best lap");
     expect(html.indexOf("Jordan R.")).toBeLessThan(html.indexOf("Cody J."));
     expect(html).toContain("2:17.683");
