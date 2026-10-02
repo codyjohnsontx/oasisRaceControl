@@ -8,4 +8,4 @@
  * change that bumps the agent's version bumps this in the same commit, and the
  * monitor starts asking for the new build the moment it deploys.
  */
-export const CURRENT_AGENT_VERSION = "rig-agent/0.7-race-status";
+export const CURRENT_AGENT_VERSION = "rig-agent/0.8-neon";

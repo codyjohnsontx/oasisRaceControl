@@ -8,7 +8,9 @@ namespace OasisRigAgent.Tests;
 /// The sign-in rules on their own, with the backend's answers scripted: the
 /// same sequences DriverPromptTests types into the console, here as the state
 /// machine both the console and the window run. Mike's PIN is 4321; "Guest" is
-/// taken but no PIN logs it in; any other name is free.
+/// taken but no PIN logs it in; "Race" is free at the lookup and taken by the
+/// time the sign-up lands; "Offline" cannot be looked up; any other name is
+/// free.
 /// </summary>
 public sealed class SignInFlowTests
 {
@@ -18,65 +20,74 @@ public sealed class SignInFlowTests
     /// and counts the calls.</summary>
     private sealed class ScriptedBackend
     {
+        public int Lookups;
         public int Logins;
         public int Registers;
 
+        private static bool Is(string name, string known) => string.Equals(name, known, StringComparison.OrdinalIgnoreCase);
+
         public SignInResult Answer(SignInRequest request)
         {
-            if (request.Returning)
+            switch (request.Call)
             {
-                Logins++;
-                return request.Name == "Mike" && request.Pin == "4321"
-                    ? new SignInResult(SignInOutcome.SignedIn, Mike)
-                    : new SignInResult(SignInOutcome.NoMatch);
+                case SignInCall.LookUpName:
+                    Lookups++;
+                    if (Is(request.Name, "Offline")) return new SignInResult(SignInOutcome.Unreachable, Message: "venue wifi is down");
+                    return Is(request.Name, "Mike") || Is(request.Name, "Guest")
+                        ? new SignInResult(SignInOutcome.NameTaken)
+                        : new SignInResult(SignInOutcome.NameFree);
+                case SignInCall.LogIn:
+                    Logins++;
+                    return Is(request.Name, "Mike") && request.Pin == "4321"
+                        ? new SignInResult(SignInOutcome.SignedIn, Mike)
+                        : new SignInResult(SignInOutcome.NoMatch);
+                default:
+                    Registers++;
+                    return Is(request.Name, "Mike") || Is(request.Name, "Guest") || Is(request.Name, "Race")
+                        ? new SignInResult(SignInOutcome.NoMatch)
+                        : new SignInResult(SignInOutcome.SignedIn, new DriverCheckIn(request.Name, Returning: false, "d-new", "a-new"));
             }
-            Registers++;
-            return request.Name is "Mike" or "Guest"
-                ? new SignInResult(SignInOutcome.NoMatch)
-                : new SignInResult(SignInOutcome.SignedIn, new DriverCheckIn(request.Name, Returning: false, "d-new", "a-new"));
         }
     }
 
-    private const string PinRefused = "That PIN does not match. Ask staff to reset your PIN, or press Enter to try a different name.";
     private const string PinsDiffer = "The two PINs did not match, so nothing was signed up. Pick a PIN and type it twice.";
-    private const string NameTaken = "The name \"Mike\" is already registered. If it is yours, press Enter and answer y to \"Raced here before?\"; otherwise type a different name.";
+    private const string TakenMeanwhile = "The name \"Race\" was taken just now. If it is yours, type it again and sign in with your PIN; otherwise type a different name.";
+    private const string LookupFailed = "Could not reach the backend (venue wifi is down). Check the network and try again.";
 
-    /// <summary>Every sequence, typed answer by answer: how many logins and
-    /// registrations it cost, the step it ended at, and the notice showing there
-    /// (or the driver signed in).</summary>
+    /// <summary>Every sequence, typed answer by answer: how many lookups,
+    /// logins and registrations it cost, the step it ended at, and the notice
+    /// showing there (or the driver signed in).</summary>
     public static IEnumerable<object?[]> Sequences => new[]
     {
-        new object?[] { "returning driver, right PIN", new[] { "y", "Mike", "4321" }, 1, 0, SignInStep.SignedIn, null },
-        new object?[] { "returning driver, wrong then right (2026-09-28)", new[] { "y", "Mike", "1234", "4321" }, 2, 0, SignInStep.SignedIn, null },
-        new object?[] { "returning driver, wrong once", new[] { "y", "Mike", "1234" }, 1, 0, SignInStep.AskPin, "That PIN does not match \"Mike\". Type it again." },
-        new object?[] { "returning driver, wrong twice", new[] { "y", "Mike", "1234", "5678" }, 2, 0, SignInStep.PinRefused, null },
-        new object?[] { "stranger typing a registered name stops at two logins", new[] { "y", "Mike", "1234", "5678", "9999" }, 2, 0, SignInStep.AskName, null },
-        new object?[] { "stranger typing the name again gets no more logins", new[] { "y", "Mike", "1234", "5678", "", "Mike", "1111", "mike", "2222" }, 2, 0, SignInStep.AskName, null },
-        new object?[] { "a used-up name leaves another name its own two", new[] { "y", "Mike", "1234", "5678", "", "Guest", "1234", "5678" }, 4, 0, SignInStep.PinRefused, null },
-        new object?[] { "guest or banned name, no PIN logs in", new[] { "y", "Guest", "4321", "4321" }, 2, 0, SignInStep.PinRefused, null },
-        new object?[] { "not 4 digits, never sent", new[] { "y", "Mike", "12" }, 0, 0, SignInStep.AskPin, "The PIN is exactly 4 digits." },
-        new object?[] { "new driver, PIN typed the same twice", new[] { "n", "Alex", "1234", "1234" }, 0, 1, SignInStep.SignedIn, null },
-        new object?[] { "new driver, PINs differ then match", new[] { "n", "Alex", "1234", "1243", "5678", "5678" }, 0, 1, SignInStep.SignedIn, null },
-        new object?[] { "new driver, PINs differ", new[] { "n", "Alex", "1234", "1243" }, 0, 0, SignInStep.AskNewPin, PinsDiffer },
-        new object?[] { "new driver, PINs differ twice", new[] { "n", "Alex", "1234", "1243", "1234", "1244" }, 0, 0, SignInStep.AskNewPin, PinsDiffer },
-        new object?[] { "new driver, name taken", new[] { "n", "Mike", "1234", "1234" }, 0, 1, SignInStep.AskName, NameTaken },
-        new object?[] { "new driver, name taken, then returning with the right PIN", new[] { "n", "Mike", "1234", "1234", "", "y", "Mike", "4321" }, 1, 1, SignInStep.SignedIn, null },
-        new object?[] { "neither y nor n", new[] { "maybe" }, 0, 0, SignInStep.AskRacedBefore, "Type y if you have raced here before, or n if you are new." },
-        new object?[] { "Enter at raced here before", new[] { "" }, 0, 0, SignInStep.AskRacedBefore, null },
-        new object?[] { "Enter at the returning name", new[] { "y", "" }, 0, 0, SignInStep.AskRacedBefore, null },
-        new object?[] { "Enter at the new name", new[] { "n", "" }, 0, 0, SignInStep.AskRacedBefore, null },
-        new object?[] { "Enter at the PIN", new[] { "y", "Mike", "" }, 0, 0, SignInStep.AskName, null },
-        new object?[] { "Enter at the re-asked PIN", new[] { "y", "Mike", "1234", "" }, 1, 0, SignInStep.AskName, null },
-        new object?[] { "Enter at the PIN refusal", new[] { "y", "Mike", "1234", "5678", "" }, 2, 0, SignInStep.AskName, null },
-        new object?[] { "Enter at the new PIN", new[] { "n", "Alex", "" }, 0, 0, SignInStep.AskName, null },
-        new object?[] { "Enter at the new PIN again", new[] { "n", "Alex", "1234", "" }, 0, 0, SignInStep.AskNewPin, null },
-        new object?[] { "answers are trimmed and y/n take yes/no in any case", new[] { " YES ", "  Mike ", " 4321 " }, 1, 0, SignInStep.SignedIn, null },
+        new object?[] { "returning driver, right PIN", new[] { "Mike", "4321" }, 1, 1, 0, SignInStep.SignedIn, null },
+        new object?[] { "returning driver, wrong then right (2026-09-28)", new[] { "Mike", "1234", "4321" }, 1, 2, 0, SignInStep.SignedIn, null },
+        new object?[] { "returning driver, wrong once", new[] { "Mike", "1234" }, 1, 1, 0, SignInStep.AskPin, "That PIN does not match \"Mike\". Type it again." },
+        new object?[] { "returning driver, wrong twice", new[] { "Mike", "1234", "5678" }, 1, 2, 0, SignInStep.PinRefused, null },
+        new object?[] { "stranger typing a registered name stops at two logins", new[] { "Mike", "1234", "5678", "9999" }, 1, 2, 0, SignInStep.AskName, null },
+        new object?[] { "stranger typing the name again gets no more logins, and no lookup", new[] { "Mike", "1234", "5678", "", "Mike", "1111", "mike", "2222" }, 1, 2, 0, SignInStep.AskName, null },
+        new object?[] { "a used-up name leaves another name its own two", new[] { "Mike", "1234", "5678", "", "Guest", "1234", "5678" }, 2, 4, 0, SignInStep.PinRefused, null },
+        new object?[] { "guest or banned name, no PIN logs in", new[] { "Guest", "4321", "4321" }, 1, 2, 0, SignInStep.PinRefused, null },
+        new object?[] { "not 4 digits, never sent", new[] { "Mike", "12" }, 1, 0, 0, SignInStep.AskPin, "The PIN is exactly 4 digits." },
+        new object?[] { "new driver, PIN typed the same twice", new[] { "Alex", "1234", "1234" }, 1, 0, 1, SignInStep.SignedIn, null },
+        new object?[] { "new driver, PINs differ then match", new[] { "Alex", "1234", "1243", "5678", "5678" }, 1, 0, 1, SignInStep.SignedIn, null },
+        new object?[] { "new driver, PINs differ", new[] { "Alex", "1234", "1243" }, 1, 0, 0, SignInStep.AskNewPin, PinsDiffer },
+        new object?[] { "new driver, PINs differ twice", new[] { "Alex", "1234", "1243", "1234", "1244" }, 1, 0, 0, SignInStep.AskNewPin, PinsDiffer },
+        new object?[] { "newcomer types a taken name and picks a different one (Not you?)", new[] { "Mike", "", "Alex", "1234", "1234" }, 2, 0, 1, SignInStep.SignedIn, null },
+        new object?[] { "name taken between the lookup and the sign-up", new[] { "Race", "1234", "1234" }, 1, 0, 1, SignInStep.AskName, TakenMeanwhile },
+        new object?[] { "the lookup cannot reach the backend", new[] { "Offline" }, 1, 0, 0, SignInStep.AskName, LookupFailed },
+        new object?[] { "Enter at the name does nothing", new[] { "" }, 0, 0, 0, SignInStep.AskName, null },
+        new object?[] { "Enter at the PIN", new[] { "Mike", "" }, 1, 0, 0, SignInStep.AskName, null },
+        new object?[] { "Enter at the re-asked PIN", new[] { "Mike", "1234", "" }, 1, 1, 0, SignInStep.AskName, null },
+        new object?[] { "Enter at the PIN refusal", new[] { "Mike", "1234", "5678", "" }, 1, 2, 0, SignInStep.AskName, null },
+        new object?[] { "Enter at the new PIN", new[] { "Alex", "" }, 1, 0, 0, SignInStep.AskName, null },
+        new object?[] { "Enter at the new PIN again", new[] { "Alex", "1234", "" }, 1, 0, 0, SignInStep.AskNewPin, null },
+        new object?[] { "answers are trimmed and the name is matched in any case", new[] { "  mike ", " 4321 " }, 1, 1, 0, SignInStep.SignedIn, null },
     };
 
     [Theory]
     [MemberData(nameof(Sequences))]
     public void EverySignInSequenceEndsWhereTheRulesSay(
-        string sequence, string[] typed, int logins, int registers, SignInStep endsAt, string? notice)
+        string sequence, string[] typed, int lookups, int logins, int registers, SignInStep endsAt, string? notice)
     {
         var backend = new ScriptedBackend();
         var flow = new SignInFlow();
@@ -88,6 +99,7 @@ public sealed class SignInFlowTests
             if (flow.Pending is { } request) flow.Apply(backend.Answer(request));
         }
 
+        Assert.True(lookups == backend.Lookups, $"{sequence}: lookups {backend.Lookups}");
         Assert.True(logins == backend.Logins, $"{sequence}: logins {backend.Logins}");
         Assert.True(registers == backend.Registers, $"{sequence}: registrations {backend.Registers}");
         Assert.True(endsAt == flow.Step, $"{sequence}: ended at {flow.Step}");
@@ -95,14 +107,35 @@ public sealed class SignInFlowTests
         if (endsAt == SignInStep.SignedIn) Assert.NotNull(flow.Driver);
     }
 
+    /// <summary>No PIN prompt of either kind shows until the lookup has said
+    /// which the name is: a taken name is asked for its PIN, a free one has
+    /// its owner pick one.</summary>
+    [Fact]
+    public void TheLookupDecidesWhichPinPromptFollowsTheName()
+    {
+        var returning = new SignInFlow();
+        returning.Submit("Mike");
+        Assert.Equal(SignInStep.LookUpName, returning.Step);
+        Assert.False(returning.AwaitsDriver);
+        Assert.Equal(new SignInRequest(SignInCall.LookUpName, "Mike"), returning.Pending);
+        returning.Apply(new SignInResult(SignInOutcome.NameTaken));
+        Assert.Equal(SignInStep.AskPin, returning.Step);
+        Assert.True(returning.Returning);
+
+        var fresh = new SignInFlow();
+        fresh.Submit("Alex");
+        fresh.Apply(new SignInResult(SignInOutcome.NameFree));
+        Assert.Equal(SignInStep.AskNewPin, fresh.Step);
+        Assert.False(fresh.Returning);
+    }
+
     [Fact]
     public void TheNameIsShownOnEveryPromptAboutIt()
     {
         var flow = new SignInFlow();
         Assert.False(flow.ShowsName);
-        flow.Submit("n");
-        Assert.False(flow.ShowsName);
         flow.Submit("Alex");
+        flow.Apply(new SignInResult(SignInOutcome.NameFree));
         Assert.True(flow.ShowsName);
         Assert.Equal("Alex", flow.Name);
         flow.Submit("1234");
@@ -111,11 +144,14 @@ public sealed class SignInFlowTests
     }
 
     [Fact]
-    public void TheOpeningNoticeIsShownOnceAndGoneAtTheFirstAnswer()
+    public void TheOpeningNoticeIsShownOnceAndGoneAtTheFirstName()
     {
         var flow = new SignInFlow("Thanks Mike, you are logged out.");
         Assert.Equal("Thanks Mike, you are logged out.", flow.Notice);
-        flow.Submit("y");
+        // Enter alone at the name leaves it: there is nothing to go back to.
+        flow.Submit("");
+        Assert.Equal("Thanks Mike, you are logged out.", flow.Notice);
+        flow.Submit("Alex");
         Assert.Null(flow.Notice);
     }
 
@@ -123,10 +159,10 @@ public sealed class SignInFlowTests
     public void ThePendingRequestCarriesExactlyWhatWasTyped()
     {
         var flow = new SignInFlow();
-        flow.Submit("y");
         flow.Submit("Mike");
+        flow.Apply(new SignInResult(SignInOutcome.NameTaken));
         flow.Submit("4321");
-        Assert.Equal(new SignInRequest(true, "Mike", "4321"), flow.Pending);
+        Assert.Equal(new SignInRequest(SignInCall.LogIn, "Mike", "4321"), flow.Pending);
         Assert.False(flow.AwaitsDriver);
         // Nothing typed while the backend is asked moves the flow.
         flow.Submit("");
@@ -156,11 +192,19 @@ public sealed class SignInFlowTests
         Assert.Equal(SignInStep.AskName, cancelled.Step);
         Assert.Null(cancelled.Notice);
 
+        // A lookup the backend refused by name - a name it could never
+        // register, a backend too old to look names up - says so at the name.
+        var lookupRefused = new SignInFlow();
+        lookupRefused.Submit("Mike<>");
+        lookupRefused.Apply(new SignInResult(SignInOutcome.Refused, Message: "that name is not allowed: 2 to 24 letters, numbers, spaces or . _ ' -"));
+        Assert.Equal(SignInStep.AskName, lookupRefused.Step);
+        Assert.Equal("Could not sign in: that name is not allowed: 2 to 24 letters, numbers, spaces or . _ ' -", lookupRefused.Notice);
+
         static SignInFlow AtLogIn()
         {
             var flow = new SignInFlow();
-            flow.Submit("y");
             flow.Submit("Mike");
+            flow.Apply(new SignInResult(SignInOutcome.NameTaken));
             flow.Submit("1234");
             return flow;
         }
@@ -175,8 +219,8 @@ public sealed class SignInFlowTests
     public void ASignedUpDriverWhoseCheckInFailedRetriesAsReturning(SignInOutcome outcome, string notice)
     {
         var flow = new SignInFlow();
-        flow.Submit("n");
         flow.Submit("Alex");
+        flow.Apply(new SignInResult(SignInOutcome.NameFree));
         flow.Submit("1234");
         flow.Submit("1234");
         Assert.Equal(SignInStep.Register, flow.Step);
@@ -188,13 +232,15 @@ public sealed class SignInFlowTests
 
     /// <summary>A PIN is held only while it is needed: never once the request
     /// is built, never after a back, a mismatch or a refusal, and the request
-    /// itself is released when its answer is applied.</summary>
+    /// itself is released when its answer is applied. A lookup request holds
+    /// no PIN at all.</summary>
     [Fact]
     public void ThePinIsHeldOnlyWhileItIsNeeded()
     {
         var returning = new SignInFlow();
-        returning.Submit("y");
         returning.Submit("Mike");
+        Assert.Equal("", returning.Pending?.Pin);
+        returning.Apply(new SignInResult(SignInOutcome.NameTaken));
         returning.Submit("12");
         Assert.False(returning.HoldsPin);
         returning.Submit("4321");
@@ -209,8 +255,8 @@ public sealed class SignInFlowTests
         Assert.Null(returning.Pending);
 
         var fresh = new SignInFlow();
-        fresh.Submit("n");
         fresh.Submit("Alex");
+        fresh.Apply(new SignInResult(SignInOutcome.NameFree));
         fresh.Submit("1234");
         Assert.True(fresh.HoldsPin);
         fresh.Submit("");
@@ -226,15 +272,15 @@ public sealed class SignInFlowTests
         fresh.Submit("5678");
         fresh.Submit("5678");
         Assert.False(fresh.HoldsPin);
-        Assert.Equal(new SignInRequest(false, "Alex", "5678"), fresh.Pending);
+        Assert.Equal(new SignInRequest(SignInCall.Register, "Alex", "5678"), fresh.Pending);
         fresh.Apply(new SignInResult(SignInOutcome.SignedIn, new DriverCheckIn("Alex", false, "d-new", "a-new")));
         Assert.Null(fresh.Pending);
         Assert.False(fresh.HoldsPin);
         Assert.Equal(SignInStep.SignedIn, fresh.Step);
 
         var cancelled = new SignInFlow();
-        cancelled.Submit("y");
         cancelled.Submit("Mike");
+        cancelled.Apply(new SignInResult(SignInOutcome.NameTaken));
         cancelled.Submit("4321");
         cancelled.Apply(new SignInResult(SignInOutcome.Cancelled));
         Assert.Null(cancelled.Pending);
@@ -246,7 +292,7 @@ public sealed class SignInFlowTests
     {
         var flow = new SignInFlow();
         flow.Apply(new SignInResult(SignInOutcome.SignedIn, Mike));
-        Assert.Equal(SignInStep.AskRacedBefore, flow.Step);
+        Assert.Equal(SignInStep.AskName, flow.Step);
         Assert.Null(flow.Driver);
     }
 }

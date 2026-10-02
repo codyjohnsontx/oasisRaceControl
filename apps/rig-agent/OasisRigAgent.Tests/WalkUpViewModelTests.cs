@@ -7,11 +7,13 @@ namespace OasisRigAgent.Tests;
 
 /// <summary>
 /// The window's model against the real agent and the same fake backend the
-/// console tests use: the seat is emptied on start, a sign-in seats the driver
-/// and the next lap is theirs, a log-out ends the stint and thanks them, and
-/// every screen carries the warnings standing at that moment. The window itself
-/// only draws <see cref="WalkUpViewModel.Snapshot"/>, so this is the sign-in
-/// window's behaviour as far as a Mac can run it.
+/// console tests use: the seat is emptied on start, a name is looked up and
+/// the right PIN prompt follows, a sign-in seats the driver and the next lap is
+/// theirs, the driving screen carries their place and best lap off tonight's
+/// board, a log-out ends the stint and thanks them, and every screen carries
+/// the warnings standing at that moment. The window itself only draws
+/// <see cref="WalkUpViewModel.Snapshot"/>, so this is the sign-in window's
+/// behaviour as far as a Mac can run it.
 /// </summary>
 public sealed class WalkUpViewModelTests : IDisposable
 {
@@ -54,7 +56,9 @@ public sealed class WalkUpViewModelTests : IDisposable
             Http = new HttpClient(Backend);
             var config = new AgentConfig { BackendBaseUrl = "https://rig.test", RigToken = "t", RigNumber = 2, RigQrToken = "qr-rig-2" };
             Agent = new AgentService(config, new BackendClient(Http, config.BackendBaseUrl, "t"), Queue, Telemetry);
-            Model = new WalkUpViewModel(Agent, new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-2", () => Backend), 2);
+            // The board is polled fast here so a test can see it refresh.
+            Model = new WalkUpViewModel(Agent, new DriverCheckInClient(config.BackendBaseUrl, "qr-rig-2", () => Backend),
+                new TonightBoardClient(Http, config.BackendBaseUrl), 2, standingPoll: TimeSpan.FromMilliseconds(250));
             Model.Changed += () => Interlocked.Increment(ref Changes);
             Agent.Start();
         }
@@ -62,7 +66,6 @@ public sealed class WalkUpViewModelTests : IDisposable
         public async Task<WalkUpView> SignInMikeAsync()
         {
             await Model.StartAsync(CancellationToken.None);
-            await Model.ChooseReturningAsync(true);
             await Model.SubmitAsync("Mike");
             await Model.SubmitAsync("4321");
             return Model.Snapshot();
@@ -88,7 +91,7 @@ public sealed class WalkUpViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task StartsBusyThenEmptiesTheSeatAndAsksRacedHereBefore()
+    public async Task StartsBusyThenEmptiesTheSeatAndAsksForAName()
     {
         await using var rig = new Rig(_dbPath);
         var before = rig.Model.Snapshot();
@@ -100,8 +103,9 @@ public sealed class WalkUpViewModelTests : IDisposable
 
         var view = rig.Model.Snapshot();
         Assert.Equal(WalkUpStage.SignIn, view.Stage);
-        Assert.Equal(SignInStep.AskRacedBefore, view.Step);
+        Assert.Equal(SignInStep.AskName, view.Step);
         Assert.Null(view.Notice);
+        Assert.Null(view.Standing);
         lock (rig.Backend.Checkouts) Assert.Equal(new string?[] { null }, rig.Backend.Checkouts);
         Assert.Contains("WARNING: iRacing is not running or not in a session - no laps are being read.", view.Warnings);
         Assert.True(rig.Changes > 0);
@@ -117,11 +121,12 @@ public sealed class WalkUpViewModelTests : IDisposable
         rig.Telemetry.Emit("evt-nobody", 1);
         await WaitUntil(() => rig.Model.Snapshot().Recent.Any(l => l.Contains("Lap 1")), "the unclaimed lap is logged");
 
-        await rig.Model.ChooseReturningAsync(true);
-        Assert.Equal((WalkUpStage.SignIn, SignInStep.AskName, true), Pick(rig.Model.Snapshot()));
+        Assert.Equal((WalkUpStage.SignIn, SignInStep.AskName), Pick(rig.Model.Snapshot()));
+        // The name is looked up and found to be Mike's: the PIN is asked for.
         await rig.Model.SubmitAsync("Mike");
-        Assert.Equal((WalkUpStage.SignIn, SignInStep.AskPin, true), Pick(rig.Model.Snapshot()));
+        Assert.Equal((WalkUpStage.SignIn, SignInStep.AskPin), Pick(rig.Model.Snapshot()));
         Assert.Equal("Mike", rig.Model.Snapshot().Name);
+        lock (rig.Backend.Calls) Assert.Single(rig.Backend.Calls, c => c.StartsWith("/api/auth/name "));
         await rig.Model.SubmitAsync("4321");
 
         var driving = rig.Model.Snapshot();
@@ -141,7 +146,7 @@ public sealed class WalkUpViewModelTests : IDisposable
         Assert.Contains(recent, l => l.EndsWith("Lap 2  2:17.217  incidents 0 - queued"));
         Assert.Contains(recent, l => l.EndsWith("Lap 2  2:17.217  incidents 0 - posted"));
 
-        static (WalkUpStage, SignInStep, bool) Pick(WalkUpView v) => (v.Stage, v.Step, v.Returning);
+        static (WalkUpStage, SignInStep) Pick(WalkUpView v) => (v.Stage, v.Step);
     }
 
     [Fact]
@@ -149,7 +154,6 @@ public sealed class WalkUpViewModelTests : IDisposable
     {
         await using var rig = new Rig(_dbPath);
         await rig.Model.StartAsync(CancellationToken.None);
-        await rig.Model.ChooseReturningAsync(true);
         await rig.Model.SubmitAsync("Mike");
         await rig.Model.SubmitAsync("1234");
 
@@ -158,6 +162,7 @@ public sealed class WalkUpViewModelTests : IDisposable
         Assert.Equal(SignInStep.AskPin, view.Step);
         Assert.Equal("Mike", view.Name);
         Assert.Equal("That PIN does not match \"Mike\". Type it again.", view.Notice);
+        Assert.False(view.NoticeIsFarewell);
         Assert.Null(view.Driver);
         Assert.Null(rig.Agent.CurrentStatus().Assignment);
     }
@@ -167,8 +172,9 @@ public sealed class WalkUpViewModelTests : IDisposable
     {
         await using var rig = new Rig(_dbPath);
         await rig.Model.StartAsync(CancellationToken.None);
-        await rig.Model.ChooseReturningAsync(false);
+        // A free name: its owner picks a PIN, and is never asked for one.
         await rig.Model.SubmitAsync("Alex");
+        Assert.Equal(SignInStep.AskNewPin, rig.Model.Snapshot().Step);
         await rig.Model.SubmitAsync("1234");
         Assert.Equal(SignInStep.AskNewPinAgain, rig.Model.Snapshot().Step);
         await rig.Model.SubmitAsync("1243");
@@ -184,25 +190,28 @@ public sealed class WalkUpViewModelTests : IDisposable
         lock (rig.Backend.RegisteredPins) Assert.Equal(["5678"], rig.Backend.RegisteredPins);
     }
 
+    /// <summary>A newcomer who types a name that is already somebody's is
+    /// asked for that driver's PIN; "Not you? Pick a different name" (Back)
+    /// returns to the name with nothing registered and nothing logged in, and
+    /// the next name goes its own way.</summary>
     [Fact]
-    public async Task ATakenNameIsExplainedInTheWindowsOwnButtons()
+    public async Task ATakenNameAsksForItsPinAndNotYouGoesBackToTheName()
     {
         await using var rig = new Rig(_dbPath);
         await rig.Model.StartAsync(CancellationToken.None);
-        await rig.Model.ChooseReturningAsync(false);
         await rig.Model.SubmitAsync("Mike");
-        await rig.Model.SubmitAsync("1234");
-        await rig.Model.SubmitAsync("1234");
-
-        var view = rig.Model.Snapshot();
-        Assert.Equal(SignInStep.AskName, view.Step);
-        Assert.Equal("The name \"Mike\" is already registered. If it is yours, press Back and choose \"Yes, I have raced here\"; otherwise type a different name.", view.Notice);
+        Assert.Equal(SignInStep.AskPin, rig.Model.Snapshot().Step);
 
         await rig.Model.BackAsync();
-        await rig.Model.ChooseReturningAsync(true);
-        await rig.Model.SubmitAsync("Mike");
-        await rig.Model.SubmitAsync("4321");
-        Assert.Equal("Mike", rig.Model.Snapshot().Driver?.DisplayName);
+        var view = rig.Model.Snapshot();
+        Assert.Equal(SignInStep.AskName, view.Step);
+        Assert.Null(view.Notice);
+        lock (rig.Backend.Calls) Assert.DoesNotContain(rig.Backend.Calls, c => c.StartsWith("/api/auth/login ") || c.StartsWith("/api/auth/register "));
+
+        await rig.Model.SubmitAsync("Alex");
+        await rig.Model.SubmitAsync("1234");
+        await rig.Model.SubmitAsync("1234");
+        Assert.Equal("Alex", rig.Model.Snapshot().Driver?.DisplayName);
     }
 
     [Fact]
@@ -215,9 +224,11 @@ public sealed class WalkUpViewModelTests : IDisposable
 
         var view = rig.Model.Snapshot();
         Assert.Equal(WalkUpStage.SignIn, view.Stage);
-        Assert.Equal(SignInStep.AskRacedBefore, view.Step);
+        Assert.Equal(SignInStep.AskName, view.Step);
         Assert.Equal("Thanks Mike, you are logged out.", view.Notice);
+        Assert.True(view.NoticeIsFarewell);
         Assert.Null(view.Driver);
+        Assert.Null(view.Standing);
         Assert.Empty(view.Laps);
         lock (rig.Backend.Checkouts) Assert.Equal(new string?[] { null, WalkUpBackend.MikeAssignmentId }, rig.Backend.Checkouts);
         Assert.Null(rig.Agent.CurrentStatus().Assignment);
@@ -277,7 +288,7 @@ public sealed class WalkUpViewModelTests : IDisposable
 
         await rig.SignInMikeAsync();
         await rig.Model.SubmitAsync("");
-        await rig.Model.ChooseReturningAsync(false);
+        await rig.Model.SubmitAsync("Alex");
         var view = rig.Model.Snapshot();
         Assert.Equal(WalkUpStage.Driving, view.Stage);
         Assert.Equal("Mike", view.Driver?.DisplayName);
@@ -311,7 +322,6 @@ public sealed class WalkUpViewModelTests : IDisposable
     {
         await using var rig = new Rig(_dbPath);
         await rig.Model.StartAsync(CancellationToken.None);
-        await rig.Model.ChooseReturningAsync(true);
         await rig.Model.SubmitAsync("Mike");
         var hold = rig.Backend.HoldCheckInAnswer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var signIn = rig.Model.SubmitAsync("4321");
@@ -329,7 +339,7 @@ public sealed class WalkUpViewModelTests : IDisposable
         Assert.Null(rig.Queue.ReadPendingCheckout());
         Assert.Null(rig.Agent.CurrentStatus().Assignment);
         // Closing took the input away: nothing typed after it moves the flow.
-        await rig.Model.SubmitAsync("y");
+        await rig.Model.SubmitAsync("Alex");
         Assert.Equal(WalkUpStage.Busy, rig.Model.Snapshot().Stage);
     }
 
@@ -347,11 +357,11 @@ public sealed class WalkUpViewModelTests : IDisposable
         using var http = new HttpClient(backend);
         using var queue = new EventQueue(_dbPath);
 
+        var tonight = new TonightBoardClient(http, config.BackendBaseUrl);
         var firstAgent = new AgentService(config, new BackendClient(http, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
-        var first = new WalkUpViewModel(firstAgent, checkIn, 2);
+        var first = new WalkUpViewModel(firstAgent, checkIn, tonight, 2);
         firstAgent.Start();
         await first.StartAsync(CancellationToken.None);
-        await first.ChooseReturningAsync(true);
         await first.SubmitAsync("Mike");
         backend.HoldCheckInAnswer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var signIn = first.SubmitAsync("4321");
@@ -373,14 +383,100 @@ public sealed class WalkUpViewModelTests : IDisposable
         using var secondHttp = new HttpClient(backend);
         await using var secondAgent = new AgentService(config, new BackendClient(secondHttp, config.BackendBaseUrl, "t"), queue, new NullTelemetrySource());
         Assert.Equal(CheckoutDelivery.Queued, secondAgent.CurrentStatus().Checkout);
-        using var second = new WalkUpViewModel(secondAgent, checkIn, 2);
+        using var second = new WalkUpViewModel(secondAgent, checkIn, tonight, 2);
         secondAgent.Start();
         await second.StartAsync(CancellationToken.None);
 
         Assert.Null(backend.OpenAssignmentId);
         Assert.Null(queue.ReadPendingCheckout());
         Assert.Equal(CheckoutDelivery.None, secondAgent.CurrentStatus().Checkout);
-        Assert.Equal(SignInStep.AskRacedBefore, second.Snapshot().Step);
+        Assert.Equal(SignInStep.AskName, second.Snapshot().Step);
+    }
+
+    private const string MikeSecondOfThree = """
+        {"rows":[
+          {"driver_id":"d-ana","display_name":"Ana","lap_time_ms":131004,"car_name":"FIA F4","incident_delta":0},
+          {"driver_id":"d-mike","display_name":"Mike","lap_time_ms":137217,"car_name":"FIA F4","incident_delta":0},
+          {"driver_id":"d-chuy","display_name":"chuy","lap_time_ms":140000,"car_name":"FIA F4","incident_delta":null}
+        ],"combo":{"track_name":"Circuit of the Americas","track_config":"Grand Prix","car_name":"FIA F4"}}
+        """;
+
+    private const string MikeLeadingOfThree = """
+        {"rows":[
+          {"driver_id":"d-mike","display_name":"Mike","lap_time_ms":130500,"car_name":"FIA F4","incident_delta":0},
+          {"driver_id":"d-ana","display_name":"Ana","lap_time_ms":131004,"car_name":"FIA F4","incident_delta":0},
+          {"driver_id":"d-chuy","display_name":"chuy","lap_time_ms":140000,"car_name":"FIA F4","incident_delta":null}
+        ],"combo":{"track_name":"Circuit of the Americas","track_config":"Grand Prix","car_name":"FIA F4"}}
+        """;
+
+    /// <summary>The top of the driving screen: the seated driver's place and
+    /// best lap read off tonight's public feed once they are seated, read
+    /// again about a second after one of their laps posts, and gone - with
+    /// the polling - the moment they log out.</summary>
+    [Fact]
+    public async Task TheDrivingScreenShowsTheDriversPlaceAndBestLapOffTonightsBoard()
+    {
+        await using var rig = new Rig(_dbPath);
+        rig.Backend.TonightFeed = MikeSecondOfThree;
+        rig.Telemetry.Running = true;
+        // The board is not read until somebody is seated.
+        await rig.Model.StartAsync(CancellationToken.None);
+        await rig.Model.SubmitAsync("Mike");
+        Assert.Equal(0, rig.Backend.TonightReads);
+
+        await rig.Model.SubmitAsync("4321");
+        await WaitUntil(() => rig.Model.Snapshot().Standing is not null, "the first read of the board");
+        var standing = rig.Model.Snapshot().Standing!;
+        Assert.Equal((2, 3, 137_217, false), (standing.Place, standing.Drivers, standing.BestLapMs, standing.Leading));
+        Assert.Equal("Circuit of the Americas \u00b7 Grand Prix \u00b7 FIA F4", standing.Combo);
+
+        // A posted lap brings the next read forward: the feed now has Mike
+        // leading, and the screen says so without waiting out the interval.
+        rig.Backend.TonightFeed = MikeLeadingOfThree;
+        rig.Telemetry.Emit("evt-mike-best", 2);
+        await WaitUntil(() => rig.Model.Snapshot().Standing?.Place == 1, "the board after the lap posted");
+        Assert.Equal(130_500, rig.Model.Snapshot().Standing?.BestLapMs);
+        Assert.True(rig.Model.Snapshot().Standing?.Leading);
+
+        await rig.Model.LogOutAsync();
+        Assert.Null(rig.Model.Snapshot().Standing);
+        var readsAtLogOut = rig.Backend.TonightReads;
+        await Task.Delay(700);
+        Assert.Equal(readsAtLogOut, rig.Backend.TonightReads);
+    }
+
+    [Fact]
+    public async Task ADriverWithNoValidLapTonightHasNoPlaceAndNoBestLapYet()
+    {
+        await using var rig = new Rig(_dbPath);
+        await rig.SignInMikeAsync();
+
+        await WaitUntil(() => rig.Model.Snapshot().Standing is not null, "the first read of the board");
+
+        var standing = rig.Model.Snapshot().Standing!;
+        Assert.Null(standing.Place);
+        Assert.Null(standing.BestLapMs);
+        Assert.Equal(0, standing.Drivers);
+        Assert.Null(standing.Combo);
+    }
+
+    /// <summary>The board is read on its interval while a driver is seated; a
+    /// feed that cannot be reached is said once, not on every poll, and the
+    /// standing arrives when the feed is back.</summary>
+    [Fact]
+    public async Task TheBoardIsPolledGentlyAndAnOutageIsSaidOnce()
+    {
+        await using var rig = new Rig(_dbPath);
+        rig.Backend.TonightUnreachable = true;
+        await rig.SignInMikeAsync();
+
+        await WaitUntil(() => rig.Backend.TonightReads >= 4, "several polls");
+        Assert.Null(rig.Model.Snapshot().Standing);
+        Assert.Single(rig.Model.Snapshot().Recent, l => l.Contains("Could not read tonight's leaderboard (venue wifi is down)"));
+
+        rig.Backend.TonightUnreachable = false;
+        rig.Backend.TonightFeed = MikeSecondOfThree;
+        await WaitUntil(() => rig.Model.Snapshot().Standing?.Place == 2, "the board once the feed is back");
     }
 
     public void Dispose()

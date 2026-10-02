@@ -51,7 +51,6 @@ public sealed class ConsoleShutdownTests
         using var backend = new FakeBackend(openAssignmentId: DepartedAssignmentId);
         using var agent = StartAgent(backend.BaseUrl, out var output);
 
-        await agent.StandardInput.WriteLineAsync("y");
         await agent.StandardInput.WriteLineAsync("Mike");
         await agent.StandardInput.WriteLineAsync("1234");
         await agent.StandardInput.FlushAsync();
@@ -225,6 +224,9 @@ public sealed class ConsoleShutdownTests
                         return (200, _open is null
                             ? """{"assignment":null}"""
                             : """{"assignment":{"id":""" + $"\"{_open}\"" + ""","startedAt":"2026-09-27T17:00:00.000Z","driver":{"id":"d-mike","displayName":"Mike"}}}""");
+                    case "/api/auth/name":
+                        _log.Add("lookup");
+                        return (200, """{"taken":true}""");
                     case "/api/auth/login":
                         _log.Add("login");
                         context.Response.AppendHeader("Set-Cookie", "oasis_driver=jwt-mike; Path=/");
