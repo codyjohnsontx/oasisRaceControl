@@ -167,6 +167,11 @@ public sealed class HeartbeatTests : IDisposable
     }
 
     [Theory]
+    [InlineData("/api/auth/name", 400, SignInFailureKind.WrongPinOrName)]
+    [InlineData("/api/auth/name", 429, SignInFailureKind.RateLimited)]
+    [InlineData("/api/auth/name", 404, SignInFailureKind.Other)]
+    [InlineData("/api/auth/name", 500, SignInFailureKind.Other)]
+    [InlineData("/api/auth/name", 200, null)]
     [InlineData("/api/auth/login", 401, SignInFailureKind.WrongPinOrName)]
     [InlineData("/api/auth/login", 200, null)]
     [InlineData("/api/auth/login", 429, SignInFailureKind.Locked)]
@@ -207,6 +212,39 @@ public sealed class HeartbeatTests : IDisposable
         await Assert.ThrowsAsync<HttpRequestException>(() => http.PostAsync("api/auth/login", null));
 
         Assert.Equal([SignInFailureKind.WrongPinOrName, SignInFailureKind.WrongPinOrName, SignInFailureKind.Unreachable], recorded);
+    }
+
+    /// <summary>The name lookup goes through the same watch as the rest of the
+    /// check-in client (Program.cs builds the client over it), so a lookup the
+    /// backend refuses is one count of the right kind - the shared-address
+    /// limit here is what would hold every rig at the first prompt on a busy
+    /// night - while the refusal still reaches the flow as the client's own
+    /// exception, and an answered lookup counts nothing.</summary>
+    [Fact]
+    public async Task ARefusedNameLookupThroughTheClientIsCountedOnce()
+    {
+        var recorded = new List<SignInFailureKind>();
+        var status = HttpStatusCode.TooManyRequests;
+        var backend = new Answering(_ => status);
+        var client = new DriverCheckInClient("https://x.test", "qr-rig-1", () => new SignInFailureWatch(recorded.Add, backend));
+
+        await Assert.ThrowsAsync<CheckInRefusedException>(() => client.NameTakenAsync("Mike", CancellationToken.None));
+        Assert.Equal([SignInFailureKind.RateLimited], recorded);
+
+        status = HttpStatusCode.BadRequest;
+        await Assert.ThrowsAsync<CheckInRefusedException>(() => client.NameTakenAsync("Mike<>", CancellationToken.None));
+        Assert.Equal([SignInFailureKind.RateLimited, SignInFailureKind.WrongPinOrName], recorded);
+
+        status = HttpStatusCode.NotFound;
+        await Assert.ThrowsAsync<CheckInRefusedException>(() => client.NameTakenAsync("Mike", CancellationToken.None));
+        Assert.Equal([SignInFailureKind.RateLimited, SignInFailureKind.WrongPinOrName, SignInFailureKind.Other], recorded);
+
+        // A 200 counts nothing: the backend let the lookup through. (With no
+        // body the client still complains, but that is its own complaint, not
+        // a sign-in the backend turned away.)
+        status = HttpStatusCode.OK;
+        await Assert.ThrowsAsync<CheckInRefusedException>(() => client.NameTakenAsync("Mike", CancellationToken.None));
+        Assert.Equal(3, recorded.Count);
     }
 
     /// <summary>Everything the monitor needs, from state the agent already
