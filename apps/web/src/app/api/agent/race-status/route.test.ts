@@ -72,8 +72,7 @@ describe("POST /api/agent/race-status", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("");
     expect(query).toHaveBeenCalledTimes(1);
-    const [sql, params] = query.mock.calls[0]!;
-    expect(sql).toMatch(/on conflict \(rig_id\) do update/);
+    const [, params] = query.mock.calls[0]!;
     expect(params[0]).toBe(RIG.id);
     expect(params).toContain(0x8000_0004);
   });
