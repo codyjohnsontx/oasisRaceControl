@@ -5,7 +5,11 @@ import Image from "next/image";
 import Link from "next/link";
 import { formatLapTime } from "@/lib/time";
 import { comboLabel, roundLabel, type LeagueRound } from "@/lib/league";
-import { SCORING_RULE_SUMMARY, type SeasonStanding } from "@/lib/league-scoring";
+import {
+  SCORING_RULE_SUMMARY,
+  type SeasonStanding,
+  type StandingRoundEntry,
+} from "@/lib/league-scoring";
 import { useVisiblePoll } from "@/components/use-visible-poll";
 
 type Props = {
@@ -66,7 +70,7 @@ function StandingRow({
         {standing.rounds.map((entry) => (
           <span
             key={entry.round_id}
-            title={entry.position === null ? "No valid lap" : `Finished P${entry.position}`}
+            title={roundEntryTitle(entry)}
             className="flex items-baseline gap-1 rounded-md border border-edge bg-raised px-2 py-0.5 text-[clamp(0.6rem,0.75vw,0.95rem)]"
           >
             <span className="text-muted">R{entry.round_number}</span>
@@ -89,6 +93,17 @@ function StandingRow({
   );
 }
 
+/** What a per-round chip's points came from. */
+function roundEntryTitle(entry: StandingRoundEntry): string {
+  const placed =
+    entry.position !== null
+      ? `Finished P${entry.position}`
+      : entry.raced
+        ? "No race finish"
+        : "No valid lap";
+  return entry.fastest_qualifier ? `${placed} · fastest qualifier` : placed;
+}
+
 type RoundSummary = { winner: string | null; bestLapMs: number | null; drivers: number };
 
 /** Winner and field size per round, read straight off the standings so the
@@ -105,7 +120,9 @@ function summarizeRounds(standings: SeasonStanding[]): Record<string, RoundSumma
       summary.drivers += 1;
       if (entry.position === 1) {
         summary.winner = standing.display_name;
-        summary.bestLapMs = entry.best_lap_ms;
+        // A race winner's best lap is not what won the round, so a raced
+        // round's strip names the winner alone.
+        summary.bestLapMs = entry.raced ? null : entry.best_lap_ms;
       }
     }
   }
