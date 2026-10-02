@@ -10,12 +10,14 @@
 --
 -- league_race_results - one row per driver in a round's race. Captured from
 --   each rig's own report (rig_race_status, 0008) while iRacing shows the
---   chequered flag or cool-down, so the place is iRacing's own at the flag,
---   refreshed as each car crosses the line. Closing the round sweeps once more
---   for any car still missing, recording its last reported place. Staff review
---   and correct the order on /staff; once they save it, no capture touches
---   that round again. The driver is whoever was checked in on the rig when the
---   report arrived (rig_assignments), the same rule that owns the rig's laps.
+--   chequered flag or cool-down, so the place is iRacing's own at the flag.
+--   The first place captured for a rig in the race is final: no later report,
+--   however it arrives, moves it. Closing the round sweeps once more for any
+--   car still missing, recording its last reported place. Staff review and
+--   correct the order on /staff; once they save it, no capture touches that
+--   round again. The driver is whoever was checked in on the rig when the
+--   report arrived, the same rule that owns the rig's laps - read from the
+--   assignment stored with the report, never from whoever sits there later.
 --   lib/race-results.ts is the only writer.
 --
 -- league_race_starts - every rig heard in each iRacing race session while a
@@ -30,9 +32,17 @@
 --   rig. The flag capture, the qualifying cut-off and the close sweep all read
 --   it. Change that rule here, nowhere else.
 --
--- Additive: two new tables and two views, nothing existing altered. The
--- foreign keys take a brief SHARE ROW EXCLUSIVE on league_rounds, drivers and
--- rigs, which only an update of those tables waits on. A database ahead of the code is harmless
+-- rig_race_status.rig_assignment_id - the rig's open assignment when the
+--   report was stored, or null when nobody was checked in. The close sweep
+--   reads a rig's last report, which can be minutes old by then, and the seat
+--   may have changed hands since; this is who that report was about.
+--
+-- Additive: two new tables, two views and one nullable column on
+-- rig_race_status; nothing existing is rewritten. The foreign keys take a
+-- brief SHARE ROW EXCLUSIVE on league_rounds, drivers, rigs and
+-- rig_assignments, which only an update of those tables waits on, and adding
+-- the column takes a brief ACCESS EXCLUSIVE on rig_race_status (one row per
+-- rig), which a race report in flight waits behind for that moment. A database ahead of the code is harmless
 -- (the previous deployment never touches these tables); a database behind it
 -- answers the league feeds and the staff page with 500, and the build gate
 -- refuses the deploy anyway (docs/deploy.md).
@@ -80,6 +90,9 @@ create table league_race_starts (
   started_at timestamptz not null default now(),
   primary key (round_id, session_unique_id, session_num, rig_id)
 );
+
+alter table rig_race_status
+  add column rig_assignment_id uuid references rig_assignments (id);
 
 -- The round's race: the race session the most rigs were heard in, and at
 -- least two - a solo race is never the round's. The latest to start wins a
