@@ -116,9 +116,9 @@ describe("RaceOrder", () => {
   });
 
   it("says what is on screen in the header and dims when held", () => {
-    const html = render(undefined, { subtitle: "Spa-Francorchamps · 3:24 to go", stale: true });
+    const html = render(undefined, { subtitle: "Spa-Francorchamps", stale: true });
     expect(html).toContain(">Race<");
-    expect(html).toContain("Spa-Francorchamps · 3:24 to go");
+    expect(html).toContain("Spa-Francorchamps");
     expect(html).toContain("opacity-70");
   });
 });

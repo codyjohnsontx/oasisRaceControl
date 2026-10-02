@@ -15,7 +15,6 @@ import {
   type RoundResult,
 } from "@/lib/league";
 import type { SeasonStanding } from "@/lib/league-scoring";
-import { remainingLabel } from "@/lib/race-board";
 import { useLiveRace } from "@/components/use-live-race";
 import { reportingFeedHealth } from "@/lib/tv-feed-health";
 import {
@@ -377,17 +376,16 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
   const title = data.season?.league_name ?? "Oasis League";
 
   if (tonightsRound && live.race?.session) {
-    const { session } = live.race;
     return (
       // The owner's header for the race (2026-10-01): the eyebrow says only
       // which half of the night this is, and the line under the title names
-      // the track and what is left of the race - no round number, no session
-      // state, no layout, no car, no car count. The room knows the combo, and
-      // the running order says how many cars there are.
+      // the track alone - no round number, no session state, no layout, no
+      // car, no car count, no time or laps left. The room knows the combo,
+      // and the running order says how many cars there are.
       <RaceOrder
         eyebrow="Race"
         title={title}
-        subtitle={[tonightsRound.track_name, remainingLabel(session)].filter(Boolean).join(" · ")}
+        subtitle={tonightsRound.track_name}
         race={live.race}
         finished={live.finished}
         moves={live.moves}

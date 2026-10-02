@@ -140,10 +140,10 @@ phone agree by construction:
   (green up, red down) and carries ▲n / ▼n beside the name for a few seconds.
   A `stale` rig is dimmed where it was; a rig with nobody signed in reads
   `Rig N` in the muted colour; a car on pit road carries a PIT chip. On the
-  wall the header says only "Race", then the track and the laps or time left:
-  the owner asked for no round number, session state, layout, car or car
-  count up there, since the room knows the combo and the order shows the
-  field. The phone panel keeps the session's state and the car count.
+  wall the header says only "Race", then the track and nothing else, under
+  green and under the flag: the owner asked for no round number, session
+  state, layout, car, car count, or time or laps left up there, since the room
+  knows the combo and the order shows the field. The phone panel keeps the session's state and the car count.
 - After the chequered flag the **finishing order stays up for one minute**,
   counted from the first report that showed the flag, still updating as cars
   cross the line, then the standings come back even if the rigs are still

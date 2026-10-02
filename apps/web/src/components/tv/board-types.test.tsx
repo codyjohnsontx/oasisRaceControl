@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { venueToday } from "@/lib/venue";
+import { SESSION_STATE } from "@/lib/events";
 import type { LiveRaceView } from "@/components/use-live-race";
 import { liveRaceFeed, liveRaceRow } from "@/test/live-race-fixture";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
@@ -217,24 +218,25 @@ describe("league board on league night", () => {
     expect(standings).not.toContain("Qualifying");
   });
 
-  it("heads the race with only 'Race', the track and what is left", () => {
-    liveRace.view = {
-      race: liveRaceFeed([liveRaceRow(1, 1), liveRaceRow(2, 2), liveRaceRow(3, 3)], {
-        timeRemainS: 754,
-      }),
-      finished: false,
-      moves: new Map(),
-      stale: false,
-    };
+  it("heads the race with only 'Race' and the track, under green and under the flag", () => {
+    const tonight = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field } };
+    const rows = [liveRaceRow(1, 1), liveRaceRow(2, 2), liveRaceRow(3, 3)];
     try {
-      const tonight = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field } };
-      const html = renderToStaticMarkup(
-        <league.Board spec={null} data={tonight} stale={false} hold={() => {}} />,
-      );
-      expect(html).toContain(">Race<");
-      expect(html).toContain("Spa-Francorchamps · 12:34 to go");
-      for (const absent of ["Round 1", "Qualifying", "Racing", "Grand Prix Pits", "Porsche 911 GT3 R", "3 cars"]) {
-        expect(html).not.toContain(absent);
+      for (const [race, finished] of [
+        [liveRaceFeed(rows, { timeRemainS: 754 }), false],
+        [liveRaceFeed(rows, { lapsRemain: 5, timeRemainS: null }), false],
+        [liveRaceFeed(rows, { lapsRemain: 1, timeRemainS: null }), false],
+        [liveRaceFeed(rows, { sessionState: SESSION_STATE.checkered }), true],
+      ] as const) {
+        liveRace.view = { race, finished, moves: new Map(), stale: false };
+        const html = renderToStaticMarkup(
+          <league.Board spec={null} data={tonight} stale={false} hold={() => {}} />,
+        );
+        expect(html).toContain(">Race<");
+        expect(html).toContain(">Spa-Francorchamps</p>");
+        for (const absent of ["to go", "Final lap", "Round 1", "Qualifying", "Racing", "Chequered", "Grand Prix Pits", "Porsche 911 GT3 R", "3 cars"]) {
+          expect(html).not.toContain(absent);
+        }
       }
     } finally {
       liveRace.view = { race: null, finished: false, moves: new Map(), stale: false };

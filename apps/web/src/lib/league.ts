@@ -96,7 +96,6 @@ export const DRIVER_LAP_CAP = 500;
 
 // ---- Pure helpers (unit-tested; no DB) ------------------------------------
 
-/** "Week 3" if staff named it, otherwise "Round 3". */
 /**
  * Whether a round is tonight's league night: still open, and belonging to the
  * venue's current day. It decides what owns the wall and whether the race is
@@ -113,6 +112,7 @@ export function isOpenTonight(round: Pick<LeagueRound, "closed_at" | "round_date
   return round.closed_at === null && round.round_date === venueToday();
 }
 
+/** "Week 3" if staff named it, otherwise "Round 3". */
 export function roundLabel(round: Pick<LeagueRound, "name" | "round_number">): string {
   return round.name?.trim() || `Round ${round.round_number}`;
 }
