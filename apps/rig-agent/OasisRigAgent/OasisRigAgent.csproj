@@ -34,6 +34,13 @@
     <Compile Remove="Windows\**" />
   </ItemGroup>
 
+  <!-- The venue's faces and mark travel inside the rig exe (Windows/Brand.cs
+       registers them process-private at first use); CI uploads only the exe
+       and the SQLite native library, so nothing may sit beside it. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <EmbeddedResource Include="Windows\Assets\*.ttf;Windows\Assets\*.png" LogicalName="%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\OasisRigAgent.Core\OasisRigAgent.Core.csproj" />
   </ItemGroup>
