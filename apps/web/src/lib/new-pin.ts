@@ -3,8 +3,8 @@
  * digits twice are sent. A PIN mistyped once at sign-up is one its owner can
  * never sign back in with - that is how a returning driver was locked out of
  * their own name at the 2026-09-28 event - and only staff can fix it
- * afterwards, with Reset PIN on /staff. The rig console asks the same way
- * (`SignInState` in apps/rig-agent/OasisRigAgent/DriverPrompt.cs).
+ * afterwards, with Reset PIN on /staff. The rig asks the same way
+ * (`SignInStep` in apps/rig-agent/OasisRigAgent.Core/WalkUp/SignInFlow.cs).
  */
 
 /** Why a new profile's PIN cannot be sent yet, or null when it can. */

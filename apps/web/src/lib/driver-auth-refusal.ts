@@ -1,7 +1,7 @@
 /**
  * What the website's Guest, Sign in and New profile tabs say when the backend
- * refuses. The rig asks the same way (`SignInState` in
- * apps/rig-agent/OasisRigAgent/DriverPrompt.cs): a taken name on New profile
+ * refuses. The rig asks the same way (`SignInStep` in
+ * apps/rig-agent/OasisRigAgent.Core/WalkUp/SignInFlow.cs): a taken name on New profile
  * points a returning driver at Sign in rather than at a different name, and a
  * wrong PIN points them at staff, who reset PINs on /staff.
  */

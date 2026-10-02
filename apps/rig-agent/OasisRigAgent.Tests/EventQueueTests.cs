@@ -476,6 +476,9 @@ public sealed class EventQueueTests : IDisposable
 
     public void Dispose()
     {
+        // A disposed SqliteConnection goes back to the pool with the file
+        // still open, and Windows will not delete an open file.
+        SqliteConnection.ClearAllPools();
         if (File.Exists(_dbPath)) File.Delete(_dbPath);
     }
 }
