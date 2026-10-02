@@ -191,19 +191,91 @@ describeDb("league night's race result against real Postgres", () => {
     });
   });
 
-  it("settles a place as the car crosses the line, never from a report sampled earlier", async () => {
+  it("keeps a rig's first place at the flag, against a later report and an older one accepted late", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben] = [await seat("Ana"), await seat("Ben")];
     await racing(ana, ben);
 
     await report(ana.rig, atFlag(3, 11));
     await report(ana.rig, { ...atFlag(2, 12), sessionState: SESSION_STATE.coolDown });
-    // A request abandoned on a timeout, landing after its successor.
+
+    // The rig goes quiet past the live feed's stale threshold, so the route
+    // takes any report - here one sampled a minute before the capture.
+    await testDb().query(
+      "update rig_race_status set received_at = now() - interval '16 seconds' where rig_id = $1",
+      [ana.rig.id],
+    );
     await report(ana.rig, { ...atFlag(5, 11), sampledAt: new Date(sampleClock - 60_000).toISOString() });
+    const live = await testDb().query<{ position: number }>(
+      "select position from rig_race_status where rig_id = $1",
+      [ana.rig.id],
+    );
+    expect(live.rows[0].position).toBe(5);
 
     const review = await getRaceReview(roundId);
     expect(review.entries).toMatchObject([
-      { display_name: "Ana", finish_position: 2, source: "flag", rig_number: ana.rig.rigNumber, laps_completed: 12 },
+      { display_name: "Ana", finish_position: 3, source: "flag", rig_number: ana.rig.rigNumber, laps_completed: 11 },
+    ]);
+  });
+
+  it("credits the close sweep to the driver a report was stored for, not whoever sits in the rig at close", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, cal] = [await seat("Ana"), await seat("Cal")];
+    await report(ana.rig, { position: 1 });
+    await report(cal.rig, { position: 2 });
+
+    // Ana gets out and Ben takes the seat; Rig 1 sends nothing more.
+    await testDb().query(
+      "update rig_assignments set ended_at = now(), end_reason = 'driver_ended' where id = $1",
+      [ana.assignmentId],
+    );
+    const ben = await seedDriver("Ben");
+    await openAssignment(ana.rig.id, ben.id);
+
+    expect((await closeLeagueRound(roundId))?.racePlacesSwept).toBe(2);
+    expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
+      ["Ana", 1],
+      ["Cal", 2],
+    ]);
+  });
+
+  it("sweeps nobody for a rig whose last report came while nobody was signed in", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, cal] = [await seat("Ana"), await seat("Cal")];
+    await racing(ana, cal);
+    await testDb().query(
+      "update rig_assignments set ended_at = now(), end_reason = 'driver_ended' where id = $1",
+      [ana.assignmentId],
+    );
+    await report(ana.rig, { position: 1 });
+    const ben = await seedDriver("Ben");
+    await openAssignment(ana.rig.id, ben.id);
+
+    expect((await closeLeagueRound(roundId))?.racePlacesSwept).toBe(1);
+    expect((await placing(roundId)).map((row) => row.name)).toEqual(["Cal"]);
+  });
+
+  it("replaces a place from a race that stopped being the round's when the bigger race takes the flag", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben, cal] = [await seat("Ana"), await seat("Ben"), await seat("Cal")];
+    const warmUp = { sessionUniqueId: 70_000_001, sessionNum: 0 };
+    // A two-rig race finishes first, and is the round's race for now.
+    await report(ana.rig, { ...warmUp, position: 1 });
+    await report(ben.rig, { ...warmUp, position: 2 });
+    await report(ana.rig, { ...warmUp, ...atFlag(1) });
+    await report(ben.rig, { ...warmUp, ...atFlag(2) });
+
+    await racing(cal, ben, ana);
+    await report(cal.rig, atFlag(1));
+    await report(ben.rig, atFlag(2));
+    await report(ana.rig, atFlag(3));
+
+    expect(
+      (await getRaceReview(roundId)).entries.map((entry) => [entry.display_name, entry.finish_position]),
+    ).toEqual([
+      ["Cal", 1],
+      ["Ben", 2],
+      ["Ana", 3],
     ]);
   });
 
