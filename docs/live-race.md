@@ -179,7 +179,7 @@ every round was before. `lib/race-results.ts` is the only writer, called from
   driver in the round who has no race finish listed under it, and can reorder
   it, mark a DNF or take a driver out. Saving replaces the round's rows with
   source `staff` and nothing captures into that round again. A save that
-  does not account for a place captured since staff last read the result is
+  would delete a place captured since staff last read the result is
   refused (`race_changed`) and the page re-reads, so a late finisher is
   never deleted unseen.
 

@@ -13,14 +13,12 @@ const body = z
     finishers: z.array(z.uuid()).max(MAX_ENTRANTS),
     /** In the race but not classified. */
     dnf: z.array(z.uuid()).max(MAX_ENTRANTS),
-    /** Taken out of the race: in the round, with no race finish. */
-    out: z.array(z.uuid()).max(MAX_ENTRANTS),
+    /** Every driver the result held when staff last read it. */
+    seen: z.array(z.uuid()).max(MAX_ENTRANTS),
   })
   .refine((input) => input.finishers.length + input.dnf.length > 0, "empty_result")
   .refine(
-    (input) =>
-      new Set([...input.finishers, ...input.dnf, ...input.out]).size ===
-      input.finishers.length + input.dnf.length + input.out.length,
+    (input) => new Set([...input.finishers, ...input.dnf]).size === input.finishers.length + input.dnf.length,
     "driver_named_twice",
   );
 
@@ -41,7 +39,7 @@ export async function POST(request: Request) {
   if (input instanceof Response) return input;
 
   try {
-    const saved = await saveRaceResult(input.roundId, input.finishers, input.dnf, input.out);
+    const saved = await saveRaceResult(input.roundId, input.finishers, input.dnf, input.seen);
     if (saved.status === "not_open") {
       return Response.json({ error: "not_open" }, { status: 404 });
     }

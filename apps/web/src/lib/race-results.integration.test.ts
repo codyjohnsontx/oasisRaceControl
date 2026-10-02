@@ -461,7 +461,7 @@ describeDb("league night's race result against real Postgres", () => {
         roundId,
         [cal.driverId, ana.driverId],
         [ben.driverId],
-        [eve.driverId, dee.driverId],
+        before.entries.map((entry) => entry.driver_id),
       ),
     ).toEqual({ status: "saved" });
 
@@ -510,36 +510,35 @@ describeDb("league night's race result against real Postgres", () => {
   it("refuses a correction that would delete a place captured after staff last read the result", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben, cal] = [await seat("Ana"), await seat("Ben"), await seat("Cal")];
+    await lap(cal, 92_000, 40);
     await racing(ana, ben, cal);
     await report(ana.rig, atFlag(1));
     await report(ben.rig, atFlag(2));
 
+    // Cal qualified, so the editor holds Cal under "not in the race".
     const read = await getRaceReview(roundId);
     expect(read.entries.map((entry) => entry.display_name)).toEqual(["Ana", "Ben"]);
+    expect(read.notInRace.map((driver) => driver.display_name)).toEqual(["Cal"]);
     // Cal crosses the line between the dashboard's refresh and staff's save.
     await report(cal.rig, atFlag(3));
 
-    expect(
-      await saveRaceResult(
-        roundId,
-        read.entries.map((entry) => entry.driver_id),
-        [],
-        read.notInRace.map((driver) => driver.driver_id),
-      ),
-    ).toEqual({ status: "race_changed" });
+    const seen = read.entries.map((entry) => entry.driver_id);
+    expect(await saveRaceResult(roundId, seen, [], seen)).toEqual({ status: "race_changed" });
     expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
       ["Ana", 1],
       ["Ben", 2],
       ["Cal", 3],
     ]);
 
-    // Taken out deliberately, a captured driver's place is staff's to remove.
-    expect(
-      await saveRaceResult(roundId, [ana.driverId, ben.driverId], [], [cal.driverId]),
-    ).toEqual({ status: "saved" });
+    // Taken out deliberately once staff have seen it, a captured place is theirs to remove.
+    const reread = (await getRaceReview(roundId)).entries.map((entry) => entry.driver_id);
+    expect(await saveRaceResult(roundId, [ana.driverId, ben.driverId], [], reread)).toEqual({
+      status: "saved",
+    });
     expect((await placing(roundId)).map((row) => [row.name, row.position])).toEqual([
       ["Ana", 1],
       ["Ben", 2],
+      ["Cal", null],
     ]);
   });
 

@@ -283,12 +283,12 @@ export function StaffLeaguePanel({
             <StaffRaceResult
               review={raceReview}
               busy={busy}
-              onSave={(finishers, dnf, out) =>
+              onSave={(finishers, dnf, seen) =>
                 post("/api/staff/league/race-result", {
                   roundId: openRound.id,
                   finishers,
                   dnf,
-                  out,
+                  seen,
                 })
               }
             />
