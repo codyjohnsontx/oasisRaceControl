@@ -173,7 +173,8 @@ every round was before. `lib/race-results.ts` is the only writer, called from
   recorded - it stopped reporting, or the round closed mid-race - is recorded
   at its last reported place (source `close`) and placed behind every car
   seen at the flag. It is credited to the driver stored with that last
-  report, not to whoever sits in the rig at close.
+  report, not to whoever sits in the rig at close, and a driver heard on
+  more than one rig is recorded once, from their latest report.
 - Staff review the result on `/staff` while the round is open, with every
   driver in the round who has no race finish listed under it, and can reorder
   it, mark a DNF or take a driver out. Saving replaces the round's rows with
