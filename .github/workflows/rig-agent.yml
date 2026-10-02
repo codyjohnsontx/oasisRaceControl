@@ -1,0 +1,57 @@
+name: Rig agent
+
+# The agent had no CI until the sign-in window: the local `dotnet test` on a
+# Mac was the only check it got (and it still is for anything the Mac can run).
+# This builds both targets and runs the suite where each matters: Windows is
+# where the net8.0-windows window build actually links against the Desktop
+# runtime and where the rig runs; Ubuntu is where ConsoleShutdownTests can send
+# the console build real signals (those cases skip on Windows).
+on:
+  pull_request:
+    paths: ["apps/rig-agent/**", ".github/workflows/rig-agent.yml", "global.json"]
+  push:
+    branches: [main]
+    paths: ["apps/rig-agent/**", ".github/workflows/rig-agent.yml", "global.json"]
+  workflow_dispatch:
+
+concurrency:
+  group: rig-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build both targets
+        run: dotnet build apps/rig-agent/OasisRigAgent.sln --configuration Release
+      - name: Test
+        run: dotnet test apps/rig-agent/OasisRigAgent.sln --configuration Release --no-build
+      - name: Publish the rig exe
+        if: runner.os == 'Windows'
+        run: dotnet publish apps/rig-agent/OasisRigAgent/OasisRigAgent.csproj --configuration Release -f net8.0-windows -r win-x64 --self-contained -p:PublishSingleFile=true --output artifacts/rig-agent
+      - name: Upload the rig exe
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rig-agent-${{ github.sha }}
+          path: |
+            artifacts/rig-agent/OasisRigAgent.exe
+            artifacts/rig-agent/e_sqlite3.dll
+          if-no-files-found: error
+          retention-days: 14
