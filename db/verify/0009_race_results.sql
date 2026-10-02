@@ -18,7 +18,10 @@
 -- the suite.
 --
 -- Column rows hash each column's name, type, nullability and default; the
--- constraint rows hash every constraint's definition by name; the column 0009
+-- constraint rows hash every constraint's definition by name, leaving out
+-- the NOT NULL rows (contype 'n') that Postgres 18 began storing in
+-- pg_constraint - nullability is already in the column rows, and with them
+-- the hash would differ between a 17 and an 18 server holding the same table; the column 0009
 -- adds to rig_race_status and its foreign key are compared as plain text,
 -- since they are one line each; the view rows
 -- hash pg_get_viewdef with runs of whitespace collapsed, so a server version
@@ -47,7 +50,7 @@ with fingerprints (check_name, expected, actual) as (
       '06f5a4bb2e16ecb34c9dafee3d291dff',
       (select md5(string_agg(conname || '|' || pg_get_constraintdef(oid), ',' order by conname))
        from pg_constraint
-       where conrelid = to_regclass('public.league_race_results'))
+       where conrelid = to_regclass('public.league_race_results') and contype <> 'n')
     ),
     (
       'race starts columns',
@@ -63,7 +66,7 @@ with fingerprints (check_name, expected, actual) as (
       '5877c17aeeded93e758442f213e7a455',
       (select md5(string_agg(conname || '|' || pg_get_constraintdef(oid), ',' order by conname))
        from pg_constraint
-       where conrelid = to_regclass('public.league_race_starts'))
+       where conrelid = to_regclass('public.league_race_starts') and contype <> 'n')
     ),
     (
       'race status assignment column',
