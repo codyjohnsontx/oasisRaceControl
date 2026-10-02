@@ -207,6 +207,131 @@ export type LapCompletedEvent = z.infer<typeof lapCompletedEvent>;
 export type AgentEventsBody = z.infer<typeof agentEventsBody>;
 
 /**
+ * iRacing's `SessionState`, as the SDK numbers it: 0 invalid, 1 get in car,
+ * 2 warmup, 3 parade laps, 4 racing, 5 checkered, 6 cool down.
+ */
+export const SESSION_STATE = {
+  invalid: 0,
+  getInCar: 1,
+  warmup: 2,
+  paradeLaps: 3,
+  racing: 4,
+  checkered: 5,
+  coolDown: 6,
+} as const;
+
+/** The most cars an iRacing session holds; `CarIdx` arrays are this long. */
+const MAX_CARS = 64;
+/** iRacing's lap counters are 16-bit; 32767 is its "unlimited" sentinel. */
+const MAX_LAPS = 32_767;
+/** One week: iRacing reports an untimed session as 604800 s remaining. */
+const MAX_SESSION_SECONDS = 7 * 24 * 60 * 60;
+
+const lapCounter = z.number().int().min(0).max(MAX_LAPS);
+const lapTime = z.number().int().positive().max(MAX_LAP_TIME_MS);
+const carPosition = z.number().int().min(1).max(MAX_CARS);
+
+/**
+ * One rig's live race status: its own car, read from iRacing's shared memory,
+ * posted alone to `POST /api/agent/race-status` - not through
+ * `/api/agent/events`, because this is the opposite of a lap: ephemeral, latest
+ * wins, never queued and never retried. The server keeps one row per rig
+ * (`rig_race_status`, db/migrations/0008_race_status.sql) and the live feed
+ * (`GET /api/race/live`) joins it to whoever is checked in on the rig. Nothing
+ * here names a driver or an iRacing account: identity comes from the rig's
+ * assignment, as a lap's does. docs/live-race.md describes the whole loop.
+ *
+ * What the agent must do with it, which is the other half of this contract:
+ *
+ * - Report only while iRacing is in a session (`SessionState` above 0), every
+ *   2-3 s. A report identical to the last one sent may be skipped, but never
+ *   for more than 10 s: the feed marks a rig `stale` after 15 s of silence and
+ *   drops it after 60 s, so a parked car that stops reporting reads as a dead
+ *   rig.
+ * - One report in flight at a time, and none kept: a report that fails is
+ *   dropped, and the next sample is sent. A stale position is worth nothing.
+ *   The server keeps the report with the latest `sampledAt`, so a report
+ *   abandoned on a timeout that lands after its successor is ignored; only once
+ *   the stored row has gone stale (15 s) does any report replace it.
+ * - Send null, not iRacing's sentinels, where a field is nullable: a position
+ *   of 0 (not yet classified), a lap time of -1 or 0 (none yet), a negative lap
+ *   counter or lap distance (not in the world), 32767 laps or 604800 s
+ *   remaining (unlimited).
+ * - Clamp to the bounds below before sending. The body is validated whole, so
+ *   one field out of bounds refuses the report with a 400 and the car vanishes
+ *   from the board.
+ *
+ * A 200 carries no body. A 401 is a token problem, a 400 is a contract
+ * mismatch; neither is retried.
+ */
+export const raceStatusEvent = z.object({
+  /**
+   * The rig's clock when it read the sim. Orders this rig's reports (the
+   * latest kept), never staleness, which the server judges by its own clock.
+   */
+  sampledAt: instant,
+  /** `SessionUniqueID`: the same on every rig in one hosted session. */
+  sessionUniqueId: z.number().int().min(0).max(PG_INT_MAX),
+  /**
+   * `SessionNum`: which session of the weekend (practice, qualifying, race),
+   * an index into a list iRacing keeps to a handful of entries.
+   */
+  sessionNum: z.number().int().min(0).max(63),
+  /** `SessionInfo.Sessions[SessionNum].SessionType`, e.g. "Race"; null until read. */
+  sessionType: z.string().min(1).max(40).nullable(),
+  sessionState: z.number().int().min(SESSION_STATE.invalid).max(SESSION_STATE.coolDown),
+  /** `SessionFlags`, read as the unsigned 32-bit bitfield it is. */
+  sessionFlags: z.number().int().min(0).max(0xffff_ffff),
+  /**
+   * `SessionTimeRemain`; null for an untimed session. Below the 604800 s
+   * sentinel, never at it: a report carrying the sentinel itself is the agent
+   * not translating it, and is refused rather than shown as a week to go.
+   */
+  sessionTimeRemainS: z.number().min(0).lt(MAX_SESSION_SECONDS).nullable(),
+  /**
+   * `SessionLapsRemainEx`; null for a session with no lap limit. Below the
+   * 32767 sentinel, never at it, for the same reason.
+   */
+  sessionLapsRemain: z.number().int().min(0).lt(MAX_LAPS).nullable(),
+  /** `PlayerCarIdx`. */
+  carIdx: z.number().int().min(0).max(MAX_CARS - 1),
+  /** `PlayerCarPosition`; null while iRacing reports 0. */
+  position: carPosition.nullable(),
+  /** `PlayerCarClassPosition`; null while iRacing reports 0. */
+  classPosition: carPosition.nullable(),
+  /** `Lap`: laps started. */
+  lap: lapCounter.nullable(),
+  /** `LapCompleted`. */
+  lapsCompleted: lapCounter.nullable(),
+  /** `LapDistPct`: how far round the current lap, 0 to 1. */
+  lapDistPct: z.number().min(0).max(1).nullable(),
+  /**
+   * `CarIdxF2Time[PlayerCarIdx]`: seconds behind the leader in a race. Outside
+   * a race iRacing puts a lap time in the same variable; send it as read, and
+   * the feed only treats it as a gap when the session is a race. Bounded by a
+   * day: no gap in a session the venue runs is longer.
+   */
+  gapToLeaderS: z.number().min(0).max(86_400).nullable(),
+  /** `CarIdxLastLapTime[PlayerCarIdx]`, in ms. */
+  lastLapMs: lapTime.nullable(),
+  /** `CarIdxBestLapTime[PlayerCarIdx]`, in ms. */
+  bestLapMs: lapTime.nullable(),
+  /** `OnPitRoad`. */
+  onPitRoad: z.boolean(),
+  /** `PlayerCarMyIncidentCount`: this session's incidents. */
+  incidents: z.number().int().min(0).max(9_999),
+});
+
+export type RaceStatusEvent = z.infer<typeof raceStatusEvent>;
+
+/**
+ * Largest race report the route reads. A report at every bound, its session
+ * type escaped as \uXXXX throughout, is under 1 KB; 4 KiB refuses anything
+ * else long before it is parsed.
+ */
+export const MAX_RACE_STATUS_BODY_BYTES = 4 * 1024;
+
+/**
  * Whether the agent told us what it knew about attribution at capture time.
  * True for a stamped assignment id AND for the explicit null that means "nobody
  * was checked in"; false only for an agent old enough not to send the field.

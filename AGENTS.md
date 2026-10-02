@@ -159,6 +159,23 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   it, and when it skips versus hard-fails, is in the root README's
   [Integration tests](README.md#integration-tests) section.
 
+## The live race feed
+
+League night's race board reads `GET /api/race/live`, built from one row per
+rig in `rig_race_status` that each agent replaces every 2-3 s
+(`POST /api/agent/race-status`). The wire contract is `raceStatusEvent` in
+`apps/web/src/lib/events.ts`; the agent, `scripts/fake-rig.ts --race` and that
+schema change together, and [docs/live-race.md](docs/live-race.md) has the rest.
+Three things are easy to undo. It stays off `/api/agent/events` and out of the
+outbox, because a queued position is a wrong one. The upsert keeps the report
+the rig's clock calls newest, so a late request cannot rewind a car, but any
+report replaces a row that has gone stale (15 s), so a clock stepped back dims
+the rig instead of freezing it until it ages off the board. Grouping,
+ordering, staleness and intervals live only in `lib/race-live.ts`, and a board
+numbers its rows by `place`, not `position`: a race under green is ordered by
+how far round each car is, because iRacing's position only catches up with a
+pass at the line; the grid and the finish keep iRacing's own order.
+
 ## Lap attribution
 
 A lap belongs to whoever was in the seat when it was captured, not to whoever is

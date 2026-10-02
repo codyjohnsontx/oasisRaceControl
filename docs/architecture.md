@@ -32,7 +32,7 @@ flowchart TB
         api <-->|"pooled SQL"| neon
     end
 
-    agent ==>|"Bearer token<br/>POST /api/agent/events (heartbeat+laps)<br/>GET /api/agent/assignment<br/>POST /api/agent/checkout"| api
+    agent ==>|"Bearer token<br/>POST /api/agent/events (heartbeat+laps)<br/>GET /api/agent/assignment<br/>POST /api/agent/checkout<br/>POST /api/agent/race-status"| api
     tv -->|"rotates boards · GET /api/leaderboards/{boards,board}<br/>GET /api/leaderboard/tonight · GET /api/league/season"| api
     driver -->|"session cookie<br/>/api/checkin · /api/me/laps · /api/auth/*"| api
     staff -->|"staff cookie<br/>/api/staff/*"| api
@@ -77,8 +77,9 @@ flowchart TB
 
 | Actor | Auth | Endpoints | Cadence |
 |---|---|---|---|
-| **Rig Agent** | Bearer (rig token) | `POST /api/agent/events` (heartbeat + laps), `GET /api/agent/assignment`, `POST /api/agent/checkout` | heartbeat 60s (backs off while undelivered) · poll 10s · flush 5s |
+| **Rig Agent** | Bearer (rig token) | `POST /api/agent/events` (heartbeat + laps), `GET /api/agent/assignment`, `POST /api/agent/checkout`, `POST /api/agent/race-status` (its own car's place in a hosted race, never queued; [live-race.md](./live-race.md)) | heartbeat 60s (backs off while undelivered) · poll 10s · flush 5s · race status every 2-3s while in a session |
 | **TV browser** | none (public); a board opened from its staff link heartbeats with a ticket the server signed into the page | `GET /api/leaderboards/boards`, `GET /api/leaderboards/board`, `GET /api/leaderboard/tonight`, `GET /api/league/season`, `POST /api/tv/heartbeat` (the rig monitor's view of a staff-opened board; an event board turns event mode on, and the public `/tv` and `/tv?event=1` send none) | board rotates 15s · on-screen board refreshes 5s · board list 120s · heartbeat 30s plus a goodbye on close · the league board holds the screen while a round is open |
+| **Live race feed** | none (public) | `GET /api/race/live`: the rigs heard in the last 60s, grouped into one race and in race order ([live-race.md](./live-race.md)) | no screen reads it yet; the race board will |
 | **Driver** | session cookie (JWT) | `/api/auth/{guest,login,register,logout,claim}`, `POST /api/checkin`, `GET /api/me/laps`, `POST /api/session/end` | on action · portal polls laps 5s |
 | **League board / round page** | none (public) | `GET /api/league/season`, `GET /api/league/rounds/[roundId]` | standings poll 10s · open round poll 6s (a closed round never polls) |
 | **Staff** | staff session cookie | `POST /api/staff/{login,logout,clear-rig,lap-validity,reset-pin,event-mode}`, `GET /api/staff/drivers` (name lookup for a PIN reset), `POST /api/staff/league/{open-round,close-round,roll-season}`, `POST /api/staff/monitor/{run,test-message}` (the `/staff/rigs` Rig health page's "Run checks now" and Discord test, [monitoring.md](./monitoring.md)) | on action · dashboard and Rig health page refresh 15s |
