@@ -22,6 +22,14 @@ import { formatGap } from "./time";
 export const RACE_POLL_MS = 2_500;
 
 /**
+ * How long one request to the feed may take before the screen gives up on
+ * it and counts it as a failure. Longer than a healthy answer by a wide
+ * margin, shorter than two polls, so a slow route cannot pile requests up
+ * and a hung one cannot freeze the race on the wall (`race-feed-poller.ts`).
+ */
+export const RACE_FEED_TIMEOUT_MS = 4_000;
+
+/**
  * How long the finishing order stays on screen after the chequered flag,
  * counted from the first report that showed it. The room wants to see who
  * won; it does not want the standings to snap back while the last cars are

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { LiveRace } from "@/lib/race-live";
 import {
   INITIAL_RACE_BOARD,
+  RACE_FEED_TIMEOUT_MS,
   RACE_MOVE_HIGHLIGHT_MS,
   RACE_POLL_MS,
   applyRaceFeed,
@@ -13,6 +14,7 @@ import {
   type RaceBoardState,
   type RaceMove,
 } from "@/lib/race-board";
+import { createRaceFeedPoller, type RaceFeedPoller } from "./race-feed-poller";
 import { useVisiblePoll } from "./use-visible-poll";
 
 export type LiveRaceView = {
@@ -36,6 +38,17 @@ export type LiveRaceView = {
  * The cadence is the hook's own rather than the TV engine's 5 s refresh: the
  * engine is unchanged (CLAUDE.md), and the board simply asks for the race
  * feed itself while it is on screen.
+ *
+ * The requests themselves go through `createRaceFeedPoller`: one at a time,
+ * each bounded by RACE_FEED_TIMEOUT_MS, and a timed-out one counts as a failed
+ * one, so a slow route cannot stack requests from every screen in the venue
+ * and a hung one cannot leave a finished race on the wall as if it were live.
+ * The request in flight is aborted when polling stops - the round closed, the
+ * screen unmounted - and reports nothing.
+ *
+ * Move marks belong to one race: when the race leaves the screen or the feed
+ * turns to another session, every mark is cleared at once rather than left
+ * to time out over the next race's grid.
  */
 export function useLiveRace(active: boolean): LiveRaceView {
   const [state, setState] = useState<RaceBoardState>(INITIAL_RACE_BOARD);
@@ -50,73 +63,90 @@ export function useLiveRace(active: boolean): LiveRaceView {
   const seq = useRef(0);
   const unmarkTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
-  const sent = useRef(0);
-  const applied = useRef(0);
+  const clearMoves = useCallback(() => {
+    for (const timer of unmarkTimers.current.values()) clearTimeout(timer);
+    unmarkTimers.current.clear();
+    setMoves((current) => (current.size === 0 ? current : new Map()));
+  }, []);
 
-  const refresh = useCallback(async () => {
-    const request = ++sent.current;
-    const current = () => {
-      if (request < applied.current) return false;
-      applied.current = request;
-      return true;
-    };
-    let feed: LiveRace;
-    try {
-      const res = await fetch("/api/race/live", { cache: "no-store" });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      feed = (await res.json()) as LiveRace;
-      if (!Array.isArray(feed.rows)) throw new Error("malformed race response");
-    } catch {
-      if (!current()) return;
-      setStale(true);
-      setState((prev) => applyRaceFeedFailure(prev, Date.now()));
-      return;
-    }
-    if (!current()) return;
-    const before = stateRef.current;
-    const next = applyRaceFeed(before, feed, Date.now());
-    stateRef.current = next;
-    setStale(false);
-    setState(next);
+  const applyFeed = useCallback(
+    (feed: LiveRace) => {
+      const before = stateRef.current;
+      const next = applyRaceFeed(before, feed, Date.now());
+      stateRef.current = next;
+      setStale(false);
+      setState(next);
 
-    const changes = next.race ? placeChanges(before.race, next.race) : null;
-    if (!changes || changes.size === 0) return;
-    setMoves((prev) => {
-      const marked = new Map(prev);
-      for (const [rig, delta] of changes) {
-        seq.current += 1;
-        marked.set(rig, { delta, seq: seq.current });
+      const continuous =
+        next.race !== null && before.race !== null && sessionKey(before.race) === sessionKey(next.race);
+      if (!continuous) {
+        clearMoves();
+        return;
       }
-      return marked;
-    });
-    for (const rig of changes.keys()) {
-      const pending = unmarkTimers.current.get(rig);
-      if (pending) clearTimeout(pending);
-      unmarkTimers.current.set(
-        rig,
-        setTimeout(() => {
-          unmarkTimers.current.delete(rig);
-          setMoves((current) => {
-            const cleared = new Map(current);
-            cleared.delete(rig);
-            return cleared;
-          });
-        }, RACE_MOVE_HIGHLIGHT_MS),
-      );
-    }
+      const changes = placeChanges(before.race, next.race!);
+      if (changes.size === 0) return;
+      setMoves((prev) => {
+        const marked = new Map(prev);
+        for (const [rig, delta] of changes) {
+          seq.current += 1;
+          marked.set(rig, { delta, seq: seq.current });
+        }
+        return marked;
+      });
+      for (const rig of changes.keys()) {
+        const pending = unmarkTimers.current.get(rig);
+        if (pending) clearTimeout(pending);
+        unmarkTimers.current.set(
+          rig,
+          setTimeout(() => {
+            unmarkTimers.current.delete(rig);
+            setMoves((current) => {
+              const cleared = new Map(current);
+              cleared.delete(rig);
+              return cleared;
+            });
+          }, RACE_MOVE_HIGHLIGHT_MS),
+        );
+      }
+    },
+    [clearMoves],
+  );
+
+  const applyFailure = useCallback(() => {
+    setStale(true);
+    setState((prev) => applyRaceFeedFailure(prev, Date.now()));
+  }, []);
+
+  // One poller for the life of the hook; the callbacks it reports through
+  // are stable, so it is never rebuilt with a request in flight.
+  const poller = useRef<RaceFeedPoller | null>(null);
+  poller.current ??= createRaceFeedPoller({
+    fetch: (...args) => fetch(...args),
+    timeoutMs: RACE_FEED_TIMEOUT_MS,
+    onFeed: applyFeed,
+    onFailure: applyFailure,
+  });
+
+  const refresh = useCallback(() => {
+    void poller.current?.poll();
   }, []);
 
   useVisiblePoll(refresh, RACE_POLL_MS, active);
 
   // The first answer should not wait a whole interval: a board that mounts
-  // during a race shows it within one request.
+  // during a race shows it within one request. And when polling stops, the
+  // request in flight is abandoned with it.
   useEffect(() => {
-    if (active) void refresh();
+    if (!active) return;
+    refresh();
+    return () => poller.current?.stop();
   }, [active, refresh]);
 
   useEffect(() => {
     const timers = unmarkTimers.current;
+    const current = poller.current;
     return () => {
+      current?.stop();
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
     };
