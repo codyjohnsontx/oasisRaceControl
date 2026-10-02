@@ -118,4 +118,73 @@ public sealed class SessionInfoParserTests
         Assert.Contains("drivers listed=1", found);
         Assert.Contains("player's CarScreenName=no entry", found);
     }
+
+    // A hosted weekend as iRacing lays it out: each session a list item under
+    // Sessions, carrying nested lists of its own whose keys sit further in.
+    private const string Weekend = """
+        ---
+        WeekendInfo:
+         TrackDisplayName: Circuit of the Americas
+         SessionID: 0
+        SessionInfo:
+         Sessions:
+         - SessionNum: 0
+           SessionLaps: unlimited
+           SessionTime: 600.0000 sec
+           SessionType: Practice
+           SessionName: PRACTICE
+           ResultsPositions:
+           - Position: 1
+             CarIdx: 2
+             FastestTime: 101.9000
+           ResultsFastestLap:
+           - CarIdx: 2
+             FastestLap: 4
+         - SessionNum: 1
+           SessionType: Open Qualify
+           ResultsPositions: 
+         - SessionNum: 2
+           SessionLaps: 12
+           SessionType: Race
+        CarSetup:
+         SessionType: not a session
+        DriverInfo:
+         DriverCarIdx: 2
+         Drivers:
+         - CarIdx: 2
+           CarScreenName: FIA F4
+        ...
+        """;
+
+    [Fact]
+    public void ReadsEachSessionsTypeBySessionNum()
+    {
+        var types = SessionInfoParser.Scan(Weekend).SessionTypes;
+        Assert.Equal(new Dictionary<int, string> { [0] = "Practice", [1] = "Open Qualify", [2] = "Race" }, types);
+        // The combo is read from the same document unchanged.
+        Assert.Equal("FIA F4", SessionInfoParser.Parse(Weekend)!.CarScreenName);
+    }
+
+    [Fact]
+    public void ASessionTypeKeyInsideANestedListIsNotTheSessions()
+    {
+        const string yaml = """
+            SessionInfo:
+             Sessions:
+             - SessionNum: 0
+               ResultsPositions:
+               - Position: 1
+                 SessionType: Race
+               SessionType: Practice
+            """;
+        Assert.Equal("Practice", SessionInfoParser.Scan(yaml).SessionTypes[0]);
+    }
+
+    [Fact]
+    public void NoSessionsListedYetIsAnEmptyMap()
+    {
+        Assert.Empty(SessionInfoParser.Scan(Cota.Replace("SessionType: Practice", "")).SessionTypes);
+        Assert.Empty(SessionInfoParser.Scan("WeekendInfo:\n TrackName: test\n").SessionTypes);
+        Assert.Equal("Practice", SessionInfoParser.Scan(Cota).SessionTypes[0]);
+    }
 }

@@ -24,6 +24,12 @@ public sealed record SessionCombo(
     int? TrackId,
     int? CarId);
 
+/// <summary>One pass of <see cref="SessionInfoParser.Scan"/> over a session-info document.</summary>
+public sealed record SessionInfoScan(
+    SessionCombo? Combo,
+    string Found,
+    IReadOnlyDictionary<int, string> SessionTypes);
+
 /// <summary>
 /// Pulls the combo out of iRacing's session-info YAML with a line scanner
 /// instead of a YAML library. The document is machine-written with a fixed
@@ -68,12 +74,26 @@ public static class SessionInfoParser
     public static string DescribeFound(string yaml, int? telemetryPlayerCarIdx = null)
         => Scan(yaml, telemetryPlayerCarIdx).Found;
 
-    private static (SessionCombo? Combo, string Found) Scan(string yaml, int? telemetryPlayerCarIdx)
+    /// <summary>Everything the agent reads from one session-info document, in one
+    /// pass: the combo (as <see cref="Parse"/>), what was found (as
+    /// <see cref="DescribeFound"/>), and `SessionInfo.Sessions[].SessionType` by
+    /// `SessionNum` - "Practice", "Open Qualify", "Race" and so on, as iRacing
+    /// spells them - so the race status can say which session of the weekend the
+    /// telemetry's `SessionNum` is. SessionTypes is empty when the document lists
+    /// no sessions yet.</summary>
+    public static SessionInfoScan Scan(string yaml, int? telemetryPlayerCarIdx = null)
     {
         string? trackDisplayName = null, trackConfigName = null, trackName = null;
         int? trackId = null, driverCarIdx = null;
         var cars = new Dictionary<int, (string? ScreenName, int? CarId)>();
         int? currentCarIdx = null;
+        var sessionTypes = new Dictionary<int, string>();
+        // The session list item being read, and the column its keys start at.
+        // A session nests lists of its own (ResultsPositions, ResultsFastestLap)
+        // whose items sit further in, so only a key at the item's own column is
+        // the session's.
+        int? currentSessionNum = null;
+        var sessionKeyColumn = -1;
         var section = "";
 
         foreach (var rawLine in yaml.Split('\n'))
@@ -86,6 +106,8 @@ public static class SessionInfoParser
                 var header = KeyValue.Match(line);
                 section = header.Success ? header.Groups[2].Value : "";
                 currentCarIdx = null;
+                currentSessionNum = null;
+                sessionKeyColumn = -1;
                 continue;
             }
 
@@ -116,6 +138,25 @@ public static class SessionInfoParser
                         else if (key == "CarID" && int.TryParse(value, out var cid)) cars[cur] = (entry.ScreenName, cid);
                     }
                     break;
+                case "SessionInfo":
+                    var column = m.Groups[2].Index;
+                    if (isListItem && key == "SessionNum" && int.TryParse(value, out var num))
+                    {
+                        currentSessionNum = num;
+                        sessionKeyColumn = column;
+                    }
+                    else if (column < sessionKeyColumn)
+                    {
+                        // Back out past the list's own column: no longer in a session.
+                        currentSessionNum = null;
+                        sessionKeyColumn = -1;
+                    }
+                    else if (key == "SessionType" && column == sessionKeyColumn && currentSessionNum is int sn
+                             && !string.IsNullOrWhiteSpace(value))
+                    {
+                        sessionTypes[sn] = value;
+                    }
+                    break;
             }
         }
 
@@ -124,17 +165,17 @@ public static class SessionInfoParser
         var found = $"TrackDisplayName={Quote(trackDisplayName)} TrackConfigName={Quote(trackConfigName)} "
                   + $"DriverCarIdx={driverCarIdx?.ToString() ?? "none"} telemetry PlayerCarIdx={telemetryPlayerCarIdx?.ToString() ?? "none"} "
                   + $"drivers listed={cars.Count} player's CarScreenName={(hasCar ? Quote(car.ScreenName) : "no entry")}";
-        if (string.IsNullOrWhiteSpace(trackDisplayName) || playerIdx is null) return (null, found);
-        if (!hasCar || string.IsNullOrWhiteSpace(car.ScreenName)) return (null, found);
+        if (string.IsNullOrWhiteSpace(trackDisplayName) || playerIdx is null) return new SessionInfoScan(null, found, sessionTypes);
+        if (!hasCar || string.IsNullOrWhiteSpace(car.ScreenName)) return new SessionInfoScan(null, found, sessionTypes);
 
-        return (new SessionCombo(
+        return new SessionInfoScan(new SessionCombo(
             trackDisplayName,
             string.IsNullOrWhiteSpace(trackConfigName) ? null : trackConfigName,
             car.ScreenName,
             playerIdx.Value,
             trackName,
             trackId,
-            car.CarId), found);
+            car.CarId), found, sessionTypes);
     }
 
     private static string Quote(string? value) => value is null ? "none" : $"\"{value}\"";

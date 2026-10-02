@@ -225,6 +225,11 @@ public sealed class AgentService : IAsyncDisposable
         // - one that has to go away the moment it is. A once-a-second check
         // publishes the change; nothing else republishes on the sim's account.
         _loops.Add(RunLoop(SimStateInterval, SimStateTick, runImmediately: false));
+        // Live race position for the league-night board: this rig's own car,
+        // every few seconds while iRacing is in a session, dropped on failure.
+        // The rules are RaceStatusReporter's; this is only its timer.
+        if (_config.RaceStatus && _telemetry is IRaceStatusSource race)
+            _loops.Add(RunLoop(RaceStatusThrottle.Interval, new RaceStatusReporter(race, _client, RaiseNotice).TickAsync, runImmediately: false));
         PublishStatus();
     }
 
