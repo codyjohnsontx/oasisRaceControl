@@ -50,7 +50,16 @@ export function useLiveRace(active: boolean): LiveRaceView {
   const seq = useRef(0);
   const unmarkTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
+  const sent = useRef(0);
+  const applied = useRef(0);
+
   const refresh = useCallback(async () => {
+    const request = ++sent.current;
+    const current = () => {
+      if (request < applied.current) return false;
+      applied.current = request;
+      return true;
+    };
     let feed: LiveRace;
     try {
       const res = await fetch("/api/race/live", { cache: "no-store" });
@@ -58,10 +67,12 @@ export function useLiveRace(active: boolean): LiveRaceView {
       feed = (await res.json()) as LiveRace;
       if (!Array.isArray(feed.rows)) throw new Error("malformed race response");
     } catch {
+      if (!current()) return;
       setStale(true);
       setState((prev) => applyRaceFeedFailure(prev, Date.now()));
       return;
     }
+    if (!current()) return;
     const before = stateRef.current;
     const next = applyRaceFeed(before, feed, Date.now());
     stateRef.current = next;
@@ -98,11 +109,8 @@ export function useLiveRace(active: boolean): LiveRaceView {
   useVisiblePoll(refresh, RACE_POLL_MS, active);
 
   // The first answer should not wait a whole interval: a board that mounts
-  // during a race shows it within one request. The feed is the external
-  // system this effect subscribes to, and every setState in `refresh` sits
-  // after its fetch resolves, not in the effect body.
+  // during a race shows it within one request.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (active) void refresh();
   }, [active, refresh]);
 
