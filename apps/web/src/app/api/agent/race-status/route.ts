@@ -2,6 +2,7 @@ import { query } from "@/lib/db";
 import { rigFromBearer } from "@/lib/agent-auth";
 import { MAX_RACE_STATUS_BODY_BYTES, raceStatusEvent } from "@/lib/events";
 import { parseJson, readBody } from "@/lib/http";
+import { RACE_STALE_AFTER_S } from "@/lib/race-live";
 
 /**
  * One rig's live race status (`raceStatusEvent` in src/lib/events.ts, which
@@ -14,13 +15,19 @@ import { parseJson, readBody } from "@/lib/http";
  * the opposite - worth something for seconds, latest wins, dropped on failure -
  * and putting it in the outbox would queue stale positions behind laps.
  *
- * The upsert is one statement, and the row kept is whichever report ARRIVED
- * last, not the one the rig's clock calls newest. The agent sends one report
- * at a time, so arrival order is send order unless a timed-out request lands
- * late, and that shows an old position for one cadence. Ordering by
- * `sampled_at` instead would let a rig clock stepped backwards freeze the row
- * until the clock caught up, and a frozen row ages out of the feed: a car
- * racing for position would drop off the board.
+ * The upsert is one statement, and it refuses a report the rig sampled
+ * before the one already stored: a request abandoned on a timeout that lands
+ * after its successor would otherwise rewind the car, or move it back into the
+ * session it just left, for as long as the rig stays silent afterwards. The
+ * rig's clock decides only between reports, though, never for long: a stored
+ * row that has gone unreplaced past the feed's stale threshold
+ * (RACE_STALE_AFTER_S) is replaced by any report, so a rig whose clock steps
+ * backwards is dimmed for at most that long rather than frozen until its
+ * clock catches up and then dropped off the board. A report from a different
+ * session also wins a tie on `sampled_at`.
+ *
+ * A refused report still answers 200: it was valid, only late, and the agent
+ * has nothing to do about it.
  *
  * It does not touch `rigs.last_seen_at`: the heartbeat owns that, and a
  * second write per report, several a second across the venue, buys nothing.
@@ -73,7 +80,11 @@ export async function POST(request: Request) {
          last_lap_ms = excluded.last_lap_ms,
          best_lap_ms = excluded.best_lap_ms,
          on_pit_road = excluded.on_pit_road,
-         incidents = excluded.incidents`,
+         incidents = excluded.incidents
+       where excluded.sampled_at > rig_race_status.sampled_at
+          or rig_race_status.received_at < now() - make_interval(secs => $21)
+          or (excluded.session_unique_id <> rig_race_status.session_unique_id
+              and excluded.sampled_at >= rig_race_status.sampled_at)`,
       [
         rig.id,
         s.sampledAt,
@@ -95,6 +106,7 @@ export async function POST(request: Request) {
         s.bestLapMs,
         s.onPitRoad,
         s.incidents,
+        RACE_STALE_AFTER_S,
       ],
     );
     return new Response(null, { status: 200 });

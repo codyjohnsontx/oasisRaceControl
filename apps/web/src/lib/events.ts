@@ -250,8 +250,9 @@ const carPosition = z.number().int().min(1).max(MAX_CARS);
  *   rig.
  * - One report in flight at a time, and none kept: a report that fails is
  *   dropped, and the next sample is sent. A stale position is worth nothing.
- *   The server keeps whichever report ARRIVED last, so a report abandoned on a
- *   timeout that lands after its successor would show for one cadence.
+ *   The server keeps the report with the latest `sampledAt`, so a report
+ *   abandoned on a timeout that lands after its successor is ignored; only once
+ *   the stored row has gone stale (15 s) does any report replace it.
  * - Send null, not iRacing's sentinels, where a field is nullable: a position
  *   of 0 (not yet classified), a lap time of -1 or 0 (none yet), a negative lap
  *   counter or lap distance (not in the world), 32767 laps or 604800 s
@@ -278,10 +279,17 @@ export const raceStatusEvent = z.object({
   sessionState: z.number().int().min(SESSION_STATE.invalid).max(SESSION_STATE.coolDown),
   /** `SessionFlags`, read as the unsigned 32-bit bitfield it is. */
   sessionFlags: z.number().int().min(0).max(0xffff_ffff),
-  /** `SessionTimeRemain`; null for an untimed session. */
-  sessionTimeRemainS: z.number().min(0).max(MAX_SESSION_SECONDS).nullable(),
-  /** `SessionLapsRemainEx`; null for a session with no lap limit. */
-  sessionLapsRemain: lapCounter.nullable(),
+  /**
+   * `SessionTimeRemain`; null for an untimed session. Below the 604800 s
+   * sentinel, never at it: a report carrying the sentinel itself is the agent
+   * not translating it, and is refused rather than shown as a week to go.
+   */
+  sessionTimeRemainS: z.number().min(0).lt(MAX_SESSION_SECONDS).nullable(),
+  /**
+   * `SessionLapsRemainEx`; null for a session with no lap limit. Below the
+   * 32767 sentinel, never at it, for the same reason.
+   */
+  sessionLapsRemain: z.number().int().min(0).lt(MAX_LAPS).nullable(),
   /** `PlayerCarIdx`. */
   carIdx: z.number().int().min(0).max(MAX_CARS - 1),
   /** `PlayerCarPosition`; null while iRacing reports 0. */
