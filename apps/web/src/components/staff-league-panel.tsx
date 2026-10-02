@@ -221,7 +221,7 @@ export function StaffLeaguePanel({
               </p>
               <p className="text-muted text-sm truncate">{comboLabel(openRound)}</p>
               <p className="text-muted text-xs">
-                {openRoundDrivers} {openRoundDrivers === 1 ? "driver" : "drivers"} so far ·
+                {openRoundDrivers} {openRoundDrivers === 1 ? "driver" : "drivers"} so far ·{" "}
                 {/* Venue time, not the tablet's - a device on the wrong zone
                     would otherwise report the round opening at the wrong hour. */}
                 opened{" "}

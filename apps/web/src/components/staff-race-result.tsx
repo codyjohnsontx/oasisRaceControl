@@ -250,7 +250,7 @@ function Editor({
         <DriverChips
           heading="DNF - scores the participation point"
           drivers={draft.dnf}
-          action="Finished"
+          action="Back in"
           onPick={(driver) =>
             setDraft({
               ...draft,
