@@ -18,9 +18,11 @@
 -- Additive: one new table, nothing existing is rewritten. Its foreign keys
 -- take a brief SHARE ROW EXCLUSIVE on league_rounds and rigs, which only an
 -- update of those tables waits on. A database ahead of the code is harmless
--- (the previous deployment never touches the table); a database behind it
--- answers every flagged race report with 500 while a round is open, and the
--- build gate refuses the deploy anyway (docs/deploy.md).
+-- (the previous deployment never touches the table). On a database behind
+-- it, flagged race reports still answer 200 but record no place, signed-in
+-- rigs included (the server log shows "race result capture failed"), and
+-- closing a round fails with 500; the build gate refuses that deploy anyway
+-- (docs/deploy.md).
 
 create table league_race_unsigned_places (
   round_id uuid not null references league_rounds (id),
