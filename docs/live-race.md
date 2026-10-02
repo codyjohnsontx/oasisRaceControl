@@ -3,8 +3,8 @@
 League night ends in a race: every rig in one hosted iRacing session. The race
 board shows the running order as it changes, within a few seconds of a pass on
 track. This document covers the server half: what a rig reports, what the
-server keeps, and what the public feed returns. The board that draws it is a
-separate change.
+server keeps, and what the public feed returns - and then, briefly, the two
+screens that draw it ([the board](#the-board)).
 
 ```
 rig agent ── POST /api/agent/race-status (every 2-3 s, its own car) ──▶ rig_race_status
@@ -115,6 +115,58 @@ puts them in order.
 Latency is the rig's cadence (2-3 s), plus the request, plus however often the
 board polls. That is fast enough for a wall, but it is not a timing screen.
 
+## The board
+
+Two screens read the feed, and they are one screen drawn twice: the wall's
+league board (`apps/web/src/components/tv/board-types.tsx`, drawing
+`tv/race-board.tsx`) and the panel at the top of `/league`
+(`components/live-race-panel.tsx`). Both poll the feed every 2.5 s through
+`components/use-live-race.ts`, and every rule about *what* is shown lives in
+`apps/web/src/lib/race-board.ts`, pure and unit-tested, so the wall and the
+phone agree by construction:
+
+- The race replaces the standings when the feed reports a **`Race` session
+  with at least two rigs**, from the grid onwards. One rig in a race session
+  is a test drive and shows nothing.
+- Rows are numbered by `place`. A row that just changed place flashes once
+  (green up, red down) and carries ▲n / ▼n beside the name for a few seconds.
+  A `stale` rig is dimmed where it was; a rig with nobody signed in reads
+  `Rig N` in the muted colour; a car on pit road carries a PIT chip. The header
+  says the session's state and the laps or time left.
+- After the chequered flag the **finishing order stays up for one minute**,
+  counted from the first report that showed the flag, still updating as cars
+  cross the line, then the standings come back even if the rigs are still
+  reporting the flag. The finish is remembered per session, so that race does
+  not return; the next race is a new session and shows at once.
+- A feed that stops answering keeps the race on screen only as long as the
+  feed would keep a silent rig (60 s), so a dead feed cannot freeze a race on
+  the wall.
+
+On the wall this is the third screen of the league board, which already takes
+the wall over while tonight's round is open: season standings on an ordinary
+day, the round's qualifying ranking (fastest valid lap, the same ranking as
+`/league/[roundId]`) while the round is open, and the race on top of that.
+It is one board, not a second one, because the rotation engine's hold is a
+max over the slide on screen - a separate race slide would never be reached
+while the league board holds (`CLAUDE.md`, The `/tv` board rotation). Past
+ten cars the race table is drawn as two halves at three quarters of the size,
+so a twenty-car field fits the venue's 1272x601 wall; the sizing rules are
+the ones every `/tv` board follows.
+
+As the fake rigs drive it, at the wall's 1272x601 and a 390px phone:
+
+| Qualifying (round open, no race) | Race, a pass just made |
+|---|---|
+| ![qualifying](images/live-race/tv-qualifying.png) | ![race](images/live-race/tv-race-swap.png) |
+
+| Chequered flag, held for a minute | Twenty cars |
+|---|---|
+| ![finish](images/live-race/tv-race-finish.png) | ![twenty cars](images/live-race/tv-race-20-cars.png) |
+
+| `/league` during the race | `/league` after the flag |
+|---|---|
+| ![phone race](images/live-race/league-phone-race-swap.png) | ![phone finish](images/live-race/league-phone-finish.png) |
+
 ## Seeing it locally
 
 The dev seed has three rigs. Check a driver in on two of them, at
@@ -135,7 +187,11 @@ Neighbours trade places on track every 20-40 s. As in iRacing, each fake
 car's `position` only changes when it crosses the line, so the feed's order
 leads it mid-lap. Each race lasts `--race-minutes`
 (default 20), ends with a minute under the chequered flag, and the next race is
-a new session. Stop one rig to watch its row go stale and then drop out.
+a new session. Stop one rig to watch its row go stale and then drop out. With a
+round open on `/staff`, `/tv` switches from the round's qualifying ranking to
+the race order within a poll, and `/league` grows the same panel; `--race-start`
+set to now and `--race-minutes 4` is a quick way to watch a whole race, the
+minute under the flag, and the board handing the wall back.
 
 `npm run` only passes the flags on after the `--`. Under the twenty-rig
 soak, `--race` drives one simulated race across every rig and checks the feed

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { venueToday } from "@/lib/venue";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
 
@@ -110,5 +111,95 @@ describe("tonight board off-track mark", () => {
     // No visible legend for the mark, on either layout.
     expect(everyone).not.toContain("* lap");
     expect(slots).not.toContain("* lap");
+  });
+});
+
+/**
+ * League night's screens. While tonight's round is open the league board is
+ * the round's qualifying ranking, read from the round endpoint the phone's
+ * round page reads; on every other day it is the season standings and asks
+ * for nothing else. The race screen on top of both is `race-board.test.tsx`.
+ */
+describe("league board on league night", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const league = TV_BOARD_TYPES.league;
+  const season = { id: "s1", name: "October 2026", league_name: "Wednesday Night League" };
+  const round = (round_date: string, closed_at: string | null = null) => ({
+    id: "11111111-1111-4111-8111-111111111111",
+    season_id: "s1",
+    season_name: season.name,
+    league_name: season.league_name,
+    round_number: 1,
+    name: null,
+    round_date,
+    track_name: "Spa-Francorchamps",
+    track_config: "Grand Prix Pits",
+    car_name: "Porsche 911 GT3 R",
+    incident_limit: 99,
+    opened_at: "2026-10-01T23:00:00Z",
+    closed_at,
+  });
+  const field = [
+    { round_id: "r1", round_number: 1, driver_id: "d1", display_name: "Jordan R.", position: 1, best_lap_ms: 137_683, lap_count: 7, valid_lap_count: 7 },
+    { round_id: "r1", round_number: 1, driver_id: "d2", display_name: "Cody J.", position: 2, best_lap_ms: 137_879, lap_count: 6, valid_lap_count: 5 },
+    { round_id: "r1", round_number: 1, driver_id: "d3", display_name: "Alexis M.", position: null, best_lap_ms: null, lap_count: 1, valid_lap_count: 0 },
+  ];
+  const standing = {
+    driver_id: "d1",
+    display_name: "Jordan R.",
+    points: 5,
+    rounds_entered: 1,
+    wins: 1,
+    best_position: 1,
+    rounds: [],
+  };
+
+  const stubFeeds = (rounds: ReturnType<typeof round>[]) => {
+    const fetch = vi.fn(async (url: string) =>
+      url.startsWith("/api/league/rounds/")
+        ? Response.json({ round: rounds[0], field, laps: null })
+        : Response.json({ season, rounds, standings: [standing] }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    return fetch;
+  };
+
+  it("reads tonight's round field while the round is open, and only the season otherwise", async () => {
+    const tonight = stubFeeds([round(venueToday())]);
+    const data = await league.load(null, new AbortController().signal);
+    expect(tonight.mock.calls.map((call) => call[0])).toEqual([
+      "/api/league/season",
+      `/api/league/rounds/${round("").id}`,
+    ]);
+    expect((data as { qualifying: unknown }).qualifying).toMatchObject({ field });
+
+    const closed = stubFeeds([round(venueToday(), "2026-10-02T03:00:00Z")]);
+    const rest = await league.load(null, new AbortController().signal);
+    expect(closed.mock.calls).toHaveLength(1);
+    expect((rest as { qualifying: unknown }).qualifying).toBeNull();
+  });
+
+  it("shows the round as qualifying while it is open, ranked by best lap, and the standings otherwise", () => {
+    const tonight = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field } };
+    const html = renderToStaticMarkup(
+      <league.Board spec={null} data={tonight} stale={false} hold={() => {}} />,
+    );
+    expect(html).toContain("Round 1 · Qualifying · live");
+    expect(html).toContain("Best lap");
+    expect(html.indexOf("Jordan R.")).toBeLessThan(html.indexOf("Cody J."));
+    expect(html).toContain("2:17.683");
+    expect(html).toContain("+0.196");
+    // A driver with no valid lap yet is in the field with no time.
+    expect(html).toContain("Alexis M.");
+    expect(html).not.toContain("Season standings");
+
+    const ordinary = { ...tonight, qualifying: null, rounds: [round("2026-09-24", "2026-09-25T03:00:00Z")] };
+    const standings = renderToStaticMarkup(
+      <league.Board spec={null} data={ordinary} stale={false} hold={() => {}} />,
+    );
+    expect(standings).toContain("Season standings");
+    expect(standings).toContain("Points");
+    expect(standings).not.toContain("Qualifying");
   });
 });

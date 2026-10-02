@@ -142,7 +142,9 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   is a `/tv` board type like any other (see the section above); both take season
   standings from `/api/league/season`. The round page `/league/[roundId]` is the
   odd one out - it reads `/api/league/rounds/[roundId]` for one round's ranked
-  field and per-driver laps, which the season endpoint does not carry. Neither
+  field and per-driver laps, which the season endpoint does not carry. The wall's
+  league board also reads that round endpoint while tonight's round is open, so
+  its qualifying screen ranks exactly what the round page ranks. Neither
   surface wraps the other.
 - Season points are one swappable module: `apps/web/src/lib/league-scoring.ts`.
   Nothing else in the codebase encodes a points table. The scale is the venue's
@@ -174,6 +176,19 @@ ordering, staleness and intervals live only in `lib/race-live.ts`, and a board
 numbers its rows by `place`, not `position`: a race under green is ordered by
 how far round each car is, because iRacing's position only catches up with a
 pass at the line; the grid and the finish keep iRacing's own order.
+
+The screens that draw it are the wall's league board and a panel on `/league`,
+and what they show is decided once, in `lib/race-board.ts` (pure, tested): a
+`Race` session with two or more rigs replaces the standings, a row that
+changed place is flashed and marked, and the finishing order is held for one
+minute from the first report of the flag, remembered per session so it does
+not come back. Both poll the feed every 2.5 s through
+`components/use-live-race.ts`; the TV engine's own 5 s refresh is untouched.
+On the wall it is the league board's third screen - season standings on an
+ordinary day, the open round's qualifying ranking while tonight's round is
+open, the race on top - and not a second board, because the engine lets only
+one holding board win. Past ten cars the race table draws as two halves at
+three quarters of the size (`tv/race-board.tsx`).
 
 ## Lap attribution
 

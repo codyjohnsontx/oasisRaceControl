@@ -194,6 +194,67 @@ body:has([data-tv-mode="event"]) [data-screen-menu] {
   }
 }
 
+/* Live race order (/tv league board and /league): a row whose place just
+   changed flashes once - green for a place gained, red for one lost - and
+   the ▲n / ▼n mark beside the name fades with it. The hook keys the row on
+   the move, so a second move remounts the row and the flash starts again.
+   Both run once and settle to nothing, so a row that moved a while ago looks
+   like any other. Under prefers-reduced-motion the row holds a faint tint
+   for the same few seconds instead of flashing, and the mark stays until the
+   hook drops it. */
+.race-row-moved {
+  animation: race-row-flash 1.6s ease-out 1;
+}
+
+.race-row-up {
+  --race-flash: var(--valid);
+}
+
+.race-row-down {
+  --race-flash: var(--invalid);
+}
+
+@keyframes race-row-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--race-flash) 45%, transparent);
+    box-shadow: inset 0.25em 0 0 var(--race-flash);
+  }
+  60% {
+    background-color: color-mix(in srgb, var(--race-flash) 18%, transparent);
+    box-shadow: inset 0.25em 0 0 var(--race-flash);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0.25em 0 0 transparent;
+  }
+}
+
+.race-move {
+  animation: race-move-fade 4s ease-in 1 forwards;
+}
+
+@keyframes race-move-fade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .race-row-moved {
+    animation: none;
+    background-color: color-mix(in srgb, var(--race-flash) 18%, transparent);
+    box-shadow: inset 0.25em 0 0 var(--race-flash);
+  }
+
+  .race-move {
+    animation: none;
+  }
+}
+
 /* /tv event view: a list taller than its box scrolls itself. The content is
    drawn twice, so sliding up by half is exactly one copy and the loop is
    seamless; the hold at the top is the 8% keyframe stop, which a keyframe

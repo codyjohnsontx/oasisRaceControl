@@ -7,6 +7,7 @@ import { formatLapTime } from "@/lib/time";
 import { comboLabel, roundLabel, type LeagueRound } from "@/lib/league";
 import { SCORING_RULE_SUMMARY, type SeasonStanding } from "@/lib/league-scoring";
 import { useVisiblePoll } from "@/components/use-visible-poll";
+import { LiveRacePanel } from "@/components/live-race-panel";
 
 type Props = {
   season: { id: string; name: string; league_name: string } | null;
@@ -212,6 +213,10 @@ export function LeagueStandings({
       </header>
 
       <div className="gradient-rule h-1 rounded-full" />
+
+      {/* The race, while one is on: the same feed and the same rules as the
+          wall's race screen. Nothing on an ordinary day. */}
+      <LiveRacePanel />
 
       {standings.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center py-16">
