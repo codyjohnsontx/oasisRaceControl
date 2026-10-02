@@ -441,9 +441,10 @@ whether the name is taken - the one route the rig needs that the event-night
 backends lacked - so verify request shapes against the served commit, not
 only main.
 
-The rig shows it as a WinForms window since 0.6, and the console screens of
-the 2026-09-27/28 event stay behind `--console` as the fallback. Both are thin
-fronts over `OasisRigAgent.Core/WalkUp/`: the sign-in rules are `SignInFlow`
+The rig shows it as a WinForms window since 0.6, and console screens stay
+behind `--console` as the window's fallback - not the backend's, since both
+fronts ask the same routes. Both are thin fronts over
+`OasisRigAgent.Core/WalkUp/`: the sign-in rules are `SignInFlow`
 (one state machine, pinned by `SignInFlowTests` for both fronts - never write
 a second one in a view), `WalkUpViewModel` is everything the window draws,
 `TonightStanding` is the seated driver's place and best lap off the same

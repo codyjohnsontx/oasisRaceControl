@@ -45,6 +45,7 @@ internal sealed class WalkUpForm : Form
     private readonly List<(Control Control, Face Face, float Points)> _typed = new();
     private readonly List<Font> _fonts = new();
     private float _scale = 1f;
+    private float _dpi = 1f;
     private FormWindowState _lastState;
 
     private readonly Label _title = new();
@@ -99,6 +100,7 @@ internal sealed class WalkUpForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size((int)DesignWidth, (int)DesignHeight);
         MinimumSize = new Size(640, 480);
+        AutoScaleDimensions = new SizeF(96f, 96f);
         AutoScaleMode = AutoScaleMode.Dpi;
         KeyPreview = true;
         DoubleBuffered = true;
@@ -410,14 +412,19 @@ internal sealed class WalkUpForm : Form
     }
 
     /// <summary>Rebuild every font for the window's current size: the design
-    /// is 960x720 and the type grows or shrinks with whichever axis is tighter.
+    /// is 960x720 at 96 DPI and the type grows or shrinks with whichever axis
+    /// is tighter; font points already carry the screen's DPI, so it is taken
+    /// out of the window's size before the two are compared.
     /// Called when a drag ends and on maximise/restore, never on every pixel of
     /// a resize, so dragging the edge costs nothing until it stops.</summary>
     private void ApplyScale()
     {
-        var scale = Math.Clamp(Math.Min(ClientSize.Width / DesignWidth, ClientSize.Height / DesignHeight), 0.6f, 2.2f);
-        if (_fonts.Count > 0 && Math.Abs(scale - _scale) < 0.02f) return;
+        var dpi = DeviceDpi / 96f;
+        var scale = Math.Clamp(Math.Min(ClientSize.Width / (DesignWidth * dpi), ClientSize.Height / (DesignHeight * dpi)), 0.6f, 2.2f);
+        if (_fonts.Count > 0 && Math.Abs(scale - _scale) < 0.02f && dpi == _dpi) return;
         _scale = scale;
+        _dpi = dpi;
+        var pixels = scale * dpi;
         var old = _fonts.ToList();
         _fonts.Clear();
         SuspendLayout();
@@ -433,14 +440,20 @@ internal sealed class WalkUpForm : Form
             _fonts.Add(font);
             control.Font = font;
         }
-        _mark.Size = new Size((int)(46 * scale), (int)(56 * scale));
-        _input.Width = (int)(420 * scale);
-        _rule.Height = Math.Max(3, (int)(4 * scale));
+        _mark.Size = new Size((int)(46 * pixels), (int)(56 * pixels));
+        _input.Width = (int)(420 * pixels);
+        _rule.Height = Math.Max(3, (int)(4 * pixels));
         foreach (ListViewItem item in _laps.Items) item.SubItems[1].Font = _bestSub.Font;
         SizeLapColumns();
         ResumeLayout(true);
         // The controls hold the new fonts now; the old ones can go.
         foreach (var font in old) font.Dispose();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        ApplyScale();
     }
 
     private void SizeLapColumns()

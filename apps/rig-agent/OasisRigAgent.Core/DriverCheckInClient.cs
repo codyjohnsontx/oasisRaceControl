@@ -87,7 +87,7 @@ public sealed class DriverCheckInClient
         if ((int)res.StatusCode == 429)
             throw new CheckInRefusedException("too many sign-ins from this network in the last minute, across the rigs - wait a minute and try again");
         if (res.StatusCode == HttpStatusCode.NotFound)
-            throw new CheckInRefusedException("the backend is older than this rig program and cannot look names up - tell staff to update the site or run the program with --console");
+            throw new CheckInRefusedException("the backend is older than this rig program and cannot look names up - tell staff to deploy the site first, or put the previous rig build back");
         if (!res.IsSuccessStatusCode)
             throw new CheckInRefusedException($"the backend could not look the name up (HTTP {(int)res.StatusCode}) - try again");
         return body?["taken"]?.GetValue<bool>()

@@ -324,8 +324,8 @@ With `rigQrToken` set, the rig runs the loop the owner asked for: "the user
 types their name and then as they make laps it assigns it accordingly. When
 they are done, they just exit out the program and then it waits for the next
 person." Since `0.6` it is a window, and since `0.7` it wears the venue's look
-and asks for the name first; the console screens the 2026-09-27/28 event ran
-are the fallback, one flag away.
+and asks for the name first; the same flow in a console window is the
+window's fallback, one flag away.
 
 ### The sign-in window
 
@@ -409,8 +409,8 @@ never wait on the window.
 ### The console screens (`--console`)
 
 `OasisRigAgent.exe --console` runs the same mode in a console window instead -
-the event-night fallback, unchanged since 2026-09-28 apart from running over
-the shared state machine. The `net8.0` build (macOS, Linux) is console-only and
+the fallback for the window itself, over the same state machine and the same
+server routes, so it asks for the name first too and needs the same backend. The `net8.0` build (macOS, Linux) is console-only and
 treats `--console` as given. On Windows it always opens a console window of
 its own, even when started from a command prompt, so nothing a driver types is
 read by the prompt instead; a shortcut to `OasisRigAgent.exe --console` is the
@@ -766,7 +766,7 @@ rig before the night, with the hosted backend and the rig's real
    empty and the rig monitor shows a goodbye, not a silent rig. Start the exe
    again each time and check step 1 clears a seat left open.
 7. **Fallback.** `OasisRigAgent.exe --console` from a shortcut opens a console
-   window with the screens of the event night; closing it signs the driver
+   window with the same name-first screens; closing it signs the driver
    out the same way.
 8. **Footprint.** Task Manager > Details: priority "Below normal", GPU 0,
    and the window idle at 0% CPU with a driver signed in; iRacing's frame

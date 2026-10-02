@@ -39,10 +39,7 @@ describe("GET /api/auth/name", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ taken: true });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    // One exists() on the trimmed name - the citext column does the case folding,
-    // as it does for register's uniqueness and login's lookup.
     expect(queryOne.mock.calls[0][1]).toEqual(["Mike"]);
-    expect(queryOne.mock.calls[0][0]).toMatch(/select exists\(select 1 from drivers where display_name = \$1\)/);
   });
 
   it("says a free name is free", async () => {

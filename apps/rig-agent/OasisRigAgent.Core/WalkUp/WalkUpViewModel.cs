@@ -314,6 +314,11 @@ public sealed class WalkUpViewModel : IDisposable
         var poll = CancellationTokenSource.CreateLinkedTokenSource(_quit);
         lock (_lock)
         {
+            if (_closing)
+            {
+                poll.Dispose();
+                return;
+            }
             _standingPoll?.Cancel();
             _standingPoll = poll;
             _tonightStanding = null;
