@@ -2,9 +2,10 @@
  * League night - shared types and pure helpers.
  *
  * A league runs one season at a time; a season is a run of weekly rounds; a
- * round pins one track/car combo for the night. Rounds rank the full field by
- * each driver's best valid lap; rounds roll up into season standings via the
- * single scoring rule in league-scoring.ts.
+ * round pins one track/car combo for the night. A round with a race result is
+ * placed by its finishing order, any other round by each driver's best valid
+ * lap; rounds roll up into season standings via the single scoring rule in
+ * league-scoring.ts.
  *
  * This module is import-safe from client components (no database). The SQL
  * lives in league-queries.ts, which is server-only - same split as
@@ -30,20 +31,55 @@ export type LeagueRound = {
   closed_at: string | null;
 };
 
+/** How a driver's race place was recorded (`league_race_results.source`). */
+export type FinishSource = "flag" | "close" | "staff";
+
 /**
- * One driver's result in one round. `position` is null when the driver took
- * part but never set a valid lap - they are still in the field, still on the
- * board, and still score the participation point.
+ * One driver's row in one round, as the database holds it, before
+ * league-scoring.ts places it. The field is every driver with a lap attributed
+ * to the round or a race entry in it.
  */
-export type RoundResult = {
+export type RoundEntry = {
   round_id: string;
   round_number: number;
   driver_id: string;
   display_name: string;
-  position: number | null;
+  /** Best valid lap anywhere in the round, race laps included. */
   best_lap_ms: number | null;
   lap_count: number;
   valid_lap_count: number;
+  /**
+   * Best valid qualifying lap, and its rank in the round: laps completed before
+   * the round's race went green, or every lap in a round with no race. Null
+   * when the driver set no valid qualifying lap.
+   */
+  qualifying_lap_ms: number | null;
+  qualifying_position: number | null;
+  /**
+   * The race place as recorded - iRacing's at the flag, or what staff entered.
+   * It can skip a number (a car nobody was signed in to) or repeat one (two
+   * rigs mid-update), which is why it is not the driver's `position`. Null
+   * with a `finish_source` is a staff-marked DNF.
+   */
+  finish_position: number | null;
+  /** Null when the driver has no race entry in this round. */
+  finish_source: FinishSource | null;
+};
+
+/**
+ * One driver's result in one round, placed by `rankRound` in
+ * league-scoring.ts. `position` is where the round puts the driver: the race
+ * finishing order when the round has a race result, otherwise the rank by best
+ * valid lap. Null when the driver took part but is not placed - no valid lap,
+ * or no race finish in a raced round. They are still in the field, still on
+ * the board, and still score the participation point.
+ */
+export type RoundResult = RoundEntry & {
+  position: number | null;
+  /** The round is scored by its race result. The same on every row of a round. */
+  raced: boolean;
+  /** Earns the qualifying bonus: the fastest valid qualifying lap of a raced round. */
+  fastest_qualifier: boolean;
 };
 
 /** A single lap inside a round, for the expanded driver view. */
