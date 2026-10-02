@@ -449,7 +449,7 @@ describeDb("league night's race result against real Postgres", () => {
       );
       const { rows } = await client.query<{ check_name: string; ok: boolean }>(verify);
 
-      expect(rows).toHaveLength(7);
+      expect(rows).toHaveLength(9);
       expect(rows.filter((check) => !check.ok)).toEqual([]);
     } finally {
       await client.query("drop table if exists pg_temp.schema_migrations");

@@ -18,7 +18,9 @@
 -- the suite.
 --
 -- Column rows hash each column's name, type, nullability and default; the
--- constraint rows hash every constraint's definition by name; the view rows
+-- constraint rows hash every constraint's definition by name; the column 0009
+-- adds to rig_race_status and its foreign key are compared as plain text,
+-- since they are one line each; the view rows
 -- hash pg_get_viewdef with runs of whitespace collapsed, so a server version
 -- that re-indents it does not read as drift. On a mismatch, compare `\d
 -- league_race_results`, `\d league_race_starts` and
@@ -62,6 +64,21 @@ with fingerprints (check_name, expected, actual) as (
       (select md5(string_agg(conname || '|' || pg_get_constraintdef(oid), ',' order by conname))
        from pg_constraint
        where conrelid = to_regclass('public.league_race_starts'))
+    ),
+    (
+      'race status assignment column',
+      'rig_assignment_id|uuid|YES|',
+      (select concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, ''))
+       from information_schema.columns
+       where table_schema = 'public' and table_name = 'rig_race_status'
+         and column_name = 'rig_assignment_id')
+    ),
+    (
+      'race status assignment foreign key',
+      'FOREIGN KEY (rig_assignment_id) REFERENCES rig_assignments(id)',
+      (select pg_get_constraintdef(oid) from pg_constraint
+       where conrelid = to_regclass('public.rig_race_status')
+         and conname = 'rig_race_status_rig_assignment_id_fkey')
     ),
     (
       'race session view',
