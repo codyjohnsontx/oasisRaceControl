@@ -164,6 +164,49 @@ describe("placeChanges", () => {
     expect(placeChanges(before, after).get(7)).toBe(-1);
   });
 
+  // The three cases below are the second-opinion review of PR #57: the feed
+  // renumbers `place` from 1 every answer, so a membership change moved every
+  // number behind it and the screen flashed passes nobody made.
+  it("marks no pass when a rig drops out and everyone behind it moves up a number", () => {
+    const before = feed([row(1, 1), row(2, 2), row(3, 3)]);
+    const dropped = feed([row(1, 1), row(3, 2)]);
+    expect(placeChanges(before, dropped).size).toBe(0);
+  });
+
+  it("marks no pass when a rig joins ahead and everyone behind it moves down a number", () => {
+    const before = feed([row(1, 1), row(3, 2)]);
+    const joined = feed([row(2, 1), row(1, 2), row(3, 3)]);
+    expect(placeChanges(before, joined).size).toBe(0);
+  });
+
+  it("marks no pass when a rig that went silent rejoins where it was", () => {
+    const start = feed([row(1, 1), row(2, 2), row(3, 3)]);
+    const gone = feed([row(1, 1), row(3, 2)]);
+    const back = feed([row(1, 1), row(2, 2), row(3, 3)]);
+    expect(placeChanges(start, gone).size).toBe(0);
+    expect(placeChanges(gone, back).size).toBe(0);
+  });
+
+  it("still marks a real pass made while the field changed", () => {
+    // Rig 4 joins at the front and rig 1 drops out; among the rigs on both
+    // answers, 3 passed 2.
+    const before = feed([row(1, 1), row(2, 2), row(3, 3)]);
+    const after = feed([row(4, 1), row(3, 2), row(2, 3)]);
+    expect([...placeChanges(before, after)]).toEqual([
+      [3, 1],
+      [2, -1],
+    ]);
+  });
+
+  it("orders by place even when the feed's rows arrive out of order", () => {
+    const before = feed([row(2, 2), row(1, 1)]);
+    const after = feed([row(1, 2), row(2, 1)]);
+    expect([...placeChanges(before, after)]).toEqual([
+      [2, 1],
+      [1, -1],
+    ]);
+  });
+
   it("marks nothing when the next answer is a different session", () => {
     const finish = feed([row(1, 1), row(2, 2)], { sessionState: SESSION_STATE.checkered });
     const nextGrid = feed([row(2, 1), row(1, 2)], { sessionNum: 3 });

@@ -133,21 +133,43 @@ function keepFinish(state: RaceBoardState, now: number): boolean {
 
 /**
  * Places gained (positive) or lost (negative) per rig between two answers
- * from the feed, for the screen to mark. A rig new to the board has nothing
- * to have moved from, and neither has any rig when the answers are different
- * sessions: the next race's grid is not a pass on the last one's finish.
- * Keyed by rig number, which is what identifies a row across answers whether
- * or not anyone is signed in on it.
+ * from the feed, for the screen to mark as a pass.
+ *
+ * A pass is a change of ORDER among the rigs on both answers, not a change
+ * of place number. The feed renumbers `place` from 1 every answer, so a rig
+ * that drops out (its row aged off) moves every car behind it up a number,
+ * and a rig that joins ahead (a late starter, a rig back from a silent spell)
+ * moves every car behind it down one - and nobody passed anybody. So the rigs
+ * present on both answers are put in their old order and their new order,
+ * and a rig is marked by how many of THOSE it gained or lost on; a rig on
+ * only one answer is neither marked nor counted. A rig new to the board has
+ * nothing to have moved from, and neither has any rig when the answers are
+ * different sessions: the next race's grid is not a pass on the last one's
+ * finish. Keyed by rig number, which is what identifies a row across answers
+ * whether or not anyone is signed in on it.
  */
 export function placeChanges(before: LiveRace | null, after: LiveRace): Map<number, number> {
   const moves = new Map<number, number>();
   if (!before || sessionKey(before) !== sessionKey(after)) return moves;
-  const previous = new Map(before.rows.map((row) => [row.rigNumber, row.place]));
-  for (const row of after.rows) {
-    const was = previous.get(row.rigNumber);
-    if (was !== undefined && was !== row.place) moves.set(row.rigNumber, was - row.place);
+  const afterRigs = new Set(after.rows.map((row) => row.rigNumber));
+  const beforeRigs = new Set(before.rows.map((row) => row.rigNumber));
+  const wasAt = new Map<number, number>();
+  for (const row of sortedByPlace(before.rows)) {
+    if (afterRigs.has(row.rigNumber)) wasAt.set(row.rigNumber, wasAt.size);
+  }
+  let nowAt = 0;
+  for (const row of sortedByPlace(after.rows)) {
+    if (!beforeRigs.has(row.rigNumber)) continue;
+    const was = wasAt.get(row.rigNumber)!;
+    if (was !== nowAt) moves.set(row.rigNumber, was - nowAt);
+    nowAt += 1;
   }
   return moves;
+}
+
+/** The feed returns rows in `place` order already; sorting is defence against one that does not. */
+function sortedByPlace(rows: readonly LiveRaceRow[]): LiveRaceRow[] {
+  return [...rows].sort((a, b) => a.place - b.place);
 }
 
 /** Who is in the seat, or the rig itself when nobody is signed in. */

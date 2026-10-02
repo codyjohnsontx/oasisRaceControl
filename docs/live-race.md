@@ -127,7 +127,10 @@ league board (`apps/web/src/components/tv/board-types.tsx`, drawing
 `tv/race-board.tsx`) and the panel at the top of `/league`
 (`components/live-race-panel.tsx`). While tonight's league round is open
 (`isOpenTonight` in `apps/web/src/lib/league.ts`), both poll the feed every 2.5 s through
-`components/use-live-race.ts`, and every rule about *what* is shown lives in
+`components/use-live-race.ts` - one request at a time, each bounded by a
+timeout that counts as a failure when it fires (`components/race-feed-poller.ts`),
+so a slow route cannot stack requests from every screen and a hung one cannot
+leave a finished race up as if it were live - and every rule about *what* is shown lives in
 `apps/web/src/lib/race-board.ts`, pure and unit-tested, so the wall and the
 phone agree by construction:
 
@@ -138,6 +141,10 @@ phone agree by construction:
   wall keeps rotating, and neither asks the feed.
 - Rows are numbered by `place`. A row that just changed place flashes once
   (green up, red down) and carries ▲n / ▼n beside the name for a few seconds.
+  A pass is a change of order among the rigs on both answers, never a change
+  of place number: the feed renumbers from 1 after a rig drops out or joins,
+  and nobody passed anybody then. The marks are cleared when the race leaves
+  the screen or the feed turns to another session.
   A `stale` rig is dimmed where it was; a rig with nobody signed in reads
   `Rig N` in the muted colour; a car on pit road carries a PIT chip. On the
   wall the header says only "Race", then the track and nothing else, under

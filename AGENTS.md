@@ -187,6 +187,12 @@ changed place is flashed and marked, and the finishing order is held for one
 minute from the first report of the flag, remembered per session so it does
 not come back. Both poll the feed every 2.5 s through
 `components/use-live-race.ts`; the TV engine's own 5 s refresh is untouched.
+The requests go one at a time with a bounded timeout
+(`components/race-feed-poller.ts`), a timed-out one counting as a failure, so
+a slow route cannot stack a request per tick from every screen in the venue
+and a hung one cannot leave a finished race on the wall as if it were live.
+A pass is a change of order among the rigs on both answers, never a change of
+place number, because the feed renumbers from 1 after a rig drops or joins.
 On the wall it is the league board's third screen - season standings on an
 ordinary day, the open round's qualifying ranking while tonight's round is
 open, the race on top - and not a second board, because the engine lets only
