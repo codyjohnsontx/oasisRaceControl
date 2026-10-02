@@ -174,38 +174,46 @@ export async function sweepRaceResultsTx(client: PoolClient, roundId: string): P
  * without staff seeing it.
  */
 export async function getRaceReview(roundId: string): Promise<RaceReview> {
-  const [entries, notInRace, state] = await Promise.all([
-    query<RaceReviewEntry>(
-      `select rr.driver_id, d.display_name::text as display_name, rr.finish_position,
+  // One statement, so one snapshot: read in separate statements, a flag capture
+  // committing between them can leave a driver in neither list - and a staff
+  // save of that review deletes the place that driver was just given.
+  const review = await queryOne<{
+    race_heard: boolean;
+    entries: RaceReviewEntry[];
+    not_in_race: RaceReview["notInRace"];
+  }>(
+    `with entries as (
+       select rr.driver_id, d.display_name::text as display_name, rr.finish_position,
               rr.source, rg.rig_number, rr.laps_completed
        from v_league_race_results rr
        join drivers d on d.id = rr.driver_id and d.status = 'active'
        left join rigs rg on rg.id = rr.rig_id
        where rr.round_id = $1
-       order by rr.finish_position is null, rr.source = 'close', rr.finish_position,
-                rr.laps_completed desc nulls last, d.display_name`,
-      [roundId],
-    ),
-    query<{ driver_id: string; display_name: string }>(
-      `select distinct rl.driver_id, d.display_name::text as display_name
+     ),
+     not_in_race as (
+       select distinct rl.driver_id, d.display_name::text as display_name
        from v_league_round_laps rl
        join drivers d on d.id = rl.driver_id and d.status = 'active'
        where rl.round_id = $1
          and not exists (select 1 from v_league_race_results rr
                          where rr.round_id = $1 and rr.driver_id = rl.driver_id)
-       order by display_name`,
-      [roundId],
-    ),
-    queryOne<{ race_heard: boolean }>(
-      "select exists (select 1 from v_league_race_session where round_id = $1) as race_heard",
-      [roundId],
-    ),
-  ]);
+     )
+     select
+       exists (select 1 from v_league_race_session where round_id = $1) as race_heard,
+       coalesce((select json_agg(e order by e.finish_position is null, e.source = 'close',
+                                            e.finish_position, e.laps_completed desc nulls last,
+                                            e.display_name)
+                 from entries e), '[]') as entries,
+       coalesce((select json_agg(n order by n.display_name) from not_in_race n), '[]')
+         as not_in_race`,
+    [roundId],
+  );
+  const entries = review?.entries ?? [];
   return {
-    raceHeard: state?.race_heard ?? false,
+    raceHeard: review?.race_heard ?? false,
     confirmed: entries.length > 0 && entries.every((entry) => entry.source === "staff"),
     entries,
-    notInRace,
+    notInRace: review?.not_in_race ?? [],
   };
 }
 
