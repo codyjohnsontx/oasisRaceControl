@@ -265,7 +265,10 @@ const carPosition = z.number().int().min(1).max(MAX_CARS);
  * mismatch; neither is retried.
  */
 export const raceStatusEvent = z.object({
-  /** The rig's clock when it read the sim. Stored for diagnosis only. */
+  /**
+   * The rig's clock when it read the sim. Orders this rig's reports (the
+   * latest kept), never staleness, which the server judges by its own clock.
+   */
   sampledAt: instant,
   /** `SessionUniqueID`: the same on every rig in one hosted session. */
   sessionUniqueId: z.number().int().min(0).max(PG_INT_MAX),
