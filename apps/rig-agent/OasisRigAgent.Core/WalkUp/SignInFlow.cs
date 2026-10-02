@@ -39,8 +39,14 @@ namespace OasisRigAgent.Core.WalkUp;
 public enum SignInStep { AskRacedBefore, AskName, AskPin, LogIn, PinRefused, AskNewPin, AskNewPinAgain, Register, SignedIn }
 
 /// <summary>The one backend call a sign-in is waiting on: a returning driver's
-/// login or a new driver's registration, each followed by the check-in.</summary>
-public sealed record SignInRequest(bool Returning, string Name, string Pin);
+/// login or a new driver's registration, each followed by the check-in. The
+/// only place a PIN lives once the driver has typed it, and for as long as the
+/// call takes; its string form leaves the PIN out so a log line or a debugger
+/// cannot pick it up by accident.</summary>
+public sealed record SignInRequest(bool Returning, string Name, string Pin)
+{
+    public override string ToString() => $"SignInRequest {{ Returning = {Returning}, Name = {Name} }}";
+}
 
 /// <summary>What a <see cref="SignInRequest"/> came to, mapped from
 /// <see cref="DriverCheckInClient"/>'s answers by <see cref="SignInAttempt"/>.</summary>
@@ -90,7 +96,12 @@ public sealed class SignInFlow
 
     private readonly Dictionary<string, int> _misses = new(StringComparer.OrdinalIgnoreCase);
     private readonly SignInFront _front;
+    // The PIN is held only between the prompt that takes it and the request
+    // built from it (a new driver's, until the second typing confirms it);
+    // every way out of those steps clears it, and the request is the one copy
+    // from then on, released when the answer is applied.
     private string _pin = "";
+    private SignInRequest? _pending;
 
     public SignInFlow(string? notice = null, SignInFront front = SignInFront.Console)
     {
@@ -113,9 +124,10 @@ public sealed class SignInFlow
 
     /// <summary>The call the flow is waiting on, when <see cref="Step"/> is
     /// <see cref="SignInStep.LogIn"/> or <see cref="SignInStep.Register"/>.</summary>
-    public SignInRequest? Pending => Step is SignInStep.LogIn or SignInStep.Register
-        ? new SignInRequest(Step == SignInStep.LogIn, Name, _pin)
-        : null;
+    public SignInRequest? Pending => _pending;
+
+    /// <summary>Whether a typed PIN is still held outside a pending request.</summary>
+    internal bool HoldsPin => _pin.Length > 0;
 
     /// <summary>Set once <see cref="Step"/> is <see cref="SignInStep.SignedIn"/>.</summary>
     public DriverCheckIn? Driver { get; private set; }
@@ -168,11 +180,12 @@ public sealed class SignInFlow
 
             case SignInStep.AskPin:
                 Notice = null;
+                _pin = "";
                 if (typed.Length == 0) Step = SignInStep.AskName;
                 else if (!DriverCheckInClient.IsPin(typed)) Notice = "The PIN is exactly 4 digits.";
                 else
                 {
-                    _pin = typed;
+                    _pending = new SignInRequest(Returning: true, Name, typed);
                     Step = SignInStep.LogIn;
                 }
                 break;
@@ -184,6 +197,7 @@ public sealed class SignInFlow
 
             case SignInStep.AskNewPin:
                 Notice = null;
+                _pin = "";
                 if (typed.Length == 0) Step = SignInStep.AskName;
                 else if (!DriverCheckInClient.IsPin(typed)) Notice = "The PIN is exactly 4 digits.";
                 else
@@ -195,8 +209,14 @@ public sealed class SignInFlow
 
             case SignInStep.AskNewPinAgain:
                 Notice = null;
+                var first = _pin;
+                _pin = "";
                 if (typed.Length == 0) Step = SignInStep.AskNewPin;
-                else if (typed == _pin) Step = SignInStep.Register;
+                else if (typed == first)
+                {
+                    _pending = new SignInRequest(Returning: false, Name, typed);
+                    Step = SignInStep.Register;
+                }
                 else
                 {
                     Notice = "The two PINs did not match, so nothing was signed up. Pick a PIN and type it twice.";
@@ -210,7 +230,10 @@ public sealed class SignInFlow
     /// unless the flow is waiting on it.</summary>
     public void Apply(SignInResult result)
     {
-        if (Pending is not { } request) return;
+        if (_pending is not { } request) return;
+        // The answer is in, whatever it says: the request, and the PIN in it,
+        // are not needed again. A retry is typed afresh.
+        _pending = null;
         switch (result.Outcome)
         {
             case SignInOutcome.SignedIn:

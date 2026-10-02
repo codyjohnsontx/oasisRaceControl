@@ -247,12 +247,16 @@ internal sealed class WalkUpForm : Form
             case WalkUpStage.SignIn:
                 RenderSignIn(view);
                 break;
+            // Off the sign-in surface the field holds nothing: a PIN must not
+            // sit in a hidden textbox for the length of a stint.
             case WalkUpStage.Busy:
                 _busy.Text = view.BusyText;
+                _input.Clear();
                 _renderedStep = null;
                 break;
             case WalkUpStage.Driving:
                 RenderDriving(view);
+                _input.Clear();
                 _renderedStep = null;
                 break;
         }
@@ -329,9 +333,13 @@ internal sealed class WalkUpForm : Form
         if (_laps.Items.Count > 0) _laps.EnsureVisible(_laps.Items.Count - 1);
     }
 
+    /// <summary>Hand the field to the model and empty it at once, so the PIN
+    /// leaves the control the moment Enter is pressed - the console clears its
+    /// screen at the same moment.</summary>
     private async Task Submit()
     {
         var typed = _input.Text;
+        _input.Clear();
         await _model.SubmitAsync(typed);
     }
 

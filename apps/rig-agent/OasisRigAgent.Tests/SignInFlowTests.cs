@@ -186,6 +186,61 @@ public sealed class SignInFlowTests
         Assert.Equal(notice, flow.Notice);
     }
 
+    /// <summary>A PIN is held only while it is needed: never once the request
+    /// is built, never after a back, a mismatch or a refusal, and the request
+    /// itself is released when its answer is applied.</summary>
+    [Fact]
+    public void ThePinIsHeldOnlyWhileItIsNeeded()
+    {
+        var returning = new SignInFlow();
+        returning.Submit("y");
+        returning.Submit("Mike");
+        returning.Submit("12");
+        Assert.False(returning.HoldsPin);
+        returning.Submit("4321");
+        Assert.False(returning.HoldsPin);
+        Assert.Equal("4321", returning.Pending?.Pin);
+        Assert.DoesNotContain("4321", returning.Pending!.ToString());
+        returning.Apply(new SignInResult(SignInOutcome.NoMatch));
+        Assert.Null(returning.Pending);
+        Assert.False(returning.HoldsPin);
+        returning.Submit("4321");
+        returning.Apply(new SignInResult(SignInOutcome.Refused, Message: "locked"));
+        Assert.Null(returning.Pending);
+
+        var fresh = new SignInFlow();
+        fresh.Submit("n");
+        fresh.Submit("Alex");
+        fresh.Submit("1234");
+        Assert.True(fresh.HoldsPin);
+        fresh.Submit("");
+        Assert.False(fresh.HoldsPin);
+        Assert.Equal(SignInStep.AskNewPin, fresh.Step);
+        fresh.Submit("1234");
+        fresh.Submit("1243");
+        Assert.False(fresh.HoldsPin);
+        Assert.Equal(SignInStep.AskNewPin, fresh.Step);
+        fresh.Submit("5678");
+        fresh.Submit("");
+        Assert.False(fresh.HoldsPin);
+        fresh.Submit("5678");
+        fresh.Submit("5678");
+        Assert.False(fresh.HoldsPin);
+        Assert.Equal(new SignInRequest(false, "Alex", "5678"), fresh.Pending);
+        fresh.Apply(new SignInResult(SignInOutcome.SignedIn, new DriverCheckIn("Alex", false, "d-new", "a-new")));
+        Assert.Null(fresh.Pending);
+        Assert.False(fresh.HoldsPin);
+        Assert.Equal(SignInStep.SignedIn, fresh.Step);
+
+        var cancelled = new SignInFlow();
+        cancelled.Submit("y");
+        cancelled.Submit("Mike");
+        cancelled.Submit("4321");
+        cancelled.Apply(new SignInResult(SignInOutcome.Cancelled));
+        Assert.Null(cancelled.Pending);
+        Assert.False(cancelled.HoldsPin);
+    }
+
     [Fact]
     public void AnAnswerWithNoPendingRequestIsIgnored()
     {
