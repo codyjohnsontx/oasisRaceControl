@@ -15,7 +15,7 @@ const render = (
 ) =>
   renderToStaticMarkup(
     <RaceOrder
-      eyebrow="Round 1 · Race · Racing"
+      eyebrow="Race"
       title="Wednesday Night League"
       race={race}
       finished={false}
@@ -116,9 +116,9 @@ describe("RaceOrder", () => {
   });
 
   it("says what is on screen in the header and dims when held", () => {
-    const html = render(undefined, { subtitle: "3:24 to go · 3 cars", stale: true });
-    expect(html).toContain("Round 1 · Race · Racing");
-    expect(html).toContain("3:24 to go · 3 cars");
+    const html = render(undefined, { subtitle: "Spa-Francorchamps · 3:24 to go", stale: true });
+    expect(html).toContain(">Race<");
+    expect(html).toContain("Spa-Francorchamps · 3:24 to go");
     expect(html).toContain("opacity-70");
   });
 });

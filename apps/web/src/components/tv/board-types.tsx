@@ -9,7 +9,7 @@ import {
 } from "@/lib/leaderboards";
 import { comboLabel, roundLabel, type LeagueRound, type RoundResult } from "@/lib/league";
 import type { SeasonStanding } from "@/lib/league-scoring";
-import { remainingLabel, sessionStateLabel } from "@/lib/race-board";
+import { remainingLabel } from "@/lib/race-board";
 import { useLiveRace } from "@/components/use-live-race";
 import { venueToday } from "@/lib/venue";
 import { reportingFeedHealth } from "@/lib/tv-feed-health";
@@ -387,18 +387,15 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
   if (live.race?.session) {
     const { session } = live.race;
     return (
+      // The owner's header for the race (2026-10-01): the eyebrow says only
+      // which half of the night this is, and the line under the title names
+      // the track and what is left of the race - no round number, no session
+      // state, no layout, no car, no car count. The room knows the combo, and
+      // the running order says how many cars there are.
       <RaceOrder
-        eyebrow={[tonightsRound && roundLabel(tonightsRound), "Race", sessionStateLabel(session.sessionState)]
-          .filter(Boolean)
-          .join(" · ")}
+        eyebrow="Race"
         title={title}
-        subtitle={[
-          remainingLabel(session),
-          carCount(live.race.rows.length),
-          tonightsRound && comboLabel(tonightsRound),
-        ]
-          .filter(Boolean)
-          .join(" · ")}
+        subtitle={[tonightsRound?.track_name, remainingLabel(session)].filter(Boolean).join(" · ")}
         race={live.race}
         finished={live.finished}
         moves={live.moves}
@@ -456,8 +453,6 @@ const toQualifyingEntry = (row: RoundResult): ArcadeEntry => ({
   detail: `${row.lap_count} ${row.lap_count === 1 ? "lap" : "laps"}`,
   timeMs: row.best_lap_ms ?? undefined,
 });
-
-const carCount = (n: number) => `${n} ${n === 1 ? "car" : "cars"}`;
 
 const roundCount = (n: number) => `${n} round${n === 1 ? "" : "s"}`;
 
