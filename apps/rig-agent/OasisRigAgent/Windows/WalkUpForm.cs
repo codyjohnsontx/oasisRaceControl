@@ -44,6 +44,7 @@ internal sealed class WalkUpForm : Form
     // Every control whose type scales, with its design size in points.
     private readonly List<(Control Control, Face Face, float Points)> _typed = new();
     private readonly List<Font> _fonts = new();
+    private Font? _lapTimeFont;
     private float _scale = 1f;
     private float _dpi = 1f;
     private FormWindowState _lastState;
@@ -443,7 +444,9 @@ internal sealed class WalkUpForm : Form
         _mark.Size = new Size((int)(46 * pixels), (int)(56 * pixels));
         _input.Width = (int)(420 * pixels);
         _rule.Height = Math.Max(3, (int)(4 * pixels));
-        foreach (ListViewItem item in _laps.Items) item.SubItems[1].Font = _bestSub.Font;
+        _lapTimeFont = Brand.MonoFont(13f * scale);
+        _fonts.Add(_lapTimeFont);
+        foreach (ListViewItem item in _laps.Items) item.SubItems[1].Font = _lapTimeFont;
         SizeLapColumns();
         ResumeLayout(true);
         // The controls hold the new fonts now; the old ones can go.
@@ -592,7 +595,7 @@ internal sealed class WalkUpForm : Form
             var item = new ListViewItem(lap.LapNumber?.ToString() ?? "-") { UseItemStyleForSubItems = false, ForeColor = Brand.Muted };
             var time = item.SubItems.Add(LapTime.Format(lap.LapTimeMs));
             time.ForeColor = Brand.Ink;
-            time.Font = _bestSub.Font;
+            time.Font = _lapTimeFont;
             item.SubItems.Add(lap.IncidentDelta?.ToString() ?? "n/a").ForeColor = lap.IncidentDelta > 0 ? Brand.Sunset : Brand.Muted;
             var posted = lap.State == LapRowState.Posted;
             item.SubItems.Add(posted ? "posted" : "queued").ForeColor = posted ? Brand.Valid : Brand.Muted;
