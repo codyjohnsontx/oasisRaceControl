@@ -12,6 +12,7 @@ import {
   getOpenRound,
   listSeasonRounds,
 } from "@/lib/league-queries";
+import { getRaceReview } from "@/lib/race-results";
 import type { ComboOption } from "@/components/staff-league-panel";
 import { listUnattributedLaps } from "@/lib/unattributed-laps";
 import {
@@ -78,22 +79,24 @@ export default async function StaffPage() {
     ),
   ]);
 
-  const [recentRounds, openRoundDrivers, comboOptions, boardLinks] = await Promise.all([
-    season ? listSeasonRounds(season.id) : Promise.resolve([]),
-    openRound ? countRoundDrivers(openRound.id) : Promise.resolve(0),
-    listRecentCombos(),
-    // Only a board opened from one of these reports to the rig monitor
-    // (lib/board-ticket.ts); the public /tv and /tv?event=1 never do.
-    Promise.all(
-      [
-        { mode: "rotation" as const, host: null },
-        ...[null, ...tvHostKeys()].map((host) => ({ mode: "event" as const, host })),
-      ].map(async (board) => ({
-        label: boardName(board),
-        href: await staffBoardLink(board.mode, board.host),
-      })),
-    ),
-  ]);
+  const [recentRounds, openRoundDrivers, raceReview, comboOptions, boardLinks] =
+    await Promise.all([
+      season ? listSeasonRounds(season.id) : Promise.resolve([]),
+      openRound ? countRoundDrivers(openRound.id) : Promise.resolve(0),
+      openRound ? getRaceReview(openRound.id) : Promise.resolve(null),
+      listRecentCombos(),
+      // Only a board opened from one of these reports to the rig monitor
+      // (lib/board-ticket.ts); the public /tv and /tv?event=1 never do.
+      Promise.all(
+        [
+          { mode: "rotation" as const, host: null },
+          ...[null, ...tvHostKeys()].map((host) => ({ mode: "event" as const, host })),
+        ].map(async (board) => ({
+          label: boardName(board),
+          href: await staffBoardLink(board.mode, board.host),
+        })),
+      ),
+    ]);
 
   return (
     <StaffDashboard
@@ -108,6 +111,7 @@ export default async function StaffPage() {
         nextSeasonName: venueMonthName(),
         openRound,
         openRoundDrivers,
+        raceReview,
         recentRounds: recentRounds.slice(0, 6),
         comboOptions,
         todaysCombo,
