@@ -84,7 +84,7 @@ export type RaceReviewEntry = {
 };
 
 export type RaceReview = {
-  /** A race session was heard from the rigs while the round was open. */
+  /** The round has a race: a race session heard from two or more rigs while it was open (v_league_race_session). */
   raceHeard: boolean;
   /** Staff have saved this result, so no capture changes it any more. */
   confirmed: boolean;

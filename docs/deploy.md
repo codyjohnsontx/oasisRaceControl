@@ -610,8 +610,9 @@ keeps scoring exactly as before.
    from league_race_starts st
    join league_rounds r on r.id = st.round_id and r.closed_at is null
    group by st.round_id, st.session_unique_id, st.session_num;
-   -- one row for the race, rigs counting every rig in it; places fills in
-   -- from the chequered flag
+   -- one row per race session heard, rigs counting every rig in it; the
+   -- round's race is the row with the most rigs (at least two), and places
+   -- fills in from the chequered flag
    ```
 
 ## Recovering a database that is behind the code
