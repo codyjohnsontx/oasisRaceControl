@@ -335,9 +335,11 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
  *
  *  - Season standings, an arcade table of points, on every ordinary day: one
  *    slide among the others.
- *  - Qualifying, while tonight's round is open: the round's field ranked by
- *    fastest valid lap, the same ranking as `/league/[roundId]`, labelled as
- *    qualifying. This is the screen that takes the wall over.
+ *  - Qualifying, while tonight's round is open: the round's whole field ranked
+ *    by fastest valid lap, the same ranking as `/league/[roundId]`, labelled
+ *    as qualifying - past ten drivers in two halves, as the race is, since a
+ *    driver cut from the wall would have no way to know it. This is the
+ *    screen that takes the wall over.
  *  - The race, while tonight's round is open and the live feed reports a Race
  *    session with a field (`useLiveRace`): the running order in place of the
  *    ranking, refreshed on the feed's own cadence, and after the chequered
@@ -402,8 +404,9 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
         eyebrow={`${roundLabel(tonightsRound)} · Qualifying · live`}
         title={title}
         subtitle={tonightsRound.track_name}
-        entries={field.slice(0, SLOT_COUNT).map(toQualifyingEntry)}
+        entries={field.map(toQualifyingEntry)}
         columns={{ detail: "Laps", score: "Best lap" }}
+        layout="halves"
         stale={stale}
       />
     );

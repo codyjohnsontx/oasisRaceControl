@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SESSION_STATE } from "@/lib/events";
 import { liveRaceFeed, liveRaceRow } from "@/test/live-race-fixture";
-import { RaceOrder, SPLIT_AFTER } from "./race-board";
+import { RaceOrder } from "./race-board";
+import { SPLIT_AFTER } from "./arcade-board";
 
 /**
  * What the wall's race screen says about each car, pinned on the markup: the

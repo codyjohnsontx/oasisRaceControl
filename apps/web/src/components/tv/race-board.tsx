@@ -1,6 +1,7 @@
 import { formatLapTime } from "@/lib/time";
 import type { LiveRace, LiveRaceRow } from "@/lib/race-live";
 import { formatRaceGap, rowName, type RaceMove } from "@/lib/race-board";
+import { HALF_ROW_MAX_H, HALVES, SPLIT_AFTER, splitHalves } from "./arcade-board";
 
 /**
  * The wall's live race order: one row per car in the race, in the feed's
@@ -16,9 +17,8 @@ import { formatRaceGap, rowName, type RaceMove } from "@/lib/race-board";
  *
  * A league field is twenty cars and more, twice what the arcade table's ten
  * slots hold, so past `SPLIT_AFTER` rows the same composition is drawn as two
- * halves side by side, each at three quarters of the size. That is one
- * layout at two scales, not two layouts: the halves are the same markup with
- * a smaller `font-size`, so every `em` inside them shrinks together.
+ * halves side by side, each at three quarters of the size - the split
+ * `arcade-board.tsx` owns, which league night's qualifying table uses too.
  *
  * What the room is meant to read at a glance:
  *   - a row that just changed place flashes and carries ▲n / ▼n beside the
@@ -28,9 +28,6 @@ import { formatRaceGap, rowName, type RaceMove } from "@/lib/race-board";
  *   - a rig with nobody signed in reads as "Rig N" in the muted colour;
  *   - a car on pit road carries a PIT chip.
  */
-
-/** Past this many cars the table is drawn as two halves. */
-export const SPLIT_AFTER = 10;
 
 /**
  * Place, driver, laps, gap, interval, last lap, pit. Each fixed track is
@@ -63,11 +60,7 @@ type Props = {
 };
 
 export function RaceOrder({ eyebrow, title, subtitle, race, finished, moves, stale = false }: Props) {
-  const rows = race.rows;
-  const split = rows.length > SPLIT_AFTER;
-  const halves = split
-    ? [rows.slice(0, Math.ceil(rows.length / 2)), rows.slice(Math.ceil(rows.length / 2))]
-    : [rows];
+  const split = race.rows.length > SPLIT_AFTER;
 
   return (
     <section
@@ -89,10 +82,8 @@ export function RaceOrder({ eyebrow, title, subtitle, race, finished, moves, sta
       <div className="gradient-rule mt-[1.25em] mb-[1em] h-[0.25em] shrink-0 rounded-full" />
 
       {/* Two halves sit side by side at 0.75em each; one list keeps the base size. */}
-      <div
-        className={`flex min-h-0 flex-1 ${split ? "gap-[3em] text-[0.75em]" : ""}`}
-      >
-        {halves.map((half, halfIndex) => (
+      <div className={`flex min-h-0 flex-1 ${split ? HALVES : ""}`}>
+        {splitHalves(race.rows).map((half, halfIndex) => (
           <div key={halfIndex} className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className={`text-muted shrink-0 ${COLUMNS}`}>
               <span className={HEADING}>Pos</span>
@@ -136,7 +127,7 @@ function RaceRow({
       data-tv-race-row
       data-stale={row.stale ? "" : undefined}
       data-moved={moved ?? undefined}
-      className={`${COLUMNS} ${ROW_MIN_H} border-edge max-h-[5.5em] flex-1 border-b px-[0.5em] last:border-b-0 ${
+      className={`${COLUMNS} ${ROW_MIN_H} border-edge ${HALF_ROW_MAX_H} flex-1 border-b px-[0.5em] last:border-b-0 ${
         moved ? `race-row-moved race-row-${moved}` : ""
       } ${row.stale ? "opacity-40" : ""}`}
     >

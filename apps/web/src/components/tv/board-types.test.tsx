@@ -223,6 +223,44 @@ describe("league board on league night", () => {
     expect(standings).not.toContain("Qualifying");
   });
 
+  it("shows every qualifying driver, in two halves once the field is past ten", () => {
+    const entrant = (n: number) => ({
+      round_id: "r1",
+      round_number: 1,
+      driver_id: `q${n}`,
+      display_name: `Qualifier ${n}`,
+      position: n,
+      best_lap_ms: 137_000 + n * 100,
+      lap_count: 3,
+      valid_lap_count: 3,
+    });
+    const render = (size: number) => {
+      const field = Array.from({ length: size }, (_, i) => entrant(i + 1));
+      const data = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field } };
+      return renderToStaticMarkup(<league.Board spec={null} data={data} stale={false} hold={() => {}} />);
+    };
+    const lists = (html: string) => html.match(/<ol[\s\S]*?<\/ol>/g) ?? [];
+    const ranks = (list = "") =>
+      [...list.matchAll(/tabular-nums[^>]*>(\d+)</g)].map((match) => Number(match[1]));
+
+    const eighteen = lists(render(18));
+    expect(eighteen).toHaveLength(2);
+    expect(ranks(eighteen[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(ranks(eighteen[1])).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    for (let n = 1; n <= 18; n++) {
+      expect(eighteen[n <= 9 ? 0 : 1]).toContain(`>Qualifier ${n}<`);
+    }
+    // The gap is still to the overall leader in the second half.
+    expect(eighteen[1]).toContain("+1.700");
+    expect(eighteen[1]).not.toContain("· · · · ·");
+
+    // A field the arcade table holds keeps the approved single table of ten slots.
+    const two = lists(render(2));
+    expect(two).toHaveLength(1);
+    expect(ranks(two[0])).toHaveLength(SLOT_COUNT);
+    expect(two[0]).toContain("· · · · ·");
+  });
+
   it("heads the race with only 'Race' and the track, under green and under the flag", () => {
     const tonight = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field } };
     const rows = [liveRaceRow(1, 1), liveRaceRow(2, 2), liveRaceRow(3, 3)];

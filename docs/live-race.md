@@ -169,8 +169,10 @@ It is one board, not a second one, because the rotation engine's hold is a
 max over the slide on screen - a separate race slide would never be reached
 while the league board holds (`CLAUDE.md`, The `/tv` board rotation). Past
 ten cars the race table is drawn as two halves at three quarters of the size,
-so a twenty-car field fits the venue's 1272x601 wall; the sizing rules are
-the ones every `/tv` board follows.
+so a twenty-car field fits the venue's 1272x601 wall, and the qualifying
+ranking does the same past ten drivers rather than cutting the field at the
+arcade table's ten slots; the sizing rules are the ones every `/tv` board
+follows.
 
 As the fake rigs drive it, at the wall's 1272x601 and a 390px phone:
 

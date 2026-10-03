@@ -196,8 +196,9 @@ place number, because the feed renumbers from 1 after a rig drops or joins.
 On the wall it is the league board's third screen - season standings on an
 ordinary day, the open round's qualifying ranking while tonight's round is
 open, the race on top - and not a second board, because the engine lets only
-one holding board win. Past ten cars the race table draws as two halves at
-three quarters of the size (`tv/race-board.tsx`).
+one holding board win. Past ten rows the race table and the qualifying
+ranking draw every row as two halves at three quarters of the size
+(`splitHalves` in `tv/arcade-board.tsx`) - neither drops a driver.
 
 ## Lap attribution
 
