@@ -2,9 +2,10 @@
  * League night - shared types and pure helpers.
  *
  * A league runs one season at a time; a season is a run of weekly rounds; a
- * round pins one track/car combo for the night. Rounds rank the full field by
- * each driver's best valid lap; rounds roll up into season standings via the
- * single scoring rule in league-scoring.ts.
+ * round pins one track/car combo for the night. A round with a race result is
+ * placed by its finishing order, any other round by each driver's best valid
+ * lap; rounds roll up into season standings via the single scoring rule in
+ * league-scoring.ts.
  *
  * This module is import-safe from client components (no database). The SQL
  * lives in league-queries.ts, which is server-only - same split as
@@ -30,10 +31,19 @@ export type LeagueRound = {
   closed_at: string | null;
 };
 
+/** How a driver's race place was recorded (`league_race_results.source`). */
+export type FinishSource = "flag" | "close" | "staff";
+
 /**
- * One driver's result in one round. `position` is null when the driver took
- * part but never set a valid lap - they are still in the field, still on the
- * board, and still score the participation point.
+ * One driver's result in one round. The field is every driver with a lap
+ * attributed to the round or an entry in its race result.
+ *
+ * `position` is where the round places the driver: the race finishing order
+ * when the round has a race result (`raced`), otherwise the rank by best valid
+ * lap, exactly as rounds were ranked before races were. Null when the driver
+ * took part but is not placed - no valid lap, or no race finish in a raced
+ * round. They are still in the field, still on the board, and still score the
+ * participation point.
  */
 export type RoundResult = {
   round_id: string;
@@ -41,9 +51,50 @@ export type RoundResult = {
   driver_id: string;
   display_name: string;
   position: number | null;
+  /** Best valid lap anywhere in the round, race laps included. */
   best_lap_ms: number | null;
   lap_count: number;
   valid_lap_count: number;
+  /** The round is scored by its race result. The same on every row of a round. */
+  raced: boolean;
+  /**
+   * Best valid qualifying lap and its rank in the round: laps completed before
+   * the round's race began, or every lap in a round with no race. Null when
+   * the driver set no valid qualifying lap.
+   */
+  qualifying_lap_ms: number | null;
+  qualifying_position: number | null;
+  /**
+   * How the driver's race entry was recorded; null when they have none. A
+   * `staff` entry with a null `position` is a DNF.
+   */
+  finish_source: FinishSource | null;
+};
+
+/** One row of a round's race result as staff review it on /staff. */
+export type RaceReviewEntry = {
+  driver_id: string;
+  display_name: string;
+  /** As recorded: iRacing's place, or staff's. Null is a staff-marked DNF. */
+  finish_position: number | null;
+  source: FinishSource;
+  /** The rig the place was captured from; null for a driver staff added. */
+  rig_number: number | null;
+  laps_completed: number | null;
+};
+
+export type RaceReview = {
+  /** The round has a race: a race session heard from two or more rigs while it was open (v_league_race_session). */
+  raceHeard: boolean;
+  /** Staff have saved this result, so no capture changes it any more. */
+  confirmed: boolean;
+  /** In the order the round will be placed by. */
+  entries: RaceReviewEntry[];
+  /** Drivers with a lap in the round and no entry in its race. */
+  notInRace: { driver_id: string; display_name: string }[];
+  /** When the newest place the rigs captured was recorded, null before any:
+   *  saving this review is refused once a newer one arrives. */
+  capturedThrough: string | null;
 };
 
 /** A single lap inside a round, for the expanded driver view. */
@@ -157,4 +208,20 @@ export function lapsByDriver(laps: RoundLap[]): Record<string, RoundLap[]> {
     (grouped[lap.driver_id] ??= []).push(lap);
   }
   return grouped;
+}
+
+/**
+ * Places recorded for more than one driver - two rigs that reported the same
+ * place, or a car the close sweep found at a place a finisher took. The round
+ * still places them in some order; staff should check which is right.
+ */
+export function repeatedPlaces(entries: Pick<RaceReviewEntry, "finish_position">[]): Set<number> {
+  const seen = new Set<number>();
+  const repeated = new Set<number>();
+  for (const { finish_position: place } of entries) {
+    if (place === null) continue;
+    if (seen.has(place)) repeated.add(place);
+    seen.add(place);
+  }
+  return repeated;
 }

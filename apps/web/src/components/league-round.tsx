@@ -13,6 +13,7 @@ import {
   type RoundLap,
   type RoundResult,
 } from "@/lib/league";
+import { isFastestQualifier, QUALIFYING_BONUS_POINTS } from "@/lib/league-scoring";
 import { useVisiblePoll } from "@/components/use-visible-poll";
 
 type Props = {
@@ -164,7 +165,11 @@ export function LeagueRound({
     }
   }
 
-  const leaderMs = field.find((row) => row.best_lap_ms !== null)?.best_lap_ms ?? null;
+  // The fastest lap, wherever it sits: a raced round is in finishing order,
+  // and its winner need not have set it.
+  const lapTimes = field.flatMap((row) => (row.best_lap_ms === null ? [] : [row.best_lap_ms]));
+  const leaderMs = lapTimes.length > 0 ? Math.min(...lapTimes) : null;
+  const raced = field.some((row) => row.raced);
   const totalLaps = useMemo(
     () => field.reduce((sum, row) => sum + row.lap_count, 0),
     [field],
@@ -207,6 +212,11 @@ export function LeagueRound({
           {current.round_date} · {field.length} {field.length === 1 ? "driver" : "drivers"} ·{" "}
           {totalLaps} {totalLaps === 1 ? "lap" : "laps"}
         </p>
+        {raced && (
+          <p className="text-muted text-xs">
+            Placed by the race · fastest qualifying lap +{QUALIFYING_BONUS_POINTS}
+          </p>
+        )}
         {truncated && (
           <p className="text-sunset text-xs">
             This round ran past {ROUND_LAP_CAP.toLocaleString("en-US")} laps, so they
@@ -295,9 +305,15 @@ function FieldRow({
             )}
           </span>
           <span className="mt-0.5 block text-muted text-xs">
+            {row.raced && `${raceNote(row)} · `}
             {row.lap_count} {row.lap_count === 1 ? "lap" : "laps"} ·{" "}
             {row.valid_lap_count} clean
           </span>
+          {isFastestQualifier(row) && (
+            <span className="mt-0.5 block text-gold text-[10px] font-bold uppercase tracking-[0.14em]">
+              Fastest qualifier +{QUALIFYING_BONUS_POINTS}
+            </span>
+          )}
         </span>
 
         <span className="shrink-0 text-right">
@@ -309,7 +325,13 @@ function FieldRow({
             )}
           </span>
           <span className="laptime block text-xs text-muted leading-tight">
-            {gapMs === null ? "" : gapMs === 0 ? "leader" : formatGap(gapMs)}
+            {gapMs === null
+              ? ""
+              : gapMs === 0
+                ? row.raced
+                  ? "fastest lap"
+                  : "leader"
+                : formatGap(gapMs)}
           </span>
         </span>
 
@@ -326,6 +348,14 @@ function FieldRow({
       {expanded && <DriverLaps laps={laps} leaderMs={leaderMs} bestMs={row.best_lap_ms} />}
     </li>
   );
+}
+
+/** How a raced round has this driver: their finish, if not placed, and where they qualified. */
+function raceNote(row: RoundResult): string {
+  const qualified =
+    row.qualifying_position === null ? "no clean qualifying lap" : `qualified P${row.qualifying_position}`;
+  if (row.position !== null) return qualified;
+  return `${row.finish_source === "staff" ? "DNF" : "no race finish"} · ${qualified}`;
 }
 
 function DriverLaps({

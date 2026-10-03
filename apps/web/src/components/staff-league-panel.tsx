@@ -3,8 +3,9 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { comboLabel, roundLabel, type LeagueRound } from "@/lib/league";
+import { comboLabel, roundLabel, type LeagueRound, type RaceReview } from "@/lib/league";
 import { VENUE_TIMEZONE } from "@/lib/venue";
+import { StaffRaceResult } from "@/components/staff-race-result";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -21,11 +22,19 @@ const ERROR_MESSAGES = new Map<string, string>([
   ["round_already_open", "A round is already open. Close it first."],
   ["round_open", "Close tonight's round before you end the season."],
   ["no_season", "There is no open season to end - it has already been rolled over."],
+  [
+    "unknown_driver",
+    "Someone in that order is no longer in the round - the list has been refreshed.",
+  ],
+  [
+    "race_changed",
+    "A car was recorded at the flag while you were editing - it has been added. Check the order and save again.",
+  ],
 ]);
 
 /** Errors that mean this page is behind the database rather than that the
  *  action was wrong, so re-reading fixes what staff are looking at. */
-const STALE_ERRORS = new Set(["not_open", "no_season"]);
+const STALE_ERRORS = new Set(["not_open", "no_season", "unknown_driver", "race_changed"]);
 
 export type ComboOption = {
   track_name: string;
@@ -41,6 +50,8 @@ export type StaffLeagueProps = {
   openRound: LeagueRound | null;
   /** Drivers already attributed to the open round. */
   openRoundDrivers: number;
+  /** The open round's race result, for review; null when no round is open. */
+  raceReview: RaceReview | null;
   recentRounds: LeagueRound[];
   /** Combos seen in the lap history, offered as one-tap prefills. */
   comboOptions: ComboOption[];
@@ -58,6 +69,7 @@ export function StaffLeaguePanel({
   nextSeasonName,
   openRound,
   openRoundDrivers,
+  raceReview,
   recentRounds,
   comboOptions,
   todaysCombo,
@@ -74,7 +86,8 @@ export function StaffLeaguePanel({
     carName: todaysCombo?.car_name ?? "",
   });
 
-  async function post(url: string, body: object) {
+  /** Resolves true when the server accepted the change. */
+  async function post(url: string, body: object): Promise<boolean> {
     setBusy(true);
     setError(null);
     // The venue tablet is on shop wifi; without a deadline a dropped request
@@ -93,15 +106,17 @@ export function StaffLeaguePanel({
         const code = payload.error ?? "";
         setError(ERROR_MESSAGES.get(code) ?? "That didn't go through - try again.");
         if (STALE_ERRORS.has(code)) router.refresh();
-        return;
+        return false;
       }
       router.refresh();
+      return true;
     } catch (error) {
       setError(
         (error as Error)?.name === "AbortError"
           ? "Timed out - refresh to check whether it went through."
           : "Network problem - nothing was changed.",
       );
+      return false;
     } finally {
       clearTimeout(timeout);
       setBusy(false);
@@ -201,62 +216,84 @@ export function StaffLeaguePanel({
       )}
 
       {openRound ? (
-        <div className="bg-surface border border-valid rounded-xl p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <p className="flex items-center gap-2 font-bold">
-              <span className="h-2 w-2 rounded-full bg-valid animate-pulse" aria-hidden />
-              {roundLabel(openRound)} is open
-            </p>
-            <p className="text-muted text-sm truncate">{comboLabel(openRound)}</p>
-            <p className="text-muted text-xs">
-              {openRoundDrivers} {openRoundDrivers === 1 ? "driver" : "drivers"} so far ·
-              {/* Venue time, not the tablet's - a device on the wrong zone
-                  would otherwise report the round opening at the wrong hour. */}
-              opened{" "}
-              {new Date(openRound.opened_at).toLocaleTimeString("en-US", {
-                timeZone: VENUE_TIMEZONE,
-              })}
-            </p>
-          </div>
-          {/* Two-tap confirm rather than window.confirm: a native dialog on the
-              venue tablet blocks the whole page and reads like an error. */}
-          <div className="flex items-center gap-2 shrink-0">
-            <Link
-              href={`/league/${openRound.id}`}
-              className="text-xs font-bold uppercase tracking-wider border border-edge rounded-md px-3 py-2"
-            >
-              View field
-            </Link>
-            {confirmingClose ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setConfirmingClose(false)}
-                  className="text-xs font-bold uppercase tracking-wider border border-edge rounded-md px-3 py-2"
-                >
-                  Cancel
-                </button>
+        <>
+          <div className="bg-surface border border-valid rounded-xl p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="flex items-center gap-2 font-bold">
+                <span className="h-2 w-2 rounded-full bg-valid animate-pulse" aria-hidden />
+                {roundLabel(openRound)} is open
+              </p>
+              <p className="text-muted text-sm truncate">{comboLabel(openRound)}</p>
+              <p className="text-muted text-xs">
+                {openRoundDrivers} {openRoundDrivers === 1 ? "driver" : "drivers"} so far ·{" "}
+                {/* Venue time, not the tablet's - a device on the wrong zone
+                    would otherwise report the round opening at the wrong hour. */}
+                opened{" "}
+                {new Date(openRound.opened_at).toLocaleTimeString("en-US", {
+                  timeZone: VENUE_TIMEZONE,
+                })}
+              </p>
+            </div>
+            {/* Two-tap confirm rather than window.confirm: a native dialog on the
+                venue tablet blocks the whole page and reads like an error. */}
+            <div className="flex items-center gap-2 shrink-0">
+              <Link
+                href={`/league/${openRound.id}`}
+                className="text-xs font-bold uppercase tracking-wider border border-edge rounded-md px-3 py-2"
+              >
+                View field
+              </Link>
+              {confirmingClose ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingClose(false)}
+                    className="text-xs font-bold uppercase tracking-wider border border-edge rounded-md px-3 py-2"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={closeRound}
+                    className="text-xs font-bold uppercase tracking-wider bg-invalid text-bg rounded-md px-3 py-2 disabled:opacity-40"
+                  >
+                    Confirm: results final
+                  </button>
+                </>
+              ) : (
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={closeRound}
-                  className="text-xs font-bold uppercase tracking-wider bg-invalid text-bg rounded-md px-3 py-2 disabled:opacity-40"
+                  onClick={() => setConfirmingClose(true)}
+                  className="text-xs font-bold uppercase tracking-wider text-invalid border border-invalid rounded-md px-3 py-2 disabled:opacity-40"
                 >
-                  Confirm: results final
+                  Close round
                 </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setConfirmingClose(true)}
-                className="text-xs font-bold uppercase tracking-wider text-invalid border border-invalid rounded-md px-3 py-2 disabled:opacity-40"
-              >
-                Close round
-              </button>
-            )}
+              )}
+            </div>
           </div>
-        </div>
+          {confirmingClose && raceReview && !raceReview.confirmed && raceReview.raceHeard && (
+            <p className="text-sunset text-xs mt-2">
+              The race result has not been checked. Closing records it as it stands, with any
+              car missing a place at the place it last reported.
+            </p>
+          )}
+          {raceReview && (
+            <StaffRaceResult
+              review={raceReview}
+              busy={busy}
+              onSave={(finishers, dnf, capturedThrough) =>
+                post("/api/staff/league/race-result", {
+                  roundId: openRound.id,
+                  finishers,
+                  dnf,
+                  capturedThrough,
+                })
+              }
+            />
+          )}
+        </>
       ) : (
         <form
           onSubmit={openRoundSubmit}

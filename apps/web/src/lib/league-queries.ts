@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { constraintName, query, queryOne, withTransaction } from "./db";
 import { DRIVER_LAP_CAP, ROUND_LAP_CAP } from "./league";
 import type { LeagueRound, LeagueSeason, RoundLap, RoundResult } from "./league";
+import { sweepRaceResultsTx } from "./race-results";
 import { venueMonthName } from "./venue";
 
 /**
@@ -97,10 +98,27 @@ export async function listSeasonRounds(seasonId: string): Promise<LeagueRound[]>
  * (`scope: "round"`) and season standings (`scope: "season"`) so the two can
  * never disagree about who finished where.
  *
- * The field is every driver with a lap attributed to the round. Attribution
- * ignores validity, so a driver who binned every lap is still on the board
- * with position null. Banned/flagged drivers are filtered out BEFORE ranking,
- * so they never occupy a position.
+ * The field is every driver with a lap attributed to the round or an entry in
+ * its race result (v_league_race_results, which owns which captured rows are
+ * the round's race; lib/race-results.ts is the only writer).
+ * Attribution ignores validity, so a driver who binned every lap is still on
+ * the board with position null. Banned/flagged drivers are filtered out BEFORE
+ * ranking, so they never occupy a position.
+ *
+ * A round with any race result row is `raced` and placed by it: finishers in
+ * the recorded order, numbered 1..n whatever numbers iRacing gave them, since
+ * a car nobody was signed in to leaves a gap and two rigs can briefly report
+ * one place. A car the flag capture recorded goes ahead of one only the close
+ * sweep found - that car never reached the flag - and laps completed break a
+ * repeated place. Everyone else in a raced round is unplaced. A round with no
+ * race result is ranked by best valid lap, exactly as every round was before.
+ *
+ * Qualifying is the laps completed before the round's race began - the start
+ * of its race session (v_league_race_session) - or every lap when the round
+ * has no race.
+ * The start is the server's clock and lap times are the rig's; iRacing grids
+ * and paces the field between the end of qualifying and the green, so ordinary
+ * clock skew does not move a lap across it.
  */
 async function queryRoundResults(
   scope: "round" | "season",
@@ -115,10 +133,19 @@ async function queryRoundResults(
      rl as (
        select l.* from v_league_round_laps l join r on r.id = l.round_id
      ),
+     res as (
+       select rr.* from v_league_race_results rr join r on r.id = rr.round_id
+     ),
+     race_start as (
+       select rs.round_id, rs.started_at
+       from v_league_race_session rs join r on r.id = rs.round_id
+     ),
      field as (
-       select distinct rl.round_id, rl.driver_id, d.display_name
-       from rl
-       join drivers d on d.id = rl.driver_id and d.status = 'active'
+       select f.round_id, f.driver_id, d.display_name
+       from (select round_id, driver_id from rl
+             union
+             select round_id, driver_id from res) f
+       join drivers d on d.id = f.driver_id and d.status = 'active'
      ),
      counts as (
        select f.round_id, f.driver_id,
@@ -134,28 +161,63 @@ async function queryRoundResults(
        from rl
        where rl.is_valid
        order by rl.round_id, rl.driver_id, rl.lap_time_ms asc, rl.completed_at asc, rl.lap_id asc
+     ),
+     quali as (
+       select distinct on (rl.round_id, rl.driver_id)
+         rl.round_id, rl.driver_id, rl.lap_time_ms, rl.completed_at
+       from rl
+       left join race_start rs on rs.round_id = rl.round_id
+       where rl.is_valid and (rs.started_at is null or rl.completed_at < rs.started_at)
+       order by rl.round_id, rl.driver_id, rl.lap_time_ms asc, rl.completed_at asc, rl.lap_id asc
+     ),
+     ranked as (
+       select f.round_id, f.driver_id, f.display_name,
+              exists (select 1 from res where res.round_id = f.round_id) as raced,
+              case when b.lap_time_ms is null then null else
+                row_number() over (
+                  partition by f.round_id
+                  order by b.lap_time_ms asc nulls last, b.completed_at asc, f.display_name asc
+                )::int
+              end as lap_position,
+              case when x.finish_position is null then null else
+                row_number() over (
+                  partition by f.round_id
+                  order by x.finish_position is null, x.source = 'close',
+                           x.finish_position asc, x.laps_completed desc nulls last,
+                           f.display_name asc
+                )::int
+              end as race_position,
+              b.lap_time_ms as best_lap_ms,
+              q.lap_time_ms as qualifying_lap_ms,
+              case when q.lap_time_ms is null then null else
+                row_number() over (
+                  partition by f.round_id
+                  order by q.lap_time_ms asc nulls last, q.completed_at asc, f.display_name asc
+                )::int
+              end as qualifying_position,
+              x.source as finish_source
+       from field f
+       left join best b on b.round_id = f.round_id and b.driver_id = f.driver_id
+       left join quali q on q.round_id = f.round_id and q.driver_id = f.driver_id
+       left join res x on x.round_id = f.round_id and x.driver_id = f.driver_id
      )
      select r.id as round_id, r.round_number,
-            f.driver_id, f.display_name::text as display_name,
+            k.driver_id, k.display_name::text as display_name,
+            case when k.raced then k.race_position else k.lap_position end as position,
             c.lap_count, c.valid_lap_count,
-            b.lap_time_ms as best_lap_ms,
-            case when b.lap_time_ms is null then null else
-              row_number() over (
-                partition by f.round_id
-                order by b.lap_time_ms asc nulls last, b.completed_at asc, f.display_name asc
-              )::int
-            end as position
-     from field f
-     join r on r.id = f.round_id
-     join counts c on c.round_id = f.round_id and c.driver_id = f.driver_id
-     left join best b on b.round_id = f.round_id and b.driver_id = f.driver_id
-     order by r.round_number asc, position asc nulls last, f.display_name asc`,
+            k.best_lap_ms, k.raced, k.qualifying_lap_ms, k.qualifying_position,
+            k.finish_source
+     from ranked k
+     join r on r.id = k.round_id
+     join counts c on c.round_id = k.round_id and c.driver_id = k.driver_id
+     order by r.round_number asc, position asc nulls last,
+              k.qualifying_position asc nulls last, k.display_name asc`,
     [id],
   );
 }
 
-/** One round's full field, ranked by best valid lap. Drivers with no valid lap
- *  come last with position null. */
+/** One round's full field, placed by its race or by best valid lap. Drivers
+ *  not placed come last with position null. */
 export function getRoundField(roundId: string): Promise<RoundResult[]> {
   return queryRoundResults("round", roundId);
 }
@@ -243,10 +305,11 @@ export async function getRoundLaps(
  *  paying for the ranking - the staff dashboard only shows the number. */
 export async function countRoundDrivers(roundId: string): Promise<number> {
   const row = await queryOne<{ drivers: number }>(
-    `select count(distinct rl.driver_id)::int as drivers
-     from v_league_round_laps rl
-     join drivers d on d.id = rl.driver_id and d.status = 'active'
-     where rl.round_id = $1`,
+    `select count(*)::int as drivers
+     from (select driver_id from v_league_round_laps where round_id = $1
+           union
+           select driver_id from v_league_race_results where round_id = $1) f
+     join drivers d on d.id = f.driver_id and d.status = 'active'`,
     [roundId],
   );
   return row?.drivers ?? 0;
@@ -454,20 +517,23 @@ export async function openLeagueRound(input: {
 }
 
 /**
- * Close a round and put the featured combo back the way opening it found it -
+ * Close a round, record any race place still missing (sweepRaceResultsTx), and
+ * put the featured combo back the way opening it found it -
  * restoring the venue's own combo if it had one, deleting the row if it had
  * none. Without this the round's combo stays pinned for the rest of the venue
  * day and every ordinary customer lap on other content is stored invalid and
  * drops off Fastest Tonight.
  *
- * Both halves share one transaction: a round whose combo was not restored
- * would be final with no control left to undo it. Returns null when the round
- * is already closed or unknown.
+ * All of it shares one transaction: a round whose combo was not restored
+ * would be final with no control left to undo it, and the sweep must read the
+ * race as it stood when the round closed. Returns null when the round is
+ * already closed or unknown.
  */
 export async function closeLeagueRound(roundId: string): Promise<{
   id: string;
   roundNumber: number;
   restoredCombo: PriorFeaturedCombo | null;
+  racePlacesSwept: number;
 } | null> {
   return withTransaction(async (client) => {
     const closed = await client.query<{
@@ -484,6 +550,8 @@ export async function closeLeagueRound(roundId: string): Promise<{
     );
     const round = closed.rows[0];
     if (!round) return null;
+
+    const racePlacesSwept = await sweepRaceResultsTx(client, round.id);
 
     const prior = round.prior_featured_combo;
     if (prior) {
@@ -504,6 +572,7 @@ export async function closeLeagueRound(roundId: string): Promise<{
       id: round.id,
       roundNumber: round.round_number,
       restoredCombo: prior,
+      racePlacesSwept,
     };
   });
 }
