@@ -163,8 +163,9 @@ phone agree by construction:
 
 On the wall this is the third screen of the league board, which already takes
 the wall over while tonight's round is open: season standings on an ordinary
-day, the round's qualifying ranking (fastest valid lap, the same ranking as
-`/league/[roundId]`) while the round is open, and the race on top of that.
+day, the round's qualifying ranking (fastest valid lap before the race
+began, the "qualified P#" of `/league/[roundId]`) while the round is open,
+even after the race has placed the round, and the race on top of that.
 It is one board, not a second one, because the rotation engine's hold is a
 max over the slide on screen - a separate race slide would never be reached
 while the league board holds (`CLAUDE.md`, The `/tv` board rotation). Past

@@ -275,9 +275,10 @@ type LeagueData = {
   rounds: LeagueRound[];
   standings: SeasonStanding[];
   /**
-   * Tonight's qualifying: the open round's field ranked by fastest valid lap,
-   * from the same round endpoint `/league/[roundId]` reads. Null on every
-   * other day, when the board shows the season standings.
+   * Tonight's qualifying: the open round's field, from the same round
+   * endpoint `/league/[roundId]` reads, in the endpoint's order - the board
+   * reorders it by qualifying. Null on every other day, when the board shows
+   * the season standings.
    */
   qualifying: { round: LeagueRound; field: RoundResult[] } | null;
 };
@@ -300,8 +301,8 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
       throw new Error("malformed league response");
     }
     // Only the round that owns the wall tonight is qualifying; the field is
-    // read from the round endpoint so the wall ranks exactly what the phone's
-    // round page ranks.
+    // read from the round endpoint so the wall's qualifying rank is the one
+    // the phone's round page shows as "qualified P#".
     const tonightsRound = data.rounds.find(isOpenTonight) ?? null;
     let qualifying: LeagueData["qualifying"] = null;
     if (tonightsRound) {
@@ -336,8 +337,9 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
  *  - Season standings, an arcade table of points, on every ordinary day: one
  *    slide among the others.
  *  - Qualifying, while tonight's round is open: the round's whole field ranked
- *    by fastest valid lap, the same ranking as `/league/[roundId]`, labelled
- *    as qualifying - past ten drivers in two halves, as the race is, since a
+ *    by fastest valid qualifying lap - laps before the race began - which is
+ *    the round's `qualifying_position`, not its placing, since a raced round
+ *    is placed by its finish - past ten drivers in two halves, as the race is, since a
  *    driver cut from the wall would have no way to know it. This is the
  *    screen that takes the wall over.
  *  - The race, while tonight's round is open and the live feed reports a Race
@@ -404,7 +406,7 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
         eyebrow={`${roundLabel(tonightsRound)} · Qualifying · live`}
         title={title}
         subtitle={tonightsRound.track_name}
-        entries={field.map(toQualifyingEntry)}
+        entries={byQualifying(field).map(toQualifyingEntry)}
         columns={{ detail: "Laps", score: "Best lap" }}
         layout="halves"
         stale={stale}
@@ -436,16 +438,28 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
 }
 
 /**
- * A qualifying row: the driver's best valid lap tonight, and how many laps it
- * took. The table works the gap to the leader out from the time. A driver in
- * the field with no valid lap yet has no time to show and ranks last, which
- * the round feed already does; their score cell reads as the unset time.
+ * The field in qualifying order, by the rank the round feed computed. A
+ * driver with no valid qualifying lap has none and goes last, in the feed's
+ * own order.
+ */
+const byQualifying = (field: RoundResult[]) =>
+  [...field].sort((a, b) =>
+    a.qualifying_position === null || b.qualifying_position === null
+      ? Number(a.qualifying_position === null) - Number(b.qualifying_position === null)
+      : a.qualifying_position - b.qualifying_position,
+  );
+
+/**
+ * A qualifying row: the driver's best valid qualifying lap, and how many laps
+ * they have driven tonight. The table works the gap to the leader out from the
+ * time. A driver in the field with no valid qualifying lap has no time to
+ * show; their score cell reads as the unset time.
  */
 const toQualifyingEntry = (row: RoundResult): ArcadeEntry => ({
   id: row.driver_id,
   name: row.display_name,
   detail: `${row.lap_count} ${row.lap_count === 1 ? "lap" : "laps"}`,
-  timeMs: row.best_lap_ms ?? undefined,
+  timeMs: row.qualifying_lap_ms ?? undefined,
 });
 
 const roundCount = (n: number) => `${n} round${n === 1 ? "" : "s"}`;

@@ -4,6 +4,7 @@ import { venueToday } from "@/lib/venue";
 import { SESSION_STATE } from "@/lib/events";
 import type { LiveRaceView } from "@/components/use-live-race";
 import { liveRaceFeed, liveRaceRow } from "@/test/live-race-fixture";
+import type { RoundResult } from "@/lib/league";
 import { TV_BOARD_TYPES, buildRotation } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
 
@@ -155,10 +156,34 @@ describe("league board on league night", () => {
     opened_at: "2026-10-01T23:00:00Z",
     closed_at,
   });
+  /** A row of a round with no race result: placed, and qualified, by best lap. */
+  function result(
+    driver_id: string,
+    display_name: string,
+    position: number | null,
+    best_lap_ms: number | null,
+    extra: Partial<RoundResult> = {},
+  ): RoundResult {
+    return {
+      round_id: "r1",
+      round_number: 1,
+      driver_id,
+      display_name,
+      position,
+      best_lap_ms,
+      lap_count: 3,
+      valid_lap_count: 3,
+      raced: false,
+      qualifying_lap_ms: best_lap_ms,
+      qualifying_position: position,
+      finish_source: null,
+      ...extra,
+    };
+  }
   const field = [
-    { round_id: "r1", round_number: 1, driver_id: "d1", display_name: "Jordan R.", position: 1, best_lap_ms: 137_683, lap_count: 7, valid_lap_count: 7 },
-    { round_id: "r1", round_number: 1, driver_id: "d2", display_name: "Cody J.", position: 2, best_lap_ms: 137_879, lap_count: 6, valid_lap_count: 5 },
-    { round_id: "r1", round_number: 1, driver_id: "d3", display_name: "Alexis M.", position: null, best_lap_ms: null, lap_count: 1, valid_lap_count: 0 },
+    result("d1", "Jordan R.", 1, 137_683, { lap_count: 7, valid_lap_count: 7 }),
+    result("d2", "Cody J.", 2, 137_879, { lap_count: 6, valid_lap_count: 5 }),
+    result("d3", "Alexis M.", null, null, { lap_count: 1, valid_lap_count: 0 }),
   ];
   const standing = {
     driver_id: "d1",
@@ -224,16 +249,7 @@ describe("league board on league night", () => {
   });
 
   it("shows every qualifying driver, in two halves once the field is past ten", () => {
-    const entrant = (n: number) => ({
-      round_id: "r1",
-      round_number: 1,
-      driver_id: `q${n}`,
-      display_name: `Qualifier ${n}`,
-      position: n,
-      best_lap_ms: 137_000 + n * 100,
-      lap_count: 3,
-      valid_lap_count: 3,
-    });
+    const entrant = (n: number) => result(`q${n}`, `Qualifier ${n}`, n, 137_000 + n * 100);
     const render = (size: number) => {
       const field = Array.from({ length: size }, (_, i) => entrant(i + 1));
       const data = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field } };
@@ -259,6 +275,29 @@ describe("league board on league night", () => {
     expect(two).toHaveLength(1);
     expect(ranks(two[0])).toHaveLength(SLOT_COUNT);
     expect(two[0]).toContain("· · · · ·");
+  });
+
+  it("ranks qualifying by qualifying laps after the race has placed the round", () => {
+    // The race finished Cody, Alexis, Jordan, and Cody's race lap beat every
+    // qualifying lap; qualifying was Jordan, then Alexis, and Cody set no clean
+    // lap before the start.
+    const raced = { raced: true, finish_source: "flag" as const };
+    const placed = [
+      result("d2", "Cody J.", 1, 136_900, { ...raced, qualifying_lap_ms: null, qualifying_position: null }),
+      result("d3", "Alexis M.", 2, 137_300, { ...raced, qualifying_lap_ms: 137_900, qualifying_position: 2 }),
+      result("d1", "Jordan R.", 3, 137_500, { ...raced, qualifying_lap_ms: 137_683, qualifying_position: 1 }),
+    ];
+    const data = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field: placed } };
+    const html = renderToStaticMarkup(<league.Board spec={null} data={data} stale={false} hold={() => {}} />);
+    const rows = html.match(/<li[\s\S]*?<\/li>/g) ?? [];
+    expect(rows[0]).toContain(">Jordan R.<");
+    expect(rows[0]).toContain("2:17.683");
+    expect(rows[1]).toContain(">Alexis M.<");
+    expect(rows[1]).toContain("2:17.900");
+    expect(rows[1]).toContain("+0.217");
+    expect(rows[2]).toContain(">Cody J.<");
+    expect(rows[2]).toContain("--.---");
+    for (const raceLap of ["2:16.900", "2:17.300", "2:17.500"]) expect(html).not.toContain(raceLap);
   });
 
   it("heads the race with only 'Race' and the track, under green and under the flag", () => {
