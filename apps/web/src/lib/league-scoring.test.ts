@@ -3,7 +3,9 @@ import type { RoundResult } from "./league";
 import {
   PARTICIPATION_POINTS,
   POINTS_BY_POSITION,
+  QUALIFYING_BONUS_POINTS,
   computeSeasonStandings,
+  isFastestQualifier,
   roundPoints,
 } from "./league-scoring";
 
@@ -16,27 +18,74 @@ function result(overrides: Partial<RoundResult> & { driver_id: string }): RoundR
     best_lap_ms: null,
     lap_count: 0,
     valid_lap_count: 0,
+    raced: false,
+    qualifying_lap_ms: null,
+    qualifying_position: null,
+    finish_source: null,
     ...overrides,
   };
 }
 
+/** A place in a round with no race result, ranked by fastest lap as every
+ *  round was before races were recorded. */
+const lapRound = (position: number | null) => ({
+  position,
+  raced: false,
+  qualifying_position: position,
+});
+
+/** A place in a raced round, with where the driver qualified. */
+const raceRound = (position: number | null, qualifying_position: number | null = null) => ({
+  position,
+  raced: true,
+  qualifying_position,
+});
+
 describe("roundPoints", () => {
   it("pays the table for scoring positions", () => {
-    expect(roundPoints({ position: 1 })).toBe(POINTS_BY_POSITION[0]);
-    expect(roundPoints({ position: 3 })).toBe(POINTS_BY_POSITION[2]);
-    expect(roundPoints({ position: POINTS_BY_POSITION.length })).toBe(
+    expect(roundPoints(lapRound(1))).toBe(POINTS_BY_POSITION[0]);
+    expect(roundPoints(lapRound(3))).toBe(POINTS_BY_POSITION[2]);
+    expect(roundPoints(lapRound(POINTS_BY_POSITION.length))).toBe(
       POINTS_BY_POSITION[POINTS_BY_POSITION.length - 1],
     );
   });
 
   it("pays participation outside the table", () => {
-    expect(roundPoints({ position: POINTS_BY_POSITION.length + 1 })).toBe(
+    expect(roundPoints(lapRound(POINTS_BY_POSITION.length + 1))).toBe(
       PARTICIPATION_POINTS,
     );
   });
 
   it("pays participation to a driver who set no valid lap", () => {
-    expect(roundPoints({ position: null })).toBe(PARTICIPATION_POINTS);
+    expect(roundPoints(lapRound(null))).toBe(PARTICIPATION_POINTS);
+  });
+});
+
+describe("roundPoints in a round with a race result", () => {
+  it("pays the table for the finishing order", () => {
+    expect(roundPoints(raceRound(1, 4))).toBe(POINTS_BY_POSITION[0]);
+    expect(roundPoints(raceRound(5, 2))).toBe(POINTS_BY_POSITION[4]);
+    expect(roundPoints(raceRound(6, 3))).toBe(PARTICIPATION_POINTS);
+  });
+
+  it("adds the bonus for the fastest qualifying lap on top of the race", () => {
+    expect(roundPoints(raceRound(1, 1))).toBe(POINTS_BY_POSITION[0] + QUALIFYING_BONUS_POINTS);
+    expect(roundPoints(raceRound(9, 1))).toBe(PARTICIPATION_POINTS + QUALIFYING_BONUS_POINTS);
+  });
+
+  it("pays participation, and still the bonus, to a driver with no race finish", () => {
+    // Qualified but crashed out, stopped reporting, or was marked DNF.
+    expect(roundPoints(raceRound(null, 3))).toBe(PARTICIPATION_POINTS);
+    expect(roundPoints(raceRound(null, 1))).toBe(PARTICIPATION_POINTS + QUALIFYING_BONUS_POINTS);
+    // Raced without ever setting a clean qualifying lap.
+    expect(roundPoints(raceRound(2, null))).toBe(POINTS_BY_POSITION[1]);
+  });
+
+  it("gives no bonus in a round with no race, where P1 already is the fastest lap", () => {
+    expect(roundPoints(lapRound(1))).toBe(POINTS_BY_POSITION[0]);
+    expect(isFastestQualifier({ raced: false, qualifying_position: 1 })).toBe(false);
+    expect(isFastestQualifier({ raced: true, qualifying_position: 1 })).toBe(true);
+    expect(isFastestQualifier({ raced: true, qualifying_position: 2 })).toBe(false);
   });
 });
 
@@ -132,9 +181,9 @@ describe("computeSeasonStandings", () => {
   it("pays fifth place and mere participation the same, by design", () => {
     // The venue's rule ends at P5 = 1 and pays 1 for turning up, so these two
     // land on the same number through different branches of roundPoints.
-    expect(roundPoints({ position: POINTS_BY_POSITION.length })).toBe(PARTICIPATION_POINTS);
-    expect(roundPoints({ position: null })).toBe(PARTICIPATION_POINTS);
-    expect(roundPoints({ position: POINTS_BY_POSITION.length + 1 })).toBe(
+    expect(roundPoints(lapRound(POINTS_BY_POSITION.length))).toBe(PARTICIPATION_POINTS);
+    expect(roundPoints(lapRound(null))).toBe(PARTICIPATION_POINTS);
+    expect(roundPoints(lapRound(POINTS_BY_POSITION.length + 1))).toBe(
       PARTICIPATION_POINTS,
     );
   });
@@ -160,5 +209,42 @@ describe("computeSeasonStandings", () => {
       points: PARTICIPATION_POINTS,
       best_position: null,
     });
+  });
+
+  it("adds race rounds, bonus included, to rounds scored by fastest lap", () => {
+    const standings = computeSeasonStandings([
+      // Round 1 from before races were recorded: placed by fastest lap.
+      result({ driver_id: "a", position: 1, qualifying_position: 1 }),
+      result({ driver_id: "b", position: 2, qualifying_position: 2 }),
+      // Round 2 was raced: b won it, a took the fastest qualifying lap and
+      // crashed out.
+      result({
+        driver_id: "b",
+        round_id: "round-2",
+        round_number: 2,
+        raced: true,
+        position: 1,
+        qualifying_position: 2,
+        finish_source: "flag",
+      }),
+      result({
+        driver_id: "a",
+        round_id: "round-2",
+        round_number: 2,
+        raced: true,
+        position: null,
+        qualifying_position: 1,
+      }),
+    ]);
+
+    expect(standings.map((s) => [s.driver_id, s.points, s.wins])).toEqual([
+      ["b", POINTS_BY_POSITION[1] + POINTS_BY_POSITION[0], 1],
+      ["a", POINTS_BY_POSITION[0] + PARTICIPATION_POINTS + QUALIFYING_BONUS_POINTS, 1],
+    ]);
+    const a = standings.find((s) => s.driver_id === "a")!;
+    expect(a.rounds.map((r) => [r.raced, r.fastest_qualifier, r.points])).toEqual([
+      [false, false, POINTS_BY_POSITION[0]],
+      [true, true, PARTICIPATION_POINTS + QUALIFYING_BONUS_POINTS],
+    ]);
   });
 });

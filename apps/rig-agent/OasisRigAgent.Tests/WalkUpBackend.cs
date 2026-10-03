@@ -7,7 +7,9 @@ namespace OasisRigAgent.Tests;
 /// <summary>The deployed routes this flow reaches: Mike's PIN is 4321, so
 /// any other PIN fails login and then finds the name taken; "Guest" is
 /// taken but no PIN logs it in, as a guest's or a banned driver's name;
-/// any other name is new and registers. A check-in
+/// any other name is new and registers. The name lookup says Mike and Guest
+/// are taken, and any name registered since. The tonight feed answers with
+/// <see cref="TonightFeed"/>, empty unless a test sets it. A check-in
 /// while Mike's stint is still open answers with that same stint, as
 /// check_in_driver does; otherwise it opens a new one.</summary>
 internal sealed class WalkUpBackend : HttpMessageHandler
@@ -21,6 +23,10 @@ internal sealed class WalkUpBackend : HttpMessageHandler
     public volatile bool FailNextCheckIn;
     private readonly Dictionary<string, string> _pins = new() { ["Mike"] = "4321" };
     public volatile bool RefuseLaps;
+    /// <summary>What `/api/leaderboard/tonight` answers, as the route writes it.</summary>
+    public volatile string TonightFeed = """{"rows":[],"combo":null}""";
+    public volatile bool TonightUnreachable;
+    public int TonightReads;
     public int AssignmentPolls;
     private volatile string? _open;
 
@@ -41,6 +47,12 @@ internal sealed class WalkUpBackend : HttpMessageHandler
     {
         var path = request.RequestUri!.AbsolutePath;
         if (path == "/api/agent/checkout" && CheckoutUnreachable) throw new HttpRequestException("venue wifi is down");
+        if (path == "/api/leaderboard/tonight")
+        {
+            Interlocked.Increment(ref TonightReads);
+            if (TonightUnreachable) throw new HttpRequestException("venue wifi is down");
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(TonightFeed, Encoding.UTF8, "application/json") };
+        }
         if (path == "/api/agent/assignment") Interlocked.Increment(ref AssignmentPolls);
         var text = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
         var body = string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
@@ -48,8 +60,10 @@ internal sealed class WalkUpBackend : HttpMessageHandler
         var pin = body?["pin"]?.GetValue<string>() ?? "";
         if (path == "/api/auth/register") lock (RegisteredPins) RegisteredPins.Add(pin);
         var identity = """{"driverId":""" + $"\"{(name == "Mike" ? "d-mike" : "d-new")}\",\"displayName\":\"{name}\"" + "}";
+        var lookedUp = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query)["displayName"] ?? "";
         var (status, answer) = path switch
         {
+            "/api/auth/name" => (HttpStatusCode.OK, Taken(lookedUp) ? """{"taken":true}""" : """{"taken":false}"""),
             "/api/auth/login" when Knows(name, pin) => (HttpStatusCode.OK, identity),
             "/api/auth/login" => (HttpStatusCode.Unauthorized, """{"error":"invalid_credentials"}"""),
             "/api/auth/register" when !SignUp(name, pin) => (HttpStatusCode.Conflict, """{"error":"name_taken"}"""),
@@ -85,6 +99,13 @@ internal sealed class WalkUpBackend : HttpMessageHandler
             });
         }
         return new JsonObject { ["results"] = results }.ToJsonString();
+    }
+
+    /// <summary>The lookup: a registered name, in any case, or the guest's.</summary>
+    private bool Taken(string name)
+    {
+        lock (_pins) return string.Equals(name, "Guest", StringComparison.OrdinalIgnoreCase)
+            || _pins.Keys.Any(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
     }
 
     private bool Knows(string name, string pin)

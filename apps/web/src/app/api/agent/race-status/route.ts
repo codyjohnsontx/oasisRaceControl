@@ -3,6 +3,7 @@ import { rigFromBearer } from "@/lib/agent-auth";
 import { MAX_RACE_STATUS_BODY_BYTES, raceStatusEvent } from "@/lib/events";
 import { parseJson, readBody } from "@/lib/http";
 import { RACE_STALE_AFTER_S } from "@/lib/race-live";
+import { captureRaceReport } from "@/lib/race-results";
 
 /**
  * One rig's live race status (`raceStatusEvent` in src/lib/events.ts, which
@@ -28,6 +29,15 @@ import { RACE_STALE_AFTER_S } from "@/lib/race-live";
  * A refused report still answers 200: it was valid, only late, and the agent
  * has nothing to do about it.
  *
+ * A stored report also feeds tonight's league round its race result
+ * (lib/race-results.ts): when the race began and, from the chequered flag on,
+ * the rig's driver's place. That runs after the report is stored and answers
+ * 200 even when it fails - the board already has the report, and the next
+ * report, seconds later, records the place again. The row keeps the rig's
+ * assignment as it stood when the report was stored (`rig_assignment_id`),
+ * and that, not whoever is in the seat later, is the driver the report scores
+ * for - the close sweep reads a rig's last report long after it arrived.
+ *
  * It does not touch `rigs.last_seen_at`: the heartbeat owns that, and a
  * second write per report, several a second across the venue, buys nothing.
  */
@@ -50,15 +60,18 @@ export async function POST(request: Request) {
   }
 
   const s = parsed.data;
+  let stored: { rig_assignment_id: string | null } | undefined;
   try {
-    await query(
+    const written = await query<{ rig_assignment_id: string | null }>(
       `insert into rig_race_status (
          rig_id, received_at, sampled_at, session_unique_id, session_num, session_type,
          session_state, session_flags, session_time_remain_s, session_laps_remain,
          car_idx, position, class_position, lap, laps_completed, lap_dist_pct,
-         gap_to_leader_s, last_lap_ms, best_lap_ms, on_pit_road, incidents)
+         gap_to_leader_s, last_lap_ms, best_lap_ms, on_pit_road, incidents,
+         rig_assignment_id)
        values ($1, now(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-               $15, $16, $17, $18, $19, $20)
+               $15, $16, $17, $18, $19, $20,
+               (select id from rig_assignments where rig_id = $1 and ended_at is null))
        on conflict (rig_id) do update set
          received_at = excluded.received_at,
          sampled_at = excluded.sampled_at,
@@ -79,9 +92,11 @@ export async function POST(request: Request) {
          last_lap_ms = excluded.last_lap_ms,
          best_lap_ms = excluded.best_lap_ms,
          on_pit_road = excluded.on_pit_road,
-         incidents = excluded.incidents
+         incidents = excluded.incidents,
+         rig_assignment_id = excluded.rig_assignment_id
        where excluded.sampled_at > rig_race_status.sampled_at
-          or rig_race_status.received_at < now() - make_interval(secs => $21)`,
+          or rig_race_status.received_at < now() - make_interval(secs => $21)
+       returning rig_assignment_id`,
       [
         rig.id,
         s.sampledAt,
@@ -106,11 +121,20 @@ export async function POST(request: Request) {
         RACE_STALE_AFTER_S,
       ],
     );
-    return new Response(null, { status: 200 });
+    stored = written[0];
   } catch (error) {
     // The agent drops a report that fails and sends the next sample; there is
     // nothing to retry.
     console.error("[agent/race-status] failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });
   }
+
+  if (stored) {
+    try {
+      await captureRaceReport(rig.id, stored.rig_assignment_id, s);
+    } catch (error) {
+      console.error("[agent/race-status] race result capture failed", (error as Error).message);
+    }
+  }
+  return new Response(null, { status: 200 });
 }

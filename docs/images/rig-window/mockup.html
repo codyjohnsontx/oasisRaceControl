@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rig sign-in window - screen mockups</title>
+<!--
+  HTML mockups of the rig's WinForms sign-in window (apps/rig-agent/OasisRigAgent/Windows/WalkUpForm.cs),
+  for review on a machine that cannot run it: the window only runs on the rig PC.
+  Same layout, colours, wording and type sizes as the code - a WinForms point is
+  4/3 of a CSS pixel at 96 DPI, so 28pt there is 37px here - at the window's
+  960x720 design size. Open the file to see every screen; add ?frame=N to the URL
+  for one screen alone (that is how the PNGs beside this file were taken, with
+  headless Chrome at 960x720). The brand faces come from Google Fonts here and
+  travel inside the exe on the rig. The one face the mockup cannot promise is the
+  monospace: the rig draws lap times in Consolas (bundled with Windows), so the
+  mockup asks for it first and falls back to the site's own Geist Mono.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Rajdhani:wght@500;700&family=Geist+Mono:wght@700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a14; --surface: #12121f; --raised: #1a1a2e; --edge: #2a2a44; --ink: #f2f2fa; --muted: #9494ad;
+    --accent: #5ce1e6; --accent-2: #ff3ec8; --purple: #8b5cf6; --sunset: #ff8a3d; --valid: #2bcc6c; --invalid: #ff453a; --gold: #ffd60a;
+    --display: "Orbitron", "Segoe UI", sans-serif;
+    --body: "Rajdhani", "Segoe UI", sans-serif;
+    --mono: Consolas, "Geist Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #000; }
+  body { font-family: var(--body); color: var(--ink); padding: 24px; }
+  body.one { padding: 0; }
+  h1 { font: 700 20px var(--display); color: var(--muted); margin: 0 0 16px; }
+  .frames { display: grid; grid-template-columns: repeat(2, 960px); gap: 32px; }
+  .frames figure { margin: 0; }
+  .frames figcaption { font: 500 18px var(--body); color: var(--muted); margin: 0 0 8px; }
+  body.one h1, body.one figcaption { display: none; }
+  body.one .frames { display: block; }
+  body.one figure { display: none; }
+  body.one figure.show { display: block; }
+
+  /* One window at its 960x720 design size, laid out as WalkUpForm's root table:
+     header, gradient rule, warnings, the screen, recent lines; padding 28/22/28/18. */
+  .win { width: 960px; height: 720px; background: var(--bg); padding: 22px 28px 18px; display: flex; flex-direction: column; overflow: hidden; font-weight: 500; }
+  .head { display: flex; align-items: center; gap: 16px; }
+  .head img { width: 46px; height: 56px; object-fit: contain; }
+  .head .titles { flex: 1; }
+  .head .t { font: 700 21px var(--display); line-height: 1.15; }
+  .head .s { font: 700 11px var(--display); color: var(--muted); margin-top: 2px; }
+  .head .rig { font: 700 35px var(--display); color: var(--accent); }
+  .rule { height: 4px; margin-top: 14px; background: linear-gradient(90deg, var(--accent), var(--purple), var(--accent-2)); }
+  .warn { font-size: 17px; color: var(--sunset); margin-top: 12px; }
+  .screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .recent { font-size: 13px; color: var(--muted); margin-top: 12px; white-space: pre-line; line-height: 1.25; }
+
+  /* Sign-in */
+  .signin { padding-top: 26px; }
+  .notice { font-size: 20px; color: var(--invalid); margin-bottom: 18px; }
+  .notice.good { color: var(--valid); }
+  .eyebrow { font: 700 13px var(--display); color: var(--accent-2); margin-bottom: 6px; }
+  .name { font: 700 37px var(--display); margin-bottom: 10px; }
+  .name.back { color: var(--accent); } .name.new { color: var(--accent-2); }
+  .prompt { font: 700 29px var(--body); margin-bottom: 16px; }
+  .row { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+  .input { width: 424px; padding: 2px; background: var(--edge); }
+  .input.focus { background: var(--accent); }
+  .input div { background: var(--surface); font: 500 37px var(--body); line-height: 1.2; padding: 6px 8px; min-height: 56px; color: var(--ink); }
+  .input .caret { color: var(--accent); }
+  .input .pin { text-align: center; letter-spacing: 6px; }
+  .btn { font: 700 15px var(--display); padding: 10px 22px; border: 1px solid transparent; border-radius: 0; line-height: 1.5; cursor: pointer; }
+  .btn.primary { background: var(--accent); color: var(--bg); }
+  .btn.secondary { background: var(--bg); color: var(--muted); border-color: var(--edge); }
+  .btn.pink { color: var(--accent-2); border-color: var(--accent-2); }
+  .hint { font-size: 17px; color: var(--muted); margin-top: 18px; }
+  .busy { flex: 1; display: grid; place-items: center; font: 700 24px var(--display); color: var(--muted); }
+
+  /* Driving */
+  .driving { padding-top: 20px; display: flex; flex-direction: column; min-height: 0; }
+  .top { display: flex; align-items: flex-start; margin-bottom: 18px; }
+  .top .who { flex: 1; }
+  .driver { font: 700 40px var(--display); color: var(--accent); }
+  .welcome { font-size: 18px; color: var(--muted); margin-top: 6px; }
+  .card { background: var(--raised); border: 1px solid var(--edge); padding: 16px 22px 18px; display: grid; grid-template-columns: 62fr 38fr; margin-bottom: 18px; }
+  .card .ey { font: 700 13px var(--display); color: var(--muted); }
+  .best { font: 700 72px var(--mono); line-height: 1.05; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .best.gold { color: var(--gold); } .best.none { color: var(--muted); }
+  .place { font: 700 61px var(--display); color: var(--accent-2); line-height: 1.1; margin-top: 2px; }
+  .place.gold { color: var(--gold); } .place.none { color: var(--muted); }
+  .sub { font-size: 17px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); font-size: 20px; }
+  th { font: 700 13px var(--display); color: var(--muted); text-align: left; background: var(--bg); padding: 4px 8px; }
+  td { padding: 3px 8px; color: var(--muted); }
+  td.time { color: var(--ink); font: 700 17px var(--mono); }
+  td.posted { color: var(--valid); } td.inc { color: var(--sunset); }
+  .laps { flex: 1; min-height: 0; overflow: hidden; background: var(--surface); }
+</style>
+</head>
+<body>
+<h1>Rig sign-in window - every screen at 960x720</h1>
+<div class="frames">
+
+<figure data-frame="1">
+<figcaption>1. Sign in: the name, with the last driver's thank-you in green and a standing warning in orange</figcaption>
+<div class="win">
+  <div class="head"><img src="../../../apps/rig-agent/OasisRigAgent/Windows/Assets/oasis-helmet.png" alt=""><div class="titles"><div class="t">OASIS SIM RACING</div><div class="s">RACE CONTROL</div></div><div class="rig">RIG 02</div></div>
+  <div class="rule"></div>
+  <div class="warn">WARNING: iRacing is not running or not in a session - no laps are being read.</div>
+  <div class="screen signin">
+    <div class="notice good">Thanks Mike, you are logged out.</div>
+    <div class="eyebrow">SIGN IN</div>
+    <div class="prompt">Type your name</div>
+    <div class="row"><div class="input focus"><div>Ale<span class="caret">|</span></div></div><button class="btn primary">Next</button></div>
+    <div class="hint">Your name goes on the leaderboard. Use the same name and PIN every time, on any rig.</div>
+  </div>
+  <div class="recent">[20:41:02] [Rig 02]  online  |  driver: - available -  |  sim idle
+[20:41:02] Priority: below normal (iRacing comes first)</div>
+</div>
+</figure>
+
+<figure data-frame="2">
+<figcaption>2. A name that is already a driver's: their PIN, and "Not you? Pick a different name" for a newcomer who typed it</figcaption>
+<div class="win">
+  <div class="head"><img src="../../../apps/rig-agent/OasisRigAgent/Windows/Assets/oasis-helmet.png" alt=""><div class="titles"><div class="t">OASIS SIM RACING</div><div class="s">RACE CONTROL</div></div><div class="rig">RIG 02</div></div>
+  <div class="rule"></div>
+  <div class="screen signin">
+    <div class="notice">That PIN does not match "Mike". Type it again.</div>
+    <div class="eyebrow">WELCOME BACK</div>
+    <div class="name back">Mike</div>
+    <div class="prompt">Type your 4-digit PIN</div>
+    <div class="row"><div class="input focus"><div class="pin">&#9679;&#9679;<span class="caret">|</span></div></div><button class="btn primary">Sign in</button></div>
+    <div class="row"><button class="btn secondary">Not you? Pick a different name</button></div>
+    <div class="hint">Forgotten it? Staff can reset your PIN at the counter.</div>
+  </div>
+  <div class="recent">[20:41:02] [Rig 02]  online  |  driver: - available -  |  sim running</div>
+</div>
+</figure>
+
+<figure data-frame="3">
+<figcaption>3. A free name: its owner picks a PIN (typed twice before anything is registered)</figcaption>
+<div class="win">
+  <div class="head"><img src="../../../apps/rig-agent/OasisRigAgent/Windows/Assets/oasis-helmet.png" alt=""><div class="titles"><div class="t">OASIS SIM RACING</div><div class="s">RACE CONTROL</div></div><div class="rig">RIG 02</div></div>
+  <div class="rule"></div>
+  <div class="screen signin">
+    <div class="eyebrow">NEW DRIVER</div>
+    <div class="name new">Alex</div>
+    <div class="prompt">New here? Pick a 4-digit PIN and remember it</div>
+    <div class="row"><div class="input focus"><div class="pin"><span class="caret">|</span></div></div><button class="btn primary">Next</button></div>
+    <div class="row"><button class="btn secondary">Not your name? Go back</button></div>
+    <div class="hint">Your PIN is how you get back to your own laps next time. Four digits, typed twice.</div>
+  </div>
+  <div class="recent">[20:41:02] [Rig 02]  online  |  driver: - available -  |  sim running</div>
+</div>
+</figure>
+
+<figure data-frame="4">
+<figcaption>4. Two wrong PINs for one name: no third try from this rig, staff reset it</figcaption>
+<div class="win">
+  <div class="head"><img src="../../../apps/rig-agent/OasisRigAgent/Windows/Assets/oasis-helmet.png" alt=""><div class="titles"><div class="t">OASIS SIM RACING</div><div class="s">RACE CONTROL</div></div><div class="rig">RIG 02</div></div>
+  <div class="rule"></div>
+  <div class="screen signin">
+    <div class="eyebrow">PIN NOT ACCEPTED</div>
+    <div class="name back">Mike</div>
+    <div class="prompt">That PIN does not match. Ask staff to reset your PIN, or try a different name.</div>
+    <div class="row"><button class="btn secondary">Try a different name</button></div>
+  </div>
+  <div class="recent">[20:41:02] [Rig 02]  online  |  driver: - available -  |  sim running</div>
+</div>
+</figure>
+
+<figure data-frame="5">
+<figcaption>5. Waiting on the backend (the lookup, the sign-in, the log-out, the close-time sign-out)</figcaption>
+<div class="win">
+  <div class="head"><img src="../../../apps/rig-agent/OasisRigAgent/Windows/Assets/oasis-helmet.png" alt=""><div class="titles"><div class="t">OASIS SIM RACING</div><div class="s">RACE CONTROL</div></div><div class="rig">RIG 02</div></div>
+  <div class="rule"></div>
+  <div class="screen"><div class="busy">Looking up Mike...</div></div>
+  <div class="recent">[20:41:02] [Rig 02]  online  |  driver: - available -  |  sim running</div>
+</div>
+</figure>
+
+<figure data-frame="6">
+<figcaption>6. Driving: best lap tonight in the largest type, place on tonight's board, the laps, Log out</figcaption>
+<div class="win">
+  <div class="head"><img src="../../../apps/rig-agent/OasisRigAgent/Windows/Assets/oasis-helmet.png" alt=""><div class="titles"><div class="t">OASIS SIM RACING</div><div class="s">RACE CONTROL</div></div><div class="rig">RIG 02</div></div>
+  <div class="rule"></div>
+  <div class="screen driving">
+    <div class="top">
+      <div class="who"><div class="eyebrow">DRIVING AS</div><div class="driver">Mike</div><div class="welcome">Welcome back. Your laps post automatically.</div></div>
+      <button class="btn secondary pink">Log out</button>
+    </div>
+    <div class="card">
+      <div><div class="ey">BEST LAP TONIGHT</div><div class="best">2:17.217</div><div class="sub">Circuit of the Americas &middot; Grand Prix &middot; FIA F4</div></div>
+      <div><div class="ey">TONIGHT'S BOARD</div><div class="place">P2</div><div class="sub">of 3 drivers tonight</div></div>
+    </div>
+    <div class="laps">
+      <table>
+        <tr><th>LAP</th><th>TIME</th><th>INCIDENTS</th><th>STATUS</th></tr>
+        <tr><td>2</td><td class="time">2:19.480</td><td>0</td><td class="posted">posted</td></tr>
+        <tr><td>3</td><td class="time">2:17.217</td><td>0</td><td class="posted">posted</td></tr>
+        <tr><td>4</td><td class="time">2:18.902</td><td class="inc">2</td><td class="posted">posted</td></tr>
+        <tr><td>5</td><td class="time">2:17.950</td><td>0</td><td>queued</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="recent">[20:44:10] Lap 4  2:18.902  incidents 2 - posted
+[20:46:45] Lap 5  2:17.950  incidents 0 - queued</div>
+</div>
+</figure>
+
+<figure data-frame="7">
+<figcaption>7. Driving, leading tonight: gold; and a driver with no valid lap in the combo yet</figcaption>
+<div class="win">
+  <div class="head"><img src="../../../apps/rig-agent/OasisRigAgent/Windows/Assets/oasis-helmet.png" alt=""><div class="titles"><div class="t">OASIS SIM RACING</div><div class="s">RACE CONTROL</div></div><div class="rig">RIG 02</div></div>
+  <div class="rule"></div>
+  <div class="screen driving">
+    <div class="top">
+      <div class="who"><div class="eyebrow">DRIVING AS</div><div class="driver">Ana</div><div class="welcome">Welcome back. Your laps post automatically.</div></div>
+      <button class="btn secondary pink">Log out</button>
+    </div>
+    <div class="card">
+      <div><div class="ey">BEST LAP TONIGHT</div><div class="best gold">2:11.004</div><div class="sub">Circuit of the Americas &middot; Grand Prix &middot; FIA F4</div></div>
+      <div><div class="ey">TONIGHT'S BOARD</div><div class="place gold">P1</div><div class="sub">of 3 drivers tonight</div></div>
+    </div>
+    <div class="card" style="margin-top:0">
+      <div><div class="ey">BEST LAP TONIGHT</div><div class="best none">--:--.---</div><div class="sub">No valid lap yet in Circuit of the Americas &middot; Grand Prix &middot; FIA F4 - your first clean lap goes up here.</div></div>
+      <div><div class="ey">TONIGHT'S BOARD</div><div class="place none">--</div><div class="sub">3 drivers on the board</div></div>
+    </div>
+  </div>
+  <div class="recent">[20:41:02] [Rig 02]  online  |  driver: Ana  |  sim running</div>
+</div>
+</figure>
+
+</div>
+<script>
+  const frame = new URLSearchParams(location.search).get("frame");
+  if (frame) {
+    document.body.classList.add("one");
+    document.querySelector(`figure[data-frame="${frame}"]`)?.classList.add("show");
+  }
+</script>
+</body>
+</html>

@@ -56,6 +56,7 @@ function render(rigs: RigStatusRow[]): string {
         nextSeasonName: "September",
         openRound: null,
         openRoundDrivers: 0,
+        raceReview: null,
         recentRounds: [],
         comboOptions: [],
         todaysCombo: null,

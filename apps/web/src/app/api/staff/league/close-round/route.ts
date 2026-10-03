@@ -10,6 +10,9 @@ const body = z.object({ roundId: z.uuid() });
  * stops changing when the next round starts - but staff can still invalidate a
  * lap afterwards and the standings follow, which is what a protest needs.
  *
+ * A race still missing places is swept at the cars' last reported places
+ * (lib/race-results.ts) - staff review the order on /staff before closing.
+ *
  * It also undoes the featured-combo overwrite that opening the round did, so
  * the rest of the venue day goes back to whatever combo (or no combo) was set
  * before league night - see closeLeagueRound.
@@ -35,6 +38,7 @@ export async function POST(request: Request) {
       detail: {
         roundNumber: round.roundNumber,
         restoredFeaturedCombo: round.restoredCombo,
+        racePlacesSwept: round.racePlacesSwept,
       },
     });
 

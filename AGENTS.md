@@ -150,7 +150,32 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   Nothing else in the codebase encodes a points table. The scale is the venue's
   own and is final: P1-P5 score 5, 4, 3, 2, 1, and every other entrant scores 1.
   Fifth place and the participation point being equal is intended. Season total
-  is the sum of every round entered - no drops, no bonus points.
+  is the sum of every round entered - no drops.
+- League night is open qualifying then a race in one hosted iRacing session, and
+  the owner's rule (2026-10-01) is that a round with a race result is placed by
+  its finishing order plus 1 bonus point for the fastest valid qualifying lap;
+  a driver with laps but no race finish still scores the 1. A round with no
+  race result is placed by fastest lap with no bonus, which keeps every round
+  played before races were recorded scoring as it did. Placing stays in the one
+  query (`queryRoundResults`), points stay in `league-scoring.ts`.
+  `lib/race-results.ts` is the only writer of the result: captured from race
+  reports at the chequered flag, swept at close, corrected and frozen by staff
+  on `/staff` ([docs/live-race.md](docs/live-race.md#the-race-result)). The
+  round's race is `v_league_race_session` - the race session the most rigs
+  were heard in while the round was open, and never one heard from a single
+  rig, so a walk-in's solo race on a spare rig is never it. The flag capture,
+  the qualifying cut-off and the close sweep all read that view; a capture
+  must never delete another session's rows. Two more rules are easy to undo:
+  a captured row names the driver from the assignment the race-status route
+  stored with the report (`rig_race_status.rig_assignment_id`), never from
+  whoever holds the seat when the row is written - the close sweep reads
+  reports minutes old - and a rig's first place at the flag is final, since
+  the live feed deliberately accepts an older report after a quiet rig, so
+  only staff move it. A rig flagged with nobody signed in records an empty
+  place (`league_race_unsigned_places`, 0010) so a cool-down sign-in never
+  takes it. A staff save carries the review's `capturedThrough` and is
+  refused once a newer capture exists; that only holds because captures lock
+  the round one at a time and stamp `clock_timestamp()`.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the
   round restores whatever was there (`league_rounds.prior_featured_combo`, null
@@ -332,7 +357,9 @@ reads to the rig as the site being down. `db/verify/0006_monitor.sql` is one
 SELECT with no transaction wrapper on purpose (Neon's SQL Editor shows only
 the last statement's result); its pinned values are tested against the
 migration, and a verify fingerprints only the columns its own migration
-created, so a later `alter table` does not fail an earlier verify. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
+created, so a later `alter table` does not fail an earlier verify. A
+fingerprint over a table's constraints filters `contype <> 'n'`: production
+runs Postgres 18, which stores NOT NULL as constraint rows that 16 does not. An urgent alert's AI diagnosis, copy-paste handoff and rig-alert
 GitHub issue (`diagnosis/`, `handoff.ts`, `github.ts`) are written from
 `incidentContext`, an allowlist of what the server can vouch for - numbers,
 flags, enum values, known agent notices as codes - that never carries a rig's
@@ -458,18 +485,32 @@ the fallback when a rig cannot read the sim.
 ## Walk-up check-in on the rig
 
 With `rigQrToken` in its config the agent signs a typed name and 4-digit PIN
-in through the backend's existing login, register and check-in routes as an
-HTTP client with a cookie jar (`OasisRigAgent.Core/DriverCheckInClient.cs`),
-so a returning driver keeps one row and it works against whatever web commit
-is deployed without a server change - verify request shapes against the
-served commit, not only main.
+in through the backend's login, register and check-in routes as an HTTP
+client with a cookie jar (`OasisRigAgent.Core/DriverCheckInClient.cs`), so a
+returning driver keeps one row. Since 0.8-neon it first asks `GET /api/auth/name`
+whether the name is taken - the one route the rig needs that the event-night
+backends lacked - so verify request shapes against the served commit, not
+only main.
 
-The rig shows it as a WinForms window since 0.6, and the console screens of
-the 2026-09-27/28 event stay behind `--console` as the fallback. Both are thin
-fronts over `OasisRigAgent.Core/WalkUp/`: the sign-in rules are `SignInFlow`
+The rig shows it as a WinForms window since 0.6, and console screens stay
+behind `--console` as the window's fallback - not the backend's, since both
+fronts ask the same routes. Both are thin fronts over
+`OasisRigAgent.Core/WalkUp/`: the sign-in rules are `SignInFlow`
 (one state machine, pinned by `SignInFlowTests` for both fronts - never write
-a second one in a view), `WalkUpViewModel` is everything the window draws, and
-`WalkUpRules` holds the warnings, log-out wording and seat-emptying. The host
+a second one in a view), `WalkUpViewModel` is everything the window draws,
+`TonightStanding` is the seated driver's place and best lap off the same
+public tonight feed the wall polls (never a second ranking), and
+`WalkUpRules` holds the warnings, log-out wording and seat-emptying. The
+window's look is `Windows/Brand.cs`: colours named after the tokens in
+`apps/web/src/app/globals.css`, Orbitron and Rajdhani embedded in the exe
+(OFL, texts beside them) and registered process-private at first use - never
+install a font on a rig, and never a web view. The owner's rules for it
+(2026-10-02): an ordinary resizable window opened centred, never topmost or
+full screen; name first, no "Raced here before?"; and nothing on a rig PC
+that costs iRacing frames - the standing poll is one GET every 20 s off the
+UI thread, stopped at log-out. Every screen has an HTML mockup with PNGs in
+`docs/images/rig-window/`; update them with the form, since nothing can
+screenshot the window off a rig. The host
 project multi-targets: `net8.0` is the console build the tests run as a
 process on macOS, `net8.0-windows` adds `OasisRigAgent/Windows/` and is what
 the rig runs (publish with `-f net8.0-windows`); the window cannot run on a
@@ -499,17 +540,19 @@ the rig and on the web's sign-up and guest "Save profile" forms
 (`apps/web/src/lib/new-pin.ts`): a PIN mistyped once is one its owner can
 never sign back in with, and only staff can fix it, with Reset PIN on
 `/staff` (2026-09-28). The
-rig asks "Raced here before?" instead of guessing from a failed login - that
-guess is what told chuy to use a different name - and its sign-in is
-`SignInFlow` (above), over the client's separate `CheckInReturningAsync`
-(login only) and `CheckInNewAsync` (register only). The rules are documented
-on `SignInStep` and every sequence is a row of
+rig looks the name up (`NameTakenAsync`, one bit) instead of guessing from
+a failed login - that guess is what told chuy to use a different name - and
+its sign-in is `SignInFlow` (above), over the client's separate
+`CheckInReturningAsync` (login only) and `CheckInNewAsync` (register only).
+The rules are documented on `SignInStep` and every sequence is a row of
 `SignInFlowTests.EverySignInSequenceEndsWhereTheRulesSay`, so change a rule
-and its row together. The load-bearing ones: the returning path never
-registers and makes at most two failed logins per name for the whole sign-in - typing the name
-again gets no fresh tries - so a stranger cannot lock the real driver out
-(the backend locks at five) from one sign-in; the new path never logs in, and compares its two
-PINs on the rig. The website says the same in `driver-auth-refusal.ts`.
+and its row together. The load-bearing ones: a taken name never registers
+and makes at most two failed logins per name for the whole sign-in - typing
+the name again gets no fresh tries and no lookup - so a stranger cannot lock
+the real driver out (the backend locks at five) from one sign-in; a free
+name never logs in, and compares its two PINs on the rig; empty input after
+the name goes back to it ("Not you?"). The website says the same in
+`driver-auth-refusal.ts`.
 
 ## Rig heartbeat
 

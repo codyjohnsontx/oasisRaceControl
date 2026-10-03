@@ -218,6 +218,61 @@ minute under the flag, and the board handing the wall back.
 soak, `--race` drives one simulated race across every rig and checks the feed
 once at the end of the hold ([soak-20-rigs.md](soak-20-rigs.md#running-it)).
 
+## The race result
+
+The same reports score the league. A round with a race result is placed by
+its finishing order, and the fastest valid qualifying lap earns a bonus point
+(`lib/league-scoring.ts`); a round with none is ranked by fastest lap, as
+every round was before. `lib/race-results.ts` is the only writer, called from
+`POST /api/agent/race-status` for each report it stores while a round is open:
+
+- Any report from a `Race` session records that its rig was heard in that
+  session, and when (`league_race_starts`). Laps carry no session, so the
+  round's race's first report is what makes a lap a qualifying lap: one
+  completed before the round's race began.
+- From the chequered flag on (`SessionState` checkered or cool-down), the
+  first report from each rig in the round's race records its driver at
+  iRacing's place (`league_race_results`, source `flag`), and that place is
+  final: no later report moves it, nor an older one the live feed accepts
+  late after a rig has been quiet. The flag shows for the whole field the
+  moment the leader crosses the line, so a car still on its last lap is
+  recorded where it was running then; a pass after that is staff's to
+  correct on `/staff`. The driver is whoever was signed in to the rig when
+  the report arrived - the route stores that assignment on the report's
+  `rig_race_status` row - so somebody signing in during cool-down does not
+  take the place. A rig that takes the flag with nobody signed in records
+  its place as empty (`league_race_unsigned_places`), so neither a cool-down
+  sign-in nor the close sweep fills it.
+- Closing the round sweeps once more: a car of the race the flag never
+  recorded - it stopped reporting, or the round closed mid-race - is recorded
+  at its last reported place (source `close`) and placed behind every car
+  seen at the flag. It is credited to the driver stored with that last
+  report, not to whoever sits in the rig at close, and a driver heard on
+  more than one rig is recorded once, from their latest report.
+- Staff review the result on `/staff` while the round is open, with every
+  driver in the round who has no race finish listed under it, and can reorder
+  it, mark a DNF or take a driver out. Saving replaces the round's rows with
+  source `staff` and nothing captures into that round again. The review
+  carries when its newest captured place was recorded (`capturedThrough`);
+  a save sent from a review older than the newest capture is refused
+  (`race_changed`) and the page re-reads, folding the late finisher into the
+  draft without moving anyone staff placed, so a place is never deleted
+  unseen. Captures take the round one at a time, so they are recorded in
+  the order they commit and that one timestamp is enough.
+
+The round's race is the race session the most rigs were heard in while the
+round was open, and never one only a single rig was heard in
+(`v_league_race_session` in `db/migrations/0009_race_results.sql`), so a
+walk-in's solo race on a spare rig is never the league race - not at the flag,
+not as the qualifying cut-off, and not for the close sweep, whenever it
+finishes. Places are renumbered 1..n among the venue's drivers
+when the round is placed: a car nobody was signed in to leaves no gap, and two
+rigs reporting one place are put in order by laps completed and shown to staff
+as a repeat.
+
+Applying the migrations: [0009](deploy.md#applying-0009_race_resultssql),
+[0010](deploy.md#applying-0010_race_unsigned_placessql).
+
 ## Not settled yet
 
 - Nothing has read these variables on a real rig. Before the board is trusted,
@@ -236,7 +291,11 @@ once at the end of the hold ([soak-20-rigs.md](soak-20-rigs.md#running-it)).
 - Twenty rigs reporting every 2.5 s is about eight requests a second during a
   race, which is several thousand serverless invocations an hour. Check that
   against the Vercel plan before the night.
-- Positions only. A finishing order scored into the league is a later change
-  with its own table.
+- The race result takes iRacing's `PlayerCarPosition` in each rig's first
+  report under the chequered flag as the finishing order. How far that is
+  from the final classification - a car still on its last lap, one that
+  crashed out and was towed - is not yet seen on a real hosted race; compare
+  the staff review on `/staff` with iRacing's own results screen on the
+  first night, and correct it there before closing the round.
 
 Applying the migration to production: [deploy.md](deploy.md#applying-0008_race_statussql).
