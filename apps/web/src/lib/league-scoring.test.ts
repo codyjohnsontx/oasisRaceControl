@@ -21,6 +21,7 @@ function result(overrides: Partial<RoundResult> & { driver_id: string }): RoundR
     raced: false,
     qualifying_lap_ms: null,
     qualifying_position: null,
+    qualifying_lap_count: 0,
     finish_source: null,
     ...overrides,
   };

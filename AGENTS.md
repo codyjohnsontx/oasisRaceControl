@@ -142,8 +142,12 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   is a `/tv` board type like any other (see the section above); both take season
   standings from `/api/league/season`. The round page `/league/[roundId]` is the
   odd one out - it reads `/api/league/rounds/[roundId]` for one round's ranked
-  field and per-driver laps, which the season endpoint does not carry. Neither
-  surface wraps the other.
+  field and per-driver laps, which the season endpoint does not carry. The wall's
+  league board also reads that round endpoint while tonight's round is open and
+  ranks its qualifying screen by the field's `qualifying_position`,
+  `qualifying_lap_ms` and `qualifying_lap_count` - the round page's
+  "qualified P#" - never by `position`, `best_lap_ms` or `lap_count`, which in
+  a raced round take in the race. Neither surface wraps the other.
 - Season points are one swappable module: `apps/web/src/lib/league-scoring.ts`.
   Nothing else in the codebase encodes a points table. The scale is the venue's
   own and is final: P1-P5 score 5, 4, 3, 2, 1, and every other entrant scores 1.
@@ -200,6 +204,28 @@ ordering, staleness and intervals live only in `lib/race-live.ts`, and a board
 numbers its rows by `place`, not `position`: a race under green is ordered by
 how far round each car is, because iRacing's position only catches up with a
 pass at the line; the grid and the finish keep iRacing's own order.
+
+The screens that draw it are the wall's league board and a panel on `/league`,
+and what they show is decided once, in `lib/race-board.ts` (pure, tested): a
+`Race` session with two or more rigs replaces the standings - only while
+tonight's round is open (`isOpenTonight` in `lib/league.ts`); with none open
+neither screen polls the feed or shows a race - a row that
+changed place is flashed and marked, and the finishing order is held for one
+minute from the first report of the flag, remembered per session so it does
+not come back. Both poll the feed every 2.5 s through
+`components/use-live-race.ts`; the TV engine's own 5 s refresh is untouched.
+The requests go one at a time with a bounded timeout
+(`components/race-feed-poller.ts`), a timed-out one counting as a failure, so
+a slow route cannot stack a request per tick from every screen in the venue
+and a hung one cannot leave a finished race on the wall as if it were live.
+A pass is a change of order among the rigs on both answers, never a change of
+place number, because the feed renumbers from 1 after a rig drops or joins.
+On the wall it is the league board's third screen - season standings on an
+ordinary day, the open round's qualifying ranking while tonight's round is
+open, the race on top - and not a second board, because the engine lets only
+one holding board win. Past ten rows the race table and the qualifying
+ranking draw every row as two halves at three quarters of the size
+(`splitHalves` in `tv/arcade-board.tsx`) - neither drops a driver.
 
 ## Lap attribution
 

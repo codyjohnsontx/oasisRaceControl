@@ -38,6 +38,7 @@ function result(name: string, change: Partial<RoundResult>): RoundResult {
     raced: false,
     qualifying_lap_ms: null,
     qualifying_position: null,
+    qualifying_lap_count: 10,
     finish_source: null,
     ...change,
   };

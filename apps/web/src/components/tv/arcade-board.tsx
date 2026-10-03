@@ -7,7 +7,7 @@ import { AutoScroll } from "./auto-scroll";
  * read from across the shop. Board types feed it entries; it owns nothing about
  * loading or rotation.
  *
- * Two layouts of the same table. In the rotation (`layout: "slots"`, the
+ * Three layouts of the same table. In the rotation (`layout: "slots"`, the
  * default) every board renders the same `SLOT_COUNT` rank slots whether or not
  * they're filled. That's deliberate on two counts: an arcade table with
  * unclaimed slots reads as an invitation rather than as a bug, and a constant
@@ -15,6 +15,10 @@ import { AutoScroll } from "./auto-scroll";
  * busy board and a quiet one. The event view (`layout: "scroll"`) is the
  * opposite job - show everyone - so it draws every entry at the row's own
  * height and lets `AutoScroll` carry the ones below the fold up on their own.
+ * League night's qualifying (`layout: "halves"`) must also show everyone but
+ * cannot scroll on an unattended wall, so it is the slots table until the
+ * field outgrows `SPLIT_AFTER`, and past that every entry, drawn as two halves
+ * side by side at three quarters of the size - the race table's split.
  * Header, rule, headings and the row itself are the same markup either way.
  *
  * Sizing: every length here is in `em` of `.tv-scale` (see `globals.css`), so
@@ -34,6 +38,29 @@ import { AutoScroll } from "./auto-scroll";
 
 /** Rank slots drawn on every board - filled ones show a driver, the rest sit open. */
 export const SLOT_COUNT = 10;
+
+/** Past this many rows a table that shows everyone is drawn as two halves. */
+export const SPLIT_AFTER = SLOT_COUNT;
+
+/**
+ * The two halves' container: side by side, each at three quarters of the
+ * size. One composition at two scales, not two layouts - the halves are the
+ * same markup with a smaller `font-size`, so every `em` inside them shrinks
+ * together.
+ */
+export const HALVES = "gap-[3em] text-[0.75em]";
+
+/** A list as the halves it is drawn in: itself up to `SPLIT_AFTER` rows, the
+ *  first half taking the odd row past that. */
+export function splitHalves<T>(rows: readonly T[]): (readonly T[])[] {
+  if (rows.length <= SPLIT_AFTER) return [rows];
+  const cut = Math.ceil(rows.length / 2);
+  return [rows.slice(0, cut), rows.slice(cut)];
+}
+
+/** Cap on a row's height in the halves, so a short half's rows line up with
+ *  the long one's instead of stretching to fill. */
+export const HALF_ROW_MAX_H = "max-h-[5.5em]";
 
 /**
  * The table's columns, shared by the heading row and every slot so the two stay
@@ -139,10 +166,11 @@ type Props = {
   stale?: boolean;
   /**
    * `slots` draws `SLOT_COUNT` rank slots stretched to fill the board; `scroll`
-   * draws every entry and scrolls them when they run past the screen. See the
-   * component comment.
+   * draws every entry and scrolls them when they run past the screen; `halves`
+   * is `slots` until the entries outgrow it, then every entry in two halves.
+   * See the component comment.
    */
-  layout?: "slots" | "scroll";
+  layout?: "slots" | "scroll" | "halves";
 };
 
 const RANK_STYLES = [
@@ -181,10 +209,11 @@ export function ArcadeHighScores({
   layout = "slots",
 }: Props) {
   const leader = entries[0];
+  const split = layout === "halves" && entries.length > SPLIT_AFTER;
   const slots =
-    layout === "slots"
-      ? Array.from({ length: SLOT_COUNT }, (_, i) => entries[i] ?? null)
-      : entries;
+    layout === "scroll" || split
+      ? entries
+      : Array.from({ length: SLOT_COUNT }, (_, i) => entries[i] ?? null);
   const {
     detail: detailHeading = "Car",
     score: scoreHeading = "Lap",
@@ -193,64 +222,79 @@ export function ArcadeHighScores({
 
   // In the slots layout the rows also stretch (`flex-1`) to fill the board;
   // scrolling rows keep their own height so the list's length is its length.
-  const rows = (
+  // `first` is the rank before the list's first row, so a second half carries
+  // on from the first.
+  const rows = (list: readonly (ArcadeEntry | null)[], first = 0) => (
     <>
-      {slots.map((entry, index) => (
-        <li
-          key={entry?.id ?? `open-${index}`}
-          className={`${COLUMNS} ${ROW_MIN_H} border-b border-edge last:border-b-0 ${
-            layout === "slots" ? "flex-1" : ""
-          } ${entry ? "" : "opacity-30"}`}
-        >
-          <span
-            className={`font-display text-[2.75em]/[1.1] font-black tabular-nums ${
-              entry ? RANK_STYLES[index] ?? "text-muted" : "text-muted"
-            }`}
+      {list.map((entry, listIndex) => {
+        const index = first + listIndex;
+        return (
+          <li
+            key={entry?.id ?? `open-${index}`}
+            className={`${COLUMNS} ${ROW_MIN_H} border-b border-edge last:border-b-0 ${
+              layout === "scroll" ? "" : "flex-1"
+            } ${split ? HALF_ROW_MAX_H : ""} ${entry ? "" : "opacity-30"}`}
           >
-            {String(index + 1).padStart(2, "0")}
-          </span>
+            <span
+              className={`font-display text-[2.75em]/[1.1] font-black tabular-nums ${
+                entry ? RANK_STYLES[index] ?? "text-muted" : "text-muted"
+              }`}
+            >
+              {String(index + 1).padStart(2, "0")}
+            </span>
 
-          {entry ? (
-            <>
-              <span className="truncate text-[2.5em]/[1.1] font-bold">{entry.name}</span>
-              <span className="text-muted truncate text-[1.5em]/[1.2] uppercase tracking-wide">
-                {entry.detail}
-              </span>
-              <span className="laptime relative text-right text-[2.5em]/[1.1] font-bold">
-                {scoreText(entry, emptyScore)}
-                {entry.asterisk && (
-                  <>
-                    <span
-                      data-tv-asterisk
-                      aria-hidden="true"
-                      className="text-accent absolute top-0 left-full ml-[0.1em]"
-                    >
-                      *
-                    </span>
-                    {/* The mark's meaning, for a screen reader: there is no legend on screen. */}
-                    <span className="sr-only">lap with an incident</span>
-                  </>
-                )}
-              </span>
-              <span className="laptime text-muted text-right text-[1.5em]/[1.2]">
-                {gapText(entry, leader, index)}
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="text-muted text-[2.5em]/[1.1] font-bold tracking-[0.3em]">
-                · · · · ·
-              </span>
-              <span />
-              <span className="laptime text-muted text-right text-[2.5em]/[1.1] font-bold">
-                {emptyScore}
-              </span>
-              <span />
-            </>
-          )}
-        </li>
-      ))}
+            {entry ? (
+              <>
+                <span className="truncate text-[2.5em]/[1.1] font-bold">{entry.name}</span>
+                <span className="text-muted truncate text-[1.5em]/[1.2] uppercase tracking-wide">
+                  {entry.detail}
+                </span>
+                <span className="laptime relative text-right text-[2.5em]/[1.1] font-bold">
+                  {scoreText(entry, emptyScore)}
+                  {entry.asterisk && (
+                    <>
+                      <span
+                        data-tv-asterisk
+                        aria-hidden="true"
+                        className="text-accent absolute top-0 left-full ml-[0.1em]"
+                      >
+                        *
+                      </span>
+                      {/* The mark's meaning, for a screen reader: there is no legend on screen. */}
+                      <span className="sr-only">lap with an incident</span>
+                    </>
+                  )}
+                </span>
+                <span className="laptime text-muted text-right text-[1.5em]/[1.2]">
+                  {gapText(entry, leader, index)}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-muted text-[2.5em]/[1.1] font-bold tracking-[0.3em]">
+                  · · · · ·
+                </span>
+                <span />
+                <span className="laptime text-muted text-right text-[2.5em]/[1.1] font-bold">
+                  {emptyScore}
+                </span>
+                <span />
+              </>
+            )}
+          </li>
+        );
+      })}
     </>
+  );
+
+  const headings = (
+    <div className={`text-muted shrink-0 ${COLUMNS}`}>
+      <span className={HEADING}>Rank</span>
+      <span className={HEADING}>Driver</span>
+      <span className={HEADING}>{detailHeading}</span>
+      <span className={`${HEADING} text-right`}>{scoreHeading}</span>
+      <span className={`${HEADING} text-right`}>{gapHeading}</span>
+    </div>
   );
 
   return (
@@ -277,20 +321,28 @@ export function ArcadeHighScores({
           against that row's own smaller text. */}
       <div className="gradient-rule mt-[1.25em] mb-[1em] h-[0.25em] shrink-0 rounded-full" />
 
-      <div className={`text-muted shrink-0 ${COLUMNS}`}>
-        <span className={HEADING}>Rank</span>
-        <span className={HEADING}>Driver</span>
-        <span className={HEADING}>{detailHeading}</span>
-        <span className={`${HEADING} text-right`}>{scoreHeading}</span>
-        <span className={`${HEADING} text-right`}>{gapHeading}</span>
-      </div>
-
-      {layout === "slots" ? (
-        <ol className="mt-[0.25em] flex flex-1 flex-col">{rows}</ol>
+      {split ? (
+        <div className={`flex min-h-0 flex-1 ${HALVES}`}>
+          {splitHalves(slots).map((half, halfIndex) => (
+            <div key={halfIndex} className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {headings}
+              <ol className="mt-[0.25em] flex flex-1 flex-col">
+                {rows(half, halfIndex === 0 ? 0 : slots.length - half.length)}
+              </ol>
+            </div>
+          ))}
+        </div>
       ) : (
-        <AutoScroll rowCount={slots.length}>
-          <ol className="mt-[0.25em] flex flex-col">{rows}</ol>
-        </AutoScroll>
+        <>
+          {headings}
+          {layout === "scroll" ? (
+            <AutoScroll rowCount={slots.length}>
+              <ol className="mt-[0.25em] flex flex-col">{rows(slots)}</ol>
+            </AutoScroll>
+          ) : (
+            <ol className="mt-[0.25em] flex flex-1 flex-col">{rows(slots)}</ol>
+          )}
+        </>
       )}
     </section>
   );

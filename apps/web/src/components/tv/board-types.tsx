@@ -7,9 +7,14 @@ import {
   type BoardRow,
   trackKey,
 } from "@/lib/leaderboards";
-import { roundLabel, type LeagueRound } from "@/lib/league";
+import {
+  isOpenTonight,
+  roundLabel,
+  type LeagueRound,
+  type RoundResult,
+} from "@/lib/league";
 import type { SeasonStanding } from "@/lib/league-scoring";
-import { venueToday } from "@/lib/venue";
+import { useLiveRace } from "@/components/use-live-race";
 import { reportingFeedHealth } from "@/lib/tv-feed-health";
 import {
   type AnyTvBoardDefinition,
@@ -19,6 +24,7 @@ import {
   defineTvBoard,
 } from "@/lib/tv-rotation";
 import { ArcadeHighScores, SLOT_COUNT, type ArcadeEntry } from "./arcade-board";
+import { RaceOrder } from "./race-board";
 
 /**
  * The board types `/tv` knows how to play, and the order it plays them in.
@@ -268,6 +274,13 @@ type LeagueData = {
   season: { id: string; name: string; league_name: string } | null;
   rounds: LeagueRound[];
   standings: SeasonStanding[];
+  /**
+   * Tonight's qualifying: the open round's field, from the same round
+   * endpoint `/league/[roundId]` reads, in the endpoint's order - the board
+   * reorders it by qualifying. Null on every other day, when the board shows
+   * the season standings.
+   */
+  qualifying: { round: LeagueRound; field: RoundResult[] } | null;
 };
 
 /**
@@ -280,28 +293,31 @@ type LeagueData = {
  */
 const LEAGUE_TAKEOVER_MS = 30_000;
 
-/**
- * Whether a round is the one the wall should be showing right now: still open,
- * and belonging to the venue's current day.
- *
- * The venue-day half is what keeps a forgotten round off the wall. Nothing
- * closes a round automatically - `rollLeagueSeason` refuses while one is open
- * precisely because staff are expected to do it - so without this a Wednesday
- * night nobody closed out would still own the TV on Saturday. `round_date` is
- * the venue-local day the round opened (`venue_today()` at insert), compared
- * against the same venue day the rest of the product means by "tonight".
- */
-const ownsTheWall = (round: LeagueRound) =>
-  round.closed_at === null && round.round_date === venueToday();
-
 const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
   kind: "league",
   async load(_spec, signal) {
-    const data = (await fetchJson("/api/league/season", signal)) as LeagueData;
+    const data = (await fetchJson("/api/league/season", signal)) as Omit<LeagueData, "qualifying">;
     if (!Array.isArray(data.rounds) || !Array.isArray(data.standings)) {
       throw new Error("malformed league response");
     }
-    return { season: data.season ?? null, rounds: data.rounds, standings: data.standings };
+    // Only the round that owns the wall tonight is qualifying; the field is
+    // read from the round endpoint so the wall's qualifying rank is the one
+    // the phone's round page shows as "qualified P#".
+    const tonightsRound = data.rounds.find(isOpenTonight) ?? null;
+    let qualifying: LeagueData["qualifying"] = null;
+    if (tonightsRound) {
+      const round = (await fetchJson(`/api/league/rounds/${tonightsRound.id}`, signal)) as {
+        field?: unknown;
+      };
+      if (!Array.isArray(round.field)) throw new Error("malformed round response");
+      qualifying = { round: tonightsRound, field: round.field as RoundResult[] };
+    }
+    return {
+      season: data.season ?? null,
+      rounds: data.rounds,
+      standings: data.standings,
+      qualifying,
+    };
   },
   // Before the venue's first league night there is no season and no round, so
   // the slide is skipped like any other empty board. A season with rounds but
@@ -313,37 +329,96 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
 });
 
 /**
- * Season standings, drawn as an arcade table. Points are NOT a lap time, so
- * they go through `score`/`gap` rather than the lap-time formatter, and the
- * columns are renamed to match.
+ * League night on the wall, in three screens, all drawn by this one board so
+ * the rotation engine still sees one slide that holds. A second holding board
+ * cannot work: the engine's hold is a max over the slide on screen, so a
+ * separate race slide would never be reached while this one holds.
+ *
+ *  - Season standings, an arcade table of points, on every ordinary day: one
+ *    slide among the others.
+ *  - Qualifying, while tonight's round is open: the round's whole field ranked
+ *    by fastest valid qualifying lap (laps before the race began). That is
+ *    the round's `qualifying_position`, not its placing, since a raced round
+ *    is placed by its finish. Past ten drivers it draws two halves, as the
+ *    race does, since a driver cut from the wall would have no way to know
+ *    it. This is the screen that takes the wall over.
+ *  - The race, while tonight's round is open and the live feed reports a Race
+ *    session with a field (`useLiveRace`): the running order in place of the
+ *    ranking, refreshed on the feed's own cadence, and after the chequered
+ *    flag the finishing order held for a minute before the board goes back to
+ *    qualifying. Any other race at the venue is not league night and never
+ *    reaches the wall; with no round open the feed is not even asked.
  *
  * League night takes the wall over rather than taking a turn on it: while
- * tonight's round is open this board renews the rotation's own `hold` on every
- * refresh, so it stays up and keeps updating instead of cycling back to the
- * arcade boards every fifteen seconds. That is the whole takeover, expressed
- * through the board contract - the rotation engine is untouched.
+ * tonight's round is open, this board renews the
+ * rotation's own `hold` on every refresh, so it stays up and keeps updating
+ * instead of cycling back to the arcade boards every fifteen seconds. That is
+ * the whole takeover, expressed through the board contract - the rotation
+ * engine is untouched.
  *
  * The hold lapses on its own, and the arcade rotation resumes, when the round
  * closes, when the feed stops refreshing this board, and at venue midnight - so
- * a night nobody closed out stops owning the wall the next morning. Only the
- * display lapses: the round stays open until staff close it, exactly as
- * `rollLeagueSeason` expects. The rest of the week this is one slide among the
- * others.
+ * a night nobody closed out stops owning the wall the next morning, and a race
+ * cannot hold it on any other day. Only the display lapses: the
+ * round stays open until staff close it, exactly as `rollLeagueSeason`
+ * expects. The rest of the week this is one slide among the others.
+ *
+ * Points are NOT a lap time, so the standings go through `score`/`gap` rather
+ * than the lap-time formatter, and the columns are renamed to match.
  */
 function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
+  const tonightsRound = data.rounds.find(isOpenTonight) ?? null;
+  const live = useLiveRace(tonightsRound !== null);
+
   useEffect(() => {
     // Read off `data` rather than a memo so that every refresh - each one a
     // fresh payload - re-tests the venue day and renews the hold.
-    if (data.rounds.some(ownsTheWall)) hold(LEAGUE_TAKEOVER_MS);
+    if (data.rounds.some(isOpenTonight)) hold(LEAGUE_TAKEOVER_MS);
   }, [data, hold]);
 
-  const tonightsRound = data.rounds.find(ownsTheWall) ?? null;
-  const leader = data.standings[0];
+  const title = data.season?.league_name ?? "Oasis League";
 
+  if (tonightsRound && live.race?.session) {
+    return (
+      // The owner's header for the race (2026-10-01): the eyebrow says only
+      // which half of the night this is, and the line under the title names
+      // the track alone - no round number, no session state, no layout, no
+      // car, no car count, no time or laps left. The room knows the combo,
+      // and the running order says how many cars there are.
+      <RaceOrder
+        eyebrow="Race"
+        title={title}
+        subtitle={tonightsRound.track_name}
+        race={live.race}
+        finished={live.finished}
+        moves={live.moves}
+        stale={stale || live.stale}
+      />
+    );
+  }
+
+  if (data.qualifying && tonightsRound) {
+    const { field } = data.qualifying;
+    return (
+      // The same line under the title as the race screen (the owner, 2026-10-02):
+      // the track alone - no layout, no car, no driver count.
+      <ArcadeHighScores
+        eyebrow={`${roundLabel(tonightsRound)} · Qualifying · live`}
+        title={title}
+        subtitle={tonightsRound.track_name}
+        entries={byQualifying(field).map(toQualifyingEntry)}
+        columns={{ detail: "Laps", score: "Best lap" }}
+        layout="halves"
+        stale={stale}
+      />
+    );
+  }
+
+  const leader = data.standings[0];
   return (
     <ArcadeHighScores
-      eyebrow={tonightsRound ? `${roundLabel(tonightsRound)} · live now` : "Season standings"}
-      title={data.season?.league_name ?? "Oasis League"}
+      eyebrow="Season standings"
+      title={title}
       subtitle={[data.season?.name, roundCount(data.rounds.length)]
         .filter(Boolean)
         .join(" · ")}
@@ -361,6 +436,31 @@ function LeagueBoard({ data, stale, hold }: TvBoardProps<null, LeagueData>) {
     />
   );
 }
+
+/**
+ * The field in qualifying order, by the rank the round feed computed. A
+ * driver with no valid qualifying lap has none and goes last, in the feed's
+ * own order.
+ */
+const byQualifying = (field: RoundResult[]) =>
+  [...field].sort((a, b) =>
+    a.qualifying_position === null || b.qualifying_position === null
+      ? Number(a.qualifying_position === null) - Number(b.qualifying_position === null)
+      : a.qualifying_position - b.qualifying_position,
+  );
+
+/**
+ * A qualifying row: the driver's best valid qualifying lap, and how many laps
+ * they drove in qualifying. The table works the gap to the leader out from the
+ * time. A driver in the field with no valid qualifying lap has no time to
+ * show; their score cell reads as the unset time.
+ */
+const toQualifyingEntry = (row: RoundResult): ArcadeEntry => ({
+  id: row.driver_id,
+  name: row.display_name,
+  detail: `${row.qualifying_lap_count} ${row.qualifying_lap_count === 1 ? "lap" : "laps"}`,
+  timeMs: row.qualifying_lap_ms ?? undefined,
+});
 
 const roundCount = (n: number) => `${n} round${n === 1 ? "" : "s"}`;
 

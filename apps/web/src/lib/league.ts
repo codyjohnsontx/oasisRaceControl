@@ -13,6 +13,7 @@
  */
 
 import { trackLabel } from "./leaderboards";
+import { venueToday } from "./venue";
 
 /** A round, joined up to its season and league for display. */
 export type LeagueRound = {
@@ -64,6 +65,8 @@ export type RoundResult = {
    */
   qualifying_lap_ms: number | null;
   qualifying_position: number | null;
+  /** Laps of any validity completed in qualifying, by the same cut. */
+  qualifying_lap_count: number;
   /**
    * How the driver's race entry was recorded; null when they have none. A
    * `staff` entry with a null `position` is a DNF.
@@ -145,6 +148,22 @@ export const ROUND_LAP_CAP = 2000;
 export const DRIVER_LAP_CAP = 500;
 
 // ---- Pure helpers (unit-tested; no DB) ------------------------------------
+
+/**
+ * Whether a round is tonight's league night: still open, and belonging to the
+ * venue's current day. It decides what owns the wall and whether the race is
+ * shown at all, on the wall and on `/league`.
+ *
+ * The venue-day half is what keeps a forgotten round off the wall. Nothing
+ * closes a round automatically - `rollLeagueSeason` refuses while one is open
+ * precisely because staff are expected to do it - so without this a Wednesday
+ * night nobody closed out would still own the TV on Saturday. `round_date` is
+ * the venue-local day the round opened (`venue_today()` at insert), compared
+ * against the same venue day the rest of the product means by "tonight".
+ */
+export function isOpenTonight(round: Pick<LeagueRound, "closed_at" | "round_date">): boolean {
+  return round.closed_at === null && round.round_date === venueToday();
+}
 
 /** "Week 3" if staff named it, otherwise "Round 3". */
 export function roundLabel(round: Pick<LeagueRound, "name" | "round_number">): string {
