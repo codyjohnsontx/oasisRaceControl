@@ -65,6 +65,8 @@ export type RoundResult = {
    */
   qualifying_lap_ms: number | null;
   qualifying_position: number | null;
+  /** Laps of any validity completed in qualifying, by the same cut. */
+  qualifying_lap_count: number;
   /**
    * How the driver's race entry was recorded; null when they have none. A
    * `staff` entry with a null `position` is a DNF.

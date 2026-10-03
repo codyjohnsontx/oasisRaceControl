@@ -191,6 +191,23 @@ describeDb("league night's race result against real Postgres", () => {
     });
   });
 
+  it("counts a driver's qualifying laps apart from their race laps", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    for (const minutesAgo of [40, 38, 36]) await lap(ana, 90_000, minutesAgo);
+    const laps = async () =>
+      (await getRoundField(roundId)).find((row) => row.display_name === "Ana");
+
+    // No race yet: every lap is a qualifying lap.
+    expect(await laps()).toMatchObject({ lap_count: 3, qualifying_lap_count: 3 });
+
+    await racing(ana, ben);
+    await raceBeganMinutesAgo(30);
+    for (let i = 0; i < 20; i++) await lap(ana, 91_000, 29 - i);
+
+    expect(await laps()).toMatchObject({ lap_count: 23, qualifying_lap_count: 3 });
+  });
+
   it("keeps a rig's first place at the flag, against a later report and an older one accepted late", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben] = [await seat("Ana"), await seat("Ben")];

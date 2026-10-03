@@ -176,14 +176,15 @@ describe("league board on league night", () => {
       raced: false,
       qualifying_lap_ms: best_lap_ms,
       qualifying_position: position,
+      qualifying_lap_count: 3,
       finish_source: null,
       ...extra,
     };
   }
   const field = [
-    result("d1", "Jordan R.", 1, 137_683, { lap_count: 7, valid_lap_count: 7 }),
-    result("d2", "Cody J.", 2, 137_879, { lap_count: 6, valid_lap_count: 5 }),
-    result("d3", "Alexis M.", null, null, { lap_count: 1, valid_lap_count: 0 }),
+    result("d1", "Jordan R.", 1, 137_683, { lap_count: 7, valid_lap_count: 7, qualifying_lap_count: 7 }),
+    result("d2", "Cody J.", 2, 137_879, { lap_count: 6, valid_lap_count: 5, qualifying_lap_count: 6 }),
+    result("d3", "Alexis M.", null, null, { lap_count: 1, valid_lap_count: 0, qualifying_lap_count: 1 }),
   ];
   const standing = {
     driver_id: "d1",
@@ -280,18 +281,26 @@ describe("league board on league night", () => {
   it("ranks qualifying by qualifying laps after the race has placed the round", () => {
     // The race finished Cody, Alexis, Jordan, and Cody's race lap beat every
     // qualifying lap; qualifying was Jordan, then Alexis, and Cody set no clean
-    // lap before the start.
+    // lap before the start. Jordan drove 3 laps in qualifying, then a 20-lap race.
     const raced = { raced: true, finish_source: "flag" as const };
     const placed = [
       result("d2", "Cody J.", 1, 136_900, { ...raced, qualifying_lap_ms: null, qualifying_position: null }),
       result("d3", "Alexis M.", 2, 137_300, { ...raced, qualifying_lap_ms: 137_900, qualifying_position: 2 }),
-      result("d1", "Jordan R.", 3, 137_500, { ...raced, qualifying_lap_ms: 137_683, qualifying_position: 1 }),
+      result("d1", "Jordan R.", 3, 137_500, {
+        ...raced,
+        qualifying_lap_ms: 137_683,
+        qualifying_position: 1,
+        lap_count: 23,
+        qualifying_lap_count: 3,
+      }),
     ];
     const data = { season, rounds: [round(venueToday())], standings: [standing], qualifying: { round: round(venueToday()), field: placed } };
     const html = renderToStaticMarkup(<league.Board spec={null} data={data} stale={false} hold={() => {}} />);
     const rows = html.match(/<li[\s\S]*?<\/li>/g) ?? [];
     expect(rows[0]).toContain(">Jordan R.<");
     expect(rows[0]).toContain("2:17.683");
+    expect(rows[0]).toContain(">3 laps<");
+    expect(html).not.toContain("23 laps");
     expect(rows[1]).toContain(">Alexis M.<");
     expect(rows[1]).toContain("2:17.900");
     expect(rows[1]).toContain("+0.217");

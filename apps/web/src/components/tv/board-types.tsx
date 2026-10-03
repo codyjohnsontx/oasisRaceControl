@@ -451,14 +451,14 @@ const byQualifying = (field: RoundResult[]) =>
 
 /**
  * A qualifying row: the driver's best valid qualifying lap, and how many laps
- * they have driven tonight. The table works the gap to the leader out from the
+ * they drove in qualifying. The table works the gap to the leader out from the
  * time. A driver in the field with no valid qualifying lap has no time to
  * show; their score cell reads as the unset time.
  */
 const toQualifyingEntry = (row: RoundResult): ArcadeEntry => ({
   id: row.driver_id,
   name: row.display_name,
-  detail: `${row.lap_count} ${row.lap_count === 1 ? "lap" : "laps"}`,
+  detail: `${row.qualifying_lap_count} ${row.qualifying_lap_count === 1 ? "lap" : "laps"}`,
   timeMs: row.qualifying_lap_ms ?? undefined,
 });
 

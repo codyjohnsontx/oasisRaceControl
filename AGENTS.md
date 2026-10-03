@@ -144,10 +144,10 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   odd one out - it reads `/api/league/rounds/[roundId]` for one round's ranked
   field and per-driver laps, which the season endpoint does not carry. The wall's
   league board also reads that round endpoint while tonight's round is open and
-  ranks its qualifying screen by the field's `qualifying_position` and
-  `qualifying_lap_ms` - the round page's "qualified P#" - never by `position`,
-  which in a raced round is the finishing order. Neither surface wraps the
-  other.
+  ranks its qualifying screen by the field's `qualifying_position`,
+  `qualifying_lap_ms` and `qualifying_lap_count` - the round page's
+  "qualified P#" - never by `position`, `best_lap_ms` or `lap_count`, which in
+  a raced round take in the race. Neither surface wraps the other.
 - Season points are one swappable module: `apps/web/src/lib/league-scoring.ts`.
   Nothing else in the codebase encodes a points table. The scale is the venue's
   own and is final: P1-P5 score 5, 4, 3, 2, 1, and every other entrant scores 1.

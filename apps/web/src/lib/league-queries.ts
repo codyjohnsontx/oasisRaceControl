@@ -150,9 +150,13 @@ async function queryRoundResults(
      counts as (
        select f.round_id, f.driver_id,
               count(rl.lap_id)::int as lap_count,
-              (count(rl.lap_id) filter (where rl.is_valid))::int as valid_lap_count
+              (count(rl.lap_id) filter (where rl.is_valid))::int as valid_lap_count,
+              (count(rl.lap_id) filter (
+                where rs.started_at is null or rl.completed_at < rs.started_at
+              ))::int as qualifying_lap_count
        from field f
        left join rl on rl.round_id = f.round_id and rl.driver_id = f.driver_id
+       left join race_start rs on rs.round_id = f.round_id
        group by f.round_id, f.driver_id
      ),
      best as (
@@ -206,6 +210,7 @@ async function queryRoundResults(
             case when k.raced then k.race_position else k.lap_position end as position,
             c.lap_count, c.valid_lap_count,
             k.best_lap_ms, k.raced, k.qualifying_lap_ms, k.qualifying_position,
+            c.qualifying_lap_count,
             k.finish_source
      from ranked k
      join r on r.id = k.round_id
