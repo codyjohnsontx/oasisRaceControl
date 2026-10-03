@@ -36,11 +36,10 @@ export default async function RigHealthPage() {
   const { clock, snapshot, lastLaps, alerts } = await withTransaction(async (client) => {
     await client.query("set transaction isolation level repeatable read, read only");
     const clock = await monitorClock(client);
-    const [snapshot, lastLaps, alerts] = await Promise.all([
-      loadSnapshot(client, clock.now),
-      lastLapAtByRig(client),
-      recentAlerts(client),
-    ]);
+    // One at a time: these share the transaction's client.
+    const snapshot = await loadSnapshot(client, clock.now);
+    const lastLaps = await lastLapAtByRig(client);
+    const alerts = await recentAlerts(client);
     return { clock, snapshot, lastLaps, alerts };
   });
   // What the rules find now, and what the channel still has open.

@@ -217,125 +217,123 @@ export async function loadSnapshot(
   db: Db,
   now: number,
 ): Promise<MonitorSnapshot & { openAlerts: OpenAlertDetail[] }> {
-  // One client runs one statement at a time; these queue on it in order.
-  const [rigRows, heartbeatRows, heardRows, openAlerts, [venue], lapRows, bestRows, moveRows, boardRows] =
-    await Promise.all([
-    rows<{
-      id: string;
-      rig_number: number;
-      display_name: string;
-      last_seen_at: Date | null;
-      seated_since: Date | null;
-      driver_name: string | null;
-      driver_status: string | null;
-    }>(
-      db,
-      `select r.id, r.rig_number, r.display_name, r.last_seen_at,
-              ra.started_at as seated_since, d.display_name::text as driver_name,
-              d.status::text as driver_status
-       from rigs r
-       left join rig_assignments ra on ra.rig_id = r.id and ra.ended_at is null
-       left join drivers d on d.id = ra.driver_id
-       order by r.rig_number`,
-    ),
-    // Through each rig's latest heartbeat (one index lookup per rig) and then
-    // an index range from there, so the read is bounded by HISTORY however
-    // much history is retained.
-    rows<HeartbeatRow>(
-      db,
-      `select h.id::text, h.rig_id, h.received_at, h.sent_at,
-              h.clock_skew_ms::float8 as clock_skew_ms, h.process_started_at,
-              h.agent_version, h.sim_connected, h.telemetry_faulted,
-              h.pending_laps, h.rejected_laps, h.checkout, h.shutting_down,
-              h.session_track, h.session_config, h.session_car, h.sign_in_failures,
-              h.payload->'signInFailureKinds' as sign_in_failure_kinds,
-              h.payload->'signInFailureSeqs' as sign_in_failure_seqs,
-              h.payload->>'telemetryMode' as telemetry_mode,
-              (h.payload->>'sequence')::float8 as sequence,
-              (h.payload->>'oldestPendingAgeS')::float8 as oldest_pending_age_s,
-              h.payload->'missingVariables' as missing_variables,
-              (h.payload->>'agentCpuPercent')::float8 as agent_cpu_percent,
-              (h.payload->>'agentMemoryMb')::float8 as agent_memory_mb
-       from v_rig_latest_heartbeat latest
-       join rig_heartbeats h
-         on h.rig_id = latest.rig_id
-        and h.received_at >= least(now() - $1::interval, latest.received_at - $2::interval)
-       order by h.rig_id, h.received_at, h.id`,
-      [HISTORY, BEFORE_LATEST],
-    ),
-    // Each rig's unbroken runs of heartbeats over HEARD_HISTORY_MS: an index
-    // range per rig, folded in the database so only the runs come back.
-    rows<{ rig_id: string; heard_from: Date; heard_to: Date }>(
-      db,
-      `select rig_id, min(received_at) as heard_from, max(received_at) as heard_to
+  // One client runs one statement at a time, so each waits for the last:
+  // pg deprecates queueing a second query on a client that is still busy.
+  const rigRows = await rows<{
+    id: string;
+    rig_number: number;
+    display_name: string;
+    last_seen_at: Date | null;
+    seated_since: Date | null;
+    driver_name: string | null;
+    driver_status: string | null;
+  }>(
+    db,
+    `select r.id, r.rig_number, r.display_name, r.last_seen_at,
+            ra.started_at as seated_since, d.display_name::text as driver_name,
+            d.status::text as driver_status
+     from rigs r
+     left join rig_assignments ra on ra.rig_id = r.id and ra.ended_at is null
+     left join drivers d on d.id = ra.driver_id
+     order by r.rig_number`,
+  );
+  // Through each rig's latest heartbeat (one index lookup per rig) and then
+  // an index range from there, so the read is bounded by HISTORY however
+  // much history is retained.
+  const heartbeatRows = await rows<HeartbeatRow>(
+    db,
+    `select h.id::text, h.rig_id, h.received_at, h.sent_at,
+            h.clock_skew_ms::float8 as clock_skew_ms, h.process_started_at,
+            h.agent_version, h.sim_connected, h.telemetry_faulted,
+            h.pending_laps, h.rejected_laps, h.checkout, h.shutting_down,
+            h.session_track, h.session_config, h.session_car, h.sign_in_failures,
+            h.payload->'signInFailureKinds' as sign_in_failure_kinds,
+            h.payload->'signInFailureSeqs' as sign_in_failure_seqs,
+            h.payload->>'telemetryMode' as telemetry_mode,
+            (h.payload->>'sequence')::float8 as sequence,
+            (h.payload->>'oldestPendingAgeS')::float8 as oldest_pending_age_s,
+            h.payload->'missingVariables' as missing_variables,
+            (h.payload->>'agentCpuPercent')::float8 as agent_cpu_percent,
+            (h.payload->>'agentMemoryMb')::float8 as agent_memory_mb
+     from v_rig_latest_heartbeat latest
+     join rig_heartbeats h
+       on h.rig_id = latest.rig_id
+      and h.received_at >= least(now() - $1::interval, latest.received_at - $2::interval)
+     order by h.rig_id, h.received_at, h.id`,
+    [HISTORY, BEFORE_LATEST],
+  );
+  // Each rig's unbroken runs of heartbeats over HEARD_HISTORY_MS: an index
+  // range per rig, folded in the database so only the runs come back.
+  const heardRows = await rows<{ rig_id: string; heard_from: Date; heard_to: Date }>(
+    db,
+    `select rig_id, min(received_at) as heard_from, max(received_at) as heard_to
+     from (
+       select rig_id, received_at,
+              sum(case when received_at - previous > $2::interval then 1 else 0 end)
+                over (partition by rig_id order by received_at) as run
        from (
-         select rig_id, received_at,
-                sum(case when received_at - previous > $2::interval then 1 else 0 end)
-                  over (partition by rig_id order by received_at) as run
-         from (
-           select h.rig_id, h.received_at,
-                  lag(h.received_at) over (partition by h.rig_id order by h.received_at) as previous
-           from rigs r
-           join rig_heartbeats h on h.rig_id = r.id and h.received_at >= now() - $1::interval
-         ) gaps
-       ) runs
-       group by rig_id, run
-       order by rig_id, heard_from`,
-      [`${HEARD_HISTORY_MS / 1000} seconds`, `${SILENT_AFTER_MS / 1000} seconds`],
-    ),
-    rows<OpenAlertDetail>(
-      db,
-      "select id::text, rule, subject, severity, detail from monitor_alerts where resolved_at is null",
-    ),
-    rows<VenueRow>(
-      db,
-      `select (extract(epoch from ${VENUE_DAY_START}) * 1000)::float8 as venue_day_start_ms,
-              s.long_stint_minutes,
-              s.event_mode_override, s.override_expires_at, su.display_name as override_set_by,
-              case when s.event_mode
-                then (extract(epoch from s.event_mode_changed_at) * 1000)::float8
-              end as event_mode_since_ms,
-              fc.track_name, fc.track_config, fc.car_name
-       from (select 1) one
-       left join monitor_state s on s.id = 1
-       left join staff_users su on su.id = s.override_set_by
-       left join featured_combos fc on fc.combo_date = venue_today()`,
-    ),
-    rows<LapRow>(db, RECENT_LAPS_SQL, [LAPS_DRIVEN_WITHIN, `${LAP_HISTORY_MS / 1000} seconds`]),
-    rows<{ track_name: string; track_config: string; car_name: string; driver_id: string; best_ms: number }>(
-      db,
-      LAP_BESTS_SQL,
-      [LAPS_DRIVEN_WITHIN, `${LAP_HISTORY_MS / 1000} seconds`],
-    ),
-    rows<{
-      from_rig_id: string;
-      to_rig_id: string | null;
-      ended_at: Date;
-      driver_name: string;
-      driver_status: string;
-    }>(
-      db,
-      `select ra.rig_id::text as from_rig_id, now_on.rig_id::text as to_rig_id, ra.ended_at,
-              d.display_name::text as driver_name, d.status::text as driver_status
-       from rig_assignments ra
-       join drivers d on d.id = ra.driver_id
-       left join rig_assignments now_on on now_on.driver_id = ra.driver_id and now_on.ended_at is null
-       where ra.end_reason = 'moved' and ra.ended_at >= now() - $1::interval`,
-      [`${MOVE_WINDOW_MS / 1000} seconds`],
-    ),
-    rows<BoardRow>(
-      db,
-      `select board_id::text, mode, host, first_seen_at, last_seen_at, visible, feed_ok,
-              feed_failures, closed_at
-       from board_heartbeats
-       where last_seen_at >= least(${VENUE_DAY_START}, now() - $1::interval)
-       order by last_seen_at desc`,
-      // Back to the venue day's start for the rules scoped to the day (8a,
-      // 8b), and never less than the live window, so a board heard just
-      // before venue midnight still holds event mode just after it.
-      [`${BOARD_DARK_AFTER_MS / 1000} seconds`],
-    ),
-  ]);
+         select h.rig_id, h.received_at,
+                lag(h.received_at) over (partition by h.rig_id order by h.received_at) as previous
+         from rigs r
+         join rig_heartbeats h on h.rig_id = r.id and h.received_at >= now() - $1::interval
+       ) gaps
+     ) runs
+     group by rig_id, run
+     order by rig_id, heard_from`,
+    [`${HEARD_HISTORY_MS / 1000} seconds`, `${SILENT_AFTER_MS / 1000} seconds`],
+  );
+  const openAlerts = await rows<OpenAlertDetail>(
+    db,
+    "select id::text, rule, subject, severity, detail from monitor_alerts where resolved_at is null",
+  );
+  const [venue] = await rows<VenueRow>(
+    db,
+    `select (extract(epoch from ${VENUE_DAY_START}) * 1000)::float8 as venue_day_start_ms,
+            s.long_stint_minutes,
+            s.event_mode_override, s.override_expires_at, su.display_name as override_set_by,
+            case when s.event_mode
+              then (extract(epoch from s.event_mode_changed_at) * 1000)::float8
+            end as event_mode_since_ms,
+            fc.track_name, fc.track_config, fc.car_name
+     from (select 1) one
+     left join monitor_state s on s.id = 1
+     left join staff_users su on su.id = s.override_set_by
+     left join featured_combos fc on fc.combo_date = venue_today()`,
+  );
+  const lapRows = await rows<LapRow>(db, RECENT_LAPS_SQL, [LAPS_DRIVEN_WITHIN, `${LAP_HISTORY_MS / 1000} seconds`]);
+  const bestRows = await rows<{ track_name: string; track_config: string; car_name: string; driver_id: string; best_ms: number }>(
+    db,
+    LAP_BESTS_SQL,
+    [LAPS_DRIVEN_WITHIN, `${LAP_HISTORY_MS / 1000} seconds`],
+  );
+  const moveRows = await rows<{
+    from_rig_id: string;
+    to_rig_id: string | null;
+    ended_at: Date;
+    driver_name: string;
+    driver_status: string;
+  }>(
+    db,
+    `select ra.rig_id::text as from_rig_id, now_on.rig_id::text as to_rig_id, ra.ended_at,
+            d.display_name::text as driver_name, d.status::text as driver_status
+     from rig_assignments ra
+     join drivers d on d.id = ra.driver_id
+     left join rig_assignments now_on on now_on.driver_id = ra.driver_id and now_on.ended_at is null
+     where ra.end_reason = 'moved' and ra.ended_at >= now() - $1::interval`,
+    [`${MOVE_WINDOW_MS / 1000} seconds`],
+  );
+  const boardRows = await rows<BoardRow>(
+    db,
+    `select board_id::text, mode, host, first_seen_at, last_seen_at, visible, feed_ok,
+            feed_failures, closed_at
+     from board_heartbeats
+     where last_seen_at >= least(${VENUE_DAY_START}, now() - $1::interval)
+     order by last_seen_at desc`,
+    // Back to the venue day's start for the rules scoped to the day (8a,
+    // 8b), and never less than the live window, so a board heard just
+    // before venue midnight still holds event mode just after it.
+    [`${BOARD_DARK_AFTER_MS / 1000} seconds`],
+  );
 
   const byRig = new Map<string, Heartbeat[]>();
   for (const row of heartbeatRows) {
