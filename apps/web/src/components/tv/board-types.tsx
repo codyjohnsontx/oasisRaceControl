@@ -337,11 +337,11 @@ const LEAGUE_BOARD = defineTvBoard<null, LeagueData>({
  *  - Season standings, an arcade table of points, on every ordinary day: one
  *    slide among the others.
  *  - Qualifying, while tonight's round is open: the round's whole field ranked
- *    by fastest valid qualifying lap - laps before the race began - which is
+ *    by fastest valid qualifying lap (laps before the race began). That is
  *    the round's `qualifying_position`, not its placing, since a raced round
- *    is placed by its finish - past ten drivers in two halves, as the race is, since a
- *    driver cut from the wall would have no way to know it. This is the
- *    screen that takes the wall over.
+ *    is placed by its finish. Past ten drivers it draws two halves, as the
+ *    race does, since a driver cut from the wall would have no way to know
+ *    it. This is the screen that takes the wall over.
  *  - The race, while tonight's round is open and the live feed reports a Race
  *    session with a field (`useLiveRace`): the running order in place of the
  *    ranking, refreshed on the feed's own cadence, and after the chequered
