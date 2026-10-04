@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Client } from "pg";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GET as tick } from "@/app/api/monitor/tick/route";
 import { db } from "@/lib/db";
 import { CURRENT_AGENT_VERSION } from "./agent-version";
 import { flowModel } from "./flow";
@@ -457,6 +459,39 @@ describeDb("rig monitor against real Postgres", () => {
   it("lets exactly one of many simultaneous evaluations run", async () => {
     const runs = await Promise.all(Array.from({ length: 6 }, () => runMonitor()));
     expect(runs.filter((r) => r.evaluated)).toHaveLength(1);
+  });
+
+  // pg@8 warns (once per process, so a warning listener would miss every
+  // later case) when a query is sent to a client still running one, and pg@9
+  // removes the queue. So every query the tick sends is watched instead: none
+  // may start on a client with another still in flight.
+  it("runs the tick's queries one at a time on each client", async () => {
+    const rig = await seedRig(3);
+    await openAssignment(rig.id, (await seedDriver("Tick Driver")).id);
+    for (const ago of [240, 180, 120]) await heartbeat(rig, ago);
+    await testDb().query("update monitor_state set last_evaluated_at = null");
+    vi.stubEnv("CRON_SECRET", "tick-secret");
+
+    const busy = new WeakSet<object>();
+    const overlapping: string[] = [];
+    const send = Client.prototype.query;
+    const spy = vi.spyOn(Client.prototype, "query").mockImplementation(function (this: Client, ...args: unknown[]) {
+      if (busy.has(this)) overlapping.push(String((args[0] as { text?: string })?.text ?? args[0]).slice(0, 80));
+      busy.add(this);
+      const sent = (send as (...a: unknown[]) => unknown).apply(this, args);
+      if (sent instanceof Promise) void sent.finally(() => busy.delete(this)).catch(() => {});
+      else busy.delete(this);
+      return sent;
+    } as typeof send);
+    try {
+      const response = await tick(
+        new Request("http://localhost/api/monitor/tick", { headers: { authorization: "Bearer tick-secret" } }),
+      );
+      expect(await response.json()).toMatchObject({ status: "ok", evaluated: true });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(overlapping).toEqual([]);
   });
 
   it("retries a post Discord refused, once, on a later evaluation", async () => {
