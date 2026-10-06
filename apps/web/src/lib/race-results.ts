@@ -16,9 +16,11 @@ import { isRaceSession } from "./race-live";
  *   - every race report a rig sends (POST /api/agent/race-status) while a
  *     round is open records that the rig was heard in its race session, and
  *     the first one from the round's race showing the chequered flag or
- *     cool-down records the rig's driver at iRacing's own place. That place is
- *     final: a later report, or an older one the live feed accepts late, never
- *     moves it - only staff do;
+ *     cool-down records the rig's driver at iRacing's own place. A place
+ *     captured under the flag follows the rig's reports until the car has
+ *     crossed the line since the flag or the session reaches cool-down; once
+ *     settled, a later report, or an older one the live feed accepts late,
+ *     never moves it - only staff do;
  *   - closing the round sweeps once more for any car of the round's race
  *     still missing, at its last reported place;
  *   - staff save the order they reviewed on /staff, which replaces every row of
@@ -29,8 +31,8 @@ import { isRaceSession } from "./race-live";
  * arrived, the rule laps use - never by whoever is in the seat when the row is
  * written. A rig that takes the flag with nobody signed in records that its
  * place is empty (league_race_unsigned_places). A rig whose race place is
- * already recorded, either way, records nothing more for that race, so a
- * driver signing in during cool-down does not inherit it.
+ * already recorded, either way, never records it for anyone else in that
+ * race, so a driver signing in during cool-down does not inherit it.
  *
  * Flag captures take the open round one at a time, and saving and closing
  * lock it exclusively before anything else, so each of them waits for a
