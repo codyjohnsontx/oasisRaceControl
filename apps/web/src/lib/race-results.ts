@@ -162,7 +162,7 @@ export async function captureRaceReport(
     await client.query(
       `update league_race_results x
          set finish_position = $3,
-             laps_completed = $6,
+             laps_completed = coalesce($6, x.laps_completed),
              final = coalesce($6::int > x.laps_completed, false) or $8::boolean
        from rig_assignments ra
        where ra.id = $7

@@ -246,6 +246,25 @@ describeDb("league night's race result against real Postgres", () => {
     ]);
   });
 
+  it("keeps the laps a place was captured with through a report that knows none, and still settles it at the line", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await racing(ana, ben);
+
+    await report(ana.rig, atFlag(3, 11));
+    // Out of world on her last lap, iRacing reports no laps completed.
+    await report(ana.rig, { ...atFlag(3, 11), lapsCompleted: null });
+    expect((await getRaceReview(roundId)).entries).toMatchObject([
+      { display_name: "Ana", finish_position: 3, laps_completed: 11 },
+    ]);
+    await report(ana.rig, atFlag(2, 12));
+    await report(ana.rig, atFlag(4, 13));
+
+    expect((await getRaceReview(roundId)).entries).toMatchObject([
+      { display_name: "Ana", finish_position: 2, laps_completed: 12 },
+    ]);
+  });
+
   it("settles a place at cool-down for a car that never crosses the line again, and at once for a first report already there", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben] = [await seat("Ana"), await seat("Ben")];
