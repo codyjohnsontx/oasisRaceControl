@@ -9,6 +9,7 @@ import {
   closeTestDb,
   describeDb,
   openAssignment,
+  openLeagueRound,
   resetDb,
   seedDriver,
   seedRig,
@@ -168,6 +169,37 @@ describeDb("the live race feed against real Postgres", () => {
     expect(race.session).toMatchObject({ sessionUniqueId: 81_234_567, sessionNum: 2, isRace: true });
     expect(race.rows.map((r) => r.rigNumber)).toEqual([1, 2]);
     expect(race.otherRigs).toBe(2);
+  });
+
+  it("shows the race as soon as the field leaves qualifying for it, not a minute later when the old rows drop", async () => {
+    const rigs = await Promise.all([1, 2, 3, 4, 5].map((n) => seedRig(n)));
+    for (const [i, rig] of rigs.entries()) {
+      await report(rig, { sessionNum: 1, sessionType: "Open Qualify", position: i + 1 });
+    }
+    // Rigs 1 and 2 are on the grid of the race; the other three have left the
+    // session and said nothing since, their qualifying rows not yet dropped.
+    for (const rig of rigs.slice(2)) await silence(rig, RACE_STALE_AFTER_S + 5);
+    await report(rigs[0]!, { position: 1 });
+    await report(rigs[1]!, { position: 2 });
+
+    const race = await live();
+    expect(race.session).toMatchObject({ sessionNum: 2, isRace: true });
+    expect(race.rows.map((r) => r.rigNumber)).toEqual([1, 2]);
+    expect(race.otherRigs).toBe(3);
+  });
+
+  it("on league night, prefers the race to a bigger session still qualifying; on any other day the sizes decide", async () => {
+    const rigs = await Promise.all([1, 2, 3, 4, 5].map((n) => seedRig(n)));
+    for (const rig of rigs.slice(0, 3)) await report(rig, { sessionNum: 1, sessionType: "Open Qualify" });
+    await report(rigs[3]!, { position: 1 });
+    await report(rigs[4]!, { position: 2 });
+    expect((await live()).session).toMatchObject({ sessionNum: 1, isRace: false });
+
+    await openLeagueRound({ trackName: "Spa-Francorchamps", carName: "Porsche 911 GT3 R" });
+    const race = await live();
+    expect(race.session).toMatchObject({ sessionNum: 2, isRace: true });
+    expect(race.rows.map((r) => r.rigNumber)).toEqual([4, 5]);
+    expect(race.otherRigs).toBe(3);
   });
 
   it("marks a rig silent past 15 s stale and drops it after 60 s, by the database clock", async () => {

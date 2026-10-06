@@ -163,21 +163,27 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   `lib/race-results.ts` is the only writer of the result: captured from race
   reports at the chequered flag, swept at close, corrected and frozen by staff
   on `/staff` ([docs/live-race.md](docs/live-race.md#the-race-result)). The
-  round's race is `v_league_race_session` - the race session the most rigs
-  were heard in while the round was open, and never one heard from a single
-  rig, so a walk-in's solo race on a spare rig is never it. The flag capture,
-  the qualifying cut-off and the close sweep all read that view; a capture
-  must never delete another session's rows. Two more rules are easy to undo:
-  a captured row names the driver from the assignment the race-status route
-  stored with the report (`rig_race_status.rig_assignment_id`), never from
-  whoever holds the seat when the row is written - the close sweep reads
-  reports minutes old - and a rig's first place at the flag is final, since
-  the live feed deliberately accepts an older report after a quiet rig, so
-  only staff move it. A rig flagged with nobody signed in records an empty
-  place (`league_race_unsigned_places`, 0010) so a cool-down sign-in never
-  takes it. A staff save carries the review's `capturedThrough` and is
-  refused once a newer capture exists; that only holds because captures lock
-  the round one at a time and stamp `clock_timestamp()`.
+  round's race is `v_league_race_session` - until a place is captured, the
+  race session the most rigs were heard in while the round was open, and
+  never one heard from a single rig, so a walk-in's solo race on a spare rig
+  is never it; once one is, the earliest session with a captured place
+  (0011), so no later race, the same size or bigger, replaces the result or
+  moves the qualifying cut-off - league night runs one race. The flag
+  capture, the qualifying cut-off and the close sweep all read that view; a
+  capture must never delete another session's rows. Two more rules
+  are easy to undo: a captured row names the driver from the assignment the
+  race-status route stored with the report (`rig_race_status.rig_assignment_id`),
+  never from whoever holds the seat when the row is written - the close sweep
+  reads reports minutes old - and a captured place follows the rig's reports
+  only until the car has crossed the line since the flag or the session
+  reaches cool-down (`league_race_results.final`, 0011), because the flag
+  shows a lap before most cars finish; once settled only staff move it, since
+  the live feed deliberately accepts an older report after a quiet rig. A rig
+  flagged with nobody signed in records an empty place
+  (`league_race_unsigned_places`, 0010) so a cool-down sign-in never takes
+  it. A staff save carries the review's `capturedThrough` and is refused once
+  a newer capture exists, or a captured place has moved; that only holds
+  because captures lock the round one at a time and stamp `clock_timestamp()`.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the
   round restores whatever was there (`league_rounds.prior_featured_combo`, null
@@ -200,7 +206,11 @@ outbox, because a queued position is a wrong one. The upsert keeps the report
 the rig's clock calls newest, so a late request cannot rewind a car, but any
 report replaces a row that has gone stale (15 s), so a clock stepped back dims
 the rig instead of freezing it until it ages off the board. Grouping,
-ordering, staleness and intervals live only in `lib/race-live.ts`, and a board
+ordering, staleness and intervals live only in `lib/race-live.ts`: a session
+is sized by its rigs still reporting (inside the 15 s stale threshold), so
+the race shows the moment the field leaves qualifying rather than a minute
+later when the old rows drop, and while tonight's round is open a `Race`
+session wins over any larger group (the route passes `preferRace`). A board
 numbers its rows by `place`, not `position`: a race under green is ordered by
 how far round each car is, because iRacing's position only catches up with a
 pass at the line; the grid and the finish keep iRacing's own order.

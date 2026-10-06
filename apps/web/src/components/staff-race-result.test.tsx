@@ -175,6 +175,39 @@ describe("reconcileDraft", () => {
     expect(draft.out).toEqual([]);
   });
 
+  it("follows the review's order of the finishers while staff have not reordered them", () => {
+    const cal = entry("Cal", { finish_position: 2 });
+    const ana = entry("Ana", { finish_position: 3 });
+    const ben = entry("Ben", { finish_position: 1 });
+    const basis = review([ben, cal, ana], []);
+    // Staff marked Ben a DNF and touched nobody else; then Ana passed Cal at the line.
+    const edited = { finishers: [cal, ana], dnf: [ben], out: [] };
+
+    const draft = reconcileDraft(
+      edited,
+      basis,
+      review([ben, entry("Ana", { finish_position: 2 }), entry("Cal", { finish_position: 3 })], []),
+    );
+
+    expect(ids(draft.finishers)).toEqual(["driver-Ana", "driver-Cal"]);
+    expect(ids(draft.dnf)).toEqual(["driver-Ben"]);
+  });
+
+  it("keeps staff's order of the finishers once they have reordered them", () => {
+    const cal = entry("Cal", { finish_position: 2 });
+    const ana = entry("Ana", { finish_position: 3 });
+    const basis = review([cal, ana], []);
+    const edited = { finishers: [ana, cal], dnf: [], out: [] };
+
+    const draft = reconcileDraft(
+      edited,
+      basis,
+      review([entry("Cal", { finish_position: 1 }), entry("Ana", { finish_position: 2 })], []),
+    );
+
+    expect(ids(draft.finishers)).toEqual(["driver-Ana", "driver-Cal"]);
+  });
+
   it("keeps staff's choices for drivers whose place in the review has not changed", () => {
     const ana = entry("Ana", { finish_position: 1 });
     const ben = entry("Ben", { finish_position: 2 });

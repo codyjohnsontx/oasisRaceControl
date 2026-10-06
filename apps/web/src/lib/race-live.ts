@@ -117,21 +117,40 @@ export type LiveRace = {
   otherRigs: number;
 };
 
+export type LiveRaceOptions = {
+  /**
+   * League night: a group whose session type is `Race` wins over any other,
+   * whatever their sizes. The route sets it while tonight's round is open,
+   * when the race is what the wall and the phone are for; on any other day
+   * the sizes alone decide, as before.
+   */
+  preferRace?: boolean;
+};
+
 /**
- * Groups the reports by iRacing session and returns the largest group as the
- * race, in race order.
+ * Groups the reports by iRacing session and returns the largest group of rigs
+ * still reporting as the race, in race order.
  *
  * A session is SessionUniqueID together with SessionNum: rigs in one hosted
  * race agree on both, and keying on the pair keeps a rig still in practice from
  * being counted into the race whatever SessionUniqueID turns out to mean on a
- * real server. Ties go to the group heard from most recently, then to the
- * higher session id, so the answer never depends on row order. The group is a
- * race when any of its rigs has read the session type as `Race`.
+ * real server. A group is sized by the rigs still reporting - inside
+ * RACE_STALE_AFTER_S - so a session that rigs have left does not hold the
+ * board for the minute its rows take to drop (the whole field leaving
+ * qualifying for the race is the ordinary case, and it must not hide the race
+ * for a minute); only when no rig is live anywhere do the silent rows count.
+ * Ties go to the group heard from most recently, then to the higher session
+ * id, so the answer never depends on row order. The group is a race when any
+ * of its rigs has read the session type as `Race`, and with `preferRace` such
+ * a group wins outright.
  *
  * Expects only rows inside RACE_DROP_AFTER_S; the route filters by the
  * database clock.
  */
-export function liveRace(reports: readonly RaceStatusRow[]): LiveRace {
+export function liveRace(
+  reports: readonly RaceStatusRow[],
+  options: LiveRaceOptions = {},
+): LiveRace {
   const groups = new Map<string, RaceStatusRow[]>();
   for (const report of reports) {
     const key = `${report.session_unique_id}:${report.session_num}`;
@@ -140,8 +159,12 @@ export function liveRace(reports: readonly RaceStatusRow[]): LiveRace {
     else groups.set(key, [report]);
   }
 
+  const raceFirst = (group: readonly RaceStatusRow[]) =>
+    options.preferRace && group.some((report) => isRaceSession(report.session_type)) ? 1 : 0;
   const race = [...groups.values()].sort(
     (a, b) =>
+      raceFirst(b) - raceFirst(a) ||
+      live(b) - live(a) ||
       b.length - a.length ||
       freshest(a) - freshest(b) ||
       b[0]!.session_unique_id - a[0]!.session_unique_id ||
@@ -214,6 +237,11 @@ function isStale(report: RaceStatusRow): boolean {
 
 function freshest(group: readonly RaceStatusRow[]): number {
   return Math.min(...group.map((report) => report.age_s));
+}
+
+/** Rigs in the group still reporting: those not yet stale. */
+function live(group: readonly RaceStatusRow[]): number {
+  return group.filter((report) => !isStale(report)).length;
 }
 
 /**

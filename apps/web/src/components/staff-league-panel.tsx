@@ -28,7 +28,7 @@ const ERROR_MESSAGES = new Map<string, string>([
   ],
   [
     "race_changed",
-    "A car was recorded at the flag while you were editing - it has been added. Check the order and save again.",
+    "A car was recorded or moved at the flag while you were editing - the result has been refreshed. Check the order and save again.",
   ],
 ]);
 

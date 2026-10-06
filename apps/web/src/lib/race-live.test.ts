@@ -172,6 +172,62 @@ describe("liveRace", () => {
     expect(liveRace([...rows].reverse()).session?.sessionUniqueId).toBe(900);
   });
 
+  it("sizes a session by the rigs still reporting, so a bigger session of silent rigs does not hide the race", () => {
+    // Twelve rigs left the hosted qualifying session for the race; their last
+    // qualifying rows are not yet a minute old, so the feed still holds them.
+    const silent = RACE_STALE_AFTER_S + 5;
+    const qualifying = Array.from({ length: 12 }, (_, i) =>
+      report({
+        rig_number: 10 + i,
+        session_unique_id: 500,
+        session_num: 1,
+        session_type: "Open Qualify",
+        age_s: silent,
+        position: i + 1,
+      }),
+    );
+    const race = liveRace([
+      ...qualifying,
+      report({ rig_number: 1, session_num: 2, position: 1 }),
+      report({ rig_number: 2, session_num: 2, position: 2 }),
+    ]);
+    expect(race.session).toMatchObject({ sessionUniqueId: 500, sessionNum: 2, isRace: true });
+    expect(race.rows.map((r) => r.rigNumber)).toEqual([1, 2]);
+    expect(race.otherRigs).toBe(12);
+  });
+
+  it("falls back to the biggest session of silent rigs when no rig is reporting anywhere", () => {
+    const silent = RACE_STALE_AFTER_S + 5;
+    const race = liveRace([
+      report({ rig_number: 1, session_unique_id: 500, age_s: silent, position: 1 }),
+      report({ rig_number: 2, session_unique_id: 500, age_s: silent, position: 2 }),
+      report({ rig_number: 3, session_unique_id: 900, age_s: silent, position: 1 }),
+    ]);
+    expect(race.session?.sessionUniqueId).toBe(500);
+    expect(race.rows.map((r) => [r.rigNumber, r.stale])).toEqual([
+      [1, true],
+      [2, true],
+    ]);
+  });
+
+  it("with preferRace, takes a Race session over a bigger session still qualifying; without it, the sizes decide", () => {
+    const rows = [
+      ...[1, 2, 3, 4].map((n) =>
+        report({ rig_number: n, session_num: 1, session_type: "Open Qualify", position: n }),
+      ),
+      report({ rig_number: 5, session_num: 2, position: 1 }),
+      report({ rig_number: 6, session_num: 2, position: 2 }),
+    ];
+    const ordinary = liveRace(rows);
+    expect(ordinary.session).toMatchObject({ sessionNum: 1, isRace: false });
+    expect(ordinary.otherRigs).toBe(2);
+
+    const leagueNight = liveRace(rows, { preferRace: true });
+    expect(leagueNight.session).toMatchObject({ sessionNum: 2, isRace: true });
+    expect(leagueNight.rows.map((r) => r.rigNumber)).toEqual([5, 6]);
+    expect(leagueNight.otherRigs).toBe(4);
+  });
+
   it("takes the session's state and what remains from the leader's report", () => {
     const race = liveRace([
       report({ rig_number: 1, position: 2, session_state: 4, session_time_remain_s: 610 }),
