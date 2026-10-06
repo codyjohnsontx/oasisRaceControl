@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeEach, expect, it } from "vitest";
 import { POST as raceStatus } from "@/app/api/agent/race-status/route";
+import { reconcileDraft } from "@/components/staff-race-result";
 import { SESSION_STATE, type RaceStatusEvent } from "@/lib/events";
 import { repeatedPlaces } from "@/lib/league";
 import { closeLeagueRound, getRoundField } from "@/lib/league-queries";
@@ -389,11 +390,11 @@ describeDb("league night's race result against real Postgres", () => {
     ]);
   });
 
-  it("replaces a place from a race that stopped being the round's when the bigger race takes the flag", async () => {
+  it("keeps the first race a place was captured in when a bigger race takes the flag later", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben, cal] = [await seat("Ana"), await seat("Ben"), await seat("Cal")];
     const warmUp = { sessionUniqueId: 70_000_001, sessionNum: 0 };
-    // A two-rig race finishes first, and is the round's race for now.
+    // A two-rig race finishes first, and its flag makes it the round's race.
     await report(ana.rig, { ...warmUp, position: 1 });
     await report(ben.rig, { ...warmUp, position: 2 });
     await report(ana.rig, { ...warmUp, ...atFlag(1) });
@@ -407,10 +408,43 @@ describeDb("league night's race result against real Postgres", () => {
     expect(
       (await getRaceReview(roundId)).entries.map((entry) => [entry.display_name, entry.finish_position]),
     ).toEqual([
-      ["Cal", 1],
+      ["Ana", 1],
       ["Ben", 2],
-      ["Ana", 3],
     ]);
+    expect((await closeLeagueRound(roundId))?.racePlacesSwept).toBe(0);
+  });
+
+  it("keeps the league result and its qualifying cut-off when a bigger race runs after the flag", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await lap(ana, 90_000, 40);
+    await lap(ben, 91_000, 40);
+    await racing(ana, ben);
+    await raceBeganMinutesAgo(20);
+    // Ben's fastest lap of the night is a race lap, so Ana is the fastest qualifier.
+    await lap(ben, 85_000, 10);
+    await report(ben.rig, atFlag(1));
+    await report(ana.rig, atFlag(2));
+    const placed = await placing(roundId);
+    expect(placed.map((row) => [row.name, row.position, row.qualifying])).toEqual([
+      ["Ben", 1, 2],
+      ["Ana", 2, 1],
+    ]);
+
+    // A driver who sat the league race out joins a race for fun, so it has
+    // one more rig than the league race had.
+    const cal = await seat("Cal");
+    const funRace = { sessionUniqueId: LEAGUE_RACE.sessionUniqueId + 1, sessionNum: 2 };
+    await report(cal.rig, { ...funRace, position: 1 });
+    await report(ana.rig, { ...funRace, position: 2 });
+    await report(ben.rig, { ...funRace, position: 3 });
+    await report(cal.rig, { ...funRace, ...atFlag(1) });
+    await report(ana.rig, { ...funRace, ...atFlag(2) });
+    await report(ben.rig, { ...funRace, ...atFlag(3) });
+
+    expect(await placing(roundId)).toEqual(placed);
+    expect((await closeLeagueRound(roundId))?.racePlacesSwept).toBe(0);
+    expect(await placing(roundId)).toEqual(placed);
   });
 
   it("does not hand a rig's place to a driver who signs in during cool-down", async () => {
@@ -641,6 +675,34 @@ describeDb("league night's race result against real Postgres", () => {
     expect(await saveRaceResult(roundId, [ana.driverId], [], capturedThrough)).toEqual({
       status: "not_open",
     });
+  });
+
+  it("refuses a correction saved from a review older than a place that moved as its car crossed the line", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, cal] = [await seat("Ana"), await seat("Cal")];
+    await racing(cal, ana);
+
+    await report(cal.rig, atFlag(2, 11));
+    await report(ana.rig, atFlag(3, 11));
+    const older = await getRaceReview(roundId);
+    const opened = {
+      finishers: older.entries.filter((entry) => entry.finish_position !== null),
+      dnf: [],
+      out: older.notInRace,
+    };
+    expect(opened.finishers.map((entry) => entry.display_name)).toEqual(["Cal", "Ana"]);
+
+    // Ana passes Cal on the last lap and her place follows her across the line.
+    await report(ana.rig, atFlag(2, 12));
+    await report(cal.rig, atFlag(3, 12));
+
+    expect(
+      await saveRaceResult(roundId, [cal.driverId, ana.driverId], [], older.capturedThrough),
+    ).toEqual({ status: "race_changed" });
+    const newer = await getRaceReview(roundId);
+    expect(
+      reconcileDraft(opened, older, newer).finishers.map((driver) => driver.display_name),
+    ).toEqual(["Ana", "Cal"]);
   });
 
   it("refuses a correction saved from a review older than the newest place captured", async () => {

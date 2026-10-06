@@ -163,14 +163,14 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   `lib/race-results.ts` is the only writer of the result: captured from race
   reports at the chequered flag, swept at close, corrected and frozen by staff
   on `/staff` ([docs/live-race.md](docs/live-race.md#the-race-result)). The
-  round's race is `v_league_race_session` - the race session the most rigs
-  were heard in while the round was open, and never one heard from a single
-  rig, so a walk-in's solo race on a spare rig is never it; a tie on rig
-  count goes to the session a place was already captured in (0011), so a
-  second race on the same rigs before the round closes neither replaces the
-  result nor moves the qualifying cut-off, while a bigger race still does.
-  The flag capture, the qualifying cut-off and the close sweep all read that
-  view; a capture must never delete another session's rows. Two more rules
+  round's race is `v_league_race_session` - until a place is captured, the
+  race session the most rigs were heard in while the round was open, and
+  never one heard from a single rig, so a walk-in's solo race on a spare rig
+  is never it; once one is, the earliest session with a captured place
+  (0011), so no later race, the same size or bigger, replaces the result or
+  moves the qualifying cut-off - league night runs one race. The flag
+  capture, the qualifying cut-off and the close sweep all read that view; a
+  capture must never delete another session's rows. Two more rules
   are easy to undo: a captured row names the driver from the assignment the
   race-status route stored with the report (`rig_race_status.rig_assignment_id`),
   never from whoever holds the seat when the row is written - the close sweep
@@ -182,7 +182,7 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   flagged with nobody signed in records an empty
   place (`league_race_unsigned_places`, 0010) so a cool-down sign-in never
   takes it. A staff save carries the review's `capturedThrough` and is
-  refused once a newer capture exists; that only holds because captures lock
+  refused once a newer capture exists, or a captured place has moved; that only holds because captures lock
   the round one at a time and stamp `clock_timestamp()`.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the

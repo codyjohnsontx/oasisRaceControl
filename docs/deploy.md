@@ -621,7 +621,8 @@ keeps scoring exactly as before.
    group by st.round_id, st.session_unique_id, st.session_num;
    -- one row per race session heard, rigs counting every rig in it; the
    -- round's race is the row with the most rigs (at least two), and places
-   -- fills in from the chequered flag
+   -- fills in from the chequered flag - from 0011 on, once it has, a later
+   -- row no longer takes over as the round's race
    ```
 
 ### Applying 0010_race_unsigned_places.sql
@@ -679,8 +680,9 @@ is open.
 
 `0011_race_result_under_flag.sql` lets a place captured at the chequered flag
 follow the rig's reports until its car has crossed the line, and keeps the
-round's race the race that was captured when a second race on the same rigs
-follows it ([live-race.md](./live-race.md#the-race-result)). It is additive:
+round's race the first race a place was captured in when any later race
+follows it, the same size or bigger
+([live-race.md](./live-race.md#the-race-result)). It is additive:
 one column with a default on `league_race_results` (`final boolean not null
 default true`, filled without a rewrite) and `v_league_race_session`
 redefined with the same columns; nothing existing is rewritten. It needs

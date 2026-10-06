@@ -126,21 +126,9 @@ export async function captureRaceReport(
          and not exists (select 1 from league_race_unsigned_places u
                          where u.round_id = $1 and u.rig_id = $2
                            and u.session_unique_id = $4 and u.session_num = $5)
-       -- A row already held from this race is followed below, never
-       -- re-captured. One from another session no longer counts (it stopped
-       -- being the round's race), so this race replaces it.
-       on conflict (round_id, driver_id) do update set
-         finish_position = excluded.finish_position,
-         source = excluded.source,
-         rig_id = excluded.rig_id,
-         session_unique_id = excluded.session_unique_id,
-         session_num = excluded.session_num,
-         laps_completed = excluded.laps_completed,
-         recorded_at = excluded.recorded_at,
-         final = excluded.final
-       where league_race_results.source = 'flag'
-         and (league_race_results.session_unique_id, league_race_results.session_num)
-             is distinct from (excluded.session_unique_id, excluded.session_num)`,
+       -- A row already held is from this race, since a captured place holds
+       -- the round's race: it is followed below, never re-captured.
+       on conflict (round_id, driver_id) do nothing`,
       [
         round.id,
         rigId,
@@ -156,12 +144,14 @@ export async function captureRaceReport(
 
     // The rig's place from this race is already held: follow it while it is
     // unsettled, for the driver it was captured for and nobody else, so a
-    // driver signing in during cool-down inherits nothing. `recorded_at` is
-    // left as captured: a place that moves is still the place staff saw, and
-    // the save guard exists so a place is never deleted unseen, not re-placed.
+    // driver signing in during cool-down inherits nothing. A place that moves
+    // is stamped anew, so a staff save from a review that showed it where it
+    // was is refused rather than freezing the order a lap earlier.
     await client.query(
       `update league_race_results x
          set finish_position = $3,
+             recorded_at = case when x.finish_position is distinct from $3::int
+                                then clock_timestamp() else x.recorded_at end,
              laps_completed = coalesce($6, x.laps_completed),
              final = coalesce($6::int > x.laps_completed, false) or $8::boolean
        from rig_assignments ra
@@ -220,18 +210,8 @@ export async function sweepRaceResultsTx(client: PoolClient, roundId: string): P
                          and u.session_unique_id = s.session_unique_id
                          and u.session_num = s.session_num)
      order by ra.driver_id, s.received_at desc
-     -- As at the flag: a row from this race stands, one from another session
-     -- no longer counts and is replaced.
-     on conflict (round_id, driver_id) do update set
-       finish_position = excluded.finish_position,
-       source = excluded.source,
-       rig_id = excluded.rig_id,
-       session_unique_id = excluded.session_unique_id,
-       session_num = excluded.session_num,
-       laps_completed = excluded.laps_completed,
-       recorded_at = now()
-     where (league_race_results.session_unique_id, league_race_results.session_num)
-           is distinct from (excluded.session_unique_id, excluded.session_num)`,
+     -- As at the flag: a row already held is from this race, and stands.
+     on conflict (round_id, driver_id) do nothing`,
     [roundId],
   );
   return swept.rowCount ?? 0;

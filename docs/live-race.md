@@ -267,23 +267,30 @@ every round was before. `lib/race-results.ts` is the only writer, called from
   it, mark a DNF or take a driver out. Saving replaces the round's rows with
   source `staff` and nothing captures into that round again. The review
   carries when its newest captured place was recorded (`capturedThrough`);
-  a save sent from a review older than the newest capture is refused
-  (`race_changed`) and the page re-reads, folding the late finisher into the
-  draft without moving anyone staff placed, so a place is never deleted
+  a place that moves under the flag is stamped anew, and a save sent from a
+  review older than the newest capture is refused (`race_changed`). The page
+  re-reads, folding the late finisher into the draft without moving anyone
+  staff placed, and putting the finishers in the review's new order while
+  staff have not reordered them, so a place is never deleted or frozen
   unseen. Captures take the round one at a time, so they are recorded in
   the order they commit and that one timestamp is enough.
 
-The round's race is the race session the most rigs were heard in while the
-round was open, and never one only a single rig was heard in
-(`v_league_race_session`, introduced in `db/migrations/0009_race_results.sql`
-and last redefined in `0011_race_result_under_flag.sql`), so a walk-in's solo
-race on a spare rig is never the league race - not at the flag, not as the
-qualifying cut-off, and not for the close sweep, whenever it finishes. A tie
-on rig count goes to the session a place has already been captured in, so a
-second race on the same rigs before staff close the round - a second heat, a
-race for fun, a server that rolls into another race - neither replaces the
-captured result nor moves the qualifying cut-off; a bigger race still does,
-which is what lets the real race follow a small warm-up heat. Places are
+The round's race (`v_league_race_session`, introduced in
+`db/migrations/0009_race_results.sql` and last redefined in
+`0011_race_result_under_flag.sql`) is, until the chequered flag records a
+place, the race session the most rigs were heard in while the round was open,
+and never one only a single rig was heard in, so a walk-in's solo race on a
+spare rig is never the league race - not at the flag, not as the qualifying
+cut-off, and not for the close sweep, whenever it finishes. Once a place is
+captured - a driver's or an empty seat's - the round's race is the earliest
+session with a captured place, whatever its size: league night runs one race,
+so a later race before staff close the round - a race for fun, one with a
+driver who sat the league race out, a server that rolls into another race -
+neither replaces the captured result nor moves the qualifying cut-off. A
+warm-up heat that reaches the flag first is therefore the round's race, so
+run none. While a league round is open, run no other hosted race on spare
+rigs either: a `Race` session takes the wall and `/league` over from the
+qualifying screen whatever its size. Places are
 renumbered 1..n among the venue's drivers
 when the round is placed: a car nobody was signed in to leaves no gap, and two
 rigs reporting one place are put in order by laps completed and shown to staff

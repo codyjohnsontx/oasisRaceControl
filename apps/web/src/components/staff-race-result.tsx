@@ -30,9 +30,11 @@ function reviewBuckets(review: RaceReview): Map<string, { bucket: Bucket; driver
  * that review had them, whose place in the review has changed since - a car
  * that crossed the line, a driver new to the round - is moved to where the
  * review now has them, at the end of that list; a driver the round no longer
- * has is dropped; everyone else stays where staff put them. Saving names every
- * driver the server will keep, so a draft that missed a late finisher would
- * delete their place.
+ * has is dropped; everyone else stays where staff put them. While staff have
+ * not reordered the finishers - every one of them a finisher in that review,
+ * in its order - they follow the review's order, so a place that moved as a
+ * car crossed the line shows. Saving names every driver the server will keep,
+ * so a draft that missed a late finisher would delete their place.
  */
 export function reconcileDraft(draft: Draft, basis: RaceReview, review: RaceReview): Draft {
   const before = reviewBuckets(basis);
@@ -53,7 +55,27 @@ export function reconcileDraft(draft: Draft, basis: RaceReview, review: RaceRevi
     ),
     ...changed.filter((change) => change.bucket === bucket).map(({ driver }) => driver),
   ];
-  return { finishers: list("finishers"), dnf: list("dnf"), out: list("out") };
+  const finishers = list("finishers");
+  if (inOrder(ids(draft.finishers), finishOrder(basis))) {
+    const order = finishOrder(review);
+    finishers.sort((a, b) => order.indexOf(a.driver_id) - order.indexOf(b.driver_id));
+  }
+  return { finishers, dnf: list("dnf"), out: list("out") };
+}
+
+const ids = (drivers: Driver[]) => drivers.map((driver) => driver.driver_id);
+
+const finishOrder = (review: RaceReview) =>
+  ids(review.entries.filter((entry) => entry.finish_position !== null));
+
+/** Whether every id of `list` is in `order`, and in the same order. */
+function inOrder(list: string[], order: string[]): boolean {
+  let at = 0;
+  for (const id of list) {
+    at = order.indexOf(id, at) + 1;
+    if (at === 0) return false;
+  }
+  return true;
 }
 
 /**

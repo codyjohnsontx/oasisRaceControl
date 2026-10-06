@@ -19,17 +19,18 @@
 --    did. lib/race-results.ts is still the only writer.
 --
 -- 2. The round's race was the race session the most rigs were heard in,
---    latest to start on a tie. A second race session with the same rigs while
---    the round was still open - a second heat, a fun race after the league
---    race, a server that rolled into another race - tied on rig count, won
---    the tie, and silently stopped every captured place from counting: the
---    round fell back to scoring by fastest lap and the qualifying cut-off
---    moved to the second race. v_league_race_session now gives a tie to the
---    session that already has a place captured in it (a result row or an
---    empty-seat row), so a captured race stays the round's race, and its
---    qualifying cut-off stays put, unless a bigger race comes along - 0009's
---    rule for a small warm-up heat that the real race follows.
---
+--    latest to start on a tie. A second race session while the round was
+--    still open - a second heat, a fun race after the league race, a server
+--    that rolled into another race - with as many rigs or more replaced it,
+--    and silently stopped every captured place from counting: the round fell
+--    back to scoring by fastest lap, or took the second race's places, and
+--    the qualifying cut-off moved to the second race. League night runs one
+--    race, so v_league_race_session now holds on to the first race a place
+--    was captured in (a result row or an empty-seat row): once a round has
+--    one, its race is the earliest session with a captured place, whatever
+--    any later race's size, and its qualifying cut-off no longer moves. Until
+--    the first capture it is still 0009's rule.
+
 -- Additive: one column with a default, and one view redefined with the same
 -- columns in the same order (which is what lets `create or replace` keep
 -- v_league_race_results, which reads it, intact). Adding the column takes a
@@ -37,7 +38,8 @@
 -- per round, and Postgres fills the default without rewriting it; replacing
 -- the view takes the same brief lock on the view. A database ahead of the
 -- code is harmless: the previous code never names the column, and the view
--- answers the same question with one more tie-break. A database behind it:
+-- answers the same question until a place is captured, then keeps that
+-- race. A database behind it:
 -- the new code's flag capture names `final` and fails, so flagged race
 -- reports still answer 200 but record no place (the server log shows "race
 -- result capture failed") until this is applied, and the build gate refuses
@@ -46,23 +48,27 @@
 alter table league_race_results
   add column final boolean not null default true;
 
--- The round's race: the race session the most rigs were heard in, and at
--- least two - a solo race is never the round's. A tie goes to the session a
--- place has already been captured in, then to the latest to start.
--- started_at is when its first rig reported it.
+-- The round's race: the earliest race session a place has been captured in;
+-- until there is one, the race session the most rigs were heard in, and at
+-- least two - a solo race is never the round's - the latest to start winning
+-- a tie. started_at is when its first rig reported it.
 create or replace view v_league_race_session as
-select distinct on (round_id) round_id, session_unique_id, session_num,
-       min(started_at) as started_at
-from league_race_starts s
-group by round_id, session_unique_id, session_num
-having count(*) >= 2
-order by round_id, count(*) desc,
-         (exists (select 1 from league_race_results r
-                  where r.round_id = s.round_id
-                    and r.session_unique_id = s.session_unique_id
-                    and r.session_num = s.session_num)
-          or exists (select 1 from league_race_unsigned_places u
-                     where u.round_id = s.round_id
-                       and u.session_unique_id = s.session_unique_id
-                       and u.session_num = s.session_num)) desc,
-         min(started_at) desc, session_unique_id desc, session_num desc;
+select distinct on (round_id) round_id, session_unique_id, session_num, started_at
+from (
+  select round_id, session_unique_id, session_num,
+         min(started_at) as started_at, count(*) as rigs,
+         exists (select 1 from league_race_results r
+                 where r.round_id = s.round_id
+                   and r.session_unique_id = s.session_unique_id
+                   and r.session_num = s.session_num)
+         or exists (select 1 from league_race_unsigned_places u
+                    where u.round_id = s.round_id
+                      and u.session_unique_id = s.session_unique_id
+                      and u.session_num = s.session_num) as captured
+  from league_race_starts s
+  group by round_id, session_unique_id, session_num
+  having count(*) >= 2
+) sessions
+order by round_id, captured desc,
+         case when captured then started_at end,
+         rigs desc, started_at desc, session_unique_id desc, session_num desc;

@@ -41,7 +41,7 @@ with fingerprints (check_name, expected, actual) as (
     ),
     (
       'race session view',
-      '188c580cf537a0ef801ecdd260714daf',
+      '5b70ef6e17947c3133ad6e63332fda5f',
       (select md5(regexp_replace(pg_get_viewdef(to_regclass('public.v_league_race_session')), '\s+', ' ', 'g')))
     )
 )
