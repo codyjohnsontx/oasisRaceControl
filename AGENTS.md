@@ -179,11 +179,11 @@ during a simulated *database* outage needs `SKIP_MIGRATION_CHECK=1`.
   reaches cool-down (`league_race_results.final`, 0011), because the flag
   shows a lap before most cars finish; once settled only staff move it, since
   the live feed deliberately accepts an older report after a quiet rig. A rig
-  flagged with nobody signed in records an empty
-  place (`league_race_unsigned_places`, 0010) so a cool-down sign-in never
-  takes it. A staff save carries the review's `capturedThrough` and is
-  refused once a newer capture exists, or a captured place has moved; that only holds because captures lock
-  the round one at a time and stamp `clock_timestamp()`.
+  flagged with nobody signed in records an empty place
+  (`league_race_unsigned_places`, 0010) so a cool-down sign-in never takes
+  it. A staff save carries the review's `capturedThrough` and is refused once
+  a newer capture exists, or a captured place has moved; that only holds
+  because captures lock the round one at a time and stamp `clock_timestamp()`.
 - Opening a round also overwrites the day's `featured_combos` row, because lap
   validity is judged against the featured combo at ingestion time; closing the
   round restores whatever was there (`league_rounds.prior_featured_combo`, null

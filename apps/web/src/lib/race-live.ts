@@ -128,8 +128,8 @@ export type LiveRaceOptions = {
 };
 
 /**
- * Groups the reports by iRacing session and returns the largest group as the
- * race, in race order.
+ * Groups the reports by iRacing session and returns the largest group of rigs
+ * still reporting as the race, in race order.
  *
  * A session is SessionUniqueID together with SessionNum: rigs in one hosted
  * race agree on both, and keying on the pair keeps a rig still in practice from
