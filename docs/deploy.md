@@ -675,6 +675,63 @@ is open.
    Expect three rows, every one `ok = t`. Any `f`: stop and compare `actual`
    with `expected`.
 
+### Applying 0011_race_result_under_flag.sql
+
+`0011_race_result_under_flag.sql` lets a place captured at the chequered flag
+follow the rig's reports until its car has crossed the line, and keeps the
+round's race the race that was captured when a second race on the same rigs
+follows it ([live-race.md](./live-race.md#the-race-result)). It is additive:
+one column with a default on `league_race_results` (`final boolean not null
+default true`, filled without a rewrite) and `v_league_race_session`
+redefined with the same columns; nothing existing is rewritten. It needs
+0010 applied first. Apply it to Neon **before merging** the change that adds
+it, as with 0009 and 0010: once the code deploys, every flagged race report
+names the new column while a round is open, and on a database without it
+records no place.
+
+1. Point at production exactly as in
+   [step 2 of the recovery runbook](#2-point-at-production-and-prove-it).
+2. Precheck. From `apps/web`: `npm run db:check`. Read the target line, then
+   expect exactly one missing file, `0011_race_result_under_flag.sql`.
+   Anything more and stop. In the SQL Editor, the same answer reads as one
+   row with every column `t` (read-only, one statement):
+
+   ```sql
+   select
+     exists (select 1 from schema_migrations where version = '0010_race_unsigned_places.sql') as has_0010,
+     not exists (select 1 from schema_migrations where version = '0011_race_result_under_flag.sql') as lacks_0011,
+     not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'league_race_results'
+                   and column_name = 'final') as column_absent;
+   ```
+
+3. `npm run db:migrate`. Read the `migrating <host>/<database>` line; expect
+   `applied 0011_race_result_under_flag.sql` and `skip` for the rest.
+
+   Only if you cannot run it, paste this into Neon's SQL Editor as one
+   explicit transaction, with the whole of
+   `db/migrations/0011_race_result_under_flag.sql` copied in unaltered where
+   marked:
+
+   ```sql
+   begin;
+   -- the whole of db/migrations/0011_race_result_under_flag.sql, unaltered
+   insert into schema_migrations (version) values ('0011_race_result_under_flag.sql');
+   commit;
+   ```
+
+4. Verify, whichever way you applied it, with
+   `db/verify/0011_race_result_under_flag.sql` - a single SELECT, like 0010's:
+
+   ```bash
+   psql "$DATABASE_URL" -f ../../db/verify/0011_race_result_under_flag.sql
+   ```
+
+   Expect three rows, every one `ok = t`. Any `f`: stop and compare `actual`
+   with `expected`. `db/verify/0009_race_results.sql` still passes on this
+   database: from 0011 on, `v_league_race_session` is fingerprinted here
+   rather than there.
+
 ## Recovering a database that is behind the code
 
 **Symptom.** Routes that need a migration return HTTP 500 while the rest of the

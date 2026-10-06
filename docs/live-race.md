@@ -76,9 +76,15 @@ unit-tested there:
 
 - It reads rows **received in the last 60 s**, judged by the database clock.
 - It groups them by **session**: `SessionUniqueID` together with `SessionNum`.
-  The **largest group is the race**. A tie goes to the group heard from most
-  recently. `otherRigs` counts the rigs reporting from anywhere else, such as a
-  rig still in practice or one that joined the wrong server.
+  The **largest group of rigs still reporting is the race** - a group is
+  sized by its rigs inside the 15 s stale threshold, so when the whole field
+  leaves qualifying for the race the race shows at once rather than a minute
+  later when the qualifying rows drop; only when no rig is live anywhere do
+  the silent rows decide. A tie goes to the group heard from most recently.
+  **While tonight's league round is open, a `Race` session wins over any
+  larger group**, so rigs in practice or qualifying elsewhere cannot keep the
+  race off the wall. `otherRigs` counts the rigs reporting from anywhere
+  else, such as a rig still in practice or one that joined the wrong server.
 - In a **race under green** (`SessionState` racing, as the leader's report
   reads it) it orders by how far round each car is: `lapsCompleted`,
   then `lapDistPct`, with iRacing's position only breaking a tie. iRacing's
@@ -233,12 +239,18 @@ every round was before. `lib/race-results.ts` is the only writer, called from
   completed before the round's race began.
 - From the chequered flag on (`SessionState` checkered or cool-down), the
   first report from each rig in the round's race records its driver at
-  iRacing's place (`league_race_results`, source `flag`), and that place is
-  final: no later report moves it, nor an older one the live feed accepts
-  late after a rig has been quiet. The flag shows for the whole field the
-  moment the leader crosses the line, so a car still on its last lap is
-  recorded where it was running then; a pass after that is staff's to
-  correct on `/staff`. The driver is whoever was signed in to the rig when
+  iRacing's place (`league_race_results`, source `flag`). The flag shows for
+  the whole field the moment the leader crosses the line, and iRacing moves a
+  car's position only when that car crosses it, so a place captured then is
+  where the car was running a lap earlier. The place therefore keeps
+  following the rig's reports while the session shows the flag, and settles
+  (`league_race_results.final`) once the car has crossed the line since the
+  flag - its `LapCompleted` went up - or the session reaches cool-down; a
+  first report already in cool-down settles at once. From then on no report
+  moves it, not a later one and not an older one the live feed accepts late
+  after a rig has been quiet; a car towed on its last lap is recorded where
+  the flag found it, and anything iRacing's own results disagree with is
+  staff's to correct on `/staff`. The driver is whoever was signed in to the rig when
   the report arrived - the route stores that assignment on the report's
   `rig_race_status` row - so somebody signing in during cool-down does not
   take the place. A rig that takes the flag with nobody signed in records
@@ -263,16 +275,23 @@ every round was before. `lib/race-results.ts` is the only writer, called from
 
 The round's race is the race session the most rigs were heard in while the
 round was open, and never one only a single rig was heard in
-(`v_league_race_session` in `db/migrations/0009_race_results.sql`), so a
-walk-in's solo race on a spare rig is never the league race - not at the flag,
-not as the qualifying cut-off, and not for the close sweep, whenever it
-finishes. Places are renumbered 1..n among the venue's drivers
+(`v_league_race_session`, introduced in `db/migrations/0009_race_results.sql`
+and last redefined in `0011_race_result_under_flag.sql`), so a walk-in's solo
+race on a spare rig is never the league race - not at the flag, not as the
+qualifying cut-off, and not for the close sweep, whenever it finishes. A tie
+on rig count goes to the session a place has already been captured in, so a
+second race on the same rigs before staff close the round - a second heat, a
+race for fun, a server that rolls into another race - neither replaces the
+captured result nor moves the qualifying cut-off; a bigger race still does,
+which is what lets the real race follow a small warm-up heat. Places are
+renumbered 1..n among the venue's drivers
 when the round is placed: a car nobody was signed in to leaves no gap, and two
 rigs reporting one place are put in order by laps completed and shown to staff
 as a repeat.
 
 Applying the migrations: [0009](deploy.md#applying-0009_race_resultssql),
-[0010](deploy.md#applying-0010_race_unsigned_placessql).
+[0010](deploy.md#applying-0010_race_unsigned_placessql),
+[0011](deploy.md#applying-0011_race_result_under_flagsql).
 
 ## Not settled yet
 
@@ -292,11 +311,13 @@ Applying the migrations: [0009](deploy.md#applying-0009_race_resultssql),
 - Twenty rigs reporting every 2.5 s is about eight requests a second during a
   race, which is several thousand serverless invocations an hour. Check that
   against the Vercel plan before the night.
-- The race result takes iRacing's `PlayerCarPosition` in each rig's first
-  report under the chequered flag as the finishing order. How far that is
-  from the final classification - a car still on its last lap, one that
-  crashed out and was towed - is not yet seen on a real hosted race; compare
-  the staff review on `/staff` with iRacing's own results screen on the
-  first night, and correct it there before closing the round.
+- The race result takes iRacing's `PlayerCarPosition` from each rig's reports
+  under the chequered flag, settling once the car's `LapCompleted` goes up or
+  the session reaches cool-down. That the position a rig reports as it
+  crosses the line after the flag is its classified finish - and that a
+  towed car's position holds through cool-down - is not yet seen on a real
+  hosted race; compare the staff review on `/staff` with iRacing's own
+  results screen on the first night, and correct it there before closing
+  the round.
 
 Applying the migration to production: [deploy.md](deploy.md#applying-0008_race_statussql).

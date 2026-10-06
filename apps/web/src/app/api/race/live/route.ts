@@ -1,11 +1,16 @@
 import { query } from "@/lib/db";
+import { isOpenTonight } from "@/lib/league";
+import { getOpenRound } from "@/lib/league-queries";
 import { liveRace, RACE_DROP_AFTER_S, type RaceStatusRow } from "@/lib/race-live";
 
 /**
  * The live race, public like the other feeds: every rig that has reported its
  * race status (POST /api/agent/race-status) in the last RACE_DROP_AFTER_S,
- * grouped into iRacing sessions, the largest group returned as the race in
- * race order (lib/race-live.ts owns those rules).
+ * grouped into iRacing sessions, the largest group of rigs still reporting
+ * returned as the race in race order (lib/race-live.ts owns those rules). On
+ * league night - tonight's round open - a `Race` session is preferred to any
+ * larger group, so rigs still in practice or qualifying elsewhere cannot keep
+ * the race off the wall.
  *
  * Each rig is joined to v_rig_status for whoever is checked in on it right now,
  * the same assignment that owns the laps it posts; a rig with nobody checked
@@ -32,7 +37,9 @@ export async function GET() {
        where s.received_at > now() - make_interval(secs => $1)`,
       [RACE_DROP_AFTER_S],
     );
-    return Response.json(liveRace(reports));
+    const openRound = await getOpenRound();
+    const preferRace = openRound !== null && isOpenTonight(openRound);
+    return Response.json(liveRace(reports, { preferRace }));
   } catch (error) {
     console.error("[race/live] failed", (error as Error).message);
     return Response.json({ error: "server_error" }, { status: 500 });

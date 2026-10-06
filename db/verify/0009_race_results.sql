@@ -23,10 +23,13 @@
 -- pg_constraint - nullability is already in the column rows, and with them
 -- the hash would differ between a 17 and an 18 server holding the same table; the column 0009
 -- adds to rig_race_status and its foreign key are compared as plain text,
--- since they are one line each; the view rows
--- hash pg_get_viewdef with runs of whitespace collapsed, so a server version
--- that re-indents it does not read as drift. On a mismatch, compare `\d
--- league_race_results`, `\d league_race_starts` and
+-- since they are one line each; the view row
+-- hashes pg_get_viewdef with runs of whitespace collapsed, so a server version
+-- that re-indents it does not read as drift. v_league_race_session, which 0009
+-- also created, is not fingerprinted here: 0011_race_result_under_flag.sql
+-- redefines it, so its row lives in db/verify/0011_race_result_under_flag.sql
+-- and this file stays true on a database carrying either definition. On a
+-- mismatch, compare `\d league_race_results`, `\d league_race_starts` and
 -- `select pg_get_viewdef('v_league_race_results')` with the migration by eye.
 
 with fingerprints (check_name, expected, actual) as (
@@ -39,11 +42,15 @@ with fingerprints (check_name, expected, actual) as (
     (
       'race results columns',
       'da8f0e910dd7c0e09f4b4d6c5e17e904',
+      -- The columns this migration created, by name: 0011 adds `final` to the
+      -- table, and that must not read as drift here.
       (select md5(string_agg(
                 concat_ws('|', column_name, data_type, is_nullable, coalesce(column_default, '')),
                 ',' order by ordinal_position))
        from information_schema.columns
-       where table_schema = 'public' and table_name = 'league_race_results')
+       where table_schema = 'public' and table_name = 'league_race_results'
+         and column_name in ('round_id', 'driver_id', 'finish_position', 'source', 'rig_id',
+                             'session_unique_id', 'session_num', 'laps_completed', 'recorded_at'))
     ),
     (
       'race results constraints',
@@ -82,11 +89,6 @@ with fingerprints (check_name, expected, actual) as (
       (select pg_get_constraintdef(oid) from pg_constraint
        where conrelid = to_regclass('public.rig_race_status')
          and conname = 'rig_race_status_rig_assignment_id_fkey')
-    ),
-    (
-      'race session view',
-      'b0f9d18fab984972cbc224c07ceb5da1',
-      (select md5(regexp_replace(pg_get_viewdef(to_regclass('public.v_league_race_session')), '\s+', ' ', 'g')))
     ),
     (
       'race results view',

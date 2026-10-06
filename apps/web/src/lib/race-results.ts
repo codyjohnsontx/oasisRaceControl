@@ -96,11 +96,21 @@ export async function captureRaceReport(
       return;
     }
 
-    await client.query(
+    // The flag is shown to the whole field the moment the leader crosses the
+    // line, and iRacing moves a car's position only when that car crosses it,
+    // so a place captured from the first flagged report is where the car was
+    // running a lap earlier. A capture written under the flag is therefore
+    // unsettled (`final = false`) and keeps following the rig's reports until
+    // the car has crossed the line since the flag - its laps completed went up
+    // - or the session reaches cool-down; a first report already in cool-down
+    // settles at once. From then on nothing moves it: not a later report, nor
+    // an older one the live feed accepts after a quiet spell.
+    const settled = report.sessionState === SESSION_STATE.coolDown;
+    const inserted = await client.query(
       `insert into league_race_results
          (round_id, driver_id, finish_position, source, rig_id,
-          session_unique_id, session_num, laps_completed, recorded_at)
-       select $1, ra.driver_id, $3, 'flag', $2, $4, $5, $6, clock_timestamp()
+          session_unique_id, session_num, laps_completed, recorded_at, final)
+       select $1, ra.driver_id, $3, 'flag', $2, $4, $5, $6, clock_timestamp(), $8::boolean
        from rig_assignments ra
        where ra.id = $7
          and exists (select 1 from v_league_race_session v
@@ -114,9 +124,9 @@ export async function captureRaceReport(
          and not exists (select 1 from league_race_unsigned_places u
                          where u.round_id = $1 and u.rig_id = $2
                            and u.session_unique_id = $4 and u.session_num = $5)
-       -- A row already held from this race is final. One from another session
-       -- no longer counts (it stopped being the round's race), so this race
-       -- replaces it.
+       -- A row already held from this race is followed below, never
+       -- re-captured. One from another session no longer counts (it stopped
+       -- being the round's race), so this race replaces it.
        on conflict (round_id, driver_id) do update set
          finish_position = excluded.finish_position,
          source = excluded.source,
@@ -124,7 +134,8 @@ export async function captureRaceReport(
          session_unique_id = excluded.session_unique_id,
          session_num = excluded.session_num,
          laps_completed = excluded.laps_completed,
-         recorded_at = excluded.recorded_at
+         recorded_at = excluded.recorded_at,
+         final = excluded.final
        where league_race_results.source = 'flag'
          and (league_race_results.session_unique_id, league_race_results.session_num)
              is distinct from (excluded.session_unique_id, excluded.session_num)`,
@@ -136,6 +147,35 @@ export async function captureRaceReport(
         report.sessionNum,
         report.lapsCompleted,
         assignmentId,
+        settled,
+      ],
+    );
+    if ((inserted.rowCount ?? 0) > 0) return;
+
+    // The rig's place from this race is already held: follow it while it is
+    // unsettled, for the driver it was captured for and nobody else, so a
+    // driver signing in during cool-down inherits nothing. `recorded_at` is
+    // left as captured: a place that moves is still the place staff saw, and
+    // the save guard exists so a place is never deleted unseen, not re-placed.
+    await client.query(
+      `update league_race_results x
+         set finish_position = $3,
+             laps_completed = $6,
+             final = coalesce($6::int > x.laps_completed, false) or $8::boolean
+       from rig_assignments ra
+       where ra.id = $7
+         and x.round_id = $1 and x.rig_id = $2 and x.driver_id = ra.driver_id
+         and x.session_unique_id = $4 and x.session_num = $5
+         and x.source = 'flag' and not x.final`,
+      [
+        round.id,
+        rigId,
+        report.position,
+        report.sessionUniqueId,
+        report.sessionNum,
+        report.lapsCompleted,
+        assignmentId,
+        settled,
       ],
     );
   });

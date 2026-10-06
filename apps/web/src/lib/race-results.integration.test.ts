@@ -208,16 +208,27 @@ describeDb("league night's race result against real Postgres", () => {
     expect(await laps()).toMatchObject({ lap_count: 23, qualifying_lap_count: 3 });
   });
 
-  it("keeps a rig's first place at the flag, against a later report and an older one accepted late", async () => {
+  it("follows a rig's place under the flag until its car crosses the line, then holds it against later and late reports", async () => {
     const roundId = await openLeagueRound(COMBO);
     const [ana, ben] = [await seat("Ana"), await seat("Ben")];
     await racing(ana, ben);
 
+    // The flag comes out while Ana is still on her last lap, running third as
+    // iRacing last placed her at the line.
     await report(ana.rig, atFlag(3, 11));
-    await report(ana.rig, { ...atFlag(2, 12), sessionState: SESSION_STATE.coolDown });
+    expect((await getRaceReview(roundId)).entries).toMatchObject([
+      { display_name: "Ana", finish_position: 3, laps_completed: 11 },
+    ]);
+    // She passes a car before the line, and iRacing moves her up as she crosses it.
+    await report(ana.rig, atFlag(2, 12));
+    expect((await getRaceReview(roundId)).entries).toMatchObject([
+      { display_name: "Ana", finish_position: 2, laps_completed: 12 },
+    ]);
 
-    // The rig goes quiet past the live feed's stale threshold, so the route
-    // takes any report - here one sampled a minute before the capture.
+    // From here nothing moves it: not cool-down, a further lap, nor an older
+    // report the live feed accepts once the rig has been quiet past its stale
+    // threshold - here one sampled a minute before the capture.
+    await report(ana.rig, { ...atFlag(4, 13), sessionState: SESSION_STATE.coolDown });
     await testDb().query(
       "update rig_race_status set received_at = now() - interval '16 seconds' where rig_id = $1",
       [ana.rig.id],
@@ -231,8 +242,73 @@ describeDb("league night's race result against real Postgres", () => {
 
     const review = await getRaceReview(roundId);
     expect(review.entries).toMatchObject([
-      { display_name: "Ana", finish_position: 3, source: "flag", rig_number: ana.rig.rigNumber, laps_completed: 11 },
+      { display_name: "Ana", finish_position: 2, source: "flag", rig_number: ana.rig.rigNumber, laps_completed: 12 },
     ]);
+  });
+
+  it("settles a place at cool-down for a car that never crosses the line again, and at once for a first report already there", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await racing(ana, ben);
+
+    // Ana was towed on her last lap: the flag found her third and cool-down
+    // found her still there, so third it is, whatever her rig says later.
+    await report(ana.rig, atFlag(3, 11));
+    await report(ana.rig, { ...atFlag(3, 11), sessionState: SESSION_STATE.coolDown });
+    await report(ana.rig, { ...atFlag(1, 12), sessionState: SESSION_STATE.coolDown });
+    // Ben's rig first reported the race already in cool-down.
+    await report(ben.rig, { ...atFlag(2, 12), sessionState: SESSION_STATE.coolDown });
+    await report(ben.rig, { ...atFlag(1, 13), sessionState: SESSION_STATE.coolDown });
+
+    expect(
+      (await getRaceReview(roundId)).entries.map((entry) => [entry.display_name, entry.finish_position]),
+    ).toEqual([
+      ["Ben", 2],
+      ["Ana", 3],
+    ]);
+  });
+
+  it("keeps the race that was captured when the same rigs run another race before the round closes", async () => {
+    const roundId = await openLeagueRound(COMBO);
+    const [ana, ben] = [await seat("Ana"), await seat("Ben")];
+    await lap(ana, 90_000, 40);
+    await lap(ben, 91_000, 40);
+    await racing(ana, ben);
+    await raceBeganMinutesAgo(20);
+    // Ben's fastest lap of the night is a race lap, so Ana is the fastest qualifier.
+    await lap(ben, 85_000, 10);
+    await report(ben.rig, atFlag(1));
+    await report(ana.rig, atFlag(2));
+    const placed = await placing(roundId);
+    expect(placed).toEqual([
+      { name: "Ben", position: 1, qualifying: 2, points: POINTS_BY_POSITION[0] },
+      {
+        name: "Ana",
+        position: 2,
+        qualifying: 1,
+        points: POINTS_BY_POSITION[1] + QUALIFYING_BONUS_POINTS,
+      },
+    ]);
+
+    // A race for fun on the same two rigs before staff close the round: the
+    // same rig count, so under 0009's tie-break the newer session would have
+    // been the round's race, with no result and a qualifying cut-off that
+    // made Ben's race lap the fastest qualifying lap.
+    const funRace = { sessionUniqueId: LEAGUE_RACE.sessionUniqueId + 1, sessionNum: 2 };
+    await report(ana.rig, { ...funRace, position: 1 });
+    await report(ben.rig, { ...funRace, position: 2 });
+    expect(await placing(roundId)).toEqual(placed);
+    expect((await getRaceReview(roundId)).entries.map((entry) => entry.display_name)).toEqual([
+      "Ben",
+      "Ana",
+    ]);
+
+    // Nor does its flag place the round.
+    await report(ana.rig, { ...funRace, ...atFlag(1) });
+    await report(ben.rig, { ...funRace, ...atFlag(2) });
+    expect(await placing(roundId)).toEqual(placed);
+    expect((await closeLeagueRound(roundId))?.racePlacesSwept).toBe(0);
+    expect(await placing(roundId)).toEqual(placed);
   });
 
   it("credits the close sweep to the driver a report was stored for, not whoever sits in the rig at close", async () => {
@@ -615,6 +691,24 @@ describeDb("league night's race result against real Postgres", () => {
     expect(rows).toEqual([{ results: 0, starts: 0 }]);
   });
 
+  it("passes the read-only verify the owner runs after hand-applying 0011", async () => {
+    const verify = readFileSync(join(REPO_ROOT, "db", "verify", "0011_race_result_under_flag.sql"), "utf8");
+    const client = await testDb().connect();
+    try {
+      await client.query(
+        `create temporary table schema_migrations (version text primary key);
+         insert into schema_migrations values ('0011_race_result_under_flag.sql')`,
+      );
+      const { rows } = await client.query<{ check_name: string; ok: boolean }>(verify);
+
+      expect(rows).toHaveLength(3);
+      expect(rows.filter((check) => !check.ok)).toEqual([]);
+    } finally {
+      await client.query("drop table if exists pg_temp.schema_migrations");
+      client.release();
+    }
+  });
+
   it("passes the read-only verify the owner runs after hand-applying 0010", async () => {
     const verify = readFileSync(join(REPO_ROOT, "db", "verify", "0010_race_unsigned_places.sql"), "utf8");
     const client = await testDb().connect();
@@ -643,7 +737,9 @@ describeDb("league night's race result against real Postgres", () => {
       );
       const { rows } = await client.query<{ check_name: string; ok: boolean }>(verify);
 
-      expect(rows).toHaveLength(9);
+      // 0011 redefined v_league_race_session, so its fingerprint moved to
+      // db/verify/0011_race_result_under_flag.sql.
+      expect(rows).toHaveLength(8);
       expect(rows.filter((check) => !check.ok)).toEqual([]);
     } finally {
       await client.query("drop table if exists pg_temp.schema_migrations");
