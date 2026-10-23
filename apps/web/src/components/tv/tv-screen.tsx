@@ -5,7 +5,7 @@ import Image from "next/image";
 import type { BoardsFeed } from "@/lib/leaderboards";
 import type { TvMode, TvSlide } from "@/lib/tv-rotation";
 import type { TvHostLogo } from "@/lib/tv-host-logo";
-import { TV_BOARD_TYPES, buildRotation } from "./board-types";
+import { TV_BOARD_TYPES, buildRotation, isEmptyFeed, parseBoardsFeed } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
 import { TvCornerQr } from "./phone-standings-qr";
 
@@ -38,7 +38,8 @@ type Props = {
   /**
    * Server-rendered rotation seed, so the first paint already has a board: the
    * same payload `/api/leaderboards/boards` answers, which `buildRotation`
-   * turns into slides. The engine never looks inside it.
+   * turns into slides. The engine never looks inside it; `board-types.tsx`
+   * parses it and says whether it is empty.
    */
   initialFeed: BoardsFeed;
   /**
@@ -122,9 +123,9 @@ export function TvScreen({ initialFeed, mode, hostLogo }: Props) {
     let nextRotationAt =
       mode === "event"
         ? Number.POSITIVE_INFINITY
-        : initialFeed.boards.length > 0 || initialFeed.live.length > 0
-          ? Date.now() + ROTATION_REFRESH_MS
-          : 0;
+        : isEmptyFeed(initialFeed)
+          ? 0
+          : Date.now() + ROTATION_REFRESH_MS;
     let advanceId = 0;
     let ticking = false;
 
@@ -223,20 +224,10 @@ export function TvScreen({ initialFeed, mode, hostLogo }: Props) {
           signal: AbortSignal.any([teardown.signal, AbortSignal.timeout(LOAD_TIMEOUT_MS)]),
         });
         if (!res.ok) throw new Error(`status ${res.status}`);
-        const payload = (await res.json()) as { boards?: unknown; live?: unknown };
-        if (!Array.isArray(payload.boards)) throw new Error("malformed boards response");
+        const feed = parseBoardsFeed(await res.json());
         if (cancelled) return;
 
-        // The payload is handed to the builder whole; only `boards` is checked
-        // here because a list without it is no list at all, while a feed with
-        // no `live` is simply a venue where no rig is in a session.
-        rotation = buildRotation(
-          {
-            boards: payload.boards,
-            live: Array.isArray(payload.live) ? payload.live : [],
-          } as BoardsFeed,
-          mode,
-        );
+        rotation = buildRotation(feed, mode);
         setSlides(rotation);
         const activeKey = current?.slide.key;
         index = activeKey ? rotation.findIndex((s) => s.key === activeKey) : -1;

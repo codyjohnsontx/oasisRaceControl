@@ -97,11 +97,12 @@ const TRACK_BOARD = defineTvBoard<TrackSpec, TrackData>({
         // "now on track, first lap coming". Ten open slots under it are the
         // invitation, exactly as an unclaimed arcade table is anywhere else on
         // this wall. Heartbeats name no driver, so neither does this header -
-        // the cars seen on the track and how many rigs are on it.
+        // how many rigs are on the track and the cars seen on it, the count
+        // first so a long car list truncates and never takes it.
         <ArcadeHighScores
           eyebrow="Now on track · first lap coming"
           title={spec.track_name}
-          subtitle={[spec.track_config, ...data.live.car_names, rigCount(data.live.rig_count)]
+          subtitle={[spec.track_config, rigCount(data.live.rig_count), ...data.live.car_names]
             .filter(Boolean)
             .join(" · ")}
           entries={[]}
@@ -570,6 +571,22 @@ export function rotationTracks(feed: BoardsFeed): TrackSpec[] {
   }
   return tracks;
 }
+
+/**
+ * Reads an `/api/leaderboards/boards` answer into the feed `buildRotation`
+ * takes, so the engine hands the payload over without knowing its shape. A
+ * payload without `boards` is no list at all and throws; one without `live` is
+ * a venue where no rig is in a session.
+ */
+export function parseBoardsFeed(payload: unknown): BoardsFeed {
+  const { boards, live } = (payload ?? {}) as { boards?: unknown; live?: unknown };
+  if (!Array.isArray(boards)) throw new Error("malformed boards response");
+  return { boards, live: Array.isArray(live) ? live : [] } as BoardsFeed;
+}
+
+/** True when the feed names no track at all - a seed that failed to load, or
+ *  a venue with no laps and no rig on a track. */
+export const isEmptyFeed = (feed: BoardsFeed) => feed.boards.length === 0 && feed.live.length === 0;
 
 /**
  * The rotation lists, one per `TvMode`.

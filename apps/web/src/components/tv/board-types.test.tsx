@@ -6,7 +6,7 @@ import type { LiveRaceView } from "@/components/use-live-race";
 import { liveRaceFeed, liveRaceRow } from "@/test/live-race-fixture";
 import type { RoundResult } from "@/lib/league";
 import type { BoardsFeed, LiveTrack } from "@/lib/leaderboards";
-import { TV_BOARD_TYPES, buildRotation, rotationTracks } from "./board-types";
+import { TV_BOARD_TYPES, buildRotation, isEmptyFeed, parseBoardsFeed, rotationTracks } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
 
 const liveRace = vi.hoisted(() => ({
@@ -125,6 +125,28 @@ describe("buildRotation with live tracks", () => {
   });
 });
 
+describe("parseBoardsFeed", () => {
+  it("reads both lists from the boards route's answer", () => {
+    const answer = feed([onTrack("Monza", null)]);
+    expect(parseBoardsFeed(JSON.parse(JSON.stringify(answer)))).toEqual(answer);
+  });
+
+  it("reads an answer with no live list as no rig on a track", () => {
+    expect(parseBoardsFeed({ boards })).toEqual(feed());
+  });
+
+  it("refuses an answer with no boards list", () => {
+    expect(() => parseBoardsFeed({ live: [] })).toThrow("malformed boards response");
+    expect(() => parseBoardsFeed(null)).toThrow("malformed boards response");
+  });
+
+  it("calls a feed empty only when it names no track at all", () => {
+    expect(isEmptyFeed({ boards: [], live: [] })).toBe(true);
+    expect(isEmptyFeed({ boards: [], live: [onTrack("Monza", null)] })).toBe(false);
+    expect(isEmptyFeed(feed())).toBe(false);
+  });
+});
+
 /**
  * The track board with no laps. A lapless track that no rig is on is skipped,
  * as it always was; one a rig is on plays with every slot open under a "now on
@@ -165,7 +187,7 @@ describe("track board on a live track", () => {
     );
     expect(html).toContain("Now on track · first lap coming");
     expect(html).toContain("Monza");
-    expect(html).toContain("Grand Prix · BMW M4 GT3 · Porsche 911 GT3 R · 2 rigs on track");
+    expect(html).toContain("Grand Prix · 2 rigs on track · BMW M4 GT3 · Porsche 911 GT3 R");
     expect(html).not.toContain("All-time best laps");
     expect(html).not.toContain("driver");
     // Ten open slots, none filled.
