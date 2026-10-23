@@ -17,6 +17,24 @@ contract and the rules the engine guarantees are documented in
 Board data comes from the same public APIs `/leaderboards` and `/league` use, so
 the wall and the phone agree by construction.
 
+A track joins the rotation the minute a rig loads it, before any lap: the
+rotation's list (`/api/leaderboards/boards`, and the page's seed) carries a
+second list, `live`, of the track layouts named by rig heartbeats in the last
+`LIVE_TRACK_WINDOW_MINUTES` (`listLiveTracks`, `lib/leaderboards-queries.ts`;
+the types and the window are in `lib/leaderboards.ts`). `rotationTracks` in
+`board-types.tsx` is the one place the two lists meet: a live track with no
+laps becomes a track slide under the same key it will have once it has laps,
+slotted among the boards by name, and the track board draws it with every
+slot open under "Now on track · first lap coming" (`TrackSpec.live`). The
+first lap turns it into the ordinary all-time board in place through the
+board's own refresh, with no slide change. A track with laps is never touched
+by `live`, and the `/leaderboards` picker reads `listBoards()` directly and
+never sees it. The owner's asks (2026-10-23): on the wall within about a
+minute of a rig reporting it - which is why the engine re-reads its list every
+minute, the one engine constant this touched - gone once no rig has reported
+it for fifteen minutes, and the event view unchanged. Heartbeats name no
+driver, so the live header names cars and a rig count and nothing else.
+
 `/tv?event=1` is the event view for a laptop at an off-site event: one board,
 every driver with a lap today in the featured combo, scrolling on its own
 (`auto-scroll.tsx`), no rotation. It is a second rotation *list* (`TvMode` in

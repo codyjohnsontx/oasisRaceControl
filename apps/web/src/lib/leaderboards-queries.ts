@@ -1,5 +1,11 @@
 import { query } from "./db";
-import type { Board, BoardRow, BoardWindow } from "./leaderboards";
+import {
+  type Board,
+  type BoardRow,
+  type BoardWindow,
+  LIVE_TRACK_WINDOW_MINUTES,
+  type LiveTrack,
+} from "./leaderboards";
 
 /**
  * Server-only leaderboard queries (imports pg). Kept separate from
@@ -70,4 +76,45 @@ export async function getBoard(
     ...row,
     completed_at: new Date(row.completed_at).toISOString(),
   }));
+}
+
+/**
+ * Every track layout some rig has reported being in within the live window,
+ * with the cars seen on it and how many rigs reported it. Read from the rigs'
+ * heartbeats (`rig_heartbeats.session_*`, which the ingestion route stores
+ * from `heartbeatEvent.session`), so a track is here the minute a rig loads
+ * it and stays for `LIVE_TRACK_WINDOW_MINUTES` after the last report - that
+ * is the whole definition of "live", and the wall applies it as it stands:
+ * a rig that has since moved to another track still counts for the one it
+ * left until its reports there age out.
+ *
+ * One index range per rig, not a scan of the table by time: the only index on
+ * `rig_heartbeats` leads with `rig_id`, so the lateral from `rigs` reads the
+ * last fifteen minutes of each rig's rows and nothing else, however much
+ * history the table holds. Tracks with laps come back too when a rig is on
+ * them; `buildRotation` keeps those on their laps and uses only the rest.
+ */
+export async function listLiveTracks(): Promise<LiveTrack[]> {
+  return query<LiveTrack>(
+    `select live.track_name,
+            live.track_config,
+            coalesce(
+              array_agg(distinct live.car_name order by live.car_name)
+                filter (where live.car_name is not null),
+              '{}'
+            ) as car_names,
+            count(distinct live.rig_id)::int as rig_count
+     from rigs r
+     cross join lateral (
+       select h.rig_id, h.session_track as track_name, h.session_config as track_config,
+              h.session_car as car_name
+       from rig_heartbeats h
+       where h.rig_id = r.id
+         and h.received_at > now() - make_interval(mins => $1)
+         and h.session_track is not null
+     ) live
+     group by live.track_name, live.track_config
+     order by live.track_name asc, coalesce(live.track_config, '') asc`,
+    [LIVE_TRACK_WINDOW_MINUTES],
+  );
 }
