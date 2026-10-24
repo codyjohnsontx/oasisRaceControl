@@ -5,7 +5,8 @@ import { SESSION_STATE } from "@/lib/events";
 import type { LiveRaceView } from "@/components/use-live-race";
 import { liveRaceFeed, liveRaceRow } from "@/test/live-race-fixture";
 import type { RoundResult } from "@/lib/league";
-import { TV_BOARD_TYPES, buildRotation } from "./board-types";
+import type { BoardsFeed, LiveTrack } from "@/lib/leaderboards";
+import { TV_BOARD_TYPES, buildRotation, isEmptyFeed, parseBoardsFeed, rotationTracks } from "./board-types";
 import { SLOT_COUNT } from "./arcade-board";
 
 const liveRace = vi.hoisted(() => ({
@@ -30,15 +31,22 @@ const boards = [
   { track_name: "Circuit of the Americas", track_config: "Grand Prix", driver_count: 24, lap_count: 47 },
   { track_name: "Spa-Francorchamps", track_config: null, driver_count: 3, lap_count: 9 },
 ];
+const feed = (live: LiveTrack[] = []): BoardsFeed => ({ boards, live });
+const onTrack = (track_name: string, track_config: string | null, cars = ["Porsche 911 GT3 R"]) => ({
+  track_name,
+  track_config,
+  car_names: cars,
+  rig_count: cars.length,
+});
 
 describe("buildRotation", () => {
   it("event view is the tonight board with everyone on it, and nothing else", () => {
-    const slides = buildRotation(boards, "event");
+    const slides = buildRotation(feed(), "event");
     expect(slides).toEqual([{ key: "event", kind: "tonight", spec: { everyone: true } }]);
   });
 
   it("the venue rotation is league, tonight (top slots), then every track, in order", () => {
-    const slides = buildRotation(boards);
+    const slides = buildRotation(feed());
     expect(slides.map((s) => s.key)).toEqual([
       "league",
       "tonight",
@@ -46,15 +54,167 @@ describe("buildRotation", () => {
       "track:Spa-Francorchamps|",
     ]);
     expect(slides[1].spec).toEqual({ everyone: false });
-    expect(buildRotation(boards, "rotation")).toEqual(slides);
+    expect(slides[2].spec).toEqual(boards[0]);
+    expect(buildRotation(feed(), "rotation")).toEqual(slides);
   });
 
   it("every slide names a registered board type", () => {
     for (const mode of ["rotation", "event"] as const) {
-      for (const slide of buildRotation(boards, mode)) {
+      for (const slide of buildRotation(feed([onTrack("Monza", null)]), mode)) {
         expect(TV_BOARD_TYPES[slide.kind]?.kind).toBe(slide.kind);
       }
     }
+  });
+});
+
+/**
+ * Live tracks: a track some rig is on right now joins the rotation on its
+ * heartbeats alone, under the same slide key it will have once it has laps,
+ * among the tracks where its name falls. A track that already has laps keeps
+ * its board untouched however many rigs are on it, and the event view - one
+ * slide, the featured combo - never sees any of this.
+ */
+describe("buildRotation with live tracks", () => {
+  it("adds a track a rig is on but nobody has lapped, where its name falls among the tracks", () => {
+    const monza = onTrack("Monza", "Grand Prix", ["BMW M4 GT3", "Porsche 911 GT3 R"]);
+    const slides = buildRotation(feed([monza]));
+    expect(slides.map((s) => s.key)).toEqual([
+      "league",
+      "tonight",
+      "track:Circuit of the Americas|Grand Prix",
+      "track:Monza|Grand Prix",
+      "track:Spa-Francorchamps|",
+    ]);
+    expect(slides[3].kind).toBe("track");
+    expect(slides[3].spec).toEqual({
+      track_name: "Monza",
+      track_config: "Grand Prix",
+      driver_count: 0,
+      lap_count: 0,
+      live: monza,
+    });
+  });
+
+  it("sorts a live track after the last board, and layouts of one track by layout", () => {
+    const keys = rotationTracks({
+      boards,
+      live: [onTrack("Watkins Glen", "Boot"), onTrack("Circuit of the Americas", "National")],
+    }).map((t) => `${t.track_name}|${t.track_config ?? ""}`);
+    expect(keys).toEqual([
+      "Circuit of the Americas|Grand Prix",
+      "Circuit of the Americas|National",
+      "Spa-Francorchamps|",
+      "Watkins Glen|Boot",
+    ]);
+  });
+
+  it("leaves a track with laps exactly as it was, however many rigs are on it", () => {
+    const spa = onTrack("Spa-Francorchamps", null, ["Ferrari 296 GT3", "Porsche 911 GT3 R"]);
+    expect(buildRotation(feed([spa]))).toEqual(buildRotation(feed()));
+  });
+
+  it("treats a null layout and an empty one as the same track", () => {
+    const spa = onTrack("Spa-Francorchamps", "");
+    expect(buildRotation(feed([spa]))).toEqual(buildRotation(feed()));
+  });
+
+  it("leaves the event view alone", () => {
+    expect(buildRotation(feed([onTrack("Monza", null)]), "event")).toEqual(
+      buildRotation(feed(), "event"),
+    );
+  });
+});
+
+describe("parseBoardsFeed", () => {
+  it("reads both lists from the boards route's answer", () => {
+    const answer = feed([onTrack("Monza", null)]);
+    expect(parseBoardsFeed(JSON.parse(JSON.stringify(answer)))).toEqual(answer);
+  });
+
+  it("reads an answer with no live list as no rig on a track", () => {
+    expect(parseBoardsFeed({ boards })).toEqual(feed());
+  });
+
+  it("refuses an answer with no boards list", () => {
+    expect(() => parseBoardsFeed({ live: [] })).toThrow("malformed boards response");
+    expect(() => parseBoardsFeed(null)).toThrow("malformed boards response");
+  });
+
+  it("calls a feed empty only when it names no track at all", () => {
+    expect(isEmptyFeed({ boards: [], live: [] })).toBe(true);
+    expect(isEmptyFeed({ boards: [], live: [onTrack("Monza", null)] })).toBe(false);
+    expect(isEmptyFeed(feed())).toBe(false);
+  });
+});
+
+/**
+ * The track board with no laps. A lapless track that no rig is on is skipped,
+ * as it always was; one a rig is on plays with every slot open under a "now on
+ * track" header that names the cars and the rigs and no driver, since the
+ * heartbeats it comes from name none. The first lap turns it back into the
+ * all-time board in place.
+ */
+describe("track board on a live track", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const track = TV_BOARD_TYPES.track;
+  const live = onTrack("Monza", "Grand Prix", ["BMW M4 GT3", "Porsche 911 GT3 R"]);
+  const liveSpec = { track_name: "Monza", track_config: "Grand Prix", driver_count: 0, lap_count: 0, live };
+  const lapRow = {
+    driver_id: "d1",
+    display_name: "Driver One",
+    lap_time_ms: 105_432,
+    car_name: "BMW M4 GT3",
+    completed_at: "2026-10-23T20:00:00.000Z",
+  };
+
+  const loadWith = async (rows: unknown[], spec: object) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ rows })));
+    return track.load(spec, new AbortController().signal);
+  };
+
+  it("has content with no laps only while a rig is on the track", async () => {
+    const lapless = { ...liveSpec, live: undefined };
+    expect(track.hasContent(await loadWith([], lapless))).toBe(false);
+    expect(track.hasContent(await loadWith([], liveSpec))).toBe(true);
+    expect(track.hasContent(await loadWith([lapRow], lapless))).toBe(true);
+  });
+
+  it("draws the now-on-track state with every slot open and no driver", async () => {
+    const data = await loadWith([], liveSpec);
+    const html = renderToStaticMarkup(
+      <track.Board spec={liveSpec} data={data} stale={false} hold={() => {}} />,
+    );
+    expect(html).toContain("Now on track");
+    expect(html).not.toContain("first lap");
+    expect(html).toContain("Monza");
+    expect(html).toContain("Grand Prix · 2 rigs on track · BMW M4 GT3 · Porsche 911 GT3 R");
+    expect(html).not.toContain("All-time best laps");
+    expect(html).not.toContain("driver");
+    // Ten open slots, none filled.
+    expect((html.match(/· · · · ·/g) ?? []).length).toBe(SLOT_COUNT);
+  });
+
+  it("becomes the all-time board in place once the first lap lands", async () => {
+    const data = await loadWith([lapRow], liveSpec);
+    const html = renderToStaticMarkup(
+      <track.Board spec={liveSpec} data={data} stale={false} hold={() => {}} />,
+    );
+    expect(html).toContain("All-time best laps");
+    expect(html).toContain("Driver One");
+    expect(html).toContain("Grand Prix · 1 driver");
+    expect(html).not.toContain("Now on track");
+    expect(html).not.toContain("0 drivers");
+  });
+
+  it("draws a track with laps exactly as before", async () => {
+    const spec = { track_name: "Monza", track_config: "Grand Prix", driver_count: 24, lap_count: 90 };
+    const data = await loadWith([lapRow], spec);
+    const html = renderToStaticMarkup(
+      <track.Board spec={spec} data={data} stale={false} hold={() => {}} />,
+    );
+    expect(html).toContain("All-time best laps");
+    expect(html).toContain("Grand Prix · 24 drivers");
   });
 });
 

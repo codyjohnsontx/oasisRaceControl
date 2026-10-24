@@ -5,6 +5,9 @@ import { formatLapTime } from "@/lib/time";
 import {
   type Board,
   type BoardRow,
+  type BoardsFeed,
+  type LiveTrack,
+  compareTracks,
   trackKey,
 } from "@/lib/leaderboards";
 import {
@@ -43,10 +46,29 @@ import { RaceOrder } from "./race-board";
 
 // ---- track board: one track layout, all-time ------------------------------
 
-/** All-time is the right window for a high-score table: the wall celebrates the
- *  shop record, not who happened to be in tonight. `/leaderboards` also defaults
- *  to all-time, so the two match for the same combo. */
-type TrackSpec = Board;
+/**
+ * All-time is the right window for a high-score table: the wall celebrates the
+ * shop record, not who happened to be in tonight. `/leaderboards` also defaults
+ * to all-time, so the two match for the same combo.
+ *
+ * `live` is set on a track some rig is on right now (`LiveTrack` in
+ * `lib/leaderboards.ts`). A track with no laps yet is in the rotation only on
+ * that, drawn as the same board with every slot open and a "now on track"
+ * header, so the driver on an out-lap at a new track sees it on the wall
+ * before their first lap lands. It is the same board type under the same slide
+ * key as the track will have once it has laps, not a second type: the board's
+ * own refresh asks the lap feed every few seconds, so the first lap fills the
+ * first slot in place and the header turns into the all-time one, with no
+ * slide change and nothing for the engine to learn.
+ */
+type TrackSpec = Board & { live?: LiveTrack | null };
+
+type TrackData = {
+  rows: BoardRow[];
+  /** Carried from the spec so `hasContent` - which sees only data - can keep
+   *  a lapless live track on the wall. */
+  live: LiveTrack | null;
+};
 
 async function fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
   const res = await fetch(url, { cache: "no-store", signal });
@@ -54,7 +76,7 @@ async function fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
   return res.json();
 }
 
-const TRACK_BOARD = defineTvBoard<TrackSpec, BoardRow[]>({
+const TRACK_BOARD = defineTvBoard<TrackSpec, TrackData>({
   kind: "track",
   async load(spec, signal) {
     const params = new URLSearchParams({ track: spec.track_name, window: "alltime" });
@@ -62,18 +84,44 @@ const TRACK_BOARD = defineTvBoard<TrackSpec, BoardRow[]>({
     const data = await fetchJson(`/api/leaderboards/board?${params}`, signal);
     const rows = (data as { rows?: unknown }).rows;
     if (!Array.isArray(rows)) throw new Error("malformed board response");
-    return rows as BoardRow[];
+    return { rows: rows as BoardRow[], live: spec.live ?? null };
   },
-  hasContent: (rows) => rows.length > 0,
+  // A track with laps always has something to show. A track with none is on
+  // the wall only while a rig is on it; the rotation list drops it once no rig
+  // has reported it for the live window, and the open slots go with it.
+  hasContent: (data) => data.rows.length > 0 || data.live !== null,
   Board({ spec, data, stale }) {
+    if (data.rows.length === 0 && data.live) {
+      return (
+        // The owner's state for a track nobody has lapped yet: "Now on track",
+        // promising no lap (2026-10-24), since one over the incident limit
+        // never ranks. Ten open slots under it are the
+        // invitation, exactly as an unclaimed arcade table is anywhere else on
+        // this wall. Heartbeats name no driver, so neither does this header -
+        // how many rigs are on the track and the cars seen on it, the count
+        // first so a long car list truncates and never takes it.
+        <ArcadeHighScores
+          eyebrow="Now on track"
+          title={spec.track_name}
+          subtitle={[spec.track_config, rigCount(data.live.rig_count), ...data.live.car_names]
+            .filter(Boolean)
+            .join(" · ")}
+          entries={[]}
+          stale={stale}
+        />
+      );
+    }
     return (
       <ArcadeHighScores
         eyebrow="All-time best laps"
         title={spec.track_name}
-        subtitle={[spec.track_config, driverCount(spec.driver_count)]
+        // The rows lift the count only when the list has none yet: the first
+        // laps on a live track land before the rotation list is next re-read,
+        // and "0 drivers" over a filled slot would be a lie for that minute.
+        subtitle={[spec.track_config, driverCount(Math.max(spec.driver_count, data.rows.length))]
           .filter(Boolean)
           .join(" · ")}
-        entries={data.slice(0, SLOT_COUNT).map(toEntry)}
+        entries={data.rows.slice(0, SLOT_COUNT).map(toEntry)}
         stale={stale}
       />
     );
@@ -113,6 +161,9 @@ const hadOffTrack = (row: { incident_delta?: number | null }) => (row.incident_d
 /** Counted by `listBoards()` over the whole board, not by the rows on screen -
  *  the board feed is capped at a page of rows and would freeze the number there. */
 const driverCount = (n: number) => `${n} driver${n === 1 ? "" : "s"}`;
+
+/** Rigs that reported a live track inside the window - sims, not people. */
+const rigCount = (n: number) => `${n} rig${n === 1 ? "" : "s"} on track`;
 
 // ---- tonight board: the featured combo ------------------------------------
 
@@ -496,11 +547,55 @@ export const TV_BOARD_TYPES: Record<string, AnyTvBoardDefinition> = Object.fromE
 );
 
 /**
+ * The tracks the rotation plays, in order: every track with laps, as
+ * `listBoards()` ordered them, with every track a rig is on right now but
+ * nobody has lapped yet slotted in where its name falls. A live track that
+ * already has laps is not a second slide and does not change the first one:
+ * the board it has is the board it keeps, so a combo with laps on the wall is
+ * exactly what it was before live tracks existed. Live-only tracks come in
+ * with no counts, since the counts are of laps.
+ */
+export function rotationTracks(feed: BoardsFeed): TrackSpec[] {
+  const tracks: TrackSpec[] = [...feed.boards];
+  const lapped = new Set(feed.boards.map(trackKey));
+  for (const live of feed.live) {
+    if (lapped.has(trackKey(live))) continue;
+    const spec: TrackSpec = {
+      track_name: live.track_name,
+      track_config: live.track_config,
+      driver_count: 0,
+      lap_count: 0,
+      live,
+    };
+    const after = tracks.findIndex((track) => compareTracks(track, live) > 0);
+    tracks.splice(after < 0 ? tracks.length : after, 0, spec);
+  }
+  return tracks;
+}
+
+/**
+ * Reads an `/api/leaderboards/boards` answer into the feed `buildRotation`
+ * takes, so the engine hands the payload over without knowing its shape. A
+ * payload without `boards` is no list at all and throws; one without `live` is
+ * a venue where no rig is in a session.
+ */
+export function parseBoardsFeed(payload: unknown): BoardsFeed {
+  const { boards, live } = (payload ?? {}) as { boards?: unknown; live?: unknown };
+  if (!Array.isArray(boards)) throw new Error("malformed boards response");
+  return { boards, live: Array.isArray(live) ? live : [] } as BoardsFeed;
+}
+
+/** True when the feed names no track at all - a seed that failed to load, or
+ *  a venue with no laps and no rig on a track. */
+export const isEmptyFeed = (feed: BoardsFeed) => feed.boards.length === 0 && feed.live.length === 0;
+
+/**
  * The rotation lists, one per `TvMode`.
  *
  * The venue's rotation: the league standings, then tonight's featured combo,
  * then every track with laps on it, in the order `listBoards()` returns them
- * (track name, then layout).
+ * (track name, then layout), with the tracks the rigs are on right now among
+ * them (`rotationTracks`).
  *
  * League goes first so that on a Wednesday the wall reaches the board that
  * holds it straight away rather than cycling the arcade boards first; on every
@@ -518,17 +613,17 @@ export const TV_BOARD_TYPES: Record<string, AnyTvBoardDefinition> = Object.fromE
  * under two headings, and a league slide with no season is a counter in the
  * footer that never plays; the owner saw "three displays" of one event.
  */
-export function buildRotation(boards: Board[], mode: TvMode = "rotation"): TvSlide[] {
+export function buildRotation(feed: BoardsFeed, mode: TvMode = "rotation"): TvSlide[] {
   if (mode === "event") {
     return [{ key: "event", kind: "tonight", spec: { everyone: true } satisfies TonightSpec }];
   }
   return [
     { key: "league", kind: "league", spec: null },
     { key: "tonight", kind: "tonight", spec: { everyone: false } satisfies TonightSpec },
-    ...boards.map((board) => ({
-      key: `track:${trackKey(board)}`,
+    ...rotationTracks(feed).map((track) => ({
+      key: `track:${trackKey(track)}`,
       kind: "track",
-      spec: board,
+      spec: track,
     })),
   ];
 }

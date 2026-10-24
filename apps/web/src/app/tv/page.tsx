@@ -1,5 +1,6 @@
 import { STAFF_BOARD_LINK_PARAM, pageBoardTicket } from "@/lib/board-ticket";
-import { listBoards } from "@/lib/leaderboards-queries";
+import type { BoardsFeed } from "@/lib/leaderboards";
+import { listBoards, listLiveTracks } from "@/lib/leaderboards-queries";
 import { tvMode } from "@/lib/tv-rotation";
 import { tvHostLogo } from "@/lib/tv-host-logo";
 import { BoardHeartbeat } from "@/components/tv/board-heartbeat";
@@ -7,8 +8,9 @@ import { TvScreen } from "@/components/tv/tv-screen";
 
 /**
  * Front-of-store arcade high-score board. Point a kiosk browser at it and walk
- * away: it cycles every track with laps on it, refreshes itself, and recovers
- * from a dead feed without anyone touching the TV.
+ * away: it cycles every track with laps on it and every track a rig is on
+ * right now (`lib/leaderboards.ts`, live tracks), refreshes itself, and
+ * recovers from a dead feed without anyone touching the TV.
  *
  * `/tv?event=1` is the same screen in its event view: one board, every driver
  * with a lap today in the featured combo, scrolling on its own - for a laptop
@@ -39,12 +41,14 @@ export default async function TvPage({ searchParams }: Props) {
 
   // A database hiccup at render time must not blank the wall - the client
   // fetches its own rotation list anyway, so an empty seed self-corrects. The
-  // event view's list does not depend on which boards exist, so it skips the
-  // query rather than making one it will not read.
-  let boards: Awaited<ReturnType<typeof listBoards>> = [];
+  // event view's list does not depend on which boards exist or which tracks
+  // the rigs are on, so it skips both queries rather than making ones it will
+  // not read.
+  let feed: BoardsFeed = { boards: [], live: [] };
   if (mode === "rotation") {
     try {
-      boards = await listBoards();
+      const [boards, live] = await Promise.all([listBoards(), listLiveTracks()]);
+      feed = { boards, live };
     } catch (error) {
       console.error("[tv] initial board list failed", (error as Error).message);
     }
@@ -64,7 +68,7 @@ export default async function TvPage({ searchParams }: Props) {
 
   return (
     <>
-      <TvScreen initialBoards={boards} mode={mode} hostLogo={hostLogo} />
+      <TvScreen initialFeed={feed} mode={mode} hostLogo={hostLogo} />
       {ticket && <BoardHeartbeat ticket={ticket} />}
     </>
   );

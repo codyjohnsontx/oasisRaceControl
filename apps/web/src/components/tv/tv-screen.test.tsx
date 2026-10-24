@@ -27,7 +27,7 @@ vi.mock("next/image", () => ({
 const { TvScreen } = await import("./tv-screen");
 
 const renderMain = (mode: "event" | "rotation") => {
-  const html = renderToStaticMarkup(<TvScreen initialBoards={[]} mode={mode} hostLogo={null} />);
+  const html = renderToStaticMarkup(<TvScreen initialFeed={{ boards: [], live: [] }} mode={mode} hostLogo={null} />);
   const main = html.match(/<main data-tv-mode="([^"]*)" class="([^"]*)"/);
   expect(main).not.toBeNull();
   return { mode: main![1], classes: main![2].split(/\s+/) };
