@@ -8,6 +8,7 @@ import {
   resetDb,
   seedDriver,
   seedRig,
+  setFeaturedCombo,
   testDb,
 } from "@/test/db";
 
@@ -18,7 +19,8 @@ import {
  * tracks with laps are read by `listBoards()` exactly as before - a heartbeat
  * cannot add or remove one, and a lap on a track a rig is on changes nothing
  * about the live list, since `buildRotation` keeps that track on its laps
- * (`components/tv/board-types.test.tsx`).
+ * (`components/tv/board-types.test.tsx`). On a day with a featured combo,
+ * only a rig in that combo puts its track on the list.
  */
 
 const monza = { track: "Monza", config: "Grand Prix", car: "BMW M4 GT3" };
@@ -118,5 +120,19 @@ describeDb("listLiveTracks against real Postgres", () => {
     const rig = await seedRig(1);
     await heartbeat(rig.id, monza, 1, true);
     expect((await listLiveTracks()).map((t) => t.rig_count)).toEqual([1]);
+  });
+
+  it("on a featured-combo day lists only the combo, whatever else the rigs are on", async () => {
+    await setFeaturedCombo({ trackName: monza.track, trackConfig: monza.config, carName: monza.car });
+    const rig1 = await seedRig(1);
+    const rig2 = await seedRig(2);
+    const rig3 = await seedRig(3);
+    await heartbeat(rig1.id, monza);
+    await heartbeat(rig2.id, { ...monza, car: "Porsche 911 GT3 R" });
+    await heartbeat(rig3.id, { track: "Spa-Francorchamps", config: null, car: monza.car });
+
+    expect(await listLiveTracks()).toEqual([
+      { track_name: "Monza", track_config: "Grand Prix", car_names: ["BMW M4 GT3"], rig_count: 1 },
+    ]);
   });
 });

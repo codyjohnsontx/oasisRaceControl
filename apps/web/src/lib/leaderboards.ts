@@ -12,6 +12,8 @@
  * to empty. There's no tracks table; combos are read straight off laps.
  */
 
+import { type FeaturedCombo, comboMismatch } from "./validity";
+
 /** A board is one track layout (track_name + track_config). The car isn't part
  *  of board identity — a driver's fastest lap is ranked across any car and the
  *  car is shown on the row. Layout (config) stays in identity because a
@@ -69,6 +71,11 @@ export function trackLabel(t: { track_name: string; track_config: string | null 
  * owner asked for (2026-10-23): a driver on an out-lap at a new track should
  * already see it on the screen. Heartbeats carry no driver, so neither does
  * this; it is a track, the cars seen on it, and how many rigs reported it.
+ *
+ * On a day with a featured combo only a rig in that combo counts (`liveTracks`
+ * below): a lap anywhere else is stored invalid at ingestion and never ranks,
+ * so its track would sit on the wall with every slot open for as long as the
+ * rig drove it. The owner's rule (2026-10-24).
  */
 export type LiveTrack = {
   track_name: string;
@@ -90,6 +97,56 @@ export type LiveTrack = {
  * minute, so the window always holds several of them for a rig still there.
  */
 export const LIVE_TRACK_WINDOW_MINUTES = 15;
+
+/** One rig's reported session inside the live window, as the heartbeats name it. */
+export type LiveSession = {
+  rig_id: string;
+  track_name: string;
+  track_config: string | null;
+  car_name: string | null;
+};
+
+/**
+ * Groups the rigs' sessions into live tracks, in the order given. With a
+ * featured combo set for the day, a session counts only if ingestion's own
+ * `comboMismatch` would let its laps rank; with none, every session counts.
+ * A null layout and an empty one are one track, as everywhere else.
+ */
+export function liveTracks(
+  sessions: LiveSession[],
+  combo: Pick<FeaturedCombo, "track_name" | "track_config" | "car_name"> | null,
+): LiveTrack[] {
+  const tracks = new Map<string, { track: LiveTrack; cars: Set<string>; rigs: Set<string> }>();
+  for (const session of sessions) {
+    if (
+      combo &&
+      comboMismatch(combo, {
+        trackName: session.track_name,
+        trackConfig: session.track_config,
+        carName: session.car_name ?? "",
+      })
+    ) {
+      continue;
+    }
+    const key = trackKey(session);
+    let entry = tracks.get(key);
+    if (!entry) {
+      entry = {
+        track: { track_name: session.track_name, track_config: session.track_config, car_names: [], rig_count: 0 },
+        cars: new Set(),
+        rigs: new Set(),
+      };
+      tracks.set(key, entry);
+    }
+    entry.rigs.add(session.rig_id);
+    if (session.car_name !== null) entry.cars.add(session.car_name);
+  }
+  return [...tracks.values()].map(({ track, cars, rigs }) => ({
+    ...track,
+    car_names: [...cars].sort((a, b) => a.localeCompare(b, "en")),
+    rig_count: rigs.size,
+  }));
+}
 
 /**
  * What `/api/leaderboards/boards` answers and the `/tv` page seeds the wall

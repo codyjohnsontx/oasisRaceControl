@@ -93,14 +93,15 @@ const TRACK_BOARD = defineTvBoard<TrackSpec, TrackData>({
   Board({ spec, data, stale }) {
     if (data.rows.length === 0 && data.live) {
       return (
-        // The owner's state for a track nobody has lapped yet (2026-10-23):
-        // "now on track, first lap coming". Ten open slots under it are the
+        // The owner's state for a track nobody has lapped yet: "Now on track",
+        // promising no lap (2026-10-24), since one over the incident limit
+        // never ranks. Ten open slots under it are the
         // invitation, exactly as an unclaimed arcade table is anywhere else on
         // this wall. Heartbeats name no driver, so neither does this header -
         // how many rigs are on the track and the cars seen on it, the count
         // first so a long car list truncates and never takes it.
         <ArcadeHighScores
-          eyebrow="Now on track · first lap coming"
+          eyebrow="Now on track"
           title={spec.track_name}
           subtitle={[spec.track_config, rigCount(data.live.rig_count), ...data.live.car_names]
             .filter(Boolean)

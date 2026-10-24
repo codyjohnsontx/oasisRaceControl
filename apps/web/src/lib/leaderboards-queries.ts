@@ -1,11 +1,14 @@
-import { query } from "./db";
+import { query, queryOne } from "./db";
 import {
   type Board,
   type BoardRow,
   type BoardWindow,
   LIVE_TRACK_WINDOW_MINUTES,
+  type LiveSession,
   type LiveTrack,
+  liveTracks,
 } from "./leaderboards";
+import type { FeaturedCombo } from "./validity";
 
 /**
  * Server-only leaderboard queries (imports pg). Kept separate from
@@ -93,28 +96,30 @@ export async function getBoard(
  * last fifteen minutes of each rig's rows and nothing else, however much
  * history the table holds. Tracks with laps come back too when a rig is on
  * them; `buildRotation` keeps those on their laps and uses only the rest.
+ * On a day with a featured combo, only rigs in that combo count
+ * (`liveTracks`).
  */
 export async function listLiveTracks(): Promise<LiveTrack[]> {
-  return query<LiveTrack>(
-    `select live.track_name,
-            live.track_config,
-            coalesce(
-              array_agg(distinct live.car_name order by live.car_name)
-                filter (where live.car_name is not null),
-              '{}'
-            ) as car_names,
-            count(distinct live.rig_id)::int as rig_count
-     from rigs r
-     cross join lateral (
-       select h.rig_id, h.session_track as track_name, h.session_config as track_config,
-              h.session_car as car_name
-       from rig_heartbeats h
-       where h.rig_id = r.id
-         and h.received_at > now() - make_interval(mins => $1)
-         and h.session_track is not null
-     ) live
-     group by live.track_name, live.track_config
-     order by live.track_name asc, coalesce(live.track_config, '') asc`,
-    [LIVE_TRACK_WINDOW_MINUTES],
-  );
+  const [sessions, combo] = await Promise.all([
+    query<LiveSession>(
+      `select live.rig_id, live.track_name, live.track_config, live.car_name
+       from rigs r
+       cross join lateral (
+         select h.rig_id, h.session_track as track_name, h.session_config as track_config,
+                h.session_car as car_name
+         from rig_heartbeats h
+         where h.rig_id = r.id
+           and h.received_at > now() - make_interval(mins => $1)
+           and h.session_track is not null
+       ) live
+       group by live.rig_id, live.track_name, live.track_config, live.car_name
+       order by live.track_name asc, coalesce(live.track_config, '') asc`,
+      [LIVE_TRACK_WINDOW_MINUTES],
+    ),
+    queryOne<Pick<FeaturedCombo, "track_name" | "track_config" | "car_name">>(
+      `select track_name, track_config, car_name
+       from featured_combos where combo_date = venue_today()`,
+    ),
+  ]);
+  return liveTracks(sessions, combo);
 }

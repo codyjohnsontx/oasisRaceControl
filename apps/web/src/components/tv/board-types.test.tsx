@@ -185,7 +185,8 @@ describe("track board on a live track", () => {
     const html = renderToStaticMarkup(
       <track.Board spec={liveSpec} data={data} stale={false} hold={() => {}} />,
     );
-    expect(html).toContain("Now on track · first lap coming");
+    expect(html).toContain("Now on track");
+    expect(html).not.toContain("first lap");
     expect(html).toContain("Monza");
     expect(html).toContain("Grand Prix · 2 rigs on track · BMW M4 GT3 · Porsche 911 GT3 R");
     expect(html).not.toContain("All-time best laps");
