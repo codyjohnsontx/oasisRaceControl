@@ -13,7 +13,7 @@ Check-in, live timing, lap history, leaderboards, league night and rig monitorin
   TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5433/oasis_test npm test   # 875 + 9 lifecycle
   TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5433/oasis_test npm run test:integration   # 198
   ```
-- **In use:** ran on rig PCs at a two-day off-site event on 2026-09-27/28, where over 100 people drove.
+- **In use:** ran on rig PCs at a two-day off-site event hosted by Cavender Cadillac of San Antonio on 2026-09-27/28, where over 100 people drove.
 
 | The `/tv` wall board | Phone check-in |
 |---|---|
