@@ -2245,16 +2245,32 @@ describeDb("rig monitor against real Postgres", () => {
     });
 
     it("alerts once, urgently, when the event board goes dark without a goodbye, though event mode ends", async () => {
-      await setCombo();
-      await board({ lastSeenAgoS: 4 * 60 });
-      await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: false });
-      await nextEvaluation();
-      await nextEvaluation();
-      const dark = posts.filter((p) => p.content?.includes("has not been heard from"));
-      expect(dark.map((p) => p.content)).toEqual([
-        `<@${OWNER}> 🔴 Event board (Cadillac) has not been heard from for 4 min - laptop asleep, browser closed, or offline?`,
-      ]);
-      expect(await alerts()).toMatchObject([{ rule: "board_dark", subject: "board:event", resolved: false }]);
+      // 8a judges today's boards, and in the first minutes after venue
+      // midnight a board heard 4 min ago was yesterday's, so the venue's day
+      // is pinned to the one that held five minutes ago. Restored below.
+      await testDb().query(
+        `create or replace function venue_today() returns date language sql stable as $$
+           select ((now() - interval '5 minutes') at time zone 'America/Chicago')::date
+         $$`,
+      );
+      try {
+        await setCombo();
+        await board({ lastSeenAgoS: 4 * 60 });
+        await expect(nextEvaluation()).resolves.toMatchObject({ eventMode: false });
+        await nextEvaluation();
+        await nextEvaluation();
+        const dark = posts.filter((p) => p.content?.includes("has not been heard from"));
+        expect(dark.map((p) => p.content)).toEqual([
+          `<@${OWNER}> 🔴 Event board (Cadillac) has not been heard from for 4 min - laptop asleep, browser closed, or offline?`,
+        ]);
+        expect(await alerts()).toMatchObject([{ rule: "board_dark", subject: "board:event", resolved: false }]);
+      } finally {
+        await testDb().query(
+          `create or replace function venue_today() returns date language sql stable as $$
+             select (now() at time zone 'America/Chicago')::date
+           $$`,
+        );
+      }
     });
 
     it("pages about a rig heard since event mode began, never about one quiet since before it", async () => {

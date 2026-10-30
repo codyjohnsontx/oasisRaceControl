@@ -21,6 +21,12 @@ import {
 const TRACK = "Spa-Francorchamps";
 const CAR = "Porsche 911 GT3 R";
 
+/**
+ * `minutesAgo` counts back from now, except in the first five minutes after
+ * venue midnight, when it counts back from five past: "three minutes ago" at
+ * 00:01 was yesterday, and the board is the venue's day (`venue_today()`), so
+ * the case would otherwise fail every night it runs across midnight.
+ */
 async function seedLap(
   rigId: string,
   assignmentId: string,
@@ -32,7 +38,8 @@ async function seedLap(
                        track_name, car_name, lap_time_ms, incident_delta,
                        is_valid, completed_at)
      values ('evt-' || gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, true,
-             now() - ($8 || ' minutes')::interval)`,
+             greatest(now(), venue_today()::timestamp at time zone 'America/Chicago' + interval '5 minutes')
+               - ($8 || ' minutes')::interval)`,
     [rigId, assignmentId, driverId, TRACK, CAR, lap.lapTimeMs, lap.incidents, lap.minutesAgo],
   );
 }
