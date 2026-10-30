@@ -109,13 +109,27 @@ public sealed class ConsoleShutdownTests
         foreach (var outbox in Directory.GetFiles(AppContext.BaseDirectory, "outbox.db*"))
             File.Delete(outbox);
 
-        var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
+        var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
+        var start = new ProcessStartInfo(OperatingSystem.IsWindows() ? dotnet : "perl")
         {
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        // The INT cases are Ctrl+C at a console, whose foreground process
+        // hears SIGINT. A runner started in the background of a
+        // non-interactive shell (`dotnet test ... &`, beside the web suites)
+        // ignores SIGINT, POSIX hands that on to every child, and .NET leaves
+        // an inherited-ignored SIGINT ignored - so the agent never heard the
+        // signal and the test waited out its minute. perl puts SIGINT back to
+        // its default and then becomes the agent (exec keeps the pid).
+        if (!OperatingSystem.IsWindows())
+        {
+            start.ArgumentList.Add("-e");
+            start.ArgumentList.Add("""$SIG{INT} = 'DEFAULT'; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n";""");
+            start.ArgumentList.Add(dotnet);
+        }
         start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "OasisRigAgent.dll"));
         start.Environment["OASIS_BACKEND_URL"] = backendUrl;
         start.Environment["OASIS_RIG_TOKEN"] = "test-rig-token";
