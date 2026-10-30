@@ -1,5 +1,24 @@
 # Oasis Race Control
 
+Check-in, live timing, lap history, leaderboards, league night and rig monitoring for a sim racing venue with 20-25 Windows iRacing simulators. Built for Oasis Sim Racing: customers scan a QR code on the rig and drive, staff run the night from a dashboard, and a wall TV shows the boards. A Next.js and Postgres web app sits behind a C#/.NET 8 agent on every rig that reads laps from iRacing's shared memory and holds them in a durable SQLite outbox until the server has them.
+
+- **Live:** https://oasis-race-control.vercel.app (the wall board is [`/tv`](https://oasis-race-control.vercel.app/tv))
+- **Stack:** C#/.NET 8, xUnit, SQLite, Next.js 16, TypeScript, PostgreSQL (Neon), Vercel, GitHub Actions
+- **Tests:** 373 C# xUnit tests (339 rig agent + 34 spike) and 1,082 TypeScript Vitest tests (875 unit + 198 integration + 9 league lifecycle), all passing; measured 2026-10-29 at `382512c`. The integration and lifecycle suites need a throwaway Postgres ([Integration tests](#integration-tests)):
+
+  ```bash
+  ~/.dotnet/dotnet test apps/rig-agent/OasisRigAgent.Tests -c Release   # 339
+  ~/.dotnet/dotnet test spike/OasisSpike.sln -c Release                 # 34
+  cd apps/web
+  TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5433/oasis_test npm test   # 875 + 9 lifecycle
+  TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5433/oasis_test npm run test:integration   # 198
+  ```
+- **In use:** ran on rig PCs at a two-day off-site event on 2026-09-27/28, where over 100 people drove.
+
+| The `/tv` wall board | Phone check-in |
+|---|---|
+| <img src="docs/screenshots/tv-board.png" alt="The /tv board: all-time best laps at Spa-Francorchamps, six drivers ranked with lap times and gaps" width="560"> | <img src="docs/screenshots/phone-check-in.png" alt="Phone check-in after scanning a rig's QR code: checking into Rig 01 as a guest, signed in, or with a new profile" width="200"> |
+
 > **Event build (2026-09-27):** [Download the rig agent event build (OasisRigAgent-event.zip)](https://github.com/codyjohnsontx/oasisRaceControl/releases/download/event-diag-2026-09-27/OasisRigAgent-event.zip). Walk-up sign-in on the rig: type your name and PIN, drive, press Enter to log out. Reads laps from iRacing automatically. Unzip it, put that rig's `agent.config.json` beside `OasisRigAgent.exe`, and run `OasisRigAgent.exe`. `OasisRigAgent.exe --diagnose` still runs the read-only iRacing check.
 
 In-store driver check-in, live timing, lap history, leaderboard, and weekly league platform for **Oasis Sim Racing** — a venue with ~20–25 Windows iRacing simulators.
@@ -35,7 +54,7 @@ docs/                # Plan, architecture, ops runbooks, and measured results
 
 - **Phase 0 (venue safety gate): lifted by the project owner on 2026-09-26** ("disregard that rule we are past that. We need this to run"). `docs/venue-safety.md` keeps the guidance (read-only iRacing access, no elevation, bounded logging) as recommendations and as the checklist for a signed release; it no longer blocks running the agent on Oasis computers.
 - **Phase 1 (Oasis canary + iRacing spike): superseded by the agent's own `--diagnose` run on the owner's rig (2026-09-26).** The `laps` table and agent event contract remain provisional until an approved canary and recording session complete. See `docs/spike-checklist.md`, `docs/spike-findings.md`, and `spike/`.
-- **Phase 2 (web/API slice and rig agent): built.** Check-in, driver portal, TV leaderboard, staff dashboard, league night, ingestion API, fake-rig simulator, and the agent's outbox, attribution and quarantine all work. The agent also reads laps from iRacing's shared memory (`"telemetry": "iracing"`); its lap detection is verified against real iRacing on the owner's rig with `OasisRigAgent.exe --diagnose` (2026-09-26, test drive, FIA F4 at COTA Grand Prix), and that read-only diagnostic is the first check on any rig; **posting laps to the hosted app from a rig is not yet verified** (`apps/rig-agent/README.md`). The Windows agent UI remains a console.
+- **Phase 2 (web/API slice and rig agent): built.** Check-in, driver portal, TV leaderboard, staff dashboard, league night, ingestion API, fake-rig simulator, and the agent's outbox, attribution and quarantine all work. The agent also reads laps from iRacing's shared memory (`"telemetry": "iracing"`); its lap detection is verified against real iRacing on the owner's rig with `OasisRigAgent.exe --diagnose` (2026-09-26, test drive, FIA F4 at COTA Grand Prix), and that read-only diagnostic is the first check on any rig; **posting laps to the hosted app from a rig is not yet verified** (`apps/rig-agent/README.md`). Since 0.6 the rig agent shows a WinForms walk-up sign-in window, with the console screens behind `--console` as its fallback.
 
 ## Web app development
 
