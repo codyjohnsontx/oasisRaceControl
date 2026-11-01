@@ -22,6 +22,25 @@ permissions:
   contents: read
 
 jobs:
+  # A formatting rule nothing enforces drifts until the next person to run the
+  # formatter cannot separate their own change from the accumulated noise.
+  # Ubuntu only: with no .gitattributes, a Windows checkout turns every file
+  # CRLF, which is noise of its own and not what the repo holds.
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Verify formatting
+        run: dotnet format apps/rig-agent/OasisRigAgent.sln --verify-no-changes
+
   test:
     strategy:
       fail-fast: false

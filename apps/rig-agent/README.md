@@ -840,6 +840,7 @@ the rest from `dotnet-counters` (`System.Runtime`, 5-second samples).
 export PATH="$HOME/.dotnet:$PATH"
 cd apps/rig-agent
 dotnet test                          # unit tests (net8.0 build; runs on a Mac)
+dotnet format --verify-no-changes    # CI fails on any formatting drift; drop the flag to fix
 OASIS_BACKEND_URL=https://oasis-race-control.vercel.app \
 OASIS_RIG_TOKEN=dev-rig-1-secret OASIS_RIG_NUMBER=1 OASIS_TELEMETRY=simulated \
   dotnet run --project OasisRigAgent -f net8.0 -c Release

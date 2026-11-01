@@ -630,8 +630,9 @@ What still needs a real rig in a hosted session is the checklist in
   is not on the default PATH; the exact commands are in
   `apps/rig-agent/README.md` (Run from source).
   `.github/workflows/rig-agent.yml` builds both targets and runs the suite on
-  Windows and Ubuntu for pull requests touching the agent; run it locally
-  first anyway. The iRacing source only reads on Windows; on macOS
+  Windows and Ubuntu for pull requests touching the agent, and fails on any
+  `dotnet format --verify-no-changes` drift (Ubuntu only: with no
+  `.gitattributes` a Windows checkout is CRLF); run both locally first anyway. The iRacing source only reads on Windows; on macOS
   `--diagnose` exits 3 and `"telemetry": "iracing"` fails at start-up, so run
   the agent here with `OASIS_TELEMETRY=simulated`.
 - `apps/web/.env.local` is gitignored and its comments have gone stale before.
